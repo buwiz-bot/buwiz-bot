@@ -1,8 +1,9 @@
 //! A box behind TLS: a relay per service, from a port on this Mac to `<service>.<name>`.
 //!
-//! The far end proves itself by the public roots, or by the one certificate a person pinned. A pin
-//! stands in for the name check, since a private certificate has no one else's word behind it.
-//! Past that it's the same bytes the box would send on loopback, so the rest of the Bot doesn't
+//! The far end proves itself by the one certificate a person pinned, with or without the public
+//! roots' word for it: a root vouches for a name, not for the machine the person means, so no
+//! token goes on that alone. The pin stands in for the name check. A certificate that renews has to
+//! be trusted again. Past that it's the same bytes the box would send on loopback, so the rest of the Bot doesn't
 //! know TLS is there. What it asks for by name is in `guest.rs` and the gate.
 
 use std::collections::HashMap;
@@ -123,14 +124,17 @@ fn builder() -> Result<rustls::ConfigBuilder<ClientConfig, rustls::WantsVerifier
     ClientConfig::builder_with_provider(Arc::new(provider())).with_safe_default_protocol_versions().map_err(|e| Problem::Failed(format!("TLS: {e}")))
 }
 
-/// TLS that takes `pin`, or with none the public roots and the name.
-fn config(pin: Option<&str>) -> Result<Arc<ClientConfig>> {
+/// TLS that takes `pin`, or with none the public roots, `extra` among them, and the name.
+fn config(pin: Option<&str>, extra: Option<&[u8]>) -> Result<Arc<ClientConfig>> {
     let builder = builder()?;
     Ok(Arc::new(match pin {
         Some(pin) => builder.dangerous().with_custom_certificate_verifier(Arc::new(Pinned(pin.to_owned(), algorithms()))).with_no_client_auth(),
         None => {
             let mut roots = rustls::RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            if let Some(der) = extra {
+                roots.add(CertificateDer::from(der.to_vec())).map_err(|e| Problem::Failed(format!("TLS: {e}")))?;
+            }
             builder.with_root_certificates(roots).with_no_client_auth()
         }
     }))
@@ -154,8 +158,8 @@ fn server_name(name: &str) -> Result<ServerName<'static>> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
     Trusted,
-    /// no root or pin says so: its hash, for a person to check
-    Unknown { fingerprint: String },
+    /// no person has said so yet: its hash, for them to check, and whether the public roots take it
+    Unknown { fingerprint: String, vouched: bool },
 }
 
 async fn handshake(name: &str, far: &Far, config: Arc<ClientConfig>, to: Option<SocketAddr>) -> Result<bool> {
@@ -164,10 +168,12 @@ async fn handshake(name: &str, far: &Far, config: Arc<ClientConfig>, to: Option<
     Ok(matches!(done, Ok(Ok(_))))
 }
 
-/// Shakes hands with the box's exec service, sending nothing else.
-pub async fn look(far: &Far, pin: Option<&str>, to: Option<SocketAddr>) -> Result<Seen> {
+/// Shakes hands with the box's exec service, sending nothing else. Only a pin that holds is
+/// [`Seen::Trusted`].
+pub async fn look(far: &Far, pin: Option<&str>, to: Option<SocketAddr>, extra_root: Option<&[u8]>) -> Result<Seen> {
     let name = far.service(EXEC_PORT);
-    if handshake(&name, far, config(pin)?, to).await? {
+    let shaken = handshake(&name, far, config(pin, extra_root)?, to).await?;
+    if shaken && pin.is_some() {
         return Ok(Seen::Trusted);
     }
     let noted = Arc::new(Mutex::new(None));
@@ -176,7 +182,7 @@ pub async fn look(far: &Far, pin: Option<&str>, to: Option<SocketAddr>) -> Resul
     let noted = noted.lock().unwrap_or_else(|e| e.into_inner()).take();
     match (noted, pin) {
         (None, _) => Err(Problem::Remote(NOT_TLS.to_owned())),
-        (Some(fingerprint), None) => Ok(Seen::Unknown { fingerprint }),
+        (Some(fingerprint), None) => Ok(Seen::Unknown { fingerprint, vouched: shaken }),
         (Some(fingerprint), Some(pin)) if !fingerprint.eq_ignore_ascii_case(pin) => Err(Problem::Remote(WRONG_CERTIFICATE.to_owned())),
         // the certificate is right and the handshake still failed: its signature didn't hold
         (Some(_), Some(_)) => Err(Problem::Remote(NOT_TLS.to_owned())),
@@ -190,8 +196,8 @@ pub struct Relays {
 
 impl Relays {
     /// A relay for each service of `names`: guest port → name. Comes back with guest port → port here.
-    pub async fn open(far: &Far, names: &HashMap<u16, String>, pin: Option<&str>, to: Option<SocketAddr>) -> Result<(Self, HashMap<u16, u16>)> {
-        let connector = TlsConnector::from(config(pin)?);
+    pub async fn open(far: &Far, names: &HashMap<u16, String>, pin: &str, to: Option<SocketAddr>) -> Result<(Self, HashMap<u16, u16>)> {
+        let connector = TlsConnector::from(config(Some(pin), None)?);
         let (stop, stopped) = watch::channel(());
         let mut ports = HashMap::new();
         for (guest, name) in names {
@@ -205,6 +211,12 @@ impl Relays {
 
     pub fn stop(&self) {
         let _ = self.stop.send(());
+    }
+
+    /// None at all, for a test of what holds them.
+    #[cfg(test)]
+    pub(super) fn idle() -> Self {
+        Self { stop: watch::channel(()).0 }
     }
 }
 
@@ -288,6 +300,6 @@ mod tests {
             }
         });
         let far = Far::parse("https://box.example.com").unwrap();
-        assert!(matches!(look(&far, None, Some(to)).await, Err(Problem::Remote(_))));
+        assert!(matches!(look(&far, None, Some(to), None).await, Err(Problem::Remote(_))));
     }
 }

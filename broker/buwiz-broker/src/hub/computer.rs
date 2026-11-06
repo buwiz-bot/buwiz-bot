@@ -87,7 +87,7 @@ const SLEEP_POLL: Duration = Duration::from_millis(20);
 const SIGHT_TTL: Duration = Duration::from_secs(60);
 
 /// What a person says yes to when they add a remote computer. The form shows it, word for word.
-pub const CONSENT: &str = "The AI will act on this machine with every right this login has. It can run commands, read and change files and use the screen there, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine.";
+pub const CONSENT: &str = "The AI will act on this machine with every right this login has. It can run commands, read and change files and use the screen there, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine. A copy of the SSH key is kept on this Mac until you remove the computer.";
 const LOST_REMOTE: &str = "This remote computer's saved connection is lost. Nothing happened to the machine: remove it and add it again.";
 
 /// A Bot's place at a computer.
@@ -901,11 +901,17 @@ impl Computers {
     }
 
     /// Whether `bot` sits at a remote computer, and if so whether it has a screen. `None` for a
-    /// local one, or if that can't be read.
+    /// local one. Not knowing counts as remote, with a screen: what that takes away is what the wall
+    /// would have given, and a model that can't see gets nothing either.
     pub fn remote_at(&self, ctx: &HubCtx, bot: &str) -> Option<bool> {
-        let seat = Self::seat(ctx, bot).ok()??;
-        let machine = self.machine(ctx, &seat.computer).ok()?;
-        machine.link.is_some().then(|| machine.has_screen())
+        let seat = match Self::seat(ctx, bot) {
+            Ok(seat) => seat?,
+            Err(_) => return Some(true),
+        };
+        match self.machine(ctx, &seat.computer) {
+            Ok(machine) => machine.link.is_some().then(|| machine.has_screen()),
+            Err(_) => Self::is_remote(ctx, &seat.computer).unwrap_or(true).then_some(true),
+        }
     }
 
     // ---- reading ----
@@ -1136,7 +1142,7 @@ impl Computers {
         let record = self.machine(ctx, &id);
         match &record {
             Ok(m) if m.link.is_some() => out["remote"] = json!({"screen": m.has_screen(), "where": where_of(&m.reach)}),
-            Err(_) if Self::is_remote(ctx, &id).unwrap_or(false) => out["remote"] = json!({"screen": false, "where": "", "lost": true}),
+            Err(_) if Self::is_remote(ctx, &id).unwrap_or(true) => out["remote"] = json!({"screen": false, "where": "", "lost": true}),
             _ => {}
         }
         if let Some(gate) = self.open_gate() {
@@ -1225,7 +1231,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(ctx: &HubCtx) -> Result<Self, Problem> {
-        let dir = ctx.data.join("computers").join(format!("probe-{}", buwiz_computer::random_hex(8)?));
+        let dir = ctx.data.join("computers").join(format!("{}{}", buwiz_computer::remote::ssh::PROBE_PREFIX, buwiz_computer::random_hex(8)?));
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
         Ok(Self(dir))
     }
@@ -1502,7 +1508,7 @@ async fn test_remote(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     match computers.probe_remote(&ctx, &asked(&body)).await {
         Ok(Probed::Ready { boxed, system }) => types::json(StatusCode::OK, &json!({"ok": true, "screen": boxed, "system": system, "consent": CONSENT})),
-        Ok(Probed::Trust { fingerprint, pin }) => types::json(StatusCode::OK, &json!({"ok": false, "code": "trust", "fingerprint": fingerprint, "pin": pin})),
+        Ok(Probed::Trust { fingerprint, pin, vouched }) => types::json(StatusCode::OK, &json!({"ok": false, "code": "trust", "fingerprint": fingerprint, "pin": pin, "vouched": vouched})),
         Err(p) => refused(&p),
     }
 }
@@ -1554,6 +1560,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/attach"), attach);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/detach"), detach);
     routes.on_start(|ctx| {
+        buwiz_computer::remote::ssh::clear_staged(&ctx.data.join("computers"));
         let Some(computers) = Computers::of(&ctx) else { return };
         let tick = (computers.idle / 2).clamp(Duration::from_secs(1), Duration::from_secs(30));
         tokio::spawn(async move {

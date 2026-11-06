@@ -26,6 +26,8 @@ use crate::{Problem, Result, Secret};
 pub const SSH: &str = "/usr/bin/ssh";
 pub const KEYSCAN: &str = "/usr/bin/ssh-keyscan";
 
+/// What a test of a connection's folder is called, under `computers`.
+pub const PROBE_PREFIX: &str = "probe-";
 const FOLDER: &str = "ssh";
 const KEY_FILE: &str = "key";
 const KNOWN_HOSTS: &str = "known_hosts";
@@ -200,6 +202,19 @@ fn io_failed(e: &std::io::Error) -> Problem {
     Problem::Failed(format!("its connection's folder: {}", e.kind()))
 }
 
+/// Takes away what a broker that stopped outright left under `computers`, a computers folder: a key
+/// staged for a login, and a test's whole folder. A running master needs neither.
+pub fn clear_staged(computers: &Path) {
+    let Ok(entries) = std::fs::read_dir(computers) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(PROBE_PREFIX) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        } else {
+            let _ = std::fs::remove_file(entry.path().join(FOLDER).join(KEY_FILE));
+        }
+    }
+}
+
 /// The key, on disk until this goes: `ssh` wants a file, and only the login reads it.
 struct StagedKey(PathBuf);
 
@@ -372,6 +387,21 @@ mod tests {
     use super::*;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==";
+
+    #[test]
+    fn what_a_crash_left_goes_and_nothing_else_does() {
+        let root = std::env::temp_dir().join(format!("buwiz-staged-{}-{}", std::process::id(), crate::random_hex(4).unwrap()));
+        let (kept, probe) = (root.join("cmp_1"), root.join("probe-ab"));
+        std::fs::create_dir_all(kept.join(FOLDER)).unwrap();
+        std::fs::create_dir_all(probe.join(FOLDER)).unwrap();
+        for file in [kept.join(FOLDER).join(KEY_FILE), kept.join(FOLDER).join(KNOWN_HOSTS), kept.join("machine.json"), probe.join(FOLDER).join(KEY_FILE)] {
+            std::fs::write(file, "x").unwrap();
+        }
+        clear_staged(&root);
+        assert!(!kept.join(FOLDER).join(KEY_FILE).exists() && !probe.exists());
+        assert!(kept.join("machine.json").exists() && kept.join(FOLDER).join(KNOWN_HOSTS).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_pin_is_one_key_and_nothing_else() {

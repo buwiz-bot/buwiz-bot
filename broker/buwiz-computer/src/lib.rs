@@ -148,8 +148,8 @@ pub struct Link {
     /// a `buwiz-computer` box answers there. Without one: commands and files over SSH, no screen
     pub boxed: bool,
     /// who the far end must prove to be: an SSH host key line (`ssh-ed25519 AAAA…`), or the SHA-256
-    /// of a TLS certificate in hex. A person saw it and said yes. `None` only for TLS, where the
-    /// public roots decide
+    /// of a TLS certificate in hex. A person saw it and said yes. `None` until they have, and
+    /// nothing is sent before then
     pub pin: Option<String>,
     /// the SSH private key
     pub key: Option<Secret>,

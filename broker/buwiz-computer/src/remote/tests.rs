@@ -135,7 +135,7 @@ async fn a_scan_is_only_ever_a_question_for_a_person() {
     let provider = RemoteProvider::new().with_programs(never, scan);
     let mut m = machine(&d);
     m.link.as_mut().unwrap().pin = None;
-    assert!(matches!(provider.probe(&m).await.unwrap(), Probed::Trust { .. }));
+    assert!(matches!(provider.probe(&m).await.unwrap(), Probed::Trust { vouched: false, .. }));
     assert!(!d.join("ssh-ran").exists());
     // and the record can't connect with no pin, however it's asked
     assert!(provider.wake(&m).await.is_err());
@@ -224,4 +224,82 @@ fn what_a_box_says_back_has_this_computers_secrets_taken_out() {
     m.token = Secret::new("tok-123");
     let said: Result<()> = clean(&m, Err(Problem::Guest { status: 500, message: "your token is tok-123".to_owned() }));
     assert_eq!(said.unwrap_err().sentence(), "The computer said: your token is [hidden]");
+}
+
+/// `WRITE` under this Mac's `/bin/sh`, with `home` for `$HOME`, told to expect `claimed` bytes and
+/// fed `sent`.
+fn write_here(home: &Path, file: &str, claimed: usize, sent: &[u8]) -> Option<i32> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("/bin/sh").args(["-c", WRITE, "sh", file, &claimed.to_string()]).env("HOME", home).stdin(std::process::Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(sent).unwrap();
+    child.wait().unwrap().code()
+}
+
+#[test]
+fn a_write_that_breaks_off_leaves_the_old_file_whole() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = dir("write");
+    let file = home.join("f/a.txt");
+    assert_eq!(write_here(&home, "f/a.txt", 3, b"old"), Some(0));
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    assert_eq!(write_here(&home, "f/a.txt", 1000, b"half of it"), Some(7), "a link that dropped");
+    assert_eq!(std::fs::read(&file).unwrap(), b"old");
+    assert_eq!(std::fs::read_dir(home.join("f")).unwrap().count(), 1, "nothing left beside it");
+
+    assert_eq!(write_here(&home, "f/a.txt", 5, b"whole"), Some(0));
+    assert_eq!(std::fs::read(&file).unwrap(), b"whole");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640, "its mode stays");
+    assert_eq!(write_here(&home, "f/new/b.txt", 0, b""), Some(0), "an empty file, in a new folder");
+    assert_eq!(std::fs::read(home.join("f/new/b.txt")).unwrap(), b"");
+}
+
+/// An open link to a guest at `addr`, with no real connection under it.
+fn held(addr: &str) -> Arc<Open> {
+    let at = format!("http://{addr}");
+    Arc::new(Open { way: Way::Tls(tls::Relays::idle()), guest: Some(BoxGuest::connect(&at, &at, Secret::new("t"))), ports: HashMap::new(), names: HashMap::new(), silent: AtomicBool::new(false) })
+}
+
+#[tokio::test]
+async fn a_late_check_doesnt_hang_up_the_link_a_person_made_since() {
+    let d = dir("identity");
+    let provider = RemoteProvider::new();
+    let m = machine(&d);
+    let (old, new) = (held("127.0.0.1:1"), held("127.0.0.1:1"));
+    provider.links.lock().unwrap().insert(m.dir.clone(), new.clone());
+    provider.drop_this(&m, &old).await;
+    assert_eq!(provider.power(&m).await.unwrap(), Power::Awake, "the fresh link went");
+    provider.drop_this(&m, &new).await;
+    assert_eq!(provider.power(&m).await.unwrap(), Power::Asleep);
+}
+
+#[tokio::test]
+async fn a_box_that_goes_quiet_behind_its_relays_stops_reading_as_awake() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let serving = tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let mut head = [0u8; 2048];
+            let _ = s.read(&mut head).await;
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
+        }
+    });
+    let d = dir("beat");
+    let provider = RemoteProvider::new();
+    let m = machine(&d);
+    let open = held(&addr);
+    provider.links.lock().unwrap().insert(m.dir.clone(), open.clone());
+    beat(Arc::downgrade(&open), Duration::from_millis(30));
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(provider.power(&m).await.unwrap(), Power::Awake, "it answers");
+    serving.abort();
+    let _ = serving.await;
+    for _ in 0..200 {
+        if provider.power(&m).await.unwrap() == Power::Asleep {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("a dead box read as awake");
 }

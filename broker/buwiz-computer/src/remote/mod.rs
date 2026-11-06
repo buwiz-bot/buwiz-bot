@@ -14,8 +14,8 @@
 //! and those ports are in the range the Bot's shell is kept off.
 //!
 //! **Nothing the far end says is trusted.** It proves who it is first: an SSH host key or a
-//! certificate a person saw and pinned, or for TLS with no pin the public roots. It can answer
-//! anything after that, so every read has a limit and a time, a redirect is an error, sentences
+//! certificate a person saw and pinned. No secret goes before that, whatever the public roots say
+//! of a certificate. It can answer anything after that, so every read has a limit and a time, a redirect is an error, sentences
 //! that reach a person are ours and not its own, and its viewer goes through the gate's far rules.
 //!
 //! **Nothing here touches the machine's data.** Sleep is a disconnect. So is retiring a computer:
@@ -28,7 +28,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -56,12 +57,16 @@ const MAX_FILE: usize = 8 * 1024 * 1024;
 /// A file-tool call over plain SSH.
 const FILE_PATIENCE: Duration = Duration::from_secs(30);
 const SERVICES: usize = 2 + VIEWER_PORTS.len();
+/// How often a box is asked if it's there, and how many misses in a row mean it isn't.
+const BEAT: Duration = Duration::from_secs(15);
+const MISSES: u32 = 3;
 
 const NOT_THIS_WAY: &str = "A remote computer isn't made here: add it in the Computer tab.";
 const NO_BOX: &str = "Nothing that answers there is a Buwiz computer. Check that the box is running on that machine.";
 const BAD_TOKEN: &str = "The box refused this token.";
 const NEEDS_TOKENS: &str = "A box needs its token and its viewer password.";
 const DROPPED: &str = "The connection to this computer dropped. Click it to connect again.";
+const TOO_BIG: &str = "is too big to read whole here, so none of it was read. Use computer_run to look at part of it.";
 const NOT_POSIX: &str = "That machine didn't run a plain shell command, so it can't be used over SSH.";
 
 /// What a person typed in the form, not yet checked.
@@ -214,8 +219,9 @@ fn free_ports(count: usize) -> Result<Vec<u16>> {
 /// How a test went, for a person to read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Probed {
-    /// nothing is trusted yet: the far end's key, for a person to check and say yes to
-    Trust { fingerprint: String, pin: String },
+    /// nothing is trusted yet: the far end's key, for a person to check and say yes to. `vouched`:
+    /// the public roots take its certificate too
+    Trust { fingerprint: String, pin: String, vouched: bool },
     /// it works. `system` is what a plain host said it runs, when that's a word
     Ready { boxed: bool, system: Option<String> },
 }
@@ -228,6 +234,8 @@ struct Open {
     ports: HashMap<u16, u16>,
     /// what a viewer is asked for by, at this guest port
     names: HashMap<u16, String>,
+    /// a box stopped answering ([`beat`])
+    silent: AtomicBool,
 }
 
 enum Way {
@@ -237,10 +245,11 @@ enum Way {
 
 impl Open {
     fn alive(&self) -> bool {
-        match &self.way {
-            Way::Ssh(master) => master.alive(),
-            Way::Tls(_) => true,
-        }
+        !self.silent.load(Ordering::Relaxed)
+            && match &self.way {
+                Way::Ssh(master) => master.alive(),
+                Way::Tls(_) => true,
+            }
     }
 
     async fn close(&self) {
@@ -258,12 +267,34 @@ impl Open {
     }
 }
 
+/// Asks a box if it's there, every `every`, for as long as its connection lasts: [`Provider::power`]
+/// is read too often to ask, and a relay stays up with nothing behind it. A few misses in a row and
+/// it's not alive, so the tab shows it and a click connects again.
+fn beat(open: Weak<Open>, every: Duration) {
+    tokio::spawn(async move {
+        let mut misses = 0;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(open) = open.upgrade() else { return };
+            let Some(guest) = &open.guest else { return };
+            misses = if guest.ready_within(CHECK_PATIENCE.min(every.max(Duration::from_millis(200)))).await { 0 } else { misses + 1 };
+            if misses >= MISSES {
+                open.silent.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+    });
+}
+
 /// Every remote computer's connections, by the folder the broker keeps for it.
 pub struct RemoteProvider {
     ssh: PathBuf,
     keyscan: PathBuf,
     /// where every TLS name goes instead of what it resolves to (tests)
     dial: Option<std::net::SocketAddr>,
+    /// a root the public ones are joined by (tests)
+    root: Option<Vec<u8>>,
+    every: Duration,
     links: Mutex<HashMap<PathBuf, Arc<Open>>>,
     /// one connect or disconnect at a time, per computer
     turns: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
@@ -277,12 +308,24 @@ impl Default for RemoteProvider {
 
 impl RemoteProvider {
     pub fn new() -> Self {
-        Self { ssh: PathBuf::from(ssh::SSH), keyscan: PathBuf::from(ssh::KEYSCAN), dial: None, links: Mutex::default(), turns: Mutex::default() }
+        Self { ssh: PathBuf::from(ssh::SSH), keyscan: PathBuf::from(ssh::KEYSCAN), dial: None, root: None, every: BEAT, links: Mutex::default(), turns: Mutex::default() }
     }
 
     /// Sends every TLS name to `addr`, as a test's own resolver would.
     pub fn with_dial(mut self, addr: std::net::SocketAddr) -> Self {
         self.dial = Some(addr);
+        self
+    }
+
+    /// Takes `root` as one of the public roots, for a test's own certificate authority.
+    pub fn with_root(mut self, root: Vec<u8>) -> Self {
+        self.root = Some(root);
+        self
+    }
+
+    /// Asks a box if it's there this often, for tests.
+    pub fn with_beat(mut self, every: Duration) -> Self {
+        self.every = every;
         self
     }
 
@@ -321,18 +364,30 @@ impl RemoteProvider {
         }
     }
 
+    /// Hangs up `open`, if it's still this computer's: a check that took its time can come back
+    /// after a person reconnected, and that link isn't what failed.
+    async fn drop_this(&self, machine: &Machine, open: &Arc<Open>) {
+        {
+            let mut links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+            if links.get(&machine.dir).is_some_and(|held| Arc::ptr_eq(held, open)) {
+                links.remove(&machine.dir);
+            }
+        }
+        open.close().await;
+    }
+
     /// Asks the far end who it is and whether it answers, with this record. Leaves nothing open.
     pub async fn probe(&self, machine: &Machine) -> Result<Probed> {
         let link = link_of(machine)?;
         match &machine.reach {
             Reach::Ssh { host, port, .. } if link.pin.is_none() => {
                 let (fingerprint, pin) = ssh::scan(&self.keyscan, host, *port).await?;
-                Ok(Probed::Trust { fingerprint, pin })
+                Ok(Probed::Trust { fingerprint, pin, vouched: false })
             }
             Reach::Url { url } => {
                 let far = tls::Far::parse(url)?;
-                match tls::look(&far, link.pin.as_deref(), self.dial).await? {
-                    tls::Seen::Unknown { fingerprint } => Ok(Probed::Trust { fingerprint: fingerprint.clone(), pin: fingerprint }),
+                match tls::look(&far, link.pin.as_deref(), self.dial, self.root.as_deref()).await? {
+                    tls::Seen::Unknown { fingerprint, vouched } => Ok(Probed::Trust { fingerprint: fingerprint.clone(), pin: fingerprint, vouched }),
                     tls::Seen::Trusted => {
                         let open = self.connect(machine).await?;
                         open.close().await;
@@ -378,17 +433,16 @@ impl RemoteProvider {
                 };
                 let ports: HashMap<u16, u16> = ports.into_iter().map(|(here, there)| (there, here)).collect();
                 let guest = link.boxed.then(|| guest_at(&ports, machine.token.clone())).transpose()?;
-                Open { way: Way::Ssh(Box::new(master)), guest, ports, names: HashMap::new() }
+                Open { way: Way::Ssh(Box::new(master)), guest, ports, names: HashMap::new(), silent: AtomicBool::new(false) }
             }
             Reach::Url { url } => {
                 let far = tls::Far::parse(url)?;
-                if let tls::Seen::Unknown { .. } = tls::look(&far, link.pin.as_deref(), self.dial).await? {
-                    return Err(Problem::Remote(tls::UNTRUSTED.to_owned()));
-                }
+                let pin = link.pin.as_deref().ok_or_else(|| Problem::Remote(tls::UNTRUSTED.to_owned()))?;
+                tls::look(&far, Some(pin), self.dial, None).await?;
                 let names: HashMap<u16, String> = guest_ports().map(|p| (p, far.service(p))).collect();
-                let (relays, ports) = tls::Relays::open(&far, &names, link.pin.as_deref(), self.dial).await?;
+                let (relays, ports) = tls::Relays::open(&far, &names, pin, self.dial).await?;
                 let guest = guest_at(&ports, machine.token.clone())?.named(&names[&EXEC_PORT], &names[&HOST_PORT]);
-                Open { way: Way::Tls(relays), guest: Some(guest), ports, names }
+                Open { way: Way::Tls(relays), guest: Some(guest), ports, names, silent: AtomicBool::new(false) }
             }
             Reach::Container { .. } => return Err(Problem::Failed("that's a container".to_owned())),
         };
@@ -397,6 +451,7 @@ impl RemoteProvider {
             open.close().await;
             return Err(p);
         }
+        beat(Arc::downgrade(&open), self.every);
         Ok(open)
     }
 }
@@ -455,6 +510,15 @@ elif [ -L "$p" ]; then exit 8
 else real=$(cd -P -- "${p%/*}" && pwd)/${p##*/}$tail; fi
 printf '%s\n%s\n' "$root" "$real""#;
 
+/// Writes stdin to `$HOME/$1`, all `$2` bytes of it or not at all: a link that drops part way
+/// leaves the old file as it was. The new one starts as a copy, so it keeps the old one's mode.
+const WRITE: &str = r#"f=$HOME/$1; mkdir -p -- "${f%/*}" || exit 1
+t=$f.buwiz-$$; (set -C; : > "$t") || exit 1
+if [ -f "$f" ]; then cp -p -- "$f" "$t" || { rm -f -- "$t"; exit 1; }; fi
+cat > "$t"; got=$(wc -c < "$t")
+if [ "$got" -eq "$2" ] && mv -f -- "$t" "$f"; then exit 0; fi
+rm -f -- "$t"; exit 7"#;
+
 #[async_trait]
 impl Provider for RemoteProvider {
     fn kind(&self) -> ProviderKind {
@@ -511,7 +575,7 @@ impl Provider for RemoteProvider {
             None => open.master()?.run(":", &[], None, CHECK_PATIENCE, 64).await.is_ok_and(|r| r.code == Some(0)),
         };
         if !fine {
-            self.drop_link(machine).await;
+            self.drop_this(machine, &open).await;
             return Err(Problem::Remote(DROPPED.to_owned()));
         }
         Ok(())
@@ -599,6 +663,10 @@ impl Provider for RemoteProvider {
         if ran.code != Some(0) {
             return Err(Problem::Guest { status: 404, message: format!("{} can't be read", relative(path)) });
         }
+        // a cut read as whole is what gets written back over the file
+        if ran.truncated || ran.timed_out {
+            return Err(Problem::Guest { status: 413, message: format!("{} {TOO_BIG}", relative(path)) });
+        }
         Ok(ran.stdout)
     }
 
@@ -608,7 +676,7 @@ impl Provider for RemoteProvider {
             return clean(machine, guest.write_file(path, content).await);
         }
         let file = format!("{SHELL_ROOT}/{}", relative(path));
-        let ran = open.master()?.run(r#"f=$HOME/$1; mkdir -p -- "${f%/*}" && cat > "$f""#, &[&file], Some(content), FILE_PATIENCE, 1024).await?;
+        let ran = open.master()?.run(WRITE, &[&file, &content.len().to_string()], Some(content), FILE_PATIENCE, 1024).await?;
         if ran.code != Some(0) {
             return Err(Problem::Guest { status: 500, message: format!("{} can't be written", relative(path)) });
         }

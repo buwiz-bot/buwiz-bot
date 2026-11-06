@@ -52,7 +52,7 @@ async fn a_plain_ssh_host_runs_commands_and_files_and_has_no_screen() {
     // nothing is trusted until a person says: first what the far end offers, with no login
     let mut asked = Asked { url: sshd.url(), key_file: Some(sshd.key.clone()), ..Asked::default() };
     let offered = provider.probe(&asked.machine(&computer).unwrap()).await.unwrap();
-    let Probed::Trust { pin, fingerprint } = offered else { panic!("{offered:?}") };
+    let Probed::Trust { pin, fingerprint, .. } = offered else { panic!("{offered:?}") };
     assert_eq!(pin, sshd.pin);
     let shown = std::process::Command::new("/usr/bin/ssh-keygen").arg("-lf").arg(sshd.dir.join("host_key.pub")).output().unwrap();
     assert!(String::from_utf8_lossy(&shown.stdout).contains(&fingerprint), "the fingerprint a person compares");
@@ -92,6 +92,12 @@ async fn a_plain_ssh_host_runs_commands_and_files_and_has_no_screen() {
     assert!(!provider.resolve(&m, "agents/b_1/hosts").await.unwrap().starts_with("/workspace/"));
     assert!(!provider.resolve(&m, "agents/b_1/dead").await.unwrap().starts_with("/workspace/"));
     let _ = std::fs::remove_dir_all("/tmp/c3t-out");
+
+    // a file past the limit is refused, not cut: a cut read as whole gets written back
+    let big = sshd.home.join("buwiz-computer/agents/b_1/big");
+    std::fs::write(&big, vec![b'x'; 9 * 1024 * 1024]).unwrap();
+    let said = provider.read_file(&m, "/workspace/agents/b_1/big").await.unwrap_err().sentence();
+    assert!(said.contains("too big to read whole"), "{said}");
 
     // the screen isn't there, and says so
     for said in [
@@ -188,6 +194,37 @@ async fn a_connection_that_drops_is_seen_and_a_click_brings_it_back() {
     assert_eq!(provider.run(&m, &screen("b_1"), "echo back", 5000).await.unwrap().stdout, "back\n");
     provider.destroy(&m).await.unwrap();
     drop(sshd);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs openssl"]
+async fn a_certificate_the_public_roots_take_still_gets_no_token_before_a_yes() {
+    use tokio::net::TcpListener;
+    let dir = temp("vouched");
+    let name = "exec.box.c3t.test".to_owned();
+    let (root, cert, key) = loopback::vouched_certificate(&dir, std::slice::from_ref(&name));
+    // what stands behind the proxy: it hears everything that gets past the handshake
+    let behind = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let to = behind.local_addr().unwrap().to_string();
+    let at = loopback::terminator(cert.clone(), key, HashMap::from([(name, to)])).await;
+    let provider = RemoteProvider::new().with_dial(at).with_root(root);
+    let computer = dir.join("computer");
+    std::fs::create_dir_all(&computer).unwrap();
+    let asked = Asked { url: "https://box.c3t.test".into(), token: Some(Secret::new("the-token")), viewer_password: Some(Secret::new("the-password")), ..Asked::default() };
+    let m = asked.machine(&computer).unwrap();
+    let said = provider.probe(&m).await.unwrap();
+    assert_eq!(said, Probed::Trust { fingerprint: fingerprint(&cert), pin: fingerprint(&cert), vouched: true });
+    assert!(provider.wake(&m).await.is_err());
+    let heard = tokio::time::timeout(Duration::from_millis(400), async {
+        let (mut s, _) = behind.accept().await.unwrap();
+        let mut buf = [0u8; 512];
+        let n = s.read(&mut buf).await.unwrap();
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    });
+    if let Ok(text) = heard.await {
+        assert!(text.is_empty(), "something went before a yes: {text}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -354,7 +391,7 @@ async fn a_real_box_works_over_real_tls_with_a_pin_and_refuses_any_other() {
 
     // no root vouches for it: nothing past the handshake, and a person gets its hash
     let unknown = asked(None).machine(&computer).unwrap();
-    let Probed::Trust { fingerprint: shown, pin } = provider.probe(&unknown).await.unwrap() else { panic!() };
+    let Probed::Trust { fingerprint: shown, pin, vouched: false } = provider.probe(&unknown).await.unwrap() else { panic!() };
     assert_eq!(shown, fingerprint(&cert));
     assert!(provider.wake(&unknown).await.unwrap_err().sentence().contains("isn't trusted yet"));
 

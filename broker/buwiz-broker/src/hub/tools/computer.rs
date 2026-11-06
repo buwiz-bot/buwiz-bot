@@ -495,7 +495,13 @@ async fn act(run: &Run, computers: &Computers, live: &Live, name: &str, input: &
                 Err(p) => return no(&p),
             };
             match provider.read_file(machine, &path).await {
-                Ok(bytes) => Out::ok(machine.scrub(&js::slice_utf16(&String::from_utf8_lossy(&bytes), MAX_TEXT))),
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let shown = js::slice_utf16(&text, MAX_TEXT);
+                    // a cut taken for the whole file is what gets written back over it
+                    let cut = if shown.len() < text.len() { format!("\n[Cut: only the first {MAX_TEXT} characters are here, so don't write this back as the whole file. Use computer_run for the rest.]") } else { String::new() };
+                    Out::ok(machine.scrub(&format!("{shown}{cut}")))
+                }
                 Err(p) => no(&p),
             }
         }

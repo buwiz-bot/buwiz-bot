@@ -125,6 +125,22 @@ pub fn certificate(dir: &Path, name: &str) -> (Vec<u8>, Vec<u8>) {
     (std::fs::read(cert).unwrap(), std::fs::read(key).unwrap())
 }
 
+/// A certificate authority's root, and a certificate and key it issued for each of `names`, as
+/// DER, by `openssl`: what the public roots would vouch for.
+pub fn vouched_certificate(dir: &Path, names: &[String]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    std::fs::create_dir_all(dir).unwrap();
+    let at = |f: &str| dir.join(f).to_str().unwrap().to_owned();
+    let ran = |args: &[&str]| assert!(Command::new("/usr/bin/openssl").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success(), "openssl {args:?}");
+    let sans: Vec<String> = names.iter().map(|n| format!("DNS:{n}")).collect();
+    std::fs::write(at("ext"), format!("basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName={}\n", sans.join(","))).unwrap();
+    ran(&["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=c3t root", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign", "-keyout", &at("ca.key"), "-out", &at("ca.pem")]);
+    ran(&["x509", "-in", &at("ca.pem"), "-outform", "DER", "-out", &at("ca.der")]);
+    ran(&["req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=c3t box", "-keyout", &at("leaf.key"), "-out", &at("leaf.csr")]);
+    ran(&["x509", "-req", "-in", &at("leaf.csr"), "-CA", &at("ca.pem"), "-CAkey", &at("ca.key"), "-CAcreateserial", "-days", "2", "-extfile", &at("ext"), "-outform", "DER", "-out", &at("leaf.der")]);
+    ran(&["pkcs8", "-topk8", "-nocrypt", "-in", &at("leaf.key"), "-out", &at("leaf.key.der"), "-outform", "DER"]);
+    (std::fs::read(at("ca.der")).unwrap(), std::fs::read(at("leaf.der")).unwrap(), std::fs::read(at("leaf.key.der")).unwrap())
+}
+
 /// A TLS proxy on loopback as a person would run one: it goes by the name each connection asks
 /// for, and hands the bytes to that service's port. A viewer goes by its own Host, so for a
 /// `desktop-` name it sets that first, as `header_up Host {upstream_hostport}` does in Caddy (one

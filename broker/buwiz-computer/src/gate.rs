@@ -16,8 +16,11 @@
 //! A viewer at the far end of a connection ([`crate::Far`]) isn't ours, and what it answers runs in
 //! a web view on the person's Mac. So there the head coming back is read too: only a page or the
 //! socket's upgrade passes, with its headers cut to a short list, no redirect, no cookie, and a
-//! policy of this gate's own that keeps the page from sending anything anywhere but here. The
-//! broker's open routes are on this Mac's loopback, which is why that matters.
+//! policy of this gate's own that keeps the page's requests and forms here. The broker's open
+//! routes are on this Mac's loopback, which is why that matters. A policy can't stop the page
+//! navigating the whole web view, so one top-level GET can leave it: the viewer in the app notices
+//! and shuts the view, after the fact (`app/src/computer.rs`). Only a rule in `web_view` would stop
+//! it first.
 //!
 //! One connection per request: a head is only ever read once. Its port is in the range the Bot's
 //! shell is kept off; a computer's own traffic never comes here.
@@ -260,6 +263,10 @@ fn rewrite(lines: &[&str], method: &str, path: &str, viewer: &Viewer) -> (String
 /// What of a far end's `head` goes to the web view: `None` for anything but the page or socket
 /// that was asked for.
 fn far_head(head: &str, upgrade: bool, gate_port: u16) -> Option<String> {
+    // a line ending of any other kind would carry a header past the list inside an allowed one
+    if head.replace("\r\n", "").contains(['\r', '\n']) {
+        return None;
+    }
     let mut lines = head.split("\r\n");
     let status = lines.next()?;
     let code = status.split(' ').nth(1)?;
@@ -270,7 +277,7 @@ fn far_head(head: &str, upgrade: bool, gate_port: u16) -> Option<String> {
     let mut out = format!("{status}\r\n");
     for line in lines {
         let Some((name, _)) = line.split_once(':') else { continue };
-        if FAR_HEADERS.contains(&name.trim().to_ascii_lowercase().as_str()) {
+        if FAR_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
             out.push_str(line);
             out.push_str("\r\n");
         }
@@ -672,6 +679,21 @@ mod tests {
         }
         assert!(page.contains(&format!("connect-src 'self' ws://127.0.0.1:{port};")), "{page}");
         assert!(page.contains("form-action 'none'"), "{page}");
+    }
+
+    #[test]
+    fn a_bare_line_ending_carries_no_header_past_the_list() {
+        for head in [
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\nSet-Cookie: a=b",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\rLocation: https://evil.example/",
+            "HTTP/1.1 200 OK\nSet-Cookie: a=b",
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\n",
+        ] {
+            assert_eq!(far_head(head, false, 47200), None, "{head:?}");
+        }
+        assert!(far_head("HTTP/1.1 200 OK\r\nContent-Type: text/html", false, 47200).is_some());
+        let folded = far_head("HTTP/1.1 200 OK\r\n content-type: text/html\r\nDate: x", false, 47200).unwrap();
+        assert!(!folded.contains("text/html"), "a folded line isn't a header: {folded}");
     }
 
     #[tokio::test]

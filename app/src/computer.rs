@@ -31,6 +31,7 @@ use crate::theme::{self, tc};
 
 const KEY_PREFIX: &str = "computer:";
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+const LEFT_THE_GATE: &str = "This computer's page tried to take this view somewhere else, so it was closed. Click to open it again.";
 
 /// What the broker says about this Bot's computer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -234,8 +235,8 @@ pub(crate) enum Stage {
     Editing,
     /// the far end is being asked
     Busy,
-    /// a person is to check this before anything is sent
-    Trust { fingerprint: String, pin: String },
+    /// a person is to check this before anything is sent. `vouched`: the public roots take it
+    Trust { fingerprint: String, pin: String, vouched: bool },
     /// it works: `what` it is, and `consent` for them to read
     Ready { what: String, consent: String },
 }
@@ -250,7 +251,7 @@ pub(crate) fn stage_of(reply: Option<&Value>) -> Result<Stage, String> {
         return Ok(Stage::Ready { what, consent: text("consent") });
     }
     if text("code") == "trust" {
-        return Ok(Stage::Trust { fingerprint: text("fingerprint"), pin: text("pin") });
+        return Ok(Stage::Trust { fingerprint: text("fingerprint"), pin: text("pin"), vouched: v.get("vouched").and_then(Value::as_bool).unwrap_or(false) });
     }
     Err(v.get("message").and_then(Value::as_str).unwrap_or("That computer can't be used.").to_owned())
 }
@@ -562,6 +563,23 @@ fn leave(bot: String) {
     });
 }
 
+/// What Remove says at `bot`: its button, and who else it takes off the computer.
+pub(crate) fn remove_words(status: &Status, bot: &str) -> (&'static str, Option<String>) {
+    let others: Vec<&str> = status.bots.iter().filter(|(id, _)| id != bot).map(|(_, n)| n.as_str()).collect();
+    if others.is_empty() {
+        ("Remove this computer", None)
+    } else {
+        ("Remove it for every Bot here", Some(format!("Removing it takes {} off it too. The machine isn't touched.", others.join(", "))))
+    }
+}
+
+/// Whether `page`, starting to load in a viewer, is still on the gate `ticket` is for. Only a web
+/// view rule could stop it first: this is how a viewer knows a page has left.
+pub(crate) fn stays_on_gate(ticket: &str, page: &str) -> bool {
+    let origin = |url: &str| url.strip_prefix("http://").and_then(|r| r.split('/').next()).map(str::to_owned);
+    page.is_empty() || page == "about:blank" || (origin(ticket).is_some() && origin(ticket) == origin(page))
+}
+
 /// Puts what `bot`'s viewer last heard on its bar.
 pub(crate) fn show_status(bot: &str, status: Status) {
     SHOWN.with(|s| s.set((bot.to_owned(), status)));
@@ -651,6 +669,13 @@ fn field(id: &'static str, hint: &'static str, masked: bool, value: Signal<Strin
     )
 }
 
+/// What a person is asked to check. A public authority's word is for the name, not the machine, and
+/// a pinned certificate has to be trusted again when it renews.
+pub(crate) fn trust_words(fingerprint: &str, vouched: bool) -> String {
+    let vouched = if vouched { " A public authority vouches for this name. When its certificate renews, you'd remove this computer and add it again." } else { "" };
+    format!("Nothing has been sent yet. Check that this is that machine's key, on the machine itself, before you trust it: {fingerprint}.{vouched}")
+}
+
 /// What the form shows under its fields, for the stage it's at.
 fn stage_part(stage: Stage) -> impl IntoElement {
     let f = form();
@@ -659,8 +684,8 @@ fn stage_part(stage: Stage) -> impl IntoElement {
         Stage::Closed => out,
         Stage::Busy => out.child(note("Asking that machine…".to_owned())),
         Stage::Editing => out.child(small_button("computer-remote-test", "Test", test_remote)),
-        Stage::Trust { fingerprint, pin } => out
-            .child(view().test_id("computer-remote-fingerprint").child(note(format!("Nothing has been sent yet. Check that this is that machine's key, on the machine itself, before you trust it: {fingerprint}"))))
+        Stage::Trust { fingerprint, pin, vouched } => out
+            .child(view().test_id("computer-remote-fingerprint").child(note(trust_words(&fingerprint, vouched))))
             .child(small_button("computer-remote-trust", "I checked, trust it", move || {
                 f.pin.set(pin.clone());
                 test_remote();
@@ -782,7 +807,11 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     if p.status.remote.is_some() {
         let b = bot.to_owned();
-        out = out.child(view().flex_row().pt(px(10.0)).child(small_button("computer-remote-remove", "Remove this computer", move || remove_remote(b.clone()))));
+        let (words, others) = remove_words(&p.status, bot);
+        if let Some(others) = others {
+            out = out.child(view().test_id("computer-remote-others").child(note(others)));
+        }
+        out = out.child(view().flex_row().pt(px(10.0)).child(small_button("computer-remote-remove", words, move || remove_remote(b.clone()))));
     }
     if p.status.bots.len() > 1 {
         let b = bot.to_owned();
@@ -827,6 +856,8 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
     let holds: Signal<String> = signal(String::new());
     let state: Signal<Status> = signal(Status::default());
     let asking = signal(false);
+    // a page took the view off the gate: no more tickets until a person asks for one
+    let left = signal(false);
     let driving = DRIVING.with(|s| *s);
     let look = {
         let bot = bot.clone();
@@ -849,7 +880,7 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
                         url.set(String::new());
                         holds.set(String::new());
                     }
-                } else if !asking.get_untracked() {
+                } else if !asking.get_untracked() && !left.get_untracked() {
                     let wants = driving.with_untracked(|d| d.contains(&bot));
                     if let Some(mode) = next_ticket(&now, &holds.get_untracked(), wants) {
                         asking.set(true);
@@ -889,6 +920,15 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
             .right(px(0.0))
             .bottom(px(0.0))
             .scrollable(false)
+            .on_load_start(move |page: &WebNavigation| {
+                let ticket = url.get_untracked();
+                if !ticket.is_empty() && !stays_on_gate(&ticket, &page.url) {
+                    left.set(true);
+                    url.set(String::new());
+                    holds.set(String::new());
+                    state.set(Status { state: "error".to_owned(), message: LEFT_THE_GATE.to_owned(), ..state.get_untracked() });
+                }
+            })
             .opacity(move || if url.with(String::is_empty) { 0.0f32 } else { 1.0 }),
         )
         .child(when(
@@ -906,6 +946,7 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
                     .child(text(move || state.with(|s| s.headline().to_owned())).text_size(px(15.0)).font_weight(FontWeight::MEDIUM).text_color(tc("#f5f5f5")))
                     .child(text(move || state.with(|s| s.message.clone())).number_of_lines(6).text_size(px(13.0)).text_color(tc("#f5f5f5c8")).pt(px(8.0)))
                     .on_press(move || {
+                        left.set(false);
                         if !matches!(state.with_untracked(|s| s.state.clone()).as_str(), "waking" | "awake") {
                             state.update(|s| s.state = "waking".to_owned());
                             wake(press.clone());
@@ -1124,8 +1165,35 @@ mod tests {
     }
 
     #[test]
+    fn a_viewer_knows_a_page_that_left_the_gate() {
+        let ticket = "http://127.0.0.1:47200/s/abc/?ticket=t";
+        assert!(stays_on_gate(ticket, "http://127.0.0.1:47200/s/abc/"));
+        assert!(stays_on_gate(ticket, "about:blank"));
+        for away in ["http://127.0.0.1:8787/", "http://127.0.0.1:472000/", "https://127.0.0.1:47200/", "https://evil.example/", "http://127.0.0.1:47200.evil.example/", "http://127.0.0.1:47200@evil.example/", "file:///etc/hosts", "data:text/html,x"] {
+            assert!(!stays_on_gate(ticket, away), "{away}");
+        }
+    }
+
+    #[test]
+    fn removing_a_shared_computer_names_who_else_goes() {
+        let alone = Status { bots: vec![("a".into(), "Ann".into())], ..Status::default() };
+        assert_eq!(remove_words(&alone, "a"), ("Remove this computer", None));
+        let shared = Status { bots: vec![("a".into(), "Ann".into()), ("b".into(), "Bea".into())], ..Status::default() };
+        let (button, others) = remove_words(&shared, "a");
+        assert_eq!(button, "Remove it for every Bot here");
+        assert!(others.unwrap().contains("takes Bea off it too"));
+    }
+
+    #[test]
+    fn a_public_authoritys_word_is_said_for_what_it_is() {
+        assert!(!trust_words("ab", false).contains("public authority"));
+        let words = trust_words("ab", true);
+        assert!(words.contains("Nothing has been sent yet") && words.contains("public authority") && words.contains("renews"), "{words}");
+    }
+
+    #[test]
     fn the_form_goes_by_what_the_broker_says() {
-        assert_eq!(stage_of(Some(&json!({"ok": false, "code": "trust", "fingerprint": "SHA256:x", "pin": "ssh-ed25519 A"}))), Ok(Stage::Trust { fingerprint: "SHA256:x".into(), pin: "ssh-ed25519 A".into() }));
+        assert_eq!(stage_of(Some(&json!({"ok": false, "code": "trust", "fingerprint": "SHA256:x", "pin": "ssh-ed25519 A", "vouched": true}))), Ok(Stage::Trust { fingerprint: "SHA256:x".into(), pin: "ssh-ed25519 A".into(), vouched: true }));
         assert_eq!(stage_of(Some(&json!({"ok": false, "code": "remote", "message": "That machine can't be reached."}))), Err("That machine can't be reached.".to_owned()));
         assert!(stage_of(None).is_err());
         let Ok(Stage::Ready { what, consent }) = stage_of(Some(&json!({"ok": true, "screen": false, "system": "Linux", "consent": "words"}))) else { panic!() };

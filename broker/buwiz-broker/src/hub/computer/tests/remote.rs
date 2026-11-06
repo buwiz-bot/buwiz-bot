@@ -104,6 +104,46 @@ async fn a_failed_read_of_the_row_keeps_the_local_provider_off_it() {
 }
 
 #[tokio::test]
+async fn not_being_able_to_read_a_record_counts_as_remote() {
+    let b = bed("remote-unread");
+    assert_eq!(b.computers.remote_at(&b.ctx, "b_ann"), None, "no computer, nothing to say");
+    let id = awake(&b, "b_bea").await;
+    assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), None, "a local one");
+    lost_remote(&b, "b_ann");
+    assert_eq!(b.computers.remote_at(&b.ctx, "b_ann"), Some(true), "a remote row with its record lost");
+    b.computers.machines.lock().unwrap().clear();
+    std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
+    assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), None, "a local row says so, record or not");
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME COLUMN provider TO provider_gone", [])).unwrap();
+    assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), Some(true), "no row to read: not known to be local");
+    assert!(b.computers.status(&b.ctx, "b_bea").await.get("remote").is_some());
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computer_seats RENAME TO seats_gone", [])).unwrap();
+    assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), Some(true), "no seat to read");
+}
+
+#[test]
+fn the_yes_says_a_copy_of_the_key_stays_here() {
+    assert!(CONSENT.contains("copy of the SSH key is kept on this Mac"));
+}
+
+#[tokio::test]
+async fn a_start_clears_what_a_crash_left_in_the_computers_folder() {
+    let b = bed("remote-crash");
+    let staged = b.ctx.data.join("computers/cmp_1/ssh");
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::write(staged.join("key"), "x").unwrap();
+    let mut routes = crate::hub::Registry::default();
+    let mut ctx = HubCtx::new(b.ctx.data.clone(), Clock::manual());
+    ctx.ext.insert(b.computers.clone());
+    super::install(&mut routes, &mut ctx);
+    let ctx = Arc::new(ctx);
+    for run in std::mem::take(&mut *routes.start.lock().unwrap()) {
+        run(ctx.clone());
+    }
+    assert!(!staged.join("key").exists());
+}
+
+#[tokio::test]
 async fn the_picker_says_a_computer_is_remote() {
     let b = bed("remote-list");
     lost_remote(&b, "b_ann");
@@ -191,6 +231,11 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
     assert!(tools::offered(&r).await);
     assert!(words(&call(&r, "computer_run", json!({"command": "echo blind-ok"})).await).contains("blind-ok"));
     b.computers.set_sight(std::collections::HashMap::new());
+
+    // what comes back cut says so, or it gets written back over the file
+    std::fs::write(sshd.home.join("buwiz-computer/agents/b_ann/long"), "y".repeat(40_000)).unwrap();
+    let o = call(&r, "computer_read_file", json!({"path": "long"})).await;
+    assert!(words(&o).contains("only the first 30000 characters"), "{}", &words(&o)[words(&o).len().saturating_sub(100)..]);
 
     // the screen tools are refused, in words
     for (name, input, word) in [
