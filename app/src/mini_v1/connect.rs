@@ -650,6 +650,26 @@ impl Listed {
     }
 }
 
+/// What a plugin's listing lets its cards, pins and pages show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// It may open.
+    Open,
+    /// It failed and may recover: its cards and pins stay, with Retry.
+    Down,
+    /// Uninstalled or disabled: nothing that points at it shows.
+    Gone,
+}
+
+/// `plugin`'s [`Reach`] in the broker's list.
+pub fn reach(listed: &[Listed], plugin: &str) -> Reach {
+    match listed.iter().find(|p| p.id == plugin) {
+        Some(p) if p.enabled && p.failed() => Reach::Down,
+        Some(p) if p.enabled => Reach::Open,
+        _ => Reach::Gone,
+    }
+}
+
 /// A message that is only `@short:login` (or `logout`, `switch`, `setup`)
 /// for a listed plugin that offers it: (plugin id, command). Any other
 /// message, or a short whose plugin declares no accounts: None (it goes to
