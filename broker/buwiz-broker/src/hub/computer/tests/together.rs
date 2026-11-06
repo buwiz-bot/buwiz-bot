@@ -485,7 +485,7 @@ async fn a_person_who_sleeps_the_computer_ends_the_hand_over() {
     let id = awake(&b, &b.ann.0).await;
     let (_r, asking) = taken_over(&b, json!({"reason": "x"})).await;
     b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
-    let out = asking.await.unwrap();
+    let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("sleeping the computer left the hand-over running").unwrap();
     assert_eq!(words(&out), Problem::Asleep.sentence());
     assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
 }
@@ -497,7 +497,7 @@ async fn a_bot_deleted_during_a_hand_over_ends_it_and_keeps_the_rule_on_files() 
     b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
     let (_r, asking) = taken_over(&b, json!({"reason": "x"})).await;
     b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
-    let out = asking.await.unwrap();
+    let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("the Bot's going left the hand-over running").unwrap();
     assert_eq!(words(&out), Problem::Gone.sentence());
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(!b.mock.calls().iter().any(|c| c == "destroy"), "Bea is still there");
