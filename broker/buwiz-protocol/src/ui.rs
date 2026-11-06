@@ -38,7 +38,9 @@ pub const UNINSTALL_REMOVES: &str = "pins, attachments and data";
 pub const UNINSTALL_REMOVES_FILES: &str = "pins, attachments, data and unsaved files";
 /// Apps with working copies, whose uninstall deletes them: Google Workspace's
 /// `open-<id>/` goes in its `buwiz.uninstall` (its test
-/// `uninstall_takes_every_token_and_every_file`).
+/// `uninstall_takes_every_token_and_every_file`). A list of one is fine for
+/// now: the next app with working copies must declare that in its manifest,
+/// and this list goes.
 const KEEPS_FILES: [&str; 1] = ["app.buwiz.google-workspace"];
 
 /// What uninstalling `plugin` takes with it, as every place that asks says it.
