@@ -978,10 +978,10 @@ impl Host {
         self.sql(|db| {
             db.execute(
                 "INSERT OR REPLACE INTO v1_plugins(id,short,command,args,env,version,protocol,publisher_key_id,plugin_pub,manifest,manifest_sha256,tools,enabled,disabled_tools,created_at,updated_at,package,skills)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)",
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 params![
                     s("id"), s("short"), spec.command, js::stringify(&raw.0), js::stringify(&raw.1), s("version"), s("protocol"), key_id, public,
-                    js::stringify(m), sha256, js::stringify(&Value::Array(tools)),
+                    js::stringify(m), sha256, js::stringify(&Value::Array(tools)), prev.map_or(true, |p| p.enabled),
                     prev.map_or("[]", |p| p.disabled_tools.as_str()), prev.map_or(now, |p| if p.created_at != 0 { p.created_at } else { now }), now,
                     folder, js::stringify(&Value::Array(skills)),
                 ],
@@ -1127,9 +1127,18 @@ impl Host {
             }
         };
         // read here, not at the top: a tool's switch takes no lock, and a restart takes seconds
-        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, self.row(&id).as_ref(), pkg.as_ref())?;
+        let prev = self.row(&id);
+        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, prev.as_ref(), pkg.as_ref())?;
         self.with_rt(&id, |rt| rt.restarts.clear());
-        self.adopt(&id, g);
+        // a person turned it off: the new version is checked and recorded, and stays off
+        if prev.is_some_and(|p| !p.enabled) {
+            g.conn.stopping.store(true, Ordering::SeqCst);
+            g.conn.abandon();
+            g.conn.close().await;
+            self.set_state(&id, "stopped", None, "");
+        } else {
+            self.adopt(&id, g);
+        }
         let (state, generation) = self.with_rt(&id, |rt| (rt.state, rt.generation));
         Ok(json!({"ok": true, "id": get(&m, "id"), "state": state, "generation": generation, "plugin_pub": public, "updated": row.is_some()}))
     }
@@ -1719,6 +1728,20 @@ mod tests {
         assert_eq!(won[0]["plugin_pub"], json!(row.plugin_pub));
         let seed = b.host.keys.get(FX).unwrap().unwrap();
         assert_eq!(Host::public_of(&seed).unwrap(), row.plugin_pub, "the keystore holds the key the record names");
+        b.done().await;
+    }
+
+    #[tokio::test]
+    async fn an_update_leaves_a_plugin_off_if_a_person_turned_it_off() {
+        let b = UpdateBed::new("stays-off").await;
+        b.run(r#"UPDATE v1_plugins SET disabled_tools='["off"]', created_at=1000 WHERE id=?"#);
+        b.host.disable(FX).await.unwrap();
+        let body = b.reviewed("1.0.1").await;
+        let answer = b.host.install(&body).await.unwrap();
+        assert_eq!((&answer["updated"], &answer["state"]), (&json!(true), &json!("stopped")), "{answer}");
+        let row = b.host.row(FX).unwrap();
+        assert_eq!((row.version.as_str(), row.enabled, row.disabled_tools.as_str(), row.created_at), ("1.0.1", false, r#"["off"]"#, 1000));
+        assert!(b.host.conn_of(FX).is_none(), "nothing of it stays running");
         b.done().await;
     }
 
