@@ -208,7 +208,7 @@ impl Relays {
     }
 }
 
-/// A port of the computers' range, from the top down: Docker takes them from the bottom.
+/// A free port of the computers' range.
 async fn bind() -> Result<TcpListener> {
     for port in (PORT_FIRST..=DOCKER_PORT_LAST).rev() {
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await {

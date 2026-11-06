@@ -197,8 +197,8 @@ fn key_has_passphrase(text: &str) -> bool {
     rest.get(..4).and_then(|n| <[u8; 4]>::try_from(n).ok()).map(u32::from_be_bytes).is_some_and(|n| rest.get(4..4 + n as usize) != Some(b"none"))
 }
 
-/// `count` ports of the computers' range that are free now, from the top down: Docker takes them
-/// from the bottom. What's free can be gone by the time `ssh` binds it, which its caller retries.
+/// `count` ports of the computers' range that are free now. What's free can be gone by the time
+/// `ssh` binds it, which its caller retries.
 fn free_ports(count: usize) -> Result<Vec<u16>> {
     let mut start = [0u8; 2];
     getrandom::getrandom(&mut start).map_err(|e| Problem::Failed(format!("no randomness: {e}")))?;
