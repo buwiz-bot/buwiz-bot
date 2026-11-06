@@ -580,6 +580,16 @@ pub(crate) fn stays_on_gate(ticket: &str, page: &str) -> bool {
     page.is_empty() || page == "about:blank" || (origin(ticket).is_some() && origin(ticket) == origin(page))
 }
 
+/// What a viewer shows of `status`: after a page left the gate, that, until a person clicks, however
+/// well the computer itself is.
+pub(crate) fn after_leaving(status: Status, left: bool) -> Status {
+    if left {
+        Status { state: "error".to_owned(), message: LEFT_THE_GATE.to_owned(), viewer: String::new(), ..status }
+    } else {
+        status
+    }
+}
+
 /// Puts what `bot`'s viewer last heard on its bar.
 pub(crate) fn show_status(bot: &str, status: Status) {
     SHOWN.with(|s| s.set((bot.to_owned(), status)));
@@ -865,7 +875,7 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
             let bot = bot.clone();
             spawn_detached(async move {
                 let Some(v) = client::get_any(&route(&bot, "")).await else { return };
-                let now = Status::parse(&v);
+                let now = after_leaving(Status::parse(&v), left.get_untracked());
                 let awake = now.state == "awake";
                 state.set(now.clone());
                 show_status(&bot, now.clone());
@@ -926,7 +936,7 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
                     left.set(true);
                     url.set(String::new());
                     holds.set(String::new());
-                    state.set(Status { state: "error".to_owned(), message: LEFT_THE_GATE.to_owned(), ..state.get_untracked() });
+                    state.set(after_leaving(state.get_untracked(), true));
                 }
             })
             .opacity(move || if url.with(String::is_empty) { 0.0f32 } else { 1.0 }),
@@ -1169,6 +1179,11 @@ mod tests {
         let ticket = "http://127.0.0.1:47200/s/abc/?ticket=t";
         assert!(stays_on_gate(ticket, "http://127.0.0.1:47200/s/abc/"));
         assert!(stays_on_gate(ticket, "about:blank"));
+        let awake = Status { state: "awake".into(), viewer: "watch".into(), ..Status::default() };
+        let shown = after_leaving(awake.clone(), true);
+        assert_eq!((shown.state.as_str(), shown.viewer.as_str()), ("error", ""), "the next poll doesn't wipe it");
+        assert!(shown.message.contains("somewhere else"));
+        assert_eq!(after_leaving(awake.clone(), false), awake);
         for away in ["http://127.0.0.1:8787/", "http://127.0.0.1:472000/", "https://127.0.0.1:47200/", "https://evil.example/", "http://127.0.0.1:47200.evil.example/", "http://127.0.0.1:47200@evil.example/", "file:///etc/hosts", "data:text/html,x"] {
             assert!(!stays_on_gate(ticket, away), "{away}");
         }
