@@ -57,6 +57,22 @@ fn seed() {
     st.set_threads(threads("first words"));
 }
 
+/// The Bots as rich avatars: these rest live, on no baked frames.
+fn seed_rich() {
+    let st = store();
+    st.side_shown.set(true);
+    st.side_mode.set("full".to_owned());
+    let mut v = threads("first words");
+    for b in v["bots"].as_array_mut().unwrap() {
+        b["shape"] = "custom".into();
+        b["color"] = "#E0A070".into();
+        b["outline"] = "M50 10 C74 10 88 30 88 52 C88 76 72 92 50 92 C28 92 12 76 12 52 C12 30 26 10 50 10 Z".into();
+        b["layers"] = serde_json::json!([{"path": "M30 30 L70 30 L70 44 L30 44 Z", "fill": "#335577"}]);
+        b["eyes"] = "#111111".into();
+    }
+    st.set_threads(v);
+}
+
 /// A reply streaming: each refresh brings the Bots' longer `desc`.
 fn reply() {
     let n = REPLY.fetch_add(1, Ordering::Relaxed);
@@ -103,6 +119,12 @@ fn Side() -> impl IntoElement {
                     store().set_threads(v);
                 }))
                 .child(view().label("rename").w(px(40.0)).h_full().on_press(rename))
+                .child(view().label("seed rich").w(px(40.0)).h_full().on_press(seed_rich))
+                .child(view().label("stop").w(px(40.0)).h_full().on_press(|| {
+                    for i in 0..BOTS {
+                        store().agent_set(format!("t{i}"), Some(format!("b{i}")), None);
+                    }
+                }))
                 .child(view().label("open 1").w(px(40.0)).h_full().on_press(|| store().active_id.set("new1".to_owned())))
                 .child(view().label("open 10").w(px(40.0)).h_full().on_press(|| store().active_id.set("new10".to_owned())))
                 .child(view().label("open 20").w(px(40.0)).h_full().on_press(|| store().active_id.set("new20".to_owned())))
@@ -266,6 +288,78 @@ fn a_tile_follows_its_bots_name_and_thread() {
         app.pump(Duration::from_millis(200));
         assert_ne!(app.styles.get(&tile).map(|s| format!("{s:?}")), dark, "{name}: lit when its chat opens");
     }
+}
+
+/// Once every run ends the avatars come to rest and stop painting: an idle
+/// Bot costs nothing. Without a rebuild to reset them, they settle themselves.
+#[test]
+fn avatars_stop_painting_when_every_run_ends() {
+    if in_child("avatars_stop_painting_when_every_run_ends") {
+        rests_after_runs("seed");
+    }
+}
+
+#[test]
+fn rich_avatars_stop_painting_when_every_run_ends() {
+    if in_child("rich_avatars_stop_painting_when_every_run_ends") {
+        rests_after_runs("seed rich");
+    }
+}
+
+fn rests_after_runs(seed: &str) {
+    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press(seed);
+    app.pump(Duration::from_millis(400));
+    let before = paints();
+    app.pump(Duration::from_millis(1000));
+    println!("idle at launch: {} paints in a second", paints() - before);
+    for _ in 0..40 {
+        app.press("step");
+        app.pump(Duration::from_millis(50));
+    }
+    app.press("stop");
+    for s in 0..8 {
+        let at = paints();
+        app.pump(Duration::from_millis(1000));
+        println!("second {s} after the runs end: {} paints", paints() - at);
+    }
+    let at = paints();
+    app.pump(Duration::from_millis(1000));
+    assert_eq!(paints() - at, 0, "paints a second, long after every run ended");
+}
+
+/// An avatar the pointer has passed over goes back to sleep: it doesn't stay
+/// awake, repainting an idle Bot, for each one touched.
+#[test]
+fn a_hovered_avatar_goes_back_to_sleep() {
+    if !in_child("a_hovered_avatar_goes_back_to_sleep") {
+        return;
+    }
+    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed rich");
+    app.press("rail");
+    app.pump(Duration::from_millis(600));
+    let at = paints();
+    app.pump(Duration::from_millis(1000));
+    println!("before any hover: {} paints in a second", paints() - at);
+    for i in 0..12 {
+        let row = format!("Bot {i}");
+        app.hover(&row, true);
+        for x in [8.0, 18.0, 28.0, 38.0] {
+            app.hover_at(&row, x, 20.0);
+        }
+        app.hover(&row, false);
+    }
+    for s in 0..12 {
+        let at = paints();
+        app.pump(Duration::from_millis(1000));
+        println!("second {s} after the hover: {} paints", paints() - at);
+    }
+    let at = paints();
+    app.pump(Duration::from_millis(1000));
+    assert_eq!(paints() - at, 0, "paints a second, long after the pointer left");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.

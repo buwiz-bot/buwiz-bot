@@ -379,8 +379,11 @@ impl Inner {
             dirty = true;
         }
         #[cfg(test)]
-        if let Some(seed) = &props.seed {
-            PAINTED.lock().unwrap().insert(seed.clone(), state);
+        {
+            PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(seed) = &props.seed {
+                PAINTED.lock().unwrap().insert(seed.clone(), state);
+            }
         }
         let compact = (props.size as f64 * 0.82) < 48.0;
         if compact != self.last_compact {
@@ -499,6 +502,10 @@ impl Inner {
 /// How many avatars were built: each one starts its animation from the top.
 #[cfg(test)]
 pub(crate) static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many times an avatar has painted.
+#[cfg(test)]
+pub(crate) static PAINTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// The state each seeded avatar last painted, for the tests to read.
 #[cfg(test)]
