@@ -3542,7 +3542,7 @@ impl Store {
                     let mut turn = 0;
                     let mut quiet = 0;
                     loop {
-                        let crowd = st.frame_crowd.get();
+                        let mut crowd = st.frame_crowd.get();
                         // Paced to deadlines: a tick's work comes out of the
                         // period, not on top of it, which held many avatars
                         // to 22 fps. Behind, it waits rather than bursts.
@@ -3555,25 +3555,27 @@ impl Store {
                         if quiet >= if crowd { FRAME_LANES } else { 1 } {
                             break;
                         }
+                        // a round is over, so each live avatar has asked once.
+                        // Settled before any lane moves: one that moved first
+                        // could be joined again by a crowd that's just ended,
+                        // and nothing would move it after that.
+                        if turn == 0 {
+                            let asked = st.frame_asked.replace(0);
+                            crowd = asked > if crowd { CROWD_LEFT } else { CROWD_JOINED };
+                            st.frame_crowd.set(crowd);
+                        }
                         let t = base + epoch.elapsed().as_secs_f64();
                         if crowd {
                             turn = (turn + 1) % FRAME_LANES;
                             st.frame_lanes[turn].set(t);
+                        } else {
+                            // nobody's on them but those a crowd left there,
+                            // and a crowd that forms starts from now
+                            st.frame_lanes.iter().for_each(|lane| lane.set(t));
                         }
                         // what can't give way keeps its full rate
                         if turn % 2 == 0 {
                             clock.set(t);
-                        }
-                        // the end of a round, when each live avatar has asked
-                        if turn == 0 {
-                            let asked = st.frame_asked.replace(0);
-                            let crowded = asked > if crowd { CROWD_LEFT } else { CROWD_JOINED };
-                            if crowded != crowd {
-                                st.frame_crowd.set(crowded);
-                                // wakes those sitting out, and those joining
-                                // don't start from the last crowd's time
-                                st.frame_lanes.iter().for_each(|lane| lane.set(t));
-                            }
                         }
                     }
                     st.frame_crowd.set(false);
