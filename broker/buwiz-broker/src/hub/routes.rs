@@ -249,6 +249,7 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/data/timeclock/out"), Rust),
     e(Get, X("/skills"), Rust),
     e(Get, P("/file/raw/"), Rust),
+    e(Get, P("/file/preview/"), Rust),
     e(Get, X("/file/versions"), Rust),
     e(Get, P("/files/attachments/"), Rust),
     e(Get, P("/files/avatars/"), Rust),

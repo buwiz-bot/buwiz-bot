@@ -1548,7 +1548,7 @@ fn web_page() -> Option<WebPage> {
             // it gets the server's (a print preview inlines its images)
             WebPage::Html(r.and_then(|r| r.text).unwrap_or_default())
         } else {
-            WebPage::Url(Store::file_raw_url(&f.path), false)
+            WebPage::Url(Store::file_preview_url(&f.path), false)
         }),
         _ => None,
     }
@@ -2737,6 +2737,11 @@ mod tests {
         ] {
             assert!(svg_page(uri, "contain").is_none(), "accepted {uri:?}");
         }
+    }
+
+    #[test]
+    fn an_html_preview_has_a_path_of_its_own() {
+        assert!(Store::file_preview_url("m1/a b.html").ends_with("/file/preview/m1/a%20b.html"));
     }
 
     #[test]

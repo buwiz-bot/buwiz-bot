@@ -7039,6 +7039,12 @@ impl Store {
         format!("{}/file/raw/{enc}", crate::client::backend())
     }
 
+    /// A reply's HTML for the viewer: its script runs, at no origin, where a plain raw URL has none.
+    pub fn file_preview_url(path: &str) -> String {
+        let enc = path.split('/').map(crate::client::urlenc).collect::<Vec<_>>().join("/");
+        format!("{}/file/preview/{enc}", crate::client::backend())
+    }
+
     /// `toLight(f)` — a reply file as a lightbox item.
     pub fn to_light(f: &Attach) -> LightItem {
         if f.kind == "video" {
