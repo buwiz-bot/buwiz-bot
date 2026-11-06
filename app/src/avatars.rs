@@ -19,7 +19,7 @@ enum Ask {
 }
 
 /// What follows `/avatars`: a link anywhere in it, and the rest as words. A pack's name can run
-/// to several.
+/// to several. Everything takes saying `all`: a bare `install` is a command not finished.
 fn parse(rest: &str) -> Option<Ask> {
     let rest = rest.trim().trim_start_matches(':');
     let mut words: Vec<&str> = rest.split_whitespace().collect();
@@ -27,6 +27,7 @@ fn parse(rest: &str) -> Option<Ask> {
     match words.split_first() {
         None => Some(Ask::List { link }),
         Some((&"list", [])) => Some(Ask::List { link }),
+        Some((&"install", [])) => None,
         Some((&"install", pick)) => Some(Ask::Install { pick: pick.join(" "), link }),
         _ => None,
     }
@@ -57,9 +58,9 @@ async fn answer(ask: Ask) -> String {
             }
             match packs(json!({"link": link, "pick": pick})).await {
                 Ok(v) => {
-                    let refused = v["refused"].as_array().map_or(0, Vec::len);
+                    let count = |k: &str| v[k].as_array().map_or(0, Vec::len);
                     let designs = v["designs"].as_array().map_or(&[][..], Vec::as_slice);
-                    outcome(store().designs_add(designs), refused)
+                    outcome(store().designs_add(designs), count("refused"), count("failed"))
                 }
                 Err(e) => e,
             }
@@ -96,8 +97,8 @@ fn listed(v: &Value) -> String {
     format!("Packs: {}. Use /avatars install and a name to add one.", titles.join(", "))
 }
 
-/// What came of an install, in a line.
-fn outcome(got: DesignsAdded, refused: usize) -> String {
+/// What came of an install, in a line: `refused` avatars and `failed` whole packs.
+fn outcome(got: DesignsAdded, refused: usize, failed: usize) -> String {
     let skipped = got.unusable + refused;
     let mut parts = Vec::new();
     if got.added > 0 {
@@ -106,8 +107,14 @@ fn outcome(got: DesignsAdded, refused: usize) -> String {
     if got.there > 0 {
         parts.push(format!("{} already there", avatars(got.there)));
     }
+    if got.repeated > 0 {
+        parts.push(format!("{} listed twice", avatars(got.repeated)));
+    }
     if skipped > 0 {
         parts.push(format!("{} couldn't be used", avatars(skipped)));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} pack{} couldn't be read", if failed == 1 { "" } else { "s" }));
     }
     if parts.is_empty() {
         return "Nothing to add.".to_owned();
@@ -130,9 +137,10 @@ mod tests {
         assert_eq!(parse(" list"), Some(Ask::List { link: String::new() }));
         assert_eq!(parse(&format!(" list {link}")), Some(Ask::List { link: link.to_owned() }));
         assert_eq!(parse(&format!(" {link}")), Some(Ask::List { link: link.to_owned() }));
-        assert_eq!(parse(" install"), install("", ""));
+        assert_eq!(parse(" install"), None);
+        assert_eq!(parse(&format!(" install {link}")), None);
         assert_eq!(parse(" install all"), install("all", ""));
-        assert_eq!(parse(" install Justice League"), install("Justice League", ""));
+        assert_eq!(parse(" install Silver Harbor"), install("Silver Harbor", ""));
         assert_eq!(parse(&format!(" install {link} fox")), install("fox", link));
         assert_eq!(parse(&format!(":install fox {link}")), install("fox", link));
         assert_eq!(parse(" remove all"), None);
@@ -141,12 +149,16 @@ mod tests {
 
     #[test]
     fn what_it_says_after_an_install() {
-        let got = |added, there, unusable| DesignsAdded { added, there, unusable };
-        assert_eq!(outcome(got(3, 0, 0), 0), "Added 3 avatars to Your designs.");
-        assert_eq!(outcome(got(1, 2, 0), 0), "Added 1 avatar to Your designs, 2 avatars already there.");
-        assert_eq!(outcome(got(0, 1, 0), 0), "1 avatar already there.");
-        assert_eq!(outcome(got(1, 0, 1), 2), "Added 1 avatar to Your designs, 3 avatars couldn't be used.");
-        assert_eq!(outcome(got(0, 0, 0), 0), "Nothing to add.");
+        let got = |added, there, unusable| DesignsAdded { added, there, unusable, ..Default::default() };
+        assert_eq!(outcome(got(3, 0, 0), 0, 0), "Added 3 avatars to Your designs.");
+        assert_eq!(outcome(got(1, 2, 0), 0, 0), "Added 1 avatar to Your designs, 2 avatars already there.");
+        assert_eq!(outcome(got(0, 1, 0), 0, 0), "1 avatar already there.");
+        assert_eq!(outcome(got(1, 0, 1), 2, 0), "Added 1 avatar to Your designs, 3 avatars couldn't be used.");
+        assert_eq!(outcome(got(0, 0, 0), 0, 0), "Nothing to add.");
+        assert_eq!(outcome(got(0, 0, 0), 0, 1), "1 pack couldn't be read.");
+        assert_eq!(outcome(got(2, 0, 0), 0, 2), "Added 2 avatars to Your designs, 2 packs couldn't be read.");
+        let twice = DesignsAdded { added: 1, repeated: 1, ..Default::default() };
+        assert_eq!(outcome(twice, 0, 0), "Added 1 avatar to Your designs, 1 avatar listed twice.");
     }
 
     #[test]

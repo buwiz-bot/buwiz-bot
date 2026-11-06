@@ -184,6 +184,7 @@ fn Editor() -> impl IntoElement {
             store().open_avatar_editor();
         }))
         .child(crate::pane::editor_overlay())
+        .child(crate::toast::layer())
 }
 
 fn start(broker: &Stub) -> Headless {
@@ -486,10 +487,12 @@ fn an_install_adds_and_replaces_nothing() {
     let same = json!({"name": "Their cloud", "shape": "cloud", "color": "#000000"});
     let a = json!({"name": "A", "shape": "heart", "color": "#FFFFFF", "why": "kept too"});
     let b = json!({"name": "B", "shape": "star", "color": "#FFFFFF"});
-    *broker.packs.lock().unwrap() = pack_answer(json!([a, same, b]), json!([]));
+    *broker.packs.lock().unwrap() = pack_answer(json!([a, same, b, a]), json!([]));
     let mut app = start_loaded(&broker);
     app.press("install fox");
     pump_until(&mut app, "the save", |_| broker.names() == ["A", "B", "Mine"]);
+    let said = "Added 2 avatars to Your designs, 1 avatar already there, 1 avatar listed twice.";
+    pump_until(&mut app, "the outcome", |app| shows(app, said));
     assert_eq!(broker.pack_asks.lock().unwrap()[0], json!({"link": "https://github.com/me/mine", "pick": "fox"}));
     let list = broker.posts().pop().unwrap();
     assert_eq!(list["designs"][0], a, "the pack's entry whole");
@@ -522,9 +525,9 @@ fn an_install_waits_for_the_list() {
     *broker.packs.lock().unwrap() = pack_answer(json!([{"name": "A", "shape": "heart", "color": "#FFFFFF"}]), json!([]));
     let mut app = start(&broker);
     app.press("install fox");
-    app.pump(Duration::from_millis(300));
+    pump_until(&mut app, "the answer", |app| shows(app, "Your avatars are still loading. Try again in a moment."));
     assert!(broker.pack_asks.lock().unwrap().is_empty(), "asked with the list unread");
-    until(&mut app, "nothing added", |p| p.get("shown").is_some_and(|n| n == "0"));
+    assert_eq!(read(&app).get("shown").map(String::as_str), Some("0"), "added with the list unread");
 }
 
 /// A link the broker refuses changes nothing.
@@ -539,7 +542,7 @@ fn a_refused_link_changes_nothing() {
     *broker.packs.lock().unwrap() = (400, json!({"ok": false, "error": "no packs at that link", "designs": [design]}));
     let mut app = start_loaded(&broker);
     app.press("install fox");
-    pump_until(&mut app, "the ask", |_| !broker.pack_asks.lock().unwrap().is_empty());
+    pump_until(&mut app, "the refusal", |app| shows(app, "No packs at that link."));
     app.pump(Duration::from_millis(300));
     assert!(broker.posts().is_empty(), "saved after a refusal");
     assert_eq!(broker.names(), ["Old"]);

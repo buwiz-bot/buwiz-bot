@@ -781,12 +781,13 @@ fn saved_design(e: &serde_json::Value) -> AvatarCand {
     AvatarCand { name: s(e, "name"), shape: shape_of(e), color: s(e, "color"), why: s(e, "why"), raw: Some(e.clone()) }
 }
 
-/// What came of adding designs: how many went in, how many the list had, and
-/// how many this build can't draw.
+/// What came of adding designs: how many went in, how many the list had, how
+/// many the pack held twice, and how many this build can't draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct DesignsAdded {
     pub added: usize,
     pub there: usize,
+    pub repeated: usize,
     pub unusable: usize,
 }
 
@@ -6228,8 +6229,10 @@ impl Store {
             let c = saved_design(e);
             if !crate::avatar::drawable(&c.shape) {
                 added.unusable += 1;
-            } else if list.iter().chain(&fresh).any(|d| d.shape == c.shape) {
+            } else if list.iter().any(|d| d.shape == c.shape) {
                 added.there += 1;
+            } else if fresh.iter().any(|d| d.shape == c.shape) {
+                added.repeated += 1;
             } else {
                 fresh.push(c);
             }
