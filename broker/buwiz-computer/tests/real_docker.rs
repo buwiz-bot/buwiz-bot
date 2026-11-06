@@ -885,6 +885,21 @@ async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
     assert!(pages.0.contains("/for-a") && !urls(&pages.0).contains("/for-b"), "{}", urls(&pages.0));
     assert!(pages.1.contains("/for-b") && !urls(&pages.1).contains("/for-a"), "{}", urls(&pages.1));
 
+    // a screen's report is only read as what it is: a link, a fifo or another's file says nothing
+    let tab = |screen: &Screen| docker(&["exec", "--user", "0", "-e", &format!("T={}", m.token.expose()), &name_of(m), "sh", "-c", &format!("curl -s -m 5 -H \"Authorization: Bearer $T\" 'http://127.0.0.1:1340/v1/chrome/active-tab?display=%3A{}'", screen.display.trim_start_matches(':'))]);
+    assert!(tab(&a).contains("/for-a"), "{}", tab(&a));
+    let report = format!("/run/box/x/{na}/run/active-tab.json");
+    docker(&["exec", "--user", "0", &name_of(m), "cp", &report, "/tmp/kept"]);
+    let plant = |how: &str| docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &format!("unlink {report}; {how}")]);
+    plant(&format!("printf '{{\"url\":\"http://forged/\"}}' > /tmp/forged; chmod a+r /tmp/forged; ln -s /tmp/forged {report}"));
+    assert!(tab(&a).contains("\"url\":null"), "a link was followed: {}", tab(&a));
+    plant(&format!("printf '{{\"url\":\"http://forged/\"}}' > {report}"));
+    assert!(tab(&a).contains("\"url\":null"), "another user's file was believed: {}", tab(&a));
+    plant(&format!("mkfifo {report}"));
+    assert!(tab(&a).contains("\"url\":null"), "a fifo: {}", tab(&a));
+    docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &format!("unlink {report}; cp /tmp/kept {report}; chown {desktop_a}:{desktop_a} {report}")]);
+    assert!(tab(&a).contains("/for-a"), "{}", tab(&a));
+
     // nothing about X's folders is readable, and nothing was for a moment: nobody but root writes them
     let modes = docker(&["exec", "--user", "0", &name_of(m), "stat", "-c", "%a %U %G", "/run/box/x", "/run/box/x/svc.auth", &format!("/run/box/x/{na}"), &format!("/run/box/x/{na}/auth"), "/run/box/log"]);
     let desktop_name = format!("d{desktop_a}");
@@ -1077,6 +1092,42 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     assert!(p.screenshot(m, &a).await.is_ok());
     assert_eq!(p.clear_strays(m, &a).await.unwrap(), Vec::<String>::new(), "a second pass finds nothing: the desktop isn't a stray");
     assert_ne!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-c", "-u", &desktop_a.to_string(), "chromium"]), "0", "the browser went");
+}
+
+/// The main screen goes, and a command takes its name at once. A call that names no display must not
+/// offer that name a cookie. The box stops itself about a second later: this is that second.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_call_for_the_main_screen_gives_no_cookie_to_who_took_its_name() {
+    with_computer("c2d", |p, m, _| async move { main_name_taken(&p, &m).await }).await;
+}
+
+async fn main_name_taken(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2d_a").await.unwrap();
+    let curl = format!("curl -s -m 2 -o /dev/null -w '%{{http_code}}\\n' -X POST -H \"Authorization: Bearer $T\" 'http://127.0.0.1:1337/v1/cua/screenshot?format=png'");
+    let ask = |script: &str| docker(&["exec", "--user", "0", "-e", &format!("T={}", m.token.expose()), &name_of(m), "sh", "-c", script]);
+    assert_eq!(ask(&curl), "200", "the default display works while it's real");
+    let squat = "import socket,time\nend=time.time()+20\ns=socket.socket(socket.AF_UNIX)\nwhile time.time()<end:\n    try:\n        s.bind('\\0/tmp/.X11-unix/X1');break\n    except OSError:\n        time.sleep(0.001)\ns.listen(5);s.settimeout(4)\nf=open('/workspace/agents/c2d_a/squat.log','w',buffering=1);f.write('holding\\n')\ntry:\n    while True:\n        c,_=s.accept();c.settimeout(1)\n        f.write('HEARD %d\\n'%len(c.recv(256)))\nexcept socket.timeout:\n    f.write('done\\n')\n";
+    p.write_file(m, "/workspace/agents/c2d_a/squat.py", squat.as_bytes()).await.unwrap();
+    assert_eq!(p.run(m, &a, "setsid nohup python3 squat.py >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let tried = ask(&format!("pkill -KILL -f '^Xvfb :1 '; for i in 1 2 3 4 5 6; do {curl}; sleep 0.1; done"));
+    println!("{tried}");
+    assert!(tried.contains("503") && !tried.lines().any(|l| l == "200"), "{tried}");
+    // the box stops itself meanwhile: what the squatter heard is on the volume
+    for _ in 0..40 {
+        if p.power(m).await.unwrap() != Power::Awake {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let log = docker(&["run", "--rm", "--mount", &format!("type=volume,source={}-workspace,target=/w", name_of(m)), "alpine:latest", "cat", "/w/agents/c2d_a/squat.log"]);
+    println!("the squatter: {log:?}");
+    assert!(log.contains("holding"), "the command never got the name, so this proves nothing: {log}");
+    // the check connects and sends nothing, and that's all anybody may see here
+    assert!(log.lines().skip(1).all(|l| l == "HEARD 0"), "a service sent a squatter something: {log}");
+    assert!(log.contains("HEARD 0"), "the calls never reached the check, so this proves nothing: {log}");
 }
 
 /// With the box's own browser on, as Compose has it: there's no DevTools port for a command to use,
