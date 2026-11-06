@@ -91,7 +91,7 @@ head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/buwiz-gpui-agent-token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 # who the front belongs to, before this Bot could take it
 case "${BUWIZ_TEST_VISIT_NS:-0}" in
-  ""|*[!0-9]*) echo "buwiz-test: BUWIZ_TEST_VISIT_NS must be a number of nanoseconds" >&2; exit 2
+  *[!0-9]*) echo "buwiz-test: BUWIZ_TEST_VISIT_NS must be a number of nanoseconds" >&2; exit 2
 esac
 front_app() { lsappinfo info -only bundleid "${1:-$(lsappinfo front)}" 2>/dev/null | sed -n 's/.*="\(.*\)"$/\1/p'; }
 # an app to give the front back to: a failed read or this Bot's last run is none
