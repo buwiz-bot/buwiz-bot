@@ -28,6 +28,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// The port of [`crate::client::DEFAULT_GEN`], the owner's broker.
+const OWNERS_PORT: &str = "8787";
+
 /// What the broker's origin answered to `GET /health`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
@@ -52,6 +55,51 @@ pub enum Decision {
     NotBundled,
     /// another Rox holds the start lock: it is starting one
     LockHeld,
+}
+
+/// Why this test bundle must not run, if it mustn't. `scripts/buwiz-test` copies
+/// the Bot into a bundle of its own; started any other way, by Finder, `open` or
+/// an automation tool, that copy has none of its settings, and would take itself
+/// for the owner's Bot: it would find the owner's broker on the default origin,
+/// read their chats and write to them. So a test bundle has to name a broker of
+/// its own and a data folder of its own, or it doesn't start.
+pub fn test_bundle_refusal(
+    exe: Option<&str>,
+    bundle: Option<&str>,
+    get: impl Fn(&str) -> Option<OsString>,
+) -> Option<String> {
+    let test_bundle = exe.is_some_and(|e| e.starts_with("buwiz-bot-test-"))
+        || bundle.is_some_and(|b| b.starts_with("dev.buwiz.bot.test-"));
+    if !test_bundle {
+        return None;
+    }
+    let set = |names: [&str; 2]| {
+        names
+            .iter()
+            .filter_map(|n| get(n))
+            .map(|v| v.to_string_lossy().trim().to_owned())
+            .find(|v| !v.is_empty())
+    };
+    let Some(backend) = set(["BUWIZ_BACKEND", "ROX_BACKEND"]) else {
+        return Some("this test bundle names no broker (BUWIZ_BACKEND): not starting, so it can't reach the owner's; use scripts/buwiz-test".to_owned());
+    };
+    let port = backend.trim_end_matches('/').rsplit(':').next().unwrap_or_default();
+    if port == OWNERS_PORT {
+        return Some(format!("BUWIZ_BACKEND is the owner's broker ({backend}): not starting a test bundle on it"));
+    }
+    if set(["BUWIZ_DATA_DIR", "ROX_DATA_DIR"]).is_none() {
+        return Some("this test bundle has no data folder of its own (BUWIZ_DATA_DIR): not starting, so it can't reach the owner's; use scripts/buwiz-test".to_owned());
+    }
+    None
+}
+
+/// [`test_bundle_refusal`] for this process.
+pub fn refusal() -> Option<String> {
+    let exe = std::env::current_exe().ok();
+    let exe = exe.as_ref().and_then(|e| e.file_name()).and_then(|n| n.to_str());
+    // LaunchServices names the bundle it started
+    let bundle = std::env::var("__CFBundleIdentifier").ok();
+    test_bundle_refusal(exe, bundle.as_deref(), |k| std::env::var_os(k))
 }
 
 /// A test instance: `BUWIZ_BACKEND` set at all (it names its own broker;
@@ -334,6 +382,69 @@ pub fn ensure_started() {
 
 #[cfg(test)]
 mod tests {
+    mod test_bundles {
+        use super::super::test_bundle_refusal;
+        use std::ffi::OsString;
+
+        fn refused(exe: Option<&str>, bundle: Option<&str>, vars: &[(&str, &str)]) -> Option<String> {
+            let vars: Vec<(String, String)> = vars.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+            test_bundle_refusal(exe, bundle, move |k| {
+                vars.iter().find(|(n, _)| n == k).map(|(_, v)| OsString::from(v))
+            })
+        }
+
+        const OWN: [(&str, &str); 2] = [("BUWIZ_BACKEND", "http://127.0.0.1:8821"), ("BUWIZ_DATA_DIR", "/tmp/x/data")];
+
+        #[test]
+        fn a_test_bundle_started_bare_refuses() {
+            assert!(refused(Some("buwiz-bot-test-gws"), None, &[]).is_some());
+            assert!(refused(None, Some("dev.buwiz.bot.test-gws"), &[]).is_some());
+            assert!(refused(Some("buwiz-bot-test-gws"), Some("dev.buwiz.bot.test-gws"), &[("BUWIZ_BACKEND", "  ")]).is_some());
+        }
+
+        #[test]
+        fn half_of_a_test_setup_refuses_too() {
+            let exe = Some("buwiz-bot-test-gws");
+            // what the app's own check takes for a test instance, on the default origin
+            assert!(refused(exe, None, &[("BUWIZ_BACKGROUND", "1")]).is_some());
+            assert!(refused(exe, None, &[("BUWIZ_DATA_DIR", "/tmp/x")]).is_some());
+            assert!(refused(exe, None, &[("BUWIZ_BACKEND", "http://127.0.0.1:8821")]).is_some());
+        }
+
+        #[test]
+        fn a_test_bundle_cannot_be_pointed_at_the_owners_broker() {
+            let exe = Some("buwiz-bot-test-gws");
+            for backend in ["http://127.0.0.1:8787", "http://127.0.0.1:8787/", "http://localhost:8787"] {
+                assert!(refused(exe, None, &[("BUWIZ_BACKEND", backend), ("BUWIZ_DATA_DIR", "/tmp/x")]).is_some(), "{backend}");
+            }
+        }
+
+        #[test]
+        fn a_test_bundle_with_its_own_setup_starts() {
+            assert_eq!(refused(Some("buwiz-bot-test-gws"), Some("dev.buwiz.bot.test-gws"), &OWN), None);
+            let old = [("ROX_BACKEND", "http://127.0.0.1:8821"), ("ROX_DATA_DIR", "/tmp/x")];
+            assert_eq!(refused(Some("buwiz-bot-test-gws"), None, &old), None);
+        }
+
+        #[test]
+        fn the_owners_bot_is_never_refused() {
+            assert_eq!(refused(Some("buwiz-bot"), Some("com.buwiz.bot"), &[]), None);
+            assert_eq!(refused(Some("Buwiz Bot"), None, &[]), None);
+            assert_eq!(refused(None, None, &[]), None);
+        }
+
+        /// Nothing runs before the check that could reach a broker or show a window.
+        #[test]
+        fn startup_checks_before_it_does_anything() {
+            let main = include_str!("main.rs");
+            let at = |what: &str| main.find(what).unwrap_or_else(|| panic!("{what}"));
+            let refusal = at("broker::refusal()");
+            for later in ["jank_log::init()", "identity::migrate_data(", "broker::ensure_started()", "agent_hub::start()", "run_app("] {
+                assert!(refusal < at(later), "{later}");
+            }
+        }
+    }
+
     use super::*;
     use std::cell::Cell;
 

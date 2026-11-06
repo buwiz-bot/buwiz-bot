@@ -104,6 +104,11 @@ for a in "$@"; do
     *) VARS+=("$a") ;;
   esac
 done
+# a test Bot names a broker or it won't start: with none given, one nobody runs
+case " ${VARS[*]-} " in
+  *" BUWIZ_BACKEND="*) ;;
+  *) VARS+=("BUWIZ_BACKEND=http://127.0.0.1:1" "ROX_BACKEND=http://127.0.0.1:1") ;;
+esac
 env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKGROUND=1 ROX_BACKGROUND=1 \
   GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
   GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN_FILE="$R/buwiz-gpui-agent-token" ${VARS[@]+"${VARS[@]}"} \
