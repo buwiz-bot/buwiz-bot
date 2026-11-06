@@ -40,6 +40,10 @@ use crate::v1::package::{self, Package};
 use crate::v1::trust::Trust;
 use crate::v1::{get, kind_of, tpl, V1Error};
 
+/// A plugin's record and the keystore name different keys.
+const KEY_CHANGED: &str = "plugin_key_changed";
+/// What the keystore holds for a plugin is no key.
+const KEY_INVALID: &str = "plugin_key_invalid";
 pub const BACKOFF_S: [u64; 7] = [1, 2, 4, 8, 16, 32, 60];
 pub const RESTART_WINDOW_MS: f64 = 10.0 * 60.0 * 1000.0;
 pub const MAX_RESTARTS: usize = 6;
@@ -674,7 +678,7 @@ impl Host {
                     host.with_rt(&pid, |rt| rt.timer = None);
                     let lock = host.lock_of(&pid);
                     let _held = lock.lock().await;
-                    host.spawn_locked(&pid).await;
+                    host.spawn_locked(&pid, false).await;
                 });
             }),
         );
@@ -709,8 +713,9 @@ impl Host {
     }
 
     /// Spawns an installed, enabled plugin through the gate (the caller
-    /// holds its lock); a verification failure leaves it `failed`.
-    async fn spawn_locked(&self, id: &str) -> &'static str {
+    /// holds its lock); a verification failure leaves it `failed`. `adopt`:
+    /// a keystore key other than the record's is taken once the gate passes.
+    async fn spawn_locked(&self, id: &str, adopt: bool) -> &'static str {
         let Some(row) = self.row(id).filter(|r| r.enabled) else { return self.with_rt(id, |rt| rt.state) };
         if self.conn_of(id).is_some() {
             return self.with_rt(id, |rt| rt.state);
@@ -739,6 +744,14 @@ impl Host {
             Some(seed) => seed,
             None => {
                 self.set_state(id, "failed", Some("plugin_invalid"), "the plugin key is missing from the keystore; reinstall");
+                return "failed";
+            }
+        };
+        let adopting = match Self::check_key(&row, &seed) {
+            Ok(()) => false,
+            Err(e) if adopt && e.code == KEY_CHANGED => true,
+            Err(e) => {
+                self.set_state(id, "failed", Some(&e.code), &e.message);
                 return "failed";
             }
         };
@@ -783,8 +796,38 @@ impl Host {
                 return "failed";
             }
         }
+        if adopting {
+            // every check passed: only now does the record change
+            let recorded = Self::public_of(&seed).and_then(|public| self.sql(|db| db.execute("UPDATE v1_plugins SET plugin_pub=? WHERE id=?", params![public, id])));
+            if let Err(e) = recorded {
+                g.conn.close().await;
+                self.set_state(id, "failed", Some(&e.code), &e.message);
+                return "failed";
+            }
+            eprintln!("  plugin {id}: a person's Retry recorded the keystore's key");
+        }
         self.adopt(id, g);
         "running"
+    }
+
+    /// The public half of `seed`, or [`KEY_INVALID`].
+    fn public_of(seed: &str) -> Res<String> {
+        match buwiz_protocol::keys::SessionKey::from_seed(seed) {
+            Ok(key) => Ok(key.public()),
+            Err(_) => V1Error::err(KEY_INVALID, "The stored key for this plugin is damaged. Uninstall the plugin, then install it again."),
+        }
+    }
+
+    /// Whether `seed` is the key `row` was installed with. The record pins
+    /// it: a keystore item replaced under an installed plugin stops the
+    /// plugin before it is handed the key, and stops an update, until a
+    /// person's [`Host::retry`] takes the new one.
+    fn check_key(row: &Row, seed: &str) -> Res<()> {
+        if Self::public_of(seed)? != row.plugin_pub {
+            eprintln!("  plugin {}: its record named another key than the keystore's", row.id);
+            return V1Error::err(KEY_CHANGED, "Buwiz Bot holds another key for this plugin than the one it was installed with. Retry to use the one it holds.");
+        }
+        Ok(())
     }
 
     /// resources/list_changed: read and verify again (6.1, 6.2 step 11).
@@ -999,7 +1042,14 @@ impl Host {
             }
             // the update runs under the installed key: spawn it again with that
             match self.key(&id).await {
-                Some(seed) => Ok(Next::Update(seed)),
+                Some(seed) => match Self::check_key(row, &seed) {
+                    Ok(()) => Ok(Next::Update(seed)),
+                    // as a spawn would: stopped, so its Retry is on offer
+                    Err(e) => {
+                        self.fail(&id, &e.code, &e.message).await?;
+                        Err(e)
+                    }
+                },
                 None => V1Error::err("plugin_invalid", "the installed plugin key is missing; uninstall and install again"),
             }
         }
@@ -1055,7 +1105,13 @@ impl Host {
                 return Err(e);
             }
         }
-        let public = buwiz_protocol::keys::SessionKey::from_seed(&seed).map(|k| k.public()).unwrap_or_default();
+        let public = match Self::public_of(&seed) {
+            Ok(public) => public,
+            Err(e) => {
+                g.conn.close().await;
+                return Err(e);
+            }
+        };
         self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, row.as_ref(), pkg.as_ref())?;
         self.with_rt(&id, |rt| rt.restarts.clear());
         self.adopt(&id, g);
@@ -1094,10 +1150,22 @@ impl Host {
 
     /// 9.5: spawn and verify again.
     pub async fn enable(&self, id: &str) -> Res {
+        self.enable_as(id, false).await
+    }
+
+    /// A person's Retry of a failed plugin: [`Host::enable`], taking the
+    /// keystore's key when that is why it stopped. Only the host route's
+    /// `adopt_key` comes here: an agent's enable can't accept a replaced key.
+    pub async fn retry(&self, id: &str) -> Res {
+        self.enable_as(id, true).await
+    }
+
+    async fn enable_as(&self, id: &str, person: bool) -> Res {
         let row = self.must_row(id)?;
-        self.check_installed(&row.manifest(), &row.publisher_key_id)?;
         let lock = self.lock_of(id);
         let _held = lock.lock().await;
+        self.check_installed(&row.manifest(), &row.publisher_key_id)?;
+        let adopt = person && self.with_rt(id, |rt| rt.code.as_deref() == Some(KEY_CHANGED));
         let now = self.clock.now() as i64;
         self.sql(|db| db.execute("UPDATE v1_plugins SET enabled=1, updated_at=? WHERE id=?", params![now, id]))?;
         self.with_rt(id, |rt| rt.restarts.clear());
@@ -1106,7 +1174,7 @@ impl Host {
             return Ok(json!({"ok": true, "state": state, "generation": generation}));
         }
         self.clear_timer(id);
-        self.spawn_locked(id).await;
+        self.spawn_locked(id, adopt).await;
         Ok(self.with_rt(id, |rt| {
             json!({"ok": rt.state == "running", "state": rt.state, "code": rt.code, "message": rt.message, "generation": rt.generation})
         }))
@@ -1263,7 +1331,7 @@ impl Host {
                 tokio::spawn(async move {
                     let lock = host.lock_of(&r.id);
                     let _held = lock.lock().await;
-                    host.spawn_locked(&r.id).await;
+                    host.spawn_locked(&r.id, false).await;
                 })
             })
             .collect();

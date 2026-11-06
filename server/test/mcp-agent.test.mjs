@@ -35,7 +35,7 @@ if (RUST) {
   mkdirSync(join(dataDir, "generated"), { recursive: true });
   const token = `line-${process.pid}-${Date.now()}`;
 
-  helper = spawn(RUST, ["helper", "--db", join(dataDir, "generated", "app.db"), "--port", String(port)], {
+  helper = spawn(RUST, ["helper", "--db", join(dataDir, "generated", "app.db"), "--data", dataDir, "--port", String(port)], {
     cwd: ROOT,
     env: { ...process.env, BUWIZ_LINE_TOKEN: token, BUWIZ_PUBLIC_PORT: String(PORT) },
     stdio: ["ignore", "pipe", "inherit"],
