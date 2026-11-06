@@ -11,13 +11,16 @@ cat > "$T/bin/aerospace" <<FAKE
 #!/bin/bash
 S="\$STATE"
 case "\$1 \${2:-}" in
-  "list-workspaces --focused") cat "\$S/workspace" ;;
-  "list-windows --focused") [ -s "\$S/window" ] && echo "\$(cat "\$S/window") 1" ;;
+  "list-workspaces --focused") cat "\$S/workspace"; echo read >> "\$S/reads" ;;
+  "list-windows --focused")
+    [ -f "\$S/no-window" ] && exit 1
+    [ -s "\$S/window" ] && echo "\$(cat "\$S/window") 1" ;;
   "list-windows --all") [ -f "\$S/listed" ] && echo "900 \$(cat "\$S/app.pid")" ;;
   workspace*) echo "\$2" > "\$S/workspace" ;;
   "focus --window-id")
     [ -f "\$S/closed" ] && exit 1
-    echo "window \$3" > "\$S/front"; echo "focus \$3" >> "\$S/log" ;;
+    echo "focus \$3" >> "\$S/log"
+    [ -f "\$S/stuck" ] || echo "window \$3" > "\$S/front" ;;
   move-node-to-workspace*) touch "\$S/moved" ;;
 esac
 exit 0
@@ -29,6 +32,7 @@ case "\$1" in
   front) echo ASN:0x1 ;;
   find) [ -f "\$STATE/quit" ] || echo ASN:0x2 ;;
   info)
+    [ -f "\$STATE/no-read" ] && exit 1
     f="\$(cat "\$STATE/front")"
     case "\$3:\$f" in
       pid:[0-9]*) echo "\"pid\"=\$f" ;;
@@ -51,11 +55,15 @@ sleep 30
 FAKE
 chmod +x "$T/bot"
 fails=0
+settled() { # until the watcher has taken in what just changed, however slow the machine
+  local want=$(($(wc -l < reads 2>/dev/null || echo 0) + 3)) n=0
+  while [ "$(wc -l < reads 2>/dev/null || echo 0)" -lt "$want" ] && [ $n -lt 800 ]; do sleep 0.025; n=$((n + 1)); done
+}
 run() { # name, list after, what happens, want in front, want exit, what's set up first
   local name="$1" list="$2" steps="$3" want="$4" code="$5" setup="${6:-:}" S="$T/s-$RANDOM"
   mkdir -p "$S" "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"; echo 9000000000 > "$S/idle"
   ( cd "$S" && eval "$setup" )
-  STATE="$S" LIST_AFTER="$list" BUWIZ_TEST_LIST_TRIES=120 BUWIZ_TEST_TICK=0.02 \
+  STATE="$S" LIST_AFTER="$list" BUWIZ_TEST_LIST_TRIES=120 BUWIZ_TEST_TICK=0.02 BUWIZ_TEST_REFRESH=5 \
     PATH="$T/bin:$PATH" "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1
   local got=$?
   ( cd "$S" && P="$(cat app.pid)" && eval "$steps" )
@@ -83,9 +91,18 @@ run "a visit: a key, then its workspace, then the front" 0.1 'echo 100000000 > i
 run "a visit stays when the input stops"               0.1 'echo 100000000 > idle; echo 3 > workspace; echo $P > front; sleep 0.3; echo 9000000000 > idle' bot 0
 # what the real test found: macOS activates it, and AeroSpace follows onto 3
 run "a steal AeroSpace followed goes back to its workspace" 0.1 'echo $P > front; echo 3 > workspace' "window 100 on 1" 0 : on
-run "and to the workspace the person had moved to"     0.1 'echo 2 > workspace; echo 200 > window; echo com.example.someone > front; sleep 0.2; echo $P > front; echo 3 > workspace' "window 200 on 2" 0 : on
+run "and to the workspace the person had moved to"     0.1 'echo 2 > workspace; echo 200 > window; echo com.example.someone > front; settled; echo $P > front; echo 3 > workspace' "window 200 on 2" 0 : on
 run "a second steal after a visit is still a steal"    0.1 'echo 100000000 > idle; echo $P > front; sleep 0.2; echo 9000000000 > idle; echo com.example.owner > front; sleep 0.2; echo $P > front' "window 100" 0
 run "nothing happens"                                  0.1 ':' com.example.owner 0
+run "a failed read doesn't undo a visit"               0.1 'echo 100000000 > idle; echo 3 > workspace; echo $P > front; sleep 0.3; echo 9000000000 > idle; touch no-read; sleep 0.3; rm no-read' bot 0
+run "a workspace change with no app change is kept"    0.1 'echo 2 > workspace; settled; echo $P > front; echo 3 > workspace' "window 100 on 2" 0 : on
+run "a failed window read doesn't end the watch"       0.1 'touch no-window; echo com.example.someone > front; sleep 0.3; rm no-window; echo $P > front' "window 100" 0
+run "a steal is answered once, not every tick"         0.1 'touch stuck; echo $P > front; sleep 0.6; [ "$(grep -c focus log)" = 1 ] && rm stuck && echo com.example.owner > front' com.example.owner 0
+S="$T/s-visit"; mkdir -p "$S/inst"; echo com.example.owner > "$S/front"
+if STATE="$S" BUWIZ_TEST_VISIT_NS=soon PATH="$T/bin:$PATH" "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1; then
+  echo "FAIL a bad BUWIZ_TEST_VISIT_NS started"; fails=1
+elif [ -e "$S/app.pid" ]; then echo "FAIL a bad BUWIZ_TEST_VISIT_NS launched the Bot"; fails=1
+else echo "ok   a bad BUWIZ_TEST_VISIT_NS stops at the start"; fi
 # no window: the launcher stops the Bot, and the watcher with it
 S="$T/s-gone"; mkdir -p "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"; echo 9000000000 > "$S/idle"
 STATE="$S" LIST_AFTER=never BUWIZ_TEST_LIST_TRIES=2 BUWIZ_TEST_TICK=0.02 PATH="$T/bin:$PATH" \
