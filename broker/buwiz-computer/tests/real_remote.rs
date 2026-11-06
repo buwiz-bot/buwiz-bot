@@ -384,7 +384,7 @@ async fn a_real_box_works_over_real_tls_with_a_pin_and_refuses_any_other() {
         routes.insert(format!("desktop-{port}.box.c3t.test"), local.ports[&port].clone());
     }
     let at = loopback::terminator(cert.clone(), key, routes).await;
-    let provider = RemoteProvider::new().with_dial(at);
+    let provider = RemoteProvider::new().with_dial(at).with_beat(Duration::from_secs(1));
     let computer = dir.join("computer");
     std::fs::create_dir_all(&computer).unwrap();
     let asked = |pin: Option<String>| Asked { url: "https://box.c3t.test".into(), token: Some(local.machine.token.clone()), viewer_password: Some(local.machine.viewer_password.clone()), pin, key_file: None };
@@ -406,6 +406,17 @@ async fn a_real_box_works_over_real_tls_with_a_pin_and_refuses_any_other() {
     provider.sleep(&m, Sleep::Deep).await.unwrap();
     assert_eq!(provider.power(&m).await.unwrap(), Power::Asleep);
     still_there(&local, &a).await;
+
+    // the box stops behind a proxy that's still up: it reads as not connected, with nobody asking
+    provider.wake(&m).await.unwrap();
+    local.docker.sleep(&local.machine, Sleep::Deep).await.unwrap();
+    for _ in 0..200 {
+        if provider.power(&m).await.unwrap() == Power::Asleep {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(provider.power(&m).await.unwrap(), Power::Asleep, "a dead box behind live relays read as awake");
     provider.destroy(&m).await.unwrap();
 
     local.gone("c3tt").await;
