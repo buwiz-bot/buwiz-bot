@@ -842,9 +842,13 @@ impl OpenContext {
             let result = result?;
             let document = result.pointer("/_meta/buwiz~1document").cloned();
             let account = result.pointer("/_meta/buwiz~1account_use").cloned();
-            let answer = tool_result(result, max)?;
-            if let Some(field) = account {
-                me.use_account(&field, who.actor)?;
+            let mut answer = tool_result(result, max)?;
+            if let Some(field) = account
+                && let Err(e) = me.use_account(&field, who.actor)
+                && let Value::Object(fields) = &mut answer
+            {
+                // the tool's work stands: only the switch failed, and it says so apart
+                fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
             me.open_document(document, who.actor);
             Ok(answer)
@@ -872,7 +876,8 @@ impl OpenContext {
     /// `actor` made: the person's own press in a first-party plugin makes that
     /// label the active one, and the call answers once the plugin has it. The
     /// broker has refused anything else already; this holds whatever it did.
-    /// A broker's refusal can name a label, so only its code comes back.
+    /// A label that's an address is never on a plugin's list, so none can ask
+    /// for one. A broker's refusal can name a label, so only its code comes back.
     fn use_account(&self, field: &Value, actor: Actor) -> Result<(), RoxError> {
         let p = &self.prepared;
         if actor != Actor::Person {
@@ -885,6 +890,9 @@ impl OpenContext {
         let (Some(account), Some(label)) = (text(field, "account"), text(field, "label")) else {
             return Err(invalid("buwiz/account_use takes {account, label}"));
         };
+        if label.contains('@') {
+            return Err(invalid("buwiz/account_use can't name an address"));
+        }
         self.session.check_live()?;
         let used = host_api::account_action(&*self.broker, &p.plugin.id, account, label, host_api::AccountAction::Use);
         used.map(drop).map_err(|e| {

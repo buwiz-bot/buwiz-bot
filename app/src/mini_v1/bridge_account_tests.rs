@@ -23,6 +23,12 @@ fn switched(o: &Open) -> Vec<(String, Value)> {
     o.broker.switched.lock().unwrap().clone()
 }
 
+/// What the app heard of a switch that didn't happen, beside the tool's answer.
+fn refused(o: &mut Open) -> Value {
+    let answer: Value = serde_json::from_str(&o.wait("{")).unwrap();
+    answer["account_use"].clone()
+}
+
 #[test]
 fn the_persons_press_in_a_first_party_app_switches_and_the_app_gets_only_its_answer() {
     let mut o = open(true, false, "fx_account_use", work());
@@ -45,8 +51,9 @@ fn the_ais_press_on_a_person_only_tool_is_refused_before_anything_is_sent() {
 #[test]
 fn a_call_of_the_ais_that_got_through_switches_nothing() {
     let mut o = open(true, true, "fx_account_read", work());
-    let said = o.wait("threw");
-    assert!(said.starts_with("threw permission_denied: Only a person can do this in Fixture"), "{said}");
+    let said = refused(&mut o);
+    assert_eq!(said["code"], "permission_denied");
+    assert!(said["message"].as_str().unwrap().starts_with("Only a person can do this in Fixture"), "{said}");
     assert_eq!(o.broker.calls.lock().unwrap()[0].0["actor"], "agent");
     assert!(switched(&o).is_empty());
 }
@@ -54,7 +61,7 @@ fn a_call_of_the_ais_that_got_through_switches_nothing() {
 #[test]
 fn a_third_party_plugins_field_switches_nothing() {
     let mut o = open(false, false, "fx_account_use", work());
-    assert_eq!(o.wait("threw"), "threw permission_denied: Only a first-party plugin can switch accounts.");
+    assert_eq!(refused(&mut o), json!({"code": "permission_denied", "message": "Only a first-party plugin can switch accounts."}));
     assert!(switched(&o).is_empty());
 }
 
@@ -63,7 +70,7 @@ fn a_field_that_names_no_account_of_the_grammar_is_refused() {
     let fields = [json!({"account": "google"}), json!({"label": "work"}), json!("work"), json!({"account": "google", "label": "a b"}), json!({"account": "../x", "label": "work"})];
     for field in fields {
         let mut o = open(true, false, "fx_account_use", json!({"field": field}));
-        assert!(o.wait("threw").starts_with("threw invalid_args"), "{field}");
+        assert_eq!(refused(&mut o)["code"], "invalid_args", "{field}");
         assert!(switched(&o).is_empty(), "{field}");
     }
 }
@@ -87,7 +94,24 @@ fn an_older_plugin_with_no_field_changes_nothing() {
 #[test]
 fn a_refused_switch_says_its_code_and_no_label() {
     let mut o = open(true, false, "fx_account_use", json!({"field": {"account": "google", "label": "gone"}}));
-    assert_eq!(o.wait("threw"), "threw needs_signin: Buwiz Bot couldn't switch to that account.");
+    assert_eq!(refused(&mut o), json!({"code": "needs_signin", "message": "Buwiz Bot couldn't switch to that account."}));
+}
+
+/// An address is never on a plugin's list, so asking for one is no switch.
+#[test]
+fn a_label_that_is_an_address_is_never_switched_to() {
+    let mut o = open(true, false, "fx_account_use", json!({"field": {"account": "google", "label": "me@example.com"}}));
+    assert_eq!(refused(&mut o)["code"], "invalid_args");
+    assert!(switched(&o).is_empty());
+}
+
+/// The tool did its work: a switch that failed takes none of that back.
+#[test]
+fn a_failed_switch_keeps_the_tools_answer() {
+    let mut o = open(true, false, "fx_account_use", json!({"field": {"account": "google", "label": "gone"}}));
+    let answer: Value = serde_json::from_str(&o.wait("{")).unwrap();
+    assert_eq!(answer["switched"], true);
+    assert_eq!(answer["account_use"]["code"], "needs_signin");
 }
 
 #[test]
@@ -99,6 +123,6 @@ fn a_result_after_the_screen_closed_switches_nothing() {
         std::thread::yield_now();
     }
     o.ctx.close();
-    o.wait("threw");
+    assert_eq!(refused(&mut o)["code"], "closed");
     assert!(switched(&o).is_empty());
 }
