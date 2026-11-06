@@ -140,9 +140,9 @@ fn file_in(folder: &Path, claimed: &Path) -> Result<PathBuf, Refused> {
     if !meta.file_type().is_file() {
         return Err(Refused::NotAFile);
     }
-    // what shows may be a file elsewhere under a second name, as through a
-    // symlink. Reading is all it reaches: a save renames over this name, so
-    // the other name keeps the old file
+    // this stops the viewer showing a file from elsewhere under a second name,
+    // as the symlink rule does. Reading is all it reaches: a save renames over
+    // this name, so the other name keeps the old file
     if std::os::unix::fs::MetadataExt::nlink(&meta) != 1 {
         return Err(Refused::Link);
     }
