@@ -430,6 +430,10 @@ pub(crate) async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse
     }) else {
         return refused(&format!("unknown bot {}", template(id)), false);
     };
+    // not knowing whether it sits at a computer, it stays: it would go with its seat left behind
+    if let Err(e) = crate::hub::computer::Computers::seat(&ctx, &bot_id) {
+        return refused(&e.sentence(), false);
+    }
     if let Err(e) = sweep_modules(&ctx, &names) {
         return refused(&e, false);
     }

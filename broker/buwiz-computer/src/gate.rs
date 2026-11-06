@@ -81,6 +81,12 @@ impl Gate {
         self.lock().open.retain(|_, o| o.bot != bot);
     }
 
+    /// That computer went to sleep: every viewer of it goes, whoever opened it. They share its
+    /// password, so this needs no list of its Bots.
+    pub fn close_computer(&self, password: &crate::Secret) {
+        self.lock().open.retain(|_, o| o.viewer.password != *password);
+    }
+
     /// Whether a person is watching `bot`'s computer: it doesn't sleep under them.
     pub fn watched(&self, bot: &str) -> bool {
         self.lock().watching.get(bot).is_some_and(|n| *n > 0)
@@ -341,6 +347,20 @@ mod tests {
         let mut out = String::new();
         tokio::time::timeout(Duration::from_secs(2), s.read_to_string(&mut out)).await.expect("the gate is gone").unwrap();
         assert!(out.starts_with("HTTP/1.1 404"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn closing_a_computer_closes_its_viewers_and_no_others() {
+        let gate = Gate::start().await.unwrap();
+        let addr = echo_viewer().await;
+        let (ours, theirs) = (Secret::new("ours"), Secret::new("theirs"));
+        let (port, ann) = parts(&gate.open("ann", Viewer { addr: addr.clone(), password: ours.clone() }).unwrap());
+        let (_, bea) = parts(&gate.open("bea", Viewer { addr: addr.clone(), password: ours.clone() }).unwrap());
+        let (_, cal) = parts(&gate.open("cal", Viewer { addr, password: theirs }).unwrap());
+        gate.close_computer(&ours);
+        assert!(get(port, &ann, "").await.starts_with("HTTP/1.1 403"));
+        assert!(get(port, &bea, "").await.starts_with("HTTP/1.1 403"));
+        assert!(get(port, &cal, "").await.starts_with("HTTP/1.1 302"), "another computer's viewer stays");
     }
 
     #[tokio::test]

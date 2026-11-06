@@ -222,6 +222,8 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone() }, None).await.unwrap().expect("it's still there");
     assert_eq!(found.reach, a.reach);
     assert_ne!(found.token, a.token);
+    // as a click does: what's running has the old secrets, so it stops first
+    p.sleep(&found, Sleep::Deep).await.unwrap();
     p.wake(&found).await.unwrap();
     assert_eq!(p.read_file(&found, "kept.txt").await.unwrap(), b"both");
 
@@ -232,4 +234,14 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     p.wake(&found).await.unwrap();
     assert_eq!(p.read_file(&found, "kept.txt").await.unwrap(), b"both", "the files were left behind");
     println!("record and containers lost: files kept");
+
+    // only the home volume left: that's files, and a delete still finishes on real Docker's words
+    docker(&["rm", "-f", &na, &format!("{na}-wall")]);
+    docker(&["volume", "rm", &format!("{na}-workspace")]);
+    let dir = a.dir.clone();
+    let home_only = p.recover(&Spec { id: "cmp_c2ua".into(), dir }, Some(&a.reach)).await.unwrap();
+    assert!(home_only.is_some(), "a surviving home was read as nothing left");
+    p.destroy(a).await.expect("a volume already gone stopped the removal");
+    assert_eq!(docker(&["volume", "ls", "--quiet", "--filter", &format!("name={na}-home")]), "", "the other volume was left behind");
+    println!("home alone: found, and a delete removed it");
 }

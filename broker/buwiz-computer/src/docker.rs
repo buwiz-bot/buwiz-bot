@@ -718,10 +718,6 @@ impl Provider for DockerProvider {
             }
             (None, _) => return Ok(None),
         };
-        // what's running still has the old secrets, and the seats wait on this: at once
-        if let Ok(found) = self.inspect(&name).await {
-            self.halt(&name, &found, AT_ONCE).await;
-        }
         Ok(Some(Machine {
             provider: ProviderKind::Docker,
             reach: Reach::Container { name },
@@ -903,12 +899,14 @@ async fn run_docker(program: &Path, args: &[&str], stdin: Option<&[u8]>, patienc
 
 /// Docker's stderr as the problem a person can act on.
 fn classify(status: Option<i32>, stderr: &str, image: &str) -> Problem {
-    let said = |words: &[&str]| words.iter().any(|w| stderr.contains(w));
-    if said(&["No such image", "Unable to find image", "pull access denied"]) {
+    // Docker's case isn't steady: `No such container`, but `get x: no such volume`
+    let lower = stderr.to_lowercase();
+    let said = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    if said(&["no such image", "unable to find image", "pull access denied"]) {
         Problem::ImageMissing(image.to_owned())
-    } else if said(&["No such container", "No such object", "No such volume"]) {
+    } else if said(&["no such container", "no such object", "no such volume"]) {
         Problem::Gone
-    } else if said(&["Cannot connect to the Docker daemon", "Is the docker daemon running", "docker daemon is not running", "failed to connect to the docker API"]) {
+    } else if said(&["cannot connect to the docker daemon", "is the docker daemon running", "docker daemon is not running", "failed to connect to the docker api"]) {
         Problem::ProviderDown("Docker".to_owned())
     } else {
         let first = stderr.lines().next().unwrap_or_default().trim();
@@ -1010,7 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_image_is_a_sentence() {
         let dir = tmp("image");
-        let program = fake_docker(&dir, "case \"$1\" in version) echo 29.8;; image) echo 'Error: No such object: img:1' >&2; exit 1;; esac");
+        let program = fake_docker(&dir, "case \"$1\" in version) echo 29.8;; image) echo 'Error response from daemon: No such image: img:1' >&2; exit 1;; esac");
         let p = DockerProvider::new("img:1", "c2").with_program(program);
         assert_eq!(p.check().await.unwrap_err(), Problem::ImageMissing("img:1".into()));
     }
@@ -1046,7 +1044,7 @@ mod tests {
         std::fs::write(dir.join("first"), first).unwrap();
         std::fs::write(dir.join("after"), inspected("exited", "running", "T1")).unwrap();
         let d = dir.display();
-        let body = format!("case \"$1\" in inspect) if [ -e \"{d}/made\" ]; then cat \"{d}/after\"; else cat \"{d}/first\"; echo 'Error: No such object: c2-x-wall' >&2; exit 1; fi;; create) touch \"{d}/made\";; start) exit 1;; esac");
+        let body = format!("case \"$1\" in inspect) if [ -e \"{d}/made\" ]; then cat \"{d}/after\"; else cat \"{d}/first\"; echo 'Error response from daemon: No such container: c2-x-wall' >&2; exit 1; fi;; create) touch \"{d}/made\";; start) exit 1;; esac");
         DockerProvider::new("img:1", "c2").with_program(fake_docker(dir, &body)).with_ifconfig(PathBuf::from("/usr/bin/true"))
     }
 
@@ -1093,14 +1091,14 @@ mod tests {
         assert!(calls(&dir).contains("volume inspect --format {{.Name}} c2-x-workspace"), "{}", calls(&dir));
         assert!(!calls(&dir).contains("rm "), "{}", calls(&dir));
         let none = tmp("no-volumes");
-        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&none, "case \"$1\" in volume) echo 'Error: No such volume: x' >&2; exit 1;; esac"));
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&none, "case \"$1\" in volume) echo 'Error response from daemon: get x: no such volume' >&2; exit 1;; esac"));
         assert_eq!(p.recover(&Spec { id: "cmp_1".into(), dir: none.clone() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn a_surviving_home_volume_counts_as_files() {
         let dir = tmp("home-only");
-        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error: No such volume' >&2; exit 1;; esac;; esac";
+        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error response from daemon: get c2-x-workspace: no such volume' >&2; exit 1;; esac;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
         let found = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap();
         assert!(found.is_some(), "its home would be swept as nothing left");
@@ -1204,17 +1202,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rebuild_gives_the_box_time_and_a_failed_guard_doesnt() {
+    async fn a_rebuild_gives_the_box_time() {
         let dir = tmp("graceful");
         let running = r#"[{"Name":"/c2-x","State":{"Status":"running","StartedAt":"U"}}]"#;
         let p = losing(&dir, running);
         let _ = p.wake(&machine(&dir)).await;
         assert!(calls(&dir).contains("stop -t 5 c2-x") && !calls(&dir).contains("stop -t 0"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn recover_stops_nothing_itself() {
         let dir = tmp("recover-stop");
         let body = format!("case \"$1\" in ps) echo c2-x;; inspect) cat <<'J'\n{}\nJ\n;; esac", inspected("running", "running", "T1"));
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
         p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, None).await.unwrap();
-        assert!(calls(&dir).contains("stop -t 0 c2-x"), "stale secrets, under the seats' lock: {}", calls(&dir));
+        assert!(!calls(&dir).contains("stop"), "the seats' lock is held here: {}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn removing_goes_on_past_a_volume_that_is_already_gone() {
+        let dir = tmp("remove");
+        let body = "case \"$1 $2 $3\" in 'volume rm c2-x-workspace') echo 'Error response from daemon: get c2-x-workspace: no such volume' >&2; exit 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        p.destroy(&machine(&dir)).await.expect("one gone volume would never let a retire finish");
+        assert!(calls(&dir).contains("volume rm c2-x-home"), "{}", calls(&dir));
+    }
+
+    /// Each line is what Docker 29 prints, copied from a run.
+    #[test]
+    fn dockers_real_words_are_read_right() {
+        for line in [
+            "Error response from daemon: get c2-none-x: no such volume",
+            "Error response from daemon: No such container: c2-none-x",
+            "Error response from daemon: No such container: c2-none-x\nfailed to start containers: c2-none-x",
+        ] {
+            assert_eq!(classify(Some(1), line, "i"), Problem::Gone, "{line}");
+        }
+        for line in ["Error response from daemon: No such image: c2-none:1", "Unable to find image 'c2-none:1' locally\nError response from daemon: pull access denied for c2-none, repository does not exist or may require 'docker login'"] {
+            assert_eq!(classify(Some(1), line, "i"), Problem::ImageMissing("i".into()), "{line}");
+        }
+        let down = "failed to connect to the docker API at unix:///tmp/x.sock; check if the path is correct and if the daemon is running: dial unix /tmp/x.sock: connect: no such file or directory";
+        assert_eq!(classify(Some(1), down, "i"), Problem::ProviderDown("Docker".into()));
+        let no_python = "OCI runtime exec failed: exec failed: unable to start container process: exec: \"python3\": executable file not found in $PATH";
+        assert!(matches!(classify(Some(127), no_python, "i"), Problem::Failed(_)), "a missing python3 isn't a gone computer");
     }
 
     #[tokio::test]
