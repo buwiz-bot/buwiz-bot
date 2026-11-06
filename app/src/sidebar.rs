@@ -14,6 +14,14 @@ use crate::theme;
 /// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
 pub(crate) fn sidebar() -> impl IntoElement {
     let shows = |full: bool| move || form_shown(full);
+    // a new order can leave every size alone: only the ids and groups say so
+    let order = computed(|| store().bots.with(|bots| bots.iter().map(|b| b.id.clone()).collect::<Vec<_>>()));
+    effect(move || {
+        order.get();
+        store().groups.with(|_| ());
+        place_rows(0);
+        place_rows(1);
+    });
     view()
         .flex_row()
         .h_full()
@@ -31,15 +39,8 @@ const SEEN_MARGIN: f32 = 80.0;
 fn row_seen(full: bool, node: ElementRef) -> std::rc::Rc<dyn Fn() -> bool> {
     let i = full as usize;
     let at = signal(None::<(f32, f32)>);
-    effect(move || {
-        store().side_relaid[i].get();
-        spawn(async move {
-            if let Some(m) = node.measure().await {
-                let w = store().side_window[i].get_untracked();
-                at.try_set(Some((m.page.y.0 - w.page_top + w.top, m.frame.size.height.0)));
-            }
-        });
-    });
+    store().side_rows[i].borrow_mut().push((node, at));
+    place_rows(i);
     let seen = computed(move || {
         let w = store().side_window[i].get();
         at.get().is_none_or(|(y, h)| {
@@ -49,24 +50,46 @@ fn row_seen(full: bool, node: ElementRef) -> std::rc::Rc<dyn Fn() -> bool> {
     std::rc::Rc::new(move || form_shown(full) && seen.get())
 }
 
-/// A list's view laid out: keeps its size and place, and has its rows look
-/// again.
-fn list_laid_out(full: bool, list: ElementRef, height: f32) {
-    let i = full as usize;
+/// Finds where list `i`'s rows are in its content, in one pass however often
+/// it's asked for in a tick. The rows and the content are asked together, so
+/// they answer for one commit, and a row's place in the content doesn't depend
+/// on how far the list has scrolled.
+pub(crate) fn place_rows(i: usize) {
+    let st = store();
+    if st.side_placing[i].replace(true) {
+        return;
+    }
     spawn(async move {
-        let page_top = list.measure().await.map_or(0.0, |m| m.page.y.0);
-        let st = store();
-        st.side_window[i].update(|w| {
-            w.height = height;
-            w.page_top = page_top;
-        });
-        st.side_relaid[i].update(|n| *n += 1);
+        timer(std::time::Duration::ZERO).await;
+        st.side_placing[i].set(false);
+        #[cfg(test)]
+        ROW_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(content) = st.side_content[i].get() else { return };
+        let rows = {
+            let mut rows = st.side_rows[i].borrow_mut();
+            rows.retain(|(_, at)| at.try_get().is_some());
+            rows.clone()
+        };
+        let top = content.measure();
+        let places: Vec<_> = rows.iter().map(|(node, _)| node.measure()).collect();
+        let Some(top) = top.await else { return };
+        for ((_, at), place) in rows.iter().zip(places) {
+            if let Some(m) = place.await {
+                at.try_set(Some((m.page.y.0 - top.page.y.0, m.frame.size.height.0)));
+            }
+        }
     });
 }
 
-/// A list's content changed size: its rows have moved.
-fn list_relaid(full: bool) {
-    store().side_relaid[full as usize].update(|n| *n += 1);
+/// How many passes [`place_rows`] has made.
+#[cfg(test)]
+pub(crate) static ROW_PASSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A list's view laid out: keeps its height and has its rows look again.
+fn list_laid_out(full: bool, height: f32) {
+    let i = full as usize;
+    store().side_window[i].update(|w| w.height = height);
+    place_rows(i);
 }
 
 /// A list scrolled.
@@ -232,7 +255,8 @@ fn hue(s: &str) -> Hsla {
 const RAIL_TOP: f32 = 30.0 + 36.0 + 4.0;
 
 fn rail() -> impl IntoElement {
-    let rail_list = element_ref();
+    let rail_content = element_ref();
+    store().side_content[0].set(Some(rail_content));
     let any_pinned = computed(|| !store().pinned_bots().is_empty());
     // the open groups and their members, not their records (see `Member`)
     let rail_groups = computed(|| {
@@ -288,12 +312,12 @@ fn rail() -> impl IntoElement {
                     scroll()
                         .flex_1()
                         .label("Bot rail")
-                        .element_ref(&rail_list)
-                        .on_layout(move |b: &Bounds<Points>| list_laid_out(false, rail_list, b.size.height.0))
+                        .on_layout(|b: &Bounds<Points>| list_laid_out(false, b.size.height.0))
                         .on_scroll(|e: &ScrollEvent| list_scrolled(false, e.offset.y.0))
                         .child(
                         view()
-                            .on_layout(|_: &Bounds<Points>| list_relaid(false))
+                            .element_ref(&rail_content)
+                            .on_layout(|_: &Bounds<Points>| place_rows(0))
                             .items_center()
                             .gap_1()
                             .pt(px(RAIL_TOP + 8.0))
@@ -530,6 +554,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     // (the `popSeq` guard drops the answer if hover already ended).
     let node = element_ref();
     let shown = row_seen(false, node);
+    let shown_fx = shown.clone();
     // a memo: this avatar wakes for its own Bot's state, not every Bot's
     let state = computed(move || store().bot_st(&bid));
     let state_src: std::rc::Rc<dyn Fn() -> String> = std::rc::Rc::new(move || state.get());
@@ -541,6 +566,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let state_src3 = state_src.clone();
     view()
         .element_ref(&node)
+        .on_layout(|_: &Bounds<Points>| place_rows(0))
         .size(px(54.0))
         .rounded(px(10.0))
         .items_center()
@@ -578,7 +604,8 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 }))
                 .child(when(
                     move || {
-                        !b.get().image.is_empty()
+                        shown_fx()
+                            && !b.get().image.is_empty()
                             && crate::statusfx::morph_kind(&state_src2()) != "none"
                     },
                     move || {
@@ -827,6 +854,8 @@ fn full_sidebar() -> impl IntoElement {
     // chats) left the list opened partway down: once the bots are in, it
     // goes back to the top (once, a moment after launch).
     let list = element_ref();
+    let list_content = element_ref();
+    store().side_content[1].set(Some(list_content));
     {
         let done = std::cell::Cell::new(false);
         effect(move || {
@@ -880,7 +909,7 @@ fn full_sidebar() -> impl IntoElement {
                         .flex_1()
                         .label("Bot list")
                         .element_ref(&list)
-                        .on_layout(move |b: &Bounds<Points>| list_laid_out(true, list, b.size.height.0))
+                        .on_layout(|b: &Bounds<Points>| list_laid_out(true, b.size.height.0))
                         .on_scroll(move |e: &ScrollEvent| {
                             let y = e.offset.y.0;
                             list_scrolled(true, y);
@@ -899,9 +928,10 @@ fn full_sidebar() -> impl IntoElement {
                             // A drag starts where the pointer last hovered
                             // (pressed, it stops hovering); its moves pick
                             // the drop target, in this view's coordinates.
+                            .element_ref(&list_content)
                             .on_layout(move |b: &Bounds<Points>| {
                                 dd3.width.set(b.size.width.0);
-                                list_relaid(true);
+                                place_rows(1);
                             })
                             .on_mouse_move(move |e: &MouseEvent| {
                                 let at = (e.position.x.0, e.position.y.0);
@@ -2218,8 +2248,10 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
     let state_src3 = state_src.clone();
     let node = element_ref();
     let shown = row_seen(true, node);
+    let shown_fx = shown.clone();
     let row = view()
         .element_ref(&node)
+        .on_layout(|_: &Bounds<Points>| place_rows(1))
         .child(
             view()
                 .flex_row()
@@ -2274,7 +2306,8 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                         // morph is ambient-backed.
                         .child(when(
                             move || {
-                                !b.get().image.is_empty()
+                                shown_fx()
+                                    && !b.get().image.is_empty()
                                     && crate::statusfx::morph_kind(&state_src2()) != "none"
                             },
                             move || {
@@ -2384,6 +2417,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     // `railPop` — same hover card as the rail tiles.
     let node = element_ref();
     let shown = row_seen(true, node);
+    let shown_fx = shown.clone();
     // a memo: this avatar wakes for its own Bot's state, not every Bot's
     let state = computed(move || store().bot_st(&bid));
     let state_src: std::rc::Rc<dyn Fn() -> String> = std::rc::Rc::new(move || state.get());
@@ -2395,6 +2429,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let state_src3 = state_src.clone();
     view()
         .element_ref(&node)
+        .on_layout(|_: &Bounds<Points>| place_rows(1))
         .w(px(95.0))
         // Grows with a label under the name (Grok Bot's tile); 92pt is
         // the tile without one.
@@ -2437,7 +2472,8 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .child(main_badge(b, 20.0))
                 .child(when(
                     move || {
-                        !b.get().image.is_empty()
+                        shown_fx()
+                            && !b.get().image.is_empty()
                             && crate::statusfx::morph_kind(&state_src2()) != "none"
                     },
                     move || {

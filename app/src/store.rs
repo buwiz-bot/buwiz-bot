@@ -13,6 +13,13 @@ use crate::client;
 // Server payloads
 // ---------------------------------------------------------------------------
 
+/// How many times anything has asked for a frame.
+#[cfg(test)]
+pub(crate) static TICKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A row of a list, and its top and height in the list's content once found.
+pub(crate) type ListRow = (ElementRef, Signal<Option<(f32, f32)>>);
+
 /// The part of a scrolling list on screen.
 #[derive(Clone, Copy, PartialEq, Default)]
 pub(crate) struct ListWindow {
@@ -20,8 +27,6 @@ pub(crate) struct ListWindow {
     pub top: f32,
     /// The view's height (0 until it has laid out).
     pub height: f32,
-    /// Where the view starts on the page.
-    pub page_top: f32,
 }
 
 /// A row of `GET /threads` — the sidebar's chat list.
@@ -3031,8 +3036,12 @@ pub struct Store {
     pub(crate) mock_run: std::cell::RefCell<Option<(String, AgentRun)>>,
     /// What the rail ([0]) and the full sidebar ([1]) show of their lists.
     pub(crate) side_window: [Signal<ListWindow>; 2],
-    /// Bumped when a list's layout changes, so its rows find their place again.
-    pub(crate) side_relaid: [Signal<u32>; 2],
+    /// The rows of each list, and where each sits in its content.
+    pub(crate) side_rows: [std::cell::RefCell<Vec<ListRow>>; 2],
+    /// What each list scrolls: rows are placed against it.
+    pub(crate) side_content: [std::cell::Cell<Option<ElementRef>>; 2],
+    /// A pass over a list's rows is on its way.
+    pub(crate) side_placing: [std::cell::Cell<bool>; 2],
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3310,7 +3319,9 @@ impl Store {
             frame_want: std::cell::Cell::new(false),
             mock_run: std::cell::RefCell::new(None),
             side_window: [signal(ListWindow::default()), signal(ListWindow::default())],
-            side_relaid: [signal(0), signal(0)],
+            side_rows: Default::default(),
+            side_content: Default::default(),
+            side_placing: Default::default(),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
@@ -3449,6 +3460,8 @@ impl Store {
     /// while live), and the ticker stops one frame after nothing did, so
     /// a window of resting avatars costs no frames at all.
     pub fn tick(&'static self) -> f64 {
+        #[cfg(test)]
+        TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.frame_want.set(true);
         if !self.frame_started.replace(true) {
             let clock = self.frame_clock;
@@ -3901,13 +3914,13 @@ impl Store {
     /// runs (any thread), the settle outcome for a few seconds after,
     /// else `idle` (App.tsx:249).
     pub fn bot_st(&'static self, id: &str) -> String {
-        if let Some(r) = self
-            .agent_runs
-            .get()
-            .values()
-            .find(|r| r.bot.as_deref() == Some(id))
-        {
-            return r.state.clone();
+        // read in place: a burst of runs touches every row, and each row
+        // cloning the map makes that the square of the Bots
+        let run = self.agent_runs.with(|runs| {
+            runs.values().find(|r| r.bot.as_deref() == Some(id)).map(|r| r.state.clone())
+        });
+        if let Some(state) = run {
+            return state;
         }
         if let Some(st) = self.settled.get().as_ref()
             && st.bot == id {

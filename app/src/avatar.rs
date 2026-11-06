@@ -540,11 +540,15 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
                 st.sync(props);
                 let now = Instant::now();
                 let resting = props.paused || (st.last_state == "idle" && now >= st.grace_until);
-                let shown = props.shown.as_ref().is_none_or(|f| f());
-                let live = shown && (!resting
+                // out of sight it draws nothing at all, a state change included:
+                // this runs again when it comes back
+                if !props.shown.as_ref().is_none_or(|f| f()) {
+                    return Painter::new();
+                }
+                let live = !resting
                     || !st.mark.is_settled()
                     || (props.edit.as_ref().map_or(0.0, |e| e.target.get()) - st.ek).abs() > 0.002
-                    || st.grace_until > now);
+                    || st.grace_until > now;
                 // Live: the shared clock repaints it next frame. Settled:
                 // sleep until gaze, edit or a poke wakes it (blob.tsx's
                 // not-live branch), so resting avatars cost no frames.

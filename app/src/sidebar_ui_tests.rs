@@ -162,6 +162,28 @@ fn Side() -> impl IntoElement {
                         store().agent_set(format!("t{i}"), Some(format!("b{i}")), Some(("thinking".to_owned(), "Thinking".to_owned())));
                     }
                 }))
+                .child(view().label("reverse").w(px(40.0)).h_full().on_press(|| {
+                    let mut bots = store().bots.get_untracked();
+                    bots.reverse();
+                    store().bots.set(bots);
+                }))
+                .child(view().label("place").w(px(40.0)).h_full().on_press(|| crate::sidebar::place_rows(1)))
+                .child(view().label("place often").w(px(40.0)).h_full().on_press(|| {
+                    for _ in 0..50 {
+                        crate::sidebar::place_rows(1);
+                    }
+                }))
+                .child(view().label("seed photos").w(px(40.0)).h_full().on_press(|| {
+                    let bots: Vec<_> = (0..BOTS)
+                        .map(|i| serde_json::json!({"id": format!("b{i}"), "name": format!("Bot {i}"), "threadId": format!("t{i}"),
+                            "shape": "blob", "color": "#1884FC", "image": "photo.png", "desc": "first words"}))
+                        .collect();
+                    store().set_threads(serde_json::json!({"list": [], "bots": bots}));
+                }))
+                .child(view().label("run last").w(px(40.0)).h_full().on_press(|| {
+                    let i = BOTS - 1;
+                    store().agent_set(format!("t{i}"), Some(format!("b{i}")), Some(("thinking".to_owned(), "Thinking".to_owned())));
+                }))
                 .child(view().label("hide").w(px(40.0)).h_full().on_press(|| store().side_shown.set(false)))
                 .child(view().label("show").w(px(40.0)).h_full().on_press(|| store().side_shown.set(true)))
                 .child(view().label("unpin and open").w(px(40.0)).h_full().on_press(|| {
@@ -653,6 +675,120 @@ fn rows_out_of_view_paint_nothing() {
     println!("scrolled down: {down:?}");
     assert_eq!(down[0], 0, "the first row has left: {down:?}");
     assert!(down[BOTS - 1] > 5, "the last row has arrived: {down:?}");
+}
+
+/// A new order leaves every size alone, but the rows have moved: the ones now
+/// in view move, and the ones that left stop.
+#[test]
+fn a_reorder_keeps_the_rows_in_view_moving() {
+    if !in_child("a_reorder_keeps_the_rows_in_view_moving") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.resize(1200.0, 400.0);
+    app.pump(Duration::from_millis(300));
+    app.press("run all");
+    app.pump(Duration::from_millis(600));
+    app.press("reverse");
+    app.pump(Duration::from_millis(500));
+    let now = paints_of(&mut app, 0..BOTS);
+    println!("reversed: {now:?}");
+    assert!(now[BOTS - 1] > 5, "the row now on top paints: {now:?}");
+    assert_eq!(now[0], 0, "the row now at the bottom stops: {now:?}");
+}
+
+/// A scroll landing while rows are being placed doesn't misplace them: their
+/// place is in the content, whatever the offset.
+#[test]
+fn a_scroll_while_placing_leaves_rows_right() {
+    if !in_child("a_scroll_while_placing_leaves_rows_right") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.resize(1200.0, 400.0);
+    app.pump(Duration::from_millis(300));
+    app.press("run all");
+    app.pump(Duration::from_millis(600));
+    app.press("place");
+    scroll_to(&mut app, "Bot list", 1000.0);
+    let down = paints_of(&mut app, 0..BOTS);
+    println!("scrolled while placing: {down:?}");
+    assert!(down[BOTS - 1] > 5, "the last row is in view: {down:?}");
+    assert_eq!(down[0], 0, "the first row has left: {down:?}");
+}
+
+/// However often a tick asks, the rows are placed once.
+#[test]
+fn rows_are_placed_once_a_tick() {
+    if !in_child("rows_are_placed_once_a_tick") {
+        return;
+    }
+    let passes = || crate::sidebar::ROW_PASSES.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(600));
+    let at = passes();
+    app.press("place often");
+    app.pump(Duration::from_millis(200));
+    assert_eq!(passes() - at, 1, "passes for 50 asks in a tick");
+}
+
+/// A state change on a hidden Bot draws nothing, and it shows on return.
+#[test]
+fn a_state_change_out_of_sight_paints_nothing() {
+    if !in_child("a_state_change_out_of_sight_paints_nothing") {
+        return;
+    }
+    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.press("hide");
+    app.pump(Duration::from_millis(300));
+    let at = paints();
+    app.press("run all");
+    app.pump(Duration::from_millis(500));
+    assert_eq!(paints() - at, 0, "paints for a state change with the sidebar hidden");
+    app.press("show");
+    app.pump(Duration::from_millis(500));
+    assert!(paints() > at, "back on screen, it paints");
+}
+
+/// A photo Bot's overlay runs the clock, so out of sight it mustn't be up.
+#[test]
+fn a_photo_out_of_sight_asks_for_no_frames() {
+    if !in_child("a_photo_out_of_sight_asks_for_no_frames") {
+        return;
+    }
+    let ticks = || crate::store::TICKS.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.press("seed photos");
+    app.pump(Duration::from_millis(400));
+    app.resize(1200.0, 400.0);
+    app.pump(Duration::from_millis(400));
+    // the last Bot is below the window
+    app.press("run last");
+    app.pump(Duration::from_millis(400));
+    let at = ticks();
+    app.pump(Duration::from_millis(1000));
+    assert_eq!(ticks() - at, 0, "frames a second for a photo scrolled out of view");
+    scroll_to(&mut app, "Bot list", 1000.0);
+    app.pump(Duration::from_millis(300));
+    let at = ticks();
+    app.pump(Duration::from_millis(1000));
+    let seen = ticks() - at;
+    println!("in view: {seen} frames a second");
+    assert!(seen > 5, "in view it runs: {seen}");
+    app.press("hide");
+    app.pump(Duration::from_millis(300));
+    let at = ticks();
+    app.pump(Duration::from_millis(1000));
+    assert_eq!(ticks() - at, 0, "frames a second for a photo with the sidebar hidden");
 }
 
 /// The cost of avatars is what's on screen: many more Bots, no more painting.
