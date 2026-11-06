@@ -175,6 +175,18 @@ fn hue(s: &str) -> Hsla {
 const RAIL_TOP: f32 = 30.0 + 36.0 + 4.0;
 
 fn rail() -> impl IntoElement {
+    let any_pinned = computed(|| !store().pinned_bots().is_empty());
+    // the open groups and their members, not their records (see `Member`)
+    let rail_groups = computed(|| {
+        let st = store();
+        st.groups
+            .get()
+            .into_iter()
+            .filter(|g| !collapsed(&g.id))
+            .map(|g| (g.id.clone(), st.group_rows(&g.id).iter().map(Member::of).collect::<Vec<_>>()))
+            .filter(|(_, rows)| !rows.is_empty())
+            .collect::<Vec<_>>()
+    });
     view()
         .w(px(88.0))
         .h_full()
@@ -233,18 +245,20 @@ fn rail() -> impl IntoElement {
                     // nested here dropped a whole open group when its
                     // members' records changed ("a kept row is gone") —
                     // after any reply that reloads the groups.
-                    .child(dynamic(|| {
+                    .child(dynamic(move || {
                         let st = store();
-                        let pinned = !st.pinned_bots().is_empty();
-                        let open: Vec<(String, Vec<GroupRow>)> = st
-                            .groups
+                        let pinned = any_pinned.get();
+                        let open: Vec<(String, Vec<GroupRow>)> = rail_groups
                             .get()
                             .into_iter()
-                            .filter(|g| !collapsed(&g.id))
-                            .map(|g| (g.id.clone(), st.group_rows(&g.id)))
-                            .filter(|(_, rows)| !rows.is_empty())
+                            .map(|(gid, _)| {
+                                let rows = untracked(|| st.group_rows(&gid));
+                                (gid, rows)
+                            })
                             .collect();
-                        view()
+                        // untracked: a row reads its record as it's built, and
+                        // this follows `rail_groups` alone
+                        untracked(|| view()
                             .items_center()
                             .gap_1()
                             .children(open.into_iter().enumerate().map(|(i, (gid, rows))| {
@@ -255,7 +269,7 @@ fn rail() -> impl IntoElement {
                                     .children(rows.into_iter().map(|m| rail_member(gid.clone(), m)))
                                     .into_element()
                             }))
-                            .into_element()
+                            .into_element())
                     }))
                     .child(when(
                         || !store().ungrouped_bots().is_empty() && !collapsed("__un"),
@@ -441,10 +455,8 @@ fn rail_rule() -> impl IntoElement {
 /// and the ambient overlay over a photo.
 fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
-    let tid2 = b0.thread_id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
-    let name = b0.name.clone();
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
@@ -454,6 +466,10 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let node = element_ref();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
+    let face = AvatarFace::of(b);
+    // memos, so a row reads these two and not the whole record each time
+    let thread = computed(move || b.get().thread_id);
+    let label = computed(move || b.get().name);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
@@ -463,7 +479,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .items_center()
         .justify_center()
         .bg(move || {
-            if store().active_id.get() == tid2 {
+            if store().active_id.get() == thread.get() {
                 theme::tc("#f5f5f514")
             } else if hovered.get() {
                 plate_hover()
@@ -477,7 +493,8 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .child(dynamic(move || {
-                    let bv = b.get();
+                    face.track();
+                    let bv = b.get_untracked();
                     bot_avatar(crate::avatar::BotAvatarProps {
                         size: 44.0,
                         box_: Some(36.0),
@@ -549,15 +566,34 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
-        .label(name)
+        .label(move || label.get())
+}
+
+/// What a Bot's avatar is drawn from. A rebuilt avatar starts its animation
+/// over, and the rest of a Bot changes all the time: `desc` with every word of
+/// a streaming reply. So an avatar is built again for these alone.
+struct AvatarFace(Memo<(String, String, String, Option<crate::store::Crop>)>);
+
+impl AvatarFace {
+    fn of(b: ReadSignal<RoxBot>) -> Self {
+        Self(computed(move || {
+            let b = b.get();
+            (b.shape, b.color, b.image, b.crop)
+        }))
+    }
+
+    /// Subscribes the caller to a change of face.
+    fn track(&self) {
+        self.0.with(|_| ());
+    }
 }
 
 /// A group member in the rail, by kind: a bot's plate, a chat's letter
 /// tile, an artifact's tile (its group section rebuilds on any change).
 fn rail_member(gid: String, m: GroupRow) -> AnyElement {
     match m {
-        GroupRow::Bot(b) => rail_btn(signal(b).read_only()).into_element(),
-        GroupRow::Chat(t) => rail_chat(signal(t).read_only()).into_element(),
+        GroupRow::Bot(b) => rail_btn(live_bot(b)).into_element(),
+        GroupRow::Chat(t) => rail_chat(live_chat(t)).into_element(),
         GroupRow::Artifact(a) => rail_art(gid, signal(*a).read_only()).into_element(),
         GroupRow::App(key, title) => rail_app(gid, key, title).into_element(),
     }
@@ -666,7 +702,6 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
     let t0 = t.get();
     let id = t0.id.clone();
     let id2 = t0.id.clone();
-    let name = t0.name.clone();
     let hovered = signal(false);
     view()
         .size(px(54.0))
@@ -710,7 +745,7 @@ fn rail_chat(t: ReadSignal<ThreadMeta>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::chat_items(&t.get()))
         })
-        .label(name)
+        .label(move || t.get().name)
 }
 
 fn full_sidebar() -> impl IntoElement {
@@ -1724,21 +1759,25 @@ fn group_block(g: ReadSignal<RoxGroup>) -> impl IntoElement {
             // of rows): a keyed `each` here lost kept rows after a reorder
             // ("a kept row is gone"), leaving an open group empty.
             let gid = gid2.clone();
+            let members = {
+                let gid = gid.clone();
+                computed(move || store().group_rows(&gid).iter().map(Member::of).collect::<Vec<_>>())
+            };
             dynamic(move || {
+                members.with(|_| ());
                 let at = gid.clone();
-                view()
-                    .on_layout(move |b: &Bounds<Points>| {
-                        if let Some(d) = dnd() {
-                            d.bases.borrow_mut().insert(at.clone(), b.origin.y.0);
-                        }
-                    })
-                    .children(
-                        store()
-                            .group_rows(&gid)
-                            .into_iter()
-                            .map(|m| group_member(gid.clone(), signal(m).read_only())),
-                    )
-                    .into_element()
+                // untracked: a row reads its record as it's built, and this
+                // follows `members` alone
+                untracked(|| {
+                    view()
+                        .on_layout(move |b: &Bounds<Points>| {
+                            if let Some(d) = dnd() {
+                                d.bases.borrow_mut().insert(at.clone(), b.origin.y.0);
+                            }
+                        })
+                        .children(store().group_rows(&gid).into_iter().map(|m| group_member(gid.clone(), m)))
+                        .into_element()
+                })
             })
         },
     ));
@@ -1828,40 +1867,61 @@ fn group_header(g: ReadSignal<RoxGroup>) -> impl IntoElement {
 }
 
 /// A group member in its kind's row: a bot's, a chat's, an artifact's.
-fn group_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
-    match m.get_untracked() {
-        GroupRow::Bot(_) => each(
-            move || match m.get() {
-                GroupRow::Bot(b) => vec![b],
-                _ => Vec::new(),
-            },
-            |b| b.id.clone(),
-            {
-                let gid = gid.clone();
-                move |b, _| bot_row(b, Src::group(&gid))
-            },
-        ),
-        GroupRow::Chat(_) => each(
-            move || match m.get() {
-                GroupRow::Chat(t) => vec![t],
-                _ => Vec::new(),
-            },
-            |t| t.id.clone(),
-            {
-                let gid = gid.clone();
-                move |t, _| thread_row(t, Src::group(&gid))
-            },
-        ),
-        GroupRow::Artifact(_) => each(
-            move || match m.get() {
-                GroupRow::Artifact(a) => vec![*a],
-                _ => Vec::new(),
-            },
-            |a| a.app.clone(),
-            move |a, _| group_art_row(gid.clone(), a),
-        ),
+fn group_member(gid: String, m: GroupRow) -> AnyElement {
+    match m {
+        GroupRow::Bot(b) => bot_row(live_bot(b), Src::group(&gid)).into_element(),
+        GroupRow::Chat(t) => thread_row(live_chat(t), Src::group(&gid)).into_element(),
+        GroupRow::Artifact(a) => group_art_row(gid, signal(*a).read_only()).into_element(),
         GroupRow::App(key, title) => group_app_row(gid, key, title).into_element(),
     }
+}
+
+/// What a group's rows are rebuilt for. A section is rebuilt whole, but only
+/// when this changes: its members and their order, not a Bot's record, which
+/// changes with every word of a streaming reply and would start every avatar
+/// in the group over. A Bot or chat row follows its record itself
+/// ([`live_bot`], [`live_chat`]); an artifact or app has no live list, so its
+/// whole record counts.
+#[derive(Clone, PartialEq)]
+enum Member {
+    Id(String),
+    Whole(Box<GroupRow>),
+}
+
+impl Member {
+    fn of(row: &GroupRow) -> Self {
+        match row {
+            GroupRow::Bot(_) | GroupRow::Chat(_) => Self::Id(row.key()),
+            GroupRow::Artifact(_) | GroupRow::App(..) => Self::Whole(Box::new(row.clone())),
+        }
+    }
+}
+
+/// A Bot row's record, kept up to date from the live list. Not a keyed `each`:
+/// those, nested in a group section, lost rows when a record changed.
+fn live_bot(b: RoxBot) -> ReadSignal<RoxBot> {
+    let id = b.id.clone();
+    let row = signal(b);
+    effect(move || {
+        let now = store().bots.with(|bots| bots.iter().find(|b| b.id == id).cloned());
+        if let Some(now) = now.filter(|now| *now != row.get_untracked()) {
+            row.set(now);
+        }
+    });
+    row.read_only()
+}
+
+/// [`live_bot`] for a chat row.
+fn live_chat(t: ThreadMeta) -> ReadSignal<ThreadMeta> {
+    let id = t.id.clone();
+    let row = signal(t);
+    effect(move || {
+        let now = store().threads.with(|ts| ts.iter().find(|t| t.id == id).cloned());
+        if let Some(now) = now.filter(|now| *now != row.get_untracked()) {
+            row.set(now);
+        }
+    });
+    row.read_only()
 }
 
 /// A group's mini app (a pinned `buwiz://app/` link): its tile, its title
@@ -2069,6 +2129,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
     let gaze3 = gaze.clone();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
+    let face = AvatarFace::of(b);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     let row = view()
@@ -2103,7 +2164,8 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                         .items_center()
                         .justify_center()
                         .child(dynamic(move || {
-                            let bv = b.get();
+                            face.track();
+                            let bv = b.get_untracked();
                             bot_avatar(crate::avatar::BotAvatarProps {
                                 size: 44.0,
                                 box_: Some(36.0),
@@ -2226,8 +2288,6 @@ fn main_badge(b: ReadSignal<RoxBot>, size: f32) -> impl IntoElement {
 
 fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let b0 = b.get();
-    let name = b0.name.clone();
-    let tid2 = b0.thread_id.clone();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
     let gaze = crate::avatar::BlobGaze::new();
@@ -2237,6 +2297,10 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let node = element_ref();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
+    let face = AvatarFace::of(b);
+    // memos, so a row reads these two and not the whole record each time
+    let thread = computed(move || b.get().thread_id);
+    let label = computed(move || b.get().name);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
@@ -2252,7 +2316,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .gap(px(6.0))
         .items_center()
         .bg(move || {
-            if store().active_id.get() == tid2 {
+            if store().active_id.get() == thread.get() {
                 theme::ACTIVE
             } else {
                 AdaptiveColor::TRANSPARENT
@@ -2264,7 +2328,8 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .child(dynamic(move || {
-                    let bv = b.get();
+                    face.track();
+                    let bv = b.get_untracked();
                     bot_avatar(crate::avatar::BotAvatarProps {
                         size: 72.0,
                         box_: Some(60.0),
@@ -2355,7 +2420,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
-        .label(name)
+        .label(move || label.get())
 }
 
 /// `railPop` (App.tsx:3011) — the bot hover card: avatar + name over a
