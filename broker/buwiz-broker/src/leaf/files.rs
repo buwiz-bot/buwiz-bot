@@ -9,7 +9,10 @@
 //! this Mac included, would get every chat. So nothing here is sniffed, and HTML and SVG come with
 //! `sandbox`: an origin of no one's and, on these routes, no script. The viewer's HTML preview has
 //! `/file/preview/`, the same files with `allow-scripts` added: script runs, at that empty origin,
-//! where `guard.rs` turns it away.
+//! where `guard.rs` turns it away. That goes for the preview's own files too: classic scripts,
+//! stylesheets, images and media load, and what a browser fetches with CORS, `fetch` itself, module
+//! scripts and fonts, doesn't. Letting `Origin: null` in here isn't safe: every sandboxed frame on
+//! every website has that origin, and so has a planted page, and either could then read any file.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
@@ -40,7 +43,24 @@ const RAW_TYPES: &[(&str, &str)] = &[
 ];
 /// Beside [`RAW_TYPES`] on `/file/preview/`: what a page's own relative links load, which `nosniff`
 /// would refuse as a download.
-const PAGE_TYPES: &[(&str, &str)] = &[("js", "text/javascript; charset=utf-8"), ("mjs", "text/javascript; charset=utf-8"), ("css", "text/css; charset=utf-8"), ("json", "application/json")];
+const PAGE_TYPES: &[(&str, &str)] = &[
+    ("js", "text/javascript; charset=utf-8"),
+    ("mjs", "text/javascript; charset=utf-8"),
+    ("css", "text/css; charset=utf-8"),
+    ("json", "application/json"),
+    ("wasm", "application/wasm"),
+    ("woff", "font/woff"),
+    ("woff2", "font/woff2"),
+    ("ttf", "font/ttf"),
+    ("otf", "font/otf"),
+    ("avif", "image/avif"),
+    ("bmp", "image/bmp"),
+    ("ico", "image/x-icon"),
+    ("webm", "video/webm"),
+    ("ogv", "video/ogg"),
+    ("ogg", "audio/ogg"),
+    ("flac", "audio/flac"),
+];
 /// Takes a file's document out of the broker's origin, and stops its script.
 const NO_SCRIPT: &str = "sandbox";
 /// The same, for a page a person opened to see it work.
@@ -393,6 +413,13 @@ mod tests {
         assert_eq!(header(&preview(&leaf, "/file/preview/m1/a.css", None), "content-type"), Some("text/css; charset=utf-8"));
         assert_eq!(header(&preview(&leaf, "/file/preview/m1/a.png", None), "content-type"), Some("image/png"));
         assert_eq!(preview(&leaf, "/file/preview/m1/../../../etc", None).status, 404);
+        for (name, kind) in [("a.wasm", "application/wasm"), ("a.woff2", "font/woff2"), ("a.ttf", "font/ttf"), ("a.avif", "image/avif"), ("a.webm", "video/webm"), ("a.ogg", "audio/ogg")] {
+            std::fs::write(dir.join("generated/files/m1").join(name), "x").unwrap();
+            assert_eq!(header(&preview(&leaf, &format!("/file/preview/m1/{name}"), None), "content-type"), Some(kind), "{name}");
+        }
+        // what runs script as a document stays what it was: not a type here
+        std::fs::write(dir.join("generated/files/m1/a.xhtml"), "x").unwrap();
+        assert_eq!(header(&preview(&leaf, "/file/preview/m1/a.xhtml", None), "content-type"), Some("application/octet-stream"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
