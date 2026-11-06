@@ -96,6 +96,8 @@ fn Side() -> impl IntoElement {
                 .child(view().label("rail").w(px(40.0)).h_full().on_press(|| store().side_mode.set("rail".to_owned())))
                 .child(view().label("reply").w(px(40.0)).h_full().on_press(reply))
                 .child(view().label("paint").w(px(40.0)).h_full().on_press(paint))
+                .child(view().label("group").w(px(40.0)).h_full().on_press(|| group(5)))
+                .child(view().label("shrink").w(px(40.0)).h_full().on_press(|| group(3)))
                 .child(view().label("work").w(px(40.0)).h_full().on_press(|| {
                     store().agent_set("t3".to_owned(), Some("b3".to_owned()), Some(("thinking".to_owned(), "Thinking".to_owned())));
                 }))
@@ -139,6 +141,84 @@ fn a_status_write_rebuilds_no_avatar() {
     app.pump(Duration::from_millis(600));
     assert_eq!(start.difference(&app.live).count(), 0, "rebuilt after the last write");
     assert_eq!(built() - made, 0, "avatars built by status writes");
+}
+
+/// The first `n` Bots in a group, as the broker gives groups.
+fn group(n: usize) {
+    store().groups.set(vec![crate::store::RoxGroup {
+        id: "g1".to_owned(),
+        name: "Team".to_owned(),
+        items: (0..n)
+            .map(|i| crate::store::GroupItem { kind: "bot".to_owned(), id: format!("b{i}"), ..Default::default() })
+            .collect(),
+        ..Default::default()
+    }]);
+}
+
+/// A streaming reply through grouped Bots: `rail`, or the full sidebar.
+fn streams_in_a_group(rail: bool) {
+    let mut app = start();
+    app.press("seed");
+    app.press("group");
+    if rail {
+        app.press("rail");
+    }
+    app.pump(Duration::from_millis(400));
+    let start = app.live.clone();
+    let made = built();
+    for k in 0..30 {
+        app.press("reply");
+        app.pump(Duration::from_millis(60));
+        if !rail {
+            let shown = app.texts().iter().filter(|t| t.contains(&format!("streamed {k} words"))).count();
+            assert_eq!(shown, BOTS, "step {k}: rows showing the reply");
+        }
+    }
+    println!("grouped reply, rail {rail}: {} avatars built", built() - made);
+    assert_eq!(built() - made, 0, "avatars built by a streaming reply");
+    assert_eq!(start.difference(&app.live).count(), 0, "nodes rebuilt by a streaming reply");
+}
+
+#[test]
+fn a_streaming_reply_rebuilds_no_avatar_in_a_group() {
+    if in_child("a_streaming_reply_rebuilds_no_avatar_in_a_group") {
+        streams_in_a_group(false);
+    }
+}
+
+#[test]
+fn a_streaming_reply_rebuilds_no_avatar_in_a_rail_group() {
+    if in_child("a_streaming_reply_rebuilds_no_avatar_in_a_rail_group") {
+        streams_in_a_group(true);
+    }
+}
+
+/// A member leaving its group mid-reply: every Bot still has its row. Keyed
+/// lists nested here once lost rows when records changed.
+#[test]
+fn no_row_is_lost_when_a_group_changes_mid_reply() {
+    if !in_child("no_row_is_lost_when_a_group_changes_mid_reply") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.press("group");
+    app.pump(Duration::from_millis(300));
+    for _ in 0..3 {
+        app.press("reply");
+        app.pump(Duration::from_millis(60));
+    }
+    app.press("shrink");
+    app.pump(Duration::from_millis(200));
+    for _ in 0..3 {
+        app.press("reply");
+        app.pump(Duration::from_millis(60));
+    }
+    for i in 0..BOTS {
+        let name = format!("Bot {i}");
+        let rows = app.texts().iter().filter(|t| **t == name).count();
+        assert_eq!(rows, 1, "rows for {name}");
+    }
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.

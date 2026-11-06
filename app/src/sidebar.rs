@@ -175,6 +175,18 @@ fn hue(s: &str) -> Hsla {
 const RAIL_TOP: f32 = 30.0 + 36.0 + 4.0;
 
 fn rail() -> impl IntoElement {
+    let any_pinned = computed(|| !store().pinned_bots().is_empty());
+    // the open groups and their members, not their records (see `Member`)
+    let rail_groups = computed(|| {
+        let st = store();
+        st.groups
+            .get()
+            .into_iter()
+            .filter(|g| !collapsed(&g.id))
+            .map(|g| (g.id.clone(), st.group_rows(&g.id).iter().map(Member::of).collect::<Vec<_>>()))
+            .filter(|(_, rows)| !rows.is_empty())
+            .collect::<Vec<_>>()
+    });
     view()
         .w(px(88.0))
         .h_full()
@@ -233,18 +245,20 @@ fn rail() -> impl IntoElement {
                     // nested here dropped a whole open group when its
                     // members' records changed ("a kept row is gone") —
                     // after any reply that reloads the groups.
-                    .child(dynamic(|| {
+                    .child(dynamic(move || {
                         let st = store();
-                        let pinned = !st.pinned_bots().is_empty();
-                        let open: Vec<(String, Vec<GroupRow>)> = st
-                            .groups
+                        let pinned = any_pinned.get();
+                        let open: Vec<(String, Vec<GroupRow>)> = rail_groups
                             .get()
                             .into_iter()
-                            .filter(|g| !collapsed(&g.id))
-                            .map(|g| (g.id.clone(), st.group_rows(&g.id)))
-                            .filter(|(_, rows)| !rows.is_empty())
+                            .map(|(gid, _)| {
+                                let rows = untracked(|| st.group_rows(&gid));
+                                (gid, rows)
+                            })
                             .collect();
-                        view()
+                        // untracked: a row reads its record as it's built, and
+                        // this follows `rail_groups` alone
+                        untracked(|| view()
                             .items_center()
                             .gap_1()
                             .children(open.into_iter().enumerate().map(|(i, (gid, rows))| {
@@ -255,7 +269,7 @@ fn rail() -> impl IntoElement {
                                     .children(rows.into_iter().map(|m| rail_member(gid.clone(), m)))
                                     .into_element()
                             }))
-                            .into_element()
+                            .into_element())
                     }))
                     .child(when(
                         || !store().ungrouped_bots().is_empty() && !collapsed("__un"),
@@ -577,8 +591,8 @@ impl AvatarFace {
 /// tile, an artifact's tile (its group section rebuilds on any change).
 fn rail_member(gid: String, m: GroupRow) -> AnyElement {
     match m {
-        GroupRow::Bot(b) => rail_btn(signal(b).read_only()).into_element(),
-        GroupRow::Chat(t) => rail_chat(signal(t).read_only()).into_element(),
+        GroupRow::Bot(b) => rail_btn(live_bot(b)).into_element(),
+        GroupRow::Chat(t) => rail_chat(live_chat(t)).into_element(),
         GroupRow::Artifact(a) => rail_art(gid, signal(*a).read_only()).into_element(),
         GroupRow::App(key, title) => rail_app(gid, key, title).into_element(),
     }
@@ -1745,21 +1759,25 @@ fn group_block(g: ReadSignal<RoxGroup>) -> impl IntoElement {
             // of rows): a keyed `each` here lost kept rows after a reorder
             // ("a kept row is gone"), leaving an open group empty.
             let gid = gid2.clone();
+            let members = {
+                let gid = gid.clone();
+                computed(move || store().group_rows(&gid).iter().map(Member::of).collect::<Vec<_>>())
+            };
             dynamic(move || {
+                members.with(|_| ());
                 let at = gid.clone();
-                view()
-                    .on_layout(move |b: &Bounds<Points>| {
-                        if let Some(d) = dnd() {
-                            d.bases.borrow_mut().insert(at.clone(), b.origin.y.0);
-                        }
-                    })
-                    .children(
-                        store()
-                            .group_rows(&gid)
-                            .into_iter()
-                            .map(|m| group_member(gid.clone(), signal(m).read_only())),
-                    )
-                    .into_element()
+                // untracked: a row reads its record as it's built, and this
+                // follows `members` alone
+                untracked(|| {
+                    view()
+                        .on_layout(move |b: &Bounds<Points>| {
+                            if let Some(d) = dnd() {
+                                d.bases.borrow_mut().insert(at.clone(), b.origin.y.0);
+                            }
+                        })
+                        .children(store().group_rows(&gid).into_iter().map(|m| group_member(gid.clone(), m)))
+                        .into_element()
+                })
             })
         },
     ));
@@ -1849,40 +1867,61 @@ fn group_header(g: ReadSignal<RoxGroup>) -> impl IntoElement {
 }
 
 /// A group member in its kind's row: a bot's, a chat's, an artifact's.
-fn group_member(gid: String, m: ReadSignal<GroupRow>) -> AnyElement {
-    match m.get_untracked() {
-        GroupRow::Bot(_) => each(
-            move || match m.get() {
-                GroupRow::Bot(b) => vec![b],
-                _ => Vec::new(),
-            },
-            |b| b.id.clone(),
-            {
-                let gid = gid.clone();
-                move |b, _| bot_row(b, Src::group(&gid))
-            },
-        ),
-        GroupRow::Chat(_) => each(
-            move || match m.get() {
-                GroupRow::Chat(t) => vec![t],
-                _ => Vec::new(),
-            },
-            |t| t.id.clone(),
-            {
-                let gid = gid.clone();
-                move |t, _| thread_row(t, Src::group(&gid))
-            },
-        ),
-        GroupRow::Artifact(_) => each(
-            move || match m.get() {
-                GroupRow::Artifact(a) => vec![*a],
-                _ => Vec::new(),
-            },
-            |a| a.app.clone(),
-            move |a, _| group_art_row(gid.clone(), a),
-        ),
+fn group_member(gid: String, m: GroupRow) -> AnyElement {
+    match m {
+        GroupRow::Bot(b) => bot_row(live_bot(b), Src::group(&gid)).into_element(),
+        GroupRow::Chat(t) => thread_row(live_chat(t), Src::group(&gid)).into_element(),
+        GroupRow::Artifact(a) => group_art_row(gid, signal(*a).read_only()).into_element(),
         GroupRow::App(key, title) => group_app_row(gid, key, title).into_element(),
     }
+}
+
+/// What a group's rows are rebuilt for. A section is rebuilt whole, but only
+/// when this changes: its members and their order, not a Bot's record, which
+/// changes with every word of a streaming reply and would start every avatar
+/// in the group over. A Bot or chat row follows its record itself
+/// ([`live_bot`], [`live_chat`]); an artifact or app has no live list, so its
+/// whole record counts.
+#[derive(Clone, PartialEq)]
+enum Member {
+    Id(String),
+    Whole(Box<GroupRow>),
+}
+
+impl Member {
+    fn of(row: &GroupRow) -> Self {
+        match row {
+            GroupRow::Bot(_) | GroupRow::Chat(_) => Self::Id(row.key()),
+            GroupRow::Artifact(_) | GroupRow::App(..) => Self::Whole(Box::new(row.clone())),
+        }
+    }
+}
+
+/// A Bot row's record, kept up to date from the live list. Not a keyed `each`:
+/// those, nested in a group section, lost rows when a record changed.
+fn live_bot(b: RoxBot) -> ReadSignal<RoxBot> {
+    let id = b.id.clone();
+    let row = signal(b);
+    effect(move || {
+        let now = store().bots.with(|bots| bots.iter().find(|b| b.id == id).cloned());
+        if let Some(now) = now.filter(|now| *now != row.get_untracked()) {
+            row.set(now);
+        }
+    });
+    row.read_only()
+}
+
+/// [`live_bot`] for a chat row.
+fn live_chat(t: ThreadMeta) -> ReadSignal<ThreadMeta> {
+    let id = t.id.clone();
+    let row = signal(t);
+    effect(move || {
+        let now = store().threads.with(|ts| ts.iter().find(|t| t.id == id).cloned());
+        if let Some(now) = now.filter(|now| *now != row.get_untracked()) {
+            row.set(now);
+        }
+    });
+    row.read_only()
 }
 
 /// A group's mini app (a pinned `buwiz://app/` link): its tile, its title
