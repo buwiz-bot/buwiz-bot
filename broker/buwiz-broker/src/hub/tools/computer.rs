@@ -32,9 +32,11 @@
 //!
 //! `computer_ask_person` hands the screen over: a card, then the person on this Bot's own screen,
 //! where its browser is its own profile, until they hand it back or the time runs out. That
-//! keeps the password out of the chat and the model's pictures. It's no wall against what's
-//! already running on that computer, which shares a user with the browser, so a card says what it
-//! does and doesn't keep from the agent.
+//! keeps the password out of the chat and the model's pictures. Before they start, what the
+//! model's commands left running is ended ([`buwiz_computer::Provider::clear_strays`]), and the
+//! model is told what went. Ended and not stopped: a stopped keylogger reads the missed keys when
+//! it's resumed. That isn't a wall: commands share a user with the browser, and what they can start
+//! inside an allowed program survives. So the card says so, and asks for trust in plain words.
 //!
 //! What these tools read is outside content (a page on that screen can say anything): it counts as
 //! such for the switches that ask after outside content.
@@ -55,7 +57,7 @@ pub const KEY: &str = "computer";
 pub const ROUTINES_KEY: &str = "computer_routines";
 pub const ASK_PERSON: &str = "computer_ask_person";
 /// The card a hand-over asks on: never `computer`, whose "Allow in this chat" would widen the rest.
-const ASK_KEY: &str = "computer_takeover";
+pub const ASK_KEY: &str = "computer_takeover";
 pub const NAMES: [&str; 13] = [
     "computer_screenshot",
     "computer_click",
@@ -80,7 +82,7 @@ const TAKEOVER_MIN_S: u64 = 30;
 const TAKEOVER_MAX_S: u64 = 1800;
 const MAX_REASON: usize = 200;
 const WAITING_FOR_PERSON: &str = "Waiting for a person on its computer";
-const TAKEOVER_NOTE: &str = "You'd use its own browser on its own screen. It waits and is shown nothing until you hand back. Afterwards it can use whatever you signed in to.";
+pub const TAKEOVER_NOTE: &str = "You'd use its own browser on its own screen. The AI isn't shown your screen and can't act through its tools until you hand back, but programs it already started can keep running there and could see what you type: the ones we can find are ended first, not always all of them. Don't type a real password unless you trust this Bot's work so far. Afterwards it can use whatever you signed in to.";
 
 /// What a command's or a file's text may be, for the model.
 const MAX_TEXT: usize = 30_000;
@@ -109,7 +111,7 @@ pub fn defs() -> Vec<Value> {
         json!({"name": "computer_read_file", "description": "Read a text file from your own folder on your computer. A path is relative to that folder.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}),
         json!({"name": "computer_write_file", "description": "Write a text file in your own folder on your computer, making its folders. A path is relative to that folder.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}),
         json!({"name": "computer_record", "description": "Start recording your screen, or stop and keep the MP4 in your folder on your computer. stop needs the id start gave.", "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "stop"]}, "id": {"type": "integer"}}, "required": ["action"]}}),
-        json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. You wait, and see nothing, until they hand it back or the time runs out. Then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
+        json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. Whatever your commands left running on the computer is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
     ]
 }
 
@@ -285,6 +287,11 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
         Ok(r) => r,
         Err(p) => return no(&p),
     };
+    // nothing is handed over beside what can't be cleared
+    let ended_programs = match live.provider.clear_strays(&live.machine).await {
+        Ok(names) => names,
+        Err(p) => return no(&p),
+    };
     let mut handing = match computers.hand_over(&live, &reason, std::time::Duration::from_secs(limit)) {
         Ok(h) => h,
         Err(p) => return no(&p),
@@ -310,6 +317,10 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
     }
     if let Some(path) = recording {
         facts["recording_stopped"] = json!(path);
+    }
+    if !ended_programs.is_empty() {
+        facts["programs_ended"] = json!(ended_programs);
+        facts["programs_note"] = json!("What your commands left running was ended before the person started. Start again what you still need.");
     }
     look(run, &live, facts).await
 }
@@ -445,20 +456,28 @@ async fn act(run: &Run, computers: &Computers, live: &Live, name: &str, input: &
             }
         }
         "computer_record" => match text(input, "action") {
-            // a person can start typing at any moment on a viewer that can drive
-            Some("start") if computers.drive_open(&live.bot) => Out::err("A person has this screen open to drive, so it can't be recorded now. Try again once they've left.".to_owned()),
-            Some("start") => match provider.record_start(machine, screen).await {
-                Ok(id) => {
-                    computers.note_recording(&live.bot, Some(id));
-                    Out::ok(js::stringify(&json!({"recording": id})))
+            Some("start") => {
+                if let Err(why) = computers.begin_recording(live) {
+                    return Out::err(why.to_owned());
                 }
-                Err(p) => no(&p),
-            },
+                match provider.record_start(machine, screen).await {
+                    Ok(id) if computers.recording_started(&live.bot, id) => Out::ok(js::stringify(&json!({"recording": id}))),
+                    Ok(id) => {
+                        let stopped = provider.record_stop(machine, screen, id).await;
+                        computers.recording_stopped(&live.bot, stopped.is_ok());
+                        Out::err("A person came to this screen as the recording started, so it was stopped.".to_owned())
+                    }
+                    Err(p) => {
+                        computers.recording_failed(&live.bot);
+                        no(&p)
+                    }
+                }
+            }
             Some("stop") => {
                 let Some(id) = input.get("id").and_then(Value::as_u64) else { return Out::err("computer_record stop needs the id start gave".to_owned()) };
                 match provider.record_stop(machine, screen, id).await {
                     Ok(path) => {
-                        computers.note_recording(&live.bot, None);
+                        computers.model_stopped_recording(&live.bot, id);
                         Out::ok(js::stringify(&json!({"saved": path})))
                     }
                     Err(p) => no(&p),

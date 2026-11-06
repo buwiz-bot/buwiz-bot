@@ -60,13 +60,17 @@ const QUIET_ENV: &str = "BUWIZ_COMPUTER_QUIET_SECS";
 /// Idle this long, it sleeps. Asleep this long, it lets go of its memory.
 const IDLE: Duration = Duration::from_secs(15 * 60);
 const DEEP: Duration = Duration::from_secs(2 * 60 * 60);
-/// A person who sent no input for this long has stopped driving.
-const QUIET: Duration = Duration::from_secs(5);
+/// A person with a drive viewer open and no input for this long has gone. Until then they're there,
+/// between clicks: the agent mustn't land where they're about to press.
+const QUIET: Duration = Duration::from_secs(60);
 /// How long an agent's call waits for a person before it gives up, undone.
 const PATIENCE: Duration = Duration::from_secs(600);
 /// The longest a recording runs: voxl's `--max-record-seconds`, which the image leaves as it is.
 /// Past this it ended by itself, and there's nothing to stop.
 const RECORDING_LIFE: Duration = Duration::from_secs(300);
+/// How long a person's ticket waits on a recording that's starting or stopping: as long as a stop
+/// can take (`guest.rs`), and a little.
+const RECORDING_PATIENCE: Duration = Duration::from_secs(130);
 /// How often a waiting call looks again.
 const PERSON_POLL: Duration = Duration::from_millis(100);
 /// How often a wake looks for a sleep under way to finish.
@@ -97,8 +101,11 @@ struct Now {
     holds: HashMap<String, (u64, String)>,
     /// by Bot: the person who has its screen
     handovers: HashMap<String, Handover>,
-    /// by Bot: the recording its model started and hasn't stopped, and when
-    recordings: HashMap<String, (u64, Instant)>,
+    /// by Bot: the recording its model has, one at most
+    recordings: HashMap<String, Recording>,
+    /// by Bot: how many drive tickets are being made, from before their recording check to the
+    /// session being open. No recording starts meanwhile.
+    coming: HashMap<String, usize>,
     numbers: u64,
 }
 
@@ -123,6 +130,18 @@ impl Now {
     fn in_use(&self, computer: &str) -> bool {
         self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer)
     }
+}
+
+/// What the model recorded on a screen.
+#[derive(Clone)]
+struct Recording {
+    computer: String,
+    screen: Screen,
+    /// `None` while its start is on the way
+    id: Option<u64>,
+    /// a stop is on the way
+    stopping: bool,
+    began: Instant,
 }
 
 /// A screen a person has been given.
@@ -580,14 +599,11 @@ impl Computers {
         self.finish_wake(ctx, id).await
     }
 
-    /// A person put it to sleep: whatever a run or a person was doing on it ends.
+    /// A person put it to sleep: once it has, whatever a person was doing on it ends. A sleep that
+    /// fails leaves them where they were.
     pub async fn sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep) -> Result<(), Problem> {
         let marked = {
             let mut now = self.now();
-            let handed: Vec<String> = now.handovers.iter().filter(|(_, h)| h.computer == id).map(|(bot, _)| bot.clone()).collect();
-            for bot in handed {
-                now.end_handover(&bot, Ended::Asleep);
-            }
             now.sleeping.insert(id.to_owned());
             Sleeping(self, id.to_owned())
         };
@@ -610,10 +626,27 @@ impl Computers {
 
     async fn put_to_sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep, _marked: Sleeping<'_>) -> Result<(), Problem> {
         let machine = self.machine(ctx, id)?;
+        let provider = self.provider_of(&machine);
+        // nothing the model recorded is left to pick up where it stopped
+        let recording: Vec<(String, Recording)> = self.now().recordings.iter().filter(|(_, r)| r.computer == id && r.id.is_some()).map(|(bot, r)| (bot.clone(), r.clone())).collect();
+        for (bot, r) in recording {
+            if let Some(number) = r.id {
+                if provider.record_stop(&machine, &r.screen, number).await.is_ok() {
+                    self.now().recordings.remove(&bot);
+                }
+            }
+        }
+        provider.sleep(&machine, depth).await?;
         if let Some(gate) = self.gate().await {
             gate.close_computer(&machine.viewer_password);
         }
-        self.provider_of(&machine).sleep(&machine, depth).await?;
+        {
+            let mut now = self.now();
+            let handed: Vec<String> = now.handovers.iter().filter(|(_, h)| h.computer == id).map(|(bot, _)| bot.clone()).collect();
+            for bot in handed {
+                now.end_handover(&bot, Ended::Asleep);
+            }
+        }
         let at = if depth == Sleep::Light { Some(policy::now(ctx)) } else { None };
         ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=? WHERE id=?", rusqlite::params![at, id])).map(|_| ()).map_err(db_problem)
     }
@@ -833,26 +866,87 @@ impl Computers {
     }
 
     /// What the model recorded stops before a person is on the screen, so that what they type
-    /// isn't in a file the model can read. A stop that fails keeps them off it, for no longer than
-    /// the recording can last.
+    /// isn't in a file the model can read. A start on its way is waited for: it stops itself, seeing
+    /// a person ([`Computers::recording_started`]). A stop that fails keeps them off it, for no
+    /// longer than the recording can last.
     pub async fn end_recording(&self, live: &Live) -> Result<Option<String>, Problem> {
-        let Some((id, began)) = self.now().recordings.get(&live.bot).copied() else { return Ok(None) };
-        if began.elapsed() >= RECORDING_LIFE {
-            self.now().recordings.remove(&live.bot);
-            return Ok(None);
+        let waiting = Instant::now();
+        loop {
+            let id = {
+                let mut now = self.now();
+                let Some(r) = now.recordings.get_mut(&live.bot) else { return Ok(None) };
+                match (r.id, r.stopping) {
+                    (_, _) if r.began.elapsed() >= RECORDING_LIFE => {
+                        now.recordings.remove(&live.bot);
+                        return Ok(None);
+                    }
+                    (Some(id), false) => {
+                        r.stopping = true;
+                        Some(id)
+                    }
+                    _ => None,
+                }
+            };
+            let Some(id) = id else {
+                if waiting.elapsed() >= RECORDING_PATIENCE {
+                    return Err(Problem::Failed("a recording on this screen wouldn't finish starting or stopping".to_owned()));
+                }
+                tokio::time::sleep(SLEEP_POLL).await;
+                continue;
+            };
+            let stopped = live.provider.record_stop(&live.machine, &live.screen, id).await;
+            self.recording_stopped(&live.bot, stopped.is_ok());
+            return stopped.map(Some);
         }
-        let path = live.provider.record_stop(&live.machine, &live.screen, id).await?;
-        self.now().recordings.remove(&live.bot);
-        Ok(Some(path))
     }
 
-    /// Note what the model's `computer_record` started or stopped.
-    pub fn note_recording(&self, bot: &str, id: Option<u64>) {
+    /// The model wants to record. One at a time, so none is left running with nothing to stop it,
+    /// and none while a person is on their way or can drive: `Err` is the model's answer.
+    pub fn begin_recording(&self, live: &Live) -> Result<(), &'static str> {
         let mut now = self.now();
-        match id {
-            Some(id) => now.recordings.insert(bot.to_owned(), (id, Instant::now())),
-            None => now.recordings.remove(bot),
-        };
+        if now.coming.contains_key(&live.bot) || now.handovers.contains_key(&live.bot) || self.drive_open(&live.bot) {
+            return Err("A person has this screen open to drive, so it can't be recorded now. Try again once they've left.");
+        }
+        if now.recordings.get(&live.bot).is_some_and(|r| r.began.elapsed() < RECORDING_LIFE) {
+            return Err("A recording of this screen is already running. Stop it first.");
+        }
+        now.recordings.insert(live.bot.clone(), Recording { computer: live.computer.clone(), screen: live.screen.clone(), id: None, stopping: false, began: Instant::now() });
+        Ok(())
+    }
+
+    /// The recording [`Computers::begin_recording`] allowed has started as `id`. `false` when a
+    /// person came meanwhile: the caller stops it now, and says how that went.
+    pub fn recording_started(&self, bot: &str, id: u64) -> bool {
+        let mut now = self.now();
+        let person = now.coming.contains_key(bot) || now.handovers.contains_key(bot) || self.drive_open(bot);
+        if let Some(r) = now.recordings.get_mut(bot) {
+            r.id = Some(id);
+            r.stopping = person;
+        }
+        !person
+    }
+
+    /// Its start failed: there's nothing to stop.
+    pub fn recording_failed(&self, bot: &str) {
+        self.now().recordings.remove(bot);
+    }
+
+    /// A stop came back. One that failed leaves the recording to be stopped again.
+    pub fn recording_stopped(&self, bot: &str, stopped: bool) {
+        let mut now = self.now();
+        if stopped {
+            now.recordings.remove(bot);
+        } else if let Some(r) = now.recordings.get_mut(bot) {
+            r.stopping = false;
+        }
+    }
+
+    /// The model stopped a recording by `id`: only the one it has counts.
+    pub fn model_stopped_recording(&self, bot: &str, id: u64) {
+        let mut now = self.now();
+        if now.recordings.get(bot).is_some_and(|r| r.id == Some(id)) {
+            now.recordings.remove(bot);
+        }
     }
 
     /// Whether a person's viewer of `bot`'s screen can drive it, input or not.
@@ -989,6 +1083,29 @@ impl Computers {
     }
 }
 
+/// A drive ticket is being made for `.1`: no recording starts until it's done, however that ends.
+struct Coming<'a>(&'a Computers, String);
+
+impl<'a> Coming<'a> {
+    fn new(computers: &'a Computers, bot: &str) -> Self {
+        *computers.now().coming.entry(bot.to_owned()).or_default() += 1;
+        Self(computers, bot.to_owned())
+    }
+}
+
+impl Drop for Coming<'_> {
+    fn drop(&mut self) {
+        let mut now = self.0.now();
+        let left = now.coming.get_mut(&self.1).map(|n| {
+            *n = n.saturating_sub(1);
+            *n
+        });
+        if left == Some(0) {
+            now.coming.remove(&self.1);
+        }
+    }
+}
+
 /// Marks a computer as going to sleep for as long as it's held, however that ends.
 struct Sleeping<'a>(&'a Computers, String);
 
@@ -1118,7 +1235,8 @@ async fn open(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Err(p) => return refused(&p),
     };
     let Some(gate) = computers.gate().await else { return refused(&Problem::Failed("no port for the viewer".to_owned())) };
-    if mode == Mode::Drive {
+    let coming = (mode == Mode::Drive).then(|| Coming::new(&computers, &bot));
+    if coming.is_some() {
         if let Err(p) = computers.end_recording(&live).await {
             return refused(&p);
         }

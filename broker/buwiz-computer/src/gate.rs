@@ -16,7 +16,7 @@
 //! One connection per request: a head is only ever read once. Its port is in the range the Bot's
 //! shell is kept off; a computer's own traffic never comes here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,9 +37,6 @@ const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// What of a frame is read to know what it is. Every command that matters fits.
 const FRAME_HEAD: usize = 32;
-/// A key or button held with nothing else happening for this long is a page that lost its key-up.
-const HELD_LIFE: Duration = Duration::from_secs(60);
-const MAX_HELD: usize = 64;
 /// All a viewer needs to show a page and a screen: voxl's page, what it loads, and its socket.
 const VIEWER_PATHS: [&str; 9] = ["/", "/index.html", "/client.js", "/worker.js", "/audio.js", "/mic.js", "/favicon.ico", "/inter.woff2", SOCKET];
 const SOCKET: &str = "/ws";
@@ -92,11 +89,10 @@ struct Sessions {
 /// A person at a Bot's screen.
 #[derive(Default)]
 struct Driver {
-    /// their connected viewers: with none, they've stopped, whatever came last
+    /// their connected viewers: with none, they've gone, whatever came last
     viewers: usize,
-    last_input: Option<Instant>,
-    /// the keys and buttons down now, as voxl's commands name them
-    held: HashSet<String>,
+    /// when a viewer connected or sent input, whichever came last
+    last_seen: Option<Instant>,
 }
 
 /// One per broker, listening on loopback.
@@ -153,12 +149,13 @@ impl Gate {
         self.lock().open.values().find(|o| o.bot == bot).map(|o| o.mode)
     }
 
-    /// Whether a person is driving `bot`'s screen: a drive viewer is connected, and it sent input
-    /// less than `quiet` ago, or a key or button is still down. Leaving is stopping.
+    /// Whether a person is at `bot`'s screen with a viewer that can drive it: one is connected, and
+    /// it connected or sent input less than `quiet` ago. A person between clicks is still there,
+    /// so an open viewer counts until it closes or `quiet` runs out. Leaving is stopping.
     pub fn driving(&self, bot: &str, quiet: Duration) -> bool {
         let s = self.lock();
         let Some(d) = s.drivers.get(bot).filter(|d| d.viewers > 0) else { return false };
-        d.last_input.is_some_and(|at| at.elapsed() < quiet || (!d.held.is_empty() && at.elapsed() < HELD_LIFE))
+        d.last_seen.is_some_and(|at| at.elapsed() < quiet)
     }
 }
 
@@ -313,21 +310,6 @@ fn word(text: &[u8]) -> &[u8] {
     text.split(|b| *b == b',').next().unwrap_or_default()
 }
 
-/// What's down after `command`, a key's or button's (`k,65,1`), as `held` tracks it.
-fn note_held(held: &mut HashSet<String>, command: &[u8]) {
-    let text = String::from_utf8_lossy(command);
-    let mut parts = text.split(',');
-    let (Some(kind @ ("k" | "b")), Some(code), Some(down)) = (parts.next(), parts.next(), parts.next()) else { return };
-    let name = format!("{kind},{code}");
-    if down == "1" {
-        if held.len() < MAX_HELD {
-            held.insert(name);
-        }
-    } else {
-        held.remove(&name);
-    }
-}
-
 /// Decides each frame of one viewer.
 struct Filter {
     bot: String,
@@ -361,13 +343,9 @@ impl Filter {
                     }
                     Mode::Drive => {
                         if !watching {
-                            let mut s = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-                            let driver = s.drivers.entry(self.bot.clone()).or_default();
-                            if text && word(&frame.start) == RELEASE.as_bytes() {
-                                driver.held.clear();
-                            } else {
-                                driver.last_input = Some(Instant::now());
-                                note_held(&mut driver.held, &frame.start);
+                            if !(text && word(&frame.start) == RELEASE.as_bytes()) {
+                                let mut s = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                                s.drivers.entry(self.bot.clone()).or_default().last_seen = Some(Instant::now());
                             }
                         }
                         true
@@ -414,7 +392,9 @@ impl Viewing {
             let mut s = sessions.lock().unwrap_or_else(|e| e.into_inner());
             *s.watching.entry(bot.clone()).or_default() += 1;
             if mode == Mode::Drive {
-                s.drivers.entry(bot.clone()).or_default().viewers += 1;
+                let driver = s.drivers.entry(bot.clone()).or_default();
+                driver.viewers += 1;
+                driver.last_seen = Some(Instant::now());
             }
         }
         Self { bot, mode, sessions }
@@ -757,39 +737,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_driver_is_heard_and_the_gate_knows_who_when_and_for_how_long() {
+    async fn a_drive_viewer_counts_as_a_person_until_it_closes_or_goes_quiet() {
         let gate = Gate::start().await.unwrap();
         let (addr, heard, _) = listening_viewer().await;
         let mut ws = socket(&gate, "ann", &addr, Mode::Drive).await;
         assert_eq!(gate.mode("ann"), Some(Mode::Drive));
-        assert!(!gate.driving("ann", QUIET), "connected and quiet isn't driving");
-        ws.write_all(&text("a,1")).await.unwrap();
-        ws.write_all(&text("po,1")).await.unwrap();
-        assert!(hears(&heard, &text("po,1")).await);
-        assert!(!gate.driving("ann", QUIET), "a page's own talk isn't a person");
-        ws.write_all(&text("r")).await.unwrap();
-        assert!(hears(&heard, &text("r")).await);
-        assert!(!gate.driving("ann", QUIET), "a hidden page's release isn't a person");
+        assert!(gate.driving("ann", QUIET), "open and idle: they're about to press something");
+        assert!(!gate.driving("bea", QUIET), "another Bot's screen isn't being driven");
+
+        // past the quiet, and a page's own talk doesn't bring them back
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let short = Duration::from_millis(20);
+        assert!(!gate.driving("ann", short), "gone quiet");
+        for said in ["a,1", "po,1", "r"] {
+            ws.write_all(&text(said)).await.unwrap();
+            assert!(hears(&heard, &text(said)).await);
+        }
+        assert!(!gate.driving("ann", short), "a page's own talk isn't a person");
 
         ws.write_all(&text("k,65,1")).await.unwrap();
         assert!(hears(&heard, &text("k,65,1")).await);
-        assert!(gate.driving("ann", QUIET));
-        assert!(!gate.driving("bea", QUIET), "another Bot's screen isn't being driven");
-        // a key still down: quiet has passed, and they haven't stopped
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(gate.driving("ann", Duration::from_millis(1)), "a held key was counted as stopped");
-        ws.write_all(&text("k,65,0")).await.unwrap();
-        assert!(hears(&heard, &text("k,65,0")).await);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(!gate.driving("ann", Duration::from_millis(1)), "they stopped");
-        assert!(gate.driving("ann", QUIET), "within the quiet they may be back");
-
-        // a release lets go of what was held, as voxl does
-        ws.write_all(&text("b,1,1")).await.unwrap();
-        ws.write_all(&text("r")).await.unwrap();
-        assert!(hears(&heard, &[text("b,1,1"), text("r")].concat()).await);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(!gate.driving("ann", Duration::from_millis(1)));
+        assert!(gate.driving("ann", short), "input brings them back");
 
         drop(ws);
         for _ in 0..100 {

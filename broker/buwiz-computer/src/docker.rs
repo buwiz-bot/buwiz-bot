@@ -137,6 +137,60 @@ except FileNotFoundError:
     pass
 "#;
 
+/// Ends the programs a hand-over mustn't run beside, as root from outside, with nothing but python3
+/// in the image. A process in the box can't hide from this or ignore it. Prints what it ended, as a
+/// JSON list. Safe to repeat.
+///
+/// What's spared is decided by what can't be forged from a command: the real `box-keeper` (the
+/// first, under pid 1), its children, and theirs, except what `box-exec` is running; and programs
+/// of the desktop and browser, by the path of the file they run, which a command can't write to.
+/// Being able to run a program isn't enough: `voxl`, `box-exec` and an interpreter are spared only
+/// as the keeper's own. Passes repeat until one finds nothing, so a forking loop doesn't get away.
+///
+/// It's no wall: a command can start an allowed program with a library of its own, and a page in
+/// the browser is a page. It ends what was left running, which is what's there to be left.
+const CLEAR: &str = r#"
+import fnmatch, json, os, signal, time
+ALLOWED = ['/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*']
+KEEPER, EXEC, BOX_UID = '/usr/local/bin/box-keeper', '/usr/local/bin/box-exec', 1000
+def table():
+    out = {}
+    for d in os.listdir('/proc'):
+        if not d.isdigit():
+            continue
+        try:
+            stat = open('/proc/%s/stat' % d).read()
+            rest = stat[stat.rindex(')') + 2:].split()
+            if rest[0] == 'Z' or os.stat('/proc/' + d).st_uid != BOX_UID:
+                continue
+            out[int(d)] = (int(rest[1]), os.readlink('/proc/%s/exe' % d), stat[stat.index('(') + 1:stat.rindex(')')])
+        except OSError:
+            pass
+    return out
+ended = []
+for _ in range(20):
+    procs = table()
+    keepers = [p for p, (parent, exe, _) in procs.items() if parent == 1 and exe == KEEPER]
+    if not keepers:
+        raise SystemExit('no keeper')
+    keeper = min(keepers)
+    children = {p for p, (parent, _, _) in procs.items() if parent == keeper}
+    grandchildren = {p for p, (parent, _, _) in procs.items() if parent in children and procs[parent][1] != EXEC}
+    kept = {1, keeper} | children | grandchildren
+    strays = [p for p, (_, exe, _) in procs.items() if p not in kept and not any(fnmatch.fnmatch(exe, a) for a in ALLOWED)]
+    if not strays:
+        print(json.dumps(sorted(set(ended))))
+        raise SystemExit(0)
+    for p in strays:
+        try:
+            os.kill(p, signal.SIGKILL)
+            ended.append(procs[p][2])
+        except ProcessLookupError:
+            pass
+    time.sleep(0.05)
+raise SystemExit('programs kept coming')
+"#;
+
 /// The local Docker computers.
 pub struct DockerProvider {
     image: String,
@@ -737,6 +791,12 @@ impl Provider for DockerProvider {
             return Err(Problem::Unwalled("its network changed under it".to_owned()));
         }
         self.net_up(name, &found, false).await
+    }
+
+    async fn clear_strays(&self, machine: &Machine) -> Result<Vec<String>> {
+        let name = container(machine)?;
+        let out = self.docker(&["exec", "--user", "0", "--privileged", name, "/usr/bin/python3", "-I", "-S", "-c", CLEAR], None).await?;
+        serde_json::from_str(out.trim()).map_err(|_| Problem::Failed("the programs left on it couldn't be told apart".to_owned()))
     }
 
     async fn screens(&self, machine: &Machine) -> Result<Vec<String>> {

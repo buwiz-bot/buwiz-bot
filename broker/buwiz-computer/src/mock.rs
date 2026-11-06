@@ -49,11 +49,19 @@ pub struct MockProvider {
     pub viewer_addr: Mutex<Option<String>>,
     /// `record_stop` fails with this
     pub record_problem: Mutex<Option<Problem>>,
+    /// `sleep` fails with this
+    pub sleep_problem: Mutex<Option<Problem>>,
+    /// `record_start` waits here until released, when set
+    pub hold_record: AtomicBool,
+    /// what `clear_strays` found
+    pub strays: Mutex<Vec<String>>,
+    /// `clear_strays` fails with this
+    pub stray_problem: Mutex<Option<Problem>>,
 }
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None) }
     }
 }
 
@@ -153,6 +161,9 @@ impl Provider for MockProvider {
     async fn sleep(&self, _: &Machine, depth: Sleep) -> Result<()> {
         while self.hang_sleep.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if let Some(p) = self.sleep_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
         }
         self.note(format!("sleep {depth:?}"));
         self.paused.store(depth == Sleep::Light, Ordering::SeqCst);
@@ -274,7 +285,19 @@ impl Provider for MockProvider {
 
     async fn record_start(&self, _: &Machine, _: &Screen) -> Result<u64> {
         self.awake()?;
+        self.note("record_start".to_owned());
+        while self.hold_record.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         Ok(7)
+    }
+
+    async fn clear_strays(&self, _: &Machine) -> Result<Vec<String>> {
+        if let Some(p) = self.stray_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
+        }
+        self.note("clear_strays".to_owned());
+        Ok(std::mem::take(&mut *self.strays.lock().unwrap_or_else(|e| e.into_inner())))
     }
 
     async fn record_stop(&self, _: &Machine, screen: &Screen, id: u64) -> Result<String> {

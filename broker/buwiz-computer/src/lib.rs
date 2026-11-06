@@ -466,6 +466,13 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
+    /// Before a person is given a screen: ends every program on the computer that isn't its
+    /// desktop, browser or services, and names what it ended. Ended, because a stopped program that
+    /// holds an X connection reads the keys it missed once it's resumed.
+    async fn clear_strays(&self, _machine: &Machine) -> Result<Vec<String>> {
+        unsupported("hand a screen to a person")
+    }
+
     /// Starts `bot`'s screen, or finds it running. Awake only; a bot keeps its screen's number
     /// and folder across sleeps.
     async fn screen_up(&self, _machine: &Machine, _bot: &str) -> Result<Screen> {

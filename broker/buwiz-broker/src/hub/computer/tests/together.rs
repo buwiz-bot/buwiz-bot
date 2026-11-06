@@ -156,7 +156,6 @@ async fn a_person_who_comes_in_during_an_action_keeps_the_picture_from_the_model
     let b = bed_with("picture", |p| Computers { quiet: Duration::from_secs(30), patience: NO_PATIENCE, ..Computers::new(p) });
     awake(&b, &b.ann.0).await;
     viewer(&b).await;
-    let mut ws = connect(&b, &b.ann.0, "drive").await;
     b.mock.calls.lock().unwrap().clear();
     let r = Arc::new(run(&b, &b.ann.1, None));
     let clicking = {
@@ -165,7 +164,7 @@ async fn a_person_who_comes_in_during_an_action_keeps_the_picture_from_the_model
     };
     // the mock settles for half a second after it acts
     until_true("it never acted", async || acted(&b)).await;
-    ws.write_all(&command("k,65,1")).await.unwrap();
+    let _ws = connect(&b, &b.ann.0, "drive").await;
     let out = clicking.await.unwrap();
     assert_eq!(out.is_error, None, "the click happened: {}", words(&out));
     assert!(!b.mock.calls().iter().any(|c| c.starts_with("screenshot")), "{:?}", b.mock.calls());
@@ -173,7 +172,7 @@ async fn a_person_who_comes_in_during_an_action_keeps_the_picture_from_the_model
 }
 
 #[tokio::test]
-async fn a_watcher_pauses_nothing_and_neither_does_a_drive_viewer_with_no_input() {
+async fn a_watcher_pauses_nothing() {
     let b = timed("watch");
     awake(&b, &b.ann.0).await;
     viewer(&b).await;
@@ -185,8 +184,38 @@ async fn a_watcher_pauses_nothing_and_neither_does_a_drive_viewer_with_no_input(
     let r = run(&b, &b.ann.1, None);
     let out = tokio::time::timeout(Duration::from_secs(3), call(&r, "computer_click", json!({"x": 1, "y": 1}))).await.expect("a watcher held the agent up");
     assert_eq!(out.is_error, None);
-    let _quiet = connect(&b, &b.ann.0, "drive").await;
-    assert!(!b.computers.person_on(&b.ann.0), "a viewer that can drive hasn't yet");
+}
+
+#[tokio::test]
+async fn an_open_drive_viewer_holds_the_agent_until_it_goes_quiet_or_closes() {
+    // no input at all: they opened it to press something, and may be about to
+    let b = bed_with("idle", |p| Computers { quiet: Duration::from_millis(700), ..Computers::new(p) });
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let _ws = connect(&b, &b.ann.0, "drive").await;
+    b.mock.calls.lock().unwrap().clear();
+    let r = Arc::new(run(&b, &b.ann.1, None));
+    let clicking = {
+        let r = r.clone();
+        tokio::spawn(async move { call(&r, "computer_click", json!({"x": 1, "y": 1})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!acted(&b), "its click landed under an idle driver");
+    assert_eq!(clicking.await.unwrap().is_error, None, "once they've gone quiet it goes on");
+
+    // closed is gone, whatever the quiet says
+    let b = bed_with("closed", |p| Computers { quiet: Duration::from_secs(30), ..Computers::new(p) });
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let ws = connect(&b, &b.ann.0, "drive").await;
+    assert!(b.computers.person_on(&b.ann.0));
+    drop(ws);
+    until_true("a closed viewer still holds the agent", async || !b.computers.person_on(&b.ann.0)).await;
+}
+
+#[test]
+fn a_person_with_a_drive_viewer_counts_for_a_minute_and_the_agent_gives_up_at_ten() {
+    assert_eq!((super::super::super::QUIET, PATIENCE), (Duration::from_secs(60), Duration::from_secs(600)));
 }
 
 #[tokio::test]
@@ -419,7 +448,7 @@ async fn saying_not_now_hands_nothing_over() {
 }
 
 #[tokio::test]
-async fn allow_in_this_chat_on_a_takeover_card_opens_nothing_else() {
+async fn a_takeover_card_takes_no_standing_yes_whatever_a_client_sends() {
     let b = bed("grant");
     awake(&b, &b.ann.0).await;
     set(&b, &b.ann.0, tools::KEY, "ask");
@@ -429,11 +458,94 @@ async fn allow_in_this_chat_on_a_takeover_card_opens_nothing_else() {
         tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
     };
     let c = card(&b, &b.ann.1).await;
-    answer(&b, &b.ann.1, &c, "chat");
+    let refused = ask::host_answer(&b.ctx, &json!({"chat": b.ann.1, "id": c["id"], "answer": "chat"}));
+    assert!(refused.is_err(), "the host took a standing yes");
+    assert!(!ask::granted(&b.ctx, &b.ann.1, tools::ASK_KEY) && !ask::granted(&b.ctx, &b.ann.1, tools::KEY));
+    assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
+    // the card is still there to answer
+    answer(&b, &b.ann.1, &card(&b, &b.ann.1).await, "once");
     until_true("no hand-over", async || b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_some()).await;
     b.computers.hand_back(&b.ann.0);
     asking.await.unwrap();
-    assert!(!ask::granted(&b.ctx, &b.ann.1, tools::KEY), "a yes to a hand-over let every click through");
+}
+
+#[tokio::test]
+async fn the_card_says_what_a_hand_over_doesnt_keep_from_the_ai() {
+    let b = bed("words");
+    awake(&b, &b.ann.0).await;
+    let r = Arc::new(run(&b, &b.ann.1, None));
+    let asking = {
+        let r = r.clone();
+        tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "Sign in"})).await })
+    };
+    let c = card(&b, &b.ann.1).await;
+    let words = c["lines"].to_string();
+    for said in ["programs it already started can keep running", "could see what you type", "Don't type a real password unless you trust this Bot's work so far"] {
+        assert!(words.contains(said), "{words}");
+    }
+    assert!(!words.contains("shown nothing"), "{words}");
+    answer(&b, &b.ann.1, &c, "no");
+    asking.await.unwrap();
+}
+
+#[tokio::test]
+async fn what_the_model_left_running_ends_before_the_person_starts_and_the_model_is_told() {
+    let b = bed("strays");
+    awake(&b, &b.ann.0).await;
+    *b.mock.strays.lock().unwrap() = vec!["python3".to_owned()];
+    b.mock.calls.lock().unwrap().clear();
+    let (_r, asking) = taken_over(&b, json!({"reason": "x"})).await;
+    assert!(b.mock.calls().iter().any(|c| c == "clear_strays"), "{:?}", b.mock.calls());
+    b.computers.hand_back(&b.ann.0);
+    let said = words(&asking.await.unwrap());
+    assert!(said.contains("programs_ended") && said.contains("python3"), "{said}");
+}
+
+#[tokio::test]
+async fn a_computer_that_cant_be_cleared_isnt_handed_over() {
+    let b = bed("noclear");
+    awake(&b, &b.ann.0).await;
+    *b.mock.stray_problem.lock().unwrap() = Some(Problem::Failed("no".into()));
+    let r = Arc::new(run(&b, &b.ann.1, None));
+    let asking = {
+        let r = r.clone();
+        tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
+    };
+    answer(&b, &b.ann.1, &card(&b, &b.ann.1).await, "once");
+    assert_eq!(asking.await.unwrap().is_error, Some(true));
+    assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
+}
+
+#[tokio::test]
+async fn mock_computer_reaches_only_a_computer_tool_this_turn_is_offered() {
+    let b = bed("mockhook");
+    awake(&b, &b.ann.0).await;
+    b.mock.calls.lock().unwrap().clear();
+    let r = run(&b, &b.ann.1, None);
+    for words in ["shell_run {\"command\": \"ls\"}", "memory_add {\"text\": \"x\"}", "tools_set {\"key\": \"computer\", \"state\": \"on\"}"] {
+        assert!(crate::hub::agent::slash_mock::mock_computer(&r, words).await.is_err(), "{words}");
+    }
+    assert!(b.mock.calls().is_empty(), "{:?}", b.mock.calls());
+    crate::hub::agent::slash_mock::mock_computer(&r, "computer_screenshot {}").await.unwrap();
+    assert!(b.mock.calls().iter().any(|c| c.starts_with("screenshot")));
+
+    // what a delegate isn't offered, it can't get this way either
+    b.mock.calls.lock().unwrap().clear();
+    let job = b.ctx.jobs.create(&b.ann.1, Value::Null, None, false);
+    let turn = TurnCtx { thread: b.ann.1.clone(), acting_bot: Some(b.ann.0.clone()), ..TurnCtx::default() };
+    let request = Run::new(b.ctx.clone(), turn, job, Arc::new(Settings::from(|_| None)));
+    assert!(crate::hub::agent::slash_mock::mock_computer(&request, "computer_screenshot {}").await.is_err());
+    assert!(b.mock.calls().is_empty(), "{:?}", b.mock.calls());
+}
+
+#[test]
+fn mock_computer_is_debug_only() {
+    let source = include_str!("../../agent/slash_mock.rs");
+    for line in ["pub(crate) async fn mock_computer(", "if let Some(words) = p.strip_prefix(\"/mock computer \")"] {
+        let at = source.find(line).expect(line);
+        let before = source[..at].trim_end().lines().last().unwrap().trim();
+        assert_eq!(before, "#[cfg(debug_assertions)]", "{line}");
+    }
 }
 
 #[tokio::test]
@@ -488,6 +600,39 @@ async fn a_person_who_sleeps_the_computer_ends_the_hand_over() {
     let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("sleeping the computer left the hand-over running").unwrap();
     assert_eq!(words(&out), Problem::Asleep.sentence());
     assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
+}
+
+#[tokio::test]
+async fn a_sleep_that_fails_leaves_the_person_where_they_were() {
+    let b = bed("sleepfails");
+    let id = awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let (_r, asking) = taken_over(&b, json!({"reason": "x"})).await;
+    let _ws = connect(&b, &b.ann.0, "drive").await;
+    *b.mock.sleep_problem.lock().unwrap() = Some(Problem::ProviderDown("Docker".into()));
+    assert!(b.computers.sleep(&b.ctx, &id, Sleep::Light).await.is_err());
+    assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_some(), "the hand-over ended on a sleep that never happened");
+    assert_eq!(b.computers.open_gate().unwrap().mode(&b.ann.0), Some(Mode::Drive), "their viewer was cut for nothing");
+    assert!(!asking.is_finished());
+    *b.mock.sleep_problem.lock().unwrap() = None;
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    assert_eq!(b.computers.open_gate().unwrap().mode(&b.ann.0), None);
+    let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("the hand-over went on asleep").unwrap();
+    assert_eq!(words(&out), Problem::Asleep.sentence());
+}
+
+#[tokio::test]
+async fn sleeping_stops_what_the_model_was_recording() {
+    let b = bed("sleeprec");
+    let id = awake(&b, &b.ann.0).await;
+    let r = run(&b, &b.ann.1, None);
+    call(&r, "computer_record", json!({"action": "start"})).await;
+    b.mock.calls.lock().unwrap().clear();
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    let calls = b.mock.calls();
+    let at = |word: &str| calls.iter().position(|c| c == word).unwrap_or_else(|| panic!("{word}: {calls:?}"));
+    assert!(at("record_stop 7") < at("sleep Light"), "{calls:?}");
+    assert!(b.computers.now().recordings.is_empty());
 }
 
 #[tokio::test]
@@ -602,16 +747,73 @@ async fn a_recording_past_its_life_or_lost_with_a_restart_keeps_nobody_out() {
     viewer(&b).await;
     *b.mock.record_problem.lock().unwrap() = Some(Problem::Failed("no such recording".into()));
     let drive = async |b: &Bed| answer_of(open(b.ctx.clone(), open_req(&b.ann.0, json!({"mode": "drive"}))).await).await.0;
+    let recording = |began: Instant| Recording { computer: id.clone(), screen: seated(&b.ctx, &b.ann.0).unwrap().screen.unwrap(), id: Some(7), stopping: false, began };
 
-    b.computers.note_recording(&b.ann.0, Some(7));
+    b.computers.now().recordings.insert(b.ann.0.clone(), recording(Instant::now()));
     assert_eq!(drive(&b).await, StatusCode::CONFLICT, "it may be recording still");
-    b.computers.now().recordings.insert(b.ann.0.clone(), (7, Instant::now() - RECORDING_LIFE));
+    b.computers.now().recordings.insert(b.ann.0.clone(), recording(Instant::now() - RECORDING_LIFE));
     assert_eq!(drive(&b).await, StatusCode::OK, "it ended by itself long ago");
 
-    b.computers.note_recording(&b.ann.0, Some(8));
+    b.computers.now().recordings.insert(b.ann.0.clone(), recording(Instant::now()));
     b.computers.sleep(&b.ctx, &id, Sleep::Deep).await.unwrap();
     b.computers.wake_and_wait(&b.ctx, &id).await.unwrap();
     assert_eq!(drive(&b).await, StatusCode::OK, "a fresh start took the recording with it");
+}
+
+#[tokio::test]
+async fn one_recording_at_a_time_so_none_is_left_with_nothing_to_stop_it() {
+    let b = bed("onerec");
+    awake(&b, &b.ann.0).await;
+    let r = run(&b, &b.ann.1, None);
+    assert_eq!(call(&r, "computer_record", json!({"action": "start"})).await.is_error, None);
+    let second = call(&r, "computer_record", json!({"action": "start"})).await;
+    assert_eq!(second.is_error, Some(true), "{}", words(&second));
+    assert_eq!(b.mock.calls().iter().filter(|c| *c == "record_start").count(), 1, "a second one started");
+    assert_eq!(call(&r, "computer_record", json!({"action": "stop", "id": 7})).await.is_error, None);
+    assert_eq!(call(&r, "computer_record", json!({"action": "start"})).await.is_error, None, "stopped, it can start again");
+}
+
+#[tokio::test]
+async fn a_recording_starting_as_a_person_comes_is_stopped_before_their_ticket() {
+    let b = timed("recrace");
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    b.mock.hold_record.store(true, Ordering::SeqCst);
+    let r = Arc::new(run(&b, &b.ann.1, None));
+    let starting = {
+        let r = r.clone();
+        tokio::spawn(async move { call(&r, "computer_record", json!({"action": "start"})).await })
+    };
+    until_true("the start never got there", async || b.mock.calls().iter().any(|c| c == "record_start")).await;
+    let ticket = {
+        let ctx = b.ctx.clone();
+        let req = open_req(&b.ann.0, json!({"mode": "drive"}));
+        tokio::spawn(async move { answer_of(open(ctx, req).await).await })
+    };
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(!ticket.is_finished(), "their ticket went out with a recording on its way");
+    b.mock.hold_record.store(false, Ordering::SeqCst);
+    let (status, v) = ticket.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(b.mock.calls().iter().any(|c| c == "record_stop 7"), "it recorded the person: {:?}", b.mock.calls());
+    let out = starting.await.unwrap();
+    assert_eq!(out.is_error, Some(true), "{}", words(&out));
+    assert!(b.computers.now().recordings.is_empty());
+}
+
+#[tokio::test]
+async fn no_recording_starts_while_a_drive_ticket_is_being_made() {
+    let b = bed("recmark");
+    awake(&b, &b.ann.0).await;
+    let live = b.computers.live(&b.ctx, &b.ann.0).await.unwrap();
+    let coming = Coming::new(&b.computers, &b.ann.0);
+    assert!(b.computers.begin_recording(&live).is_err());
+    drop(coming);
+    assert!(b.computers.begin_recording(&live).is_ok());
+    // past the check, and a person came: the start is told to stop
+    let coming = Coming::new(&b.computers, &b.ann.0);
+    assert!(!b.computers.recording_started(&b.ann.0, 7));
+    drop(coming);
 }
 
 #[tokio::test]
@@ -724,6 +926,8 @@ async fn real_flow(b: &Bed) {
     let started = box_run(&format!("setsid nohup python3 -c '{quoted}' >/dev/null 2>&1 &")).await;
     assert_eq!(started.exit_code, Some(0), "{}", started.stderr);
     let log = async || box_run("cat /tmp/c2b-signin.log 2>/dev/null").await.stdout;
+    // left running by a command: it goes before the person starts
+    assert_eq!(box_run("setsid nohup python3 -c 'import time; time.sleep(300)' >/dev/null 2>&1 &").await.exit_code, Some(0));
 
     // a person drives: what the agent does waits, then lands after they stop
     let r = Arc::new(run(b, &b.ann.1, None));
@@ -756,6 +960,8 @@ async fn real_flow(b: &Bed) {
     let c = card(b, &b.ann.1).await;
     answer(b, &b.ann.1, &c, "once");
     real_until("no hand-over", async || b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_some()).await;
+    // the clearing took the test's own server with the rest: the site is meant to be out there
+    assert_eq!(box_run(&format!("setsid nohup python3 -c '{quoted}' >/dev/null 2>&1 &")).await.exit_code, Some(0));
     let mut ws = connect(b, &b.ann.0, "drive").await;
     assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["viewer"], "drive");
     for step in ["m,640,420", "b,1,1", "b,1,0"] {
@@ -769,6 +975,7 @@ async fn real_flow(b: &Bed) {
     assert_eq!(out.is_error, None, "{}", words(&out));
     let said = words(&out);
     assert!(said.contains("handed_back") && said.contains("image/jpeg"), "{}", &said[..said.len().min(300)]);
+    assert!(said.contains("programs_ended") && said.contains("python3"), "{}", &said[..said.len().min(400)]);
     assert!(!said.contains(live.machine.viewer_password.expose()) && !said.contains(live.machine.token.expose()));
     let mut rest = Vec::new();
     assert!(tokio::time::timeout(Duration::from_secs(5), ws.read_to_end(&mut rest)).await.is_ok(), "the person's drive ticket outlived the hand-back");
