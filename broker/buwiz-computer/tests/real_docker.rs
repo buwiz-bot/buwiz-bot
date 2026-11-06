@@ -527,6 +527,38 @@ while True:
         log.write('key %d\n' % struct.unpack('<I', e[16:20])[0])
 "#;
 
+/// Starts `box-keeper` as the box user at pid `argv[1]`, under pid 1, blocked on a fifo.
+const DECOY: &str = r#"
+import ctypes, os, signal, struct, sys
+os.mkfifo('/tmp/decoy.fifo', 0o666)
+pid = int(sys.argv[1])
+tid = (ctypes.c_int32 * 1)(pid)
+args = struct.pack('=11Q', 0, 0, 0, 0, signal.SIGCHLD, 0, 0, 0, ctypes.addressof(tid), 1, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+keep = os.fork()
+if keep:
+    os.waitpid(keep, 0)
+    print('decoy', pid if open('/tmp/decoy.ok').read() == 'ok' else 'failed')
+    sys.exit(0)
+got = libc.syscall(435, ctypes.c_char_p(args), len(args))
+if got > 0:
+    open('/tmp/decoy.ok', 'w').write('ok')
+    os._exit(0)
+if got < 0:
+    open('/tmp/decoy.ok', 'w').write('errno %d' % ctypes.get_errno())
+    os._exit(1)
+if got == 0:
+    # or `docker exec` waits on these for as long as it blocks
+    null = os.open('/dev/null', os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    os.setgroups([])
+    os.setgid(1000)
+    os.setuid(1000)
+    os.setsid()
+    os.execve('/usr/local/bin/box-keeper', ['box-keeper'], {'BOX_TOKEN_FILE': '/tmp/decoy.fifo', 'HOME': '/home/box', 'PATH': '/usr/bin:/bin'})
+"#;
+
 /// What a hand-over clears: what commands left, wherever it hides, and none of the desktop.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs Docker and the computer image"]
@@ -542,6 +574,7 @@ async fn clearing_ends_what_commands_left_and_spares_the_desktop() {
         async move { clear(&DockerProvider::new(image, "c2k"), &m).await }
     })
     .await;
+    docker(&["rm", "-f", &format!("{}-helper", name_of(&m))]);
     p.destroy(&m).await.unwrap();
     let _ = std::process::Command::new("docker").args(["network", "rm", "c2k-net"]).output();
     let _ = std::fs::remove_dir_all(&dir);
@@ -568,6 +601,24 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine) {
     );
     assert_eq!(p.run(m, &a, &left, 5000).await.unwrap().exit_code, Some(0));
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // a name that isn't text, and a process /proc says is root's: neither stops the scan or hides
+    let hiding = "import ctypes,os,sys,time\nlibc=ctypes.CDLL(None)\nif sys.argv[1]=='name':\n    libc.prctl(15,b'\\xff\\xfe\\x80bad',0,0,0)\nelse:\n    libc.prctl(4,0,0,0,0)\nopen('/workspace/'+sys.argv[1]+'.pid','w').write(str(os.getpid()))\ntime.sleep(600)\n";
+    p.write_file(m, "hiding.py", hiding.as_bytes()).await.unwrap();
+    assert_eq!(p.run(m, &a, "setsid nohup python3 /workspace/hiding.py name >/dev/null 2>&1 & setsid nohup python3 /workspace/hiding.py undumpable >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    // a decoy keeper with a lower pid than the real one. Nothing in the box can get one: seccomp
+    // refuses `clone3`, and pids wrap to 300. So a helper in the box's pid namespace plants it, to
+    // show the scan goes by what can't be forged. What runs is the box user's, blocked on a fifo
+    let helper = format!("{}-helper", name_of(m));
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    docker(&["run", "-d", "--rm", "--name", &helper, "--pid", &format!("container:{}", name_of(m)), "--network", "none", "--privileged", "--security-opt", "seccomp=unconfined", "--user", "0", "--entrypoint", "sleep", &image, "120"]);
+    let keeper_pid: u32 = docker(&["exec", "--user", "0", &helper, "sh", "-c", "for p in $(pgrep -x box-keeper); do [ \"$(awk '{print $4}' /proc/$p/stat)\" = 1 ] && echo $p; done"]).parse().unwrap();
+    let low = keeper_pid - 1;
+    let planted = docker(&["exec", "--user", "0", &helper, "/usr/bin/python3", "-I", "-S", "-c", DECOY, &low.to_string()]);
+    assert_eq!(planted, format!("decoy {low}"), "the decoy never got its pid");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let seen = docker(&["exec", "--user", "0", "--privileged", &name_of(m), "sh", "-c", &format!("readlink /proc/{low}/exe; awk '{{print $4}}' /proc/{low}/stat; grep '^Uid' /proc/{low}/status")]);
+    println!("real keeper {keeper_pid}; the decoy at {low}, as the box sees it: {seen:?}");
+    assert!(seen.starts_with("/usr/local/bin/box-keeper\n1\nUid:\t1000"), "the decoy isn't one: {seen}");
     let before = p.run(m, &a, "ps -eo pid,ppid,comm --forest | cut -c1-70", 5000).await.unwrap().stdout;
     println!("before:\n{before}");
 
@@ -582,6 +633,10 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine) {
     let ended = p.clear_strays(m).await.unwrap();
     println!("ended: {ended:?}");
     assert!(!ended.iter().any(|n| n == "box-active-tab"), "the browser's own helper went: {ended:?}");
+    assert!(ended.iter().any(|n| n == "box-keeper"), "the decoy was spared: {ended:?}");
+    let gone = format!("for f in name undumpable; do test -d /proc/$(cat /workspace/$f.pid) && echo $f survived; done; test -d /proc/{low} && echo decoy survived; true");
+    let survived = p.run(m, &a, &gone, 5000).await.unwrap().stdout;
+    assert_eq!(survived.trim(), "", "hidden from the scan");
     let after = p.run(m, &a, "ps -eo pid,ppid,comm,args --forest | cut -c1-100", 5000).await.unwrap().stdout;
     println!("after:\n{after}");
     for word in ["kl.py", "innocent", "--port=7000", "time.sleep(600)", "sleep 0.05"] {

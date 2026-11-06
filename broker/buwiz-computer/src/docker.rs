@@ -141,14 +141,22 @@ except FileNotFoundError:
 /// in the image. A process in the box can't hide from this or ignore it. Prints what it ended, as a
 /// JSON list. Safe to repeat.
 ///
-/// What's spared is decided by what can't be forged from a command: the real `box-keeper` (the
-/// first, under pid 1), its children, and theirs, except what `box-exec` is running; and programs
-/// of the desktop and browser, by the path of the file they run, which a command can't write to.
-/// Being able to run a program isn't enough: `voxl`, `box-exec` and an interpreter are spared only
-/// as the keeper's own. Passes repeat until one finds nothing, so a forking loop doesn't get away.
+/// What's spared is decided by what can't be forged from a command: the real `box-keeper`, its
+/// children, and theirs, except what `box-exec` is running; and programs of the desktop and
+/// browser, by the path of the file they run, which a command can't write to. The real keeper is
+/// the oldest by the kernel's start time: tini's first child, so nothing a command starts can be
+/// older, whatever pid it lands on. Being able to run a program isn't enough: `voxl`, `box-exec`
+/// and an interpreter are spared only as the keeper's own. Passes repeat until one finds nothing,
+/// so a forking loop doesn't get away.
 ///
-/// It's no wall: a command can start an allowed program with a library of its own, and a page in
-/// the browser is a page. It ends what was left running, which is what's there to be left.
+/// Nothing a process controls can hide it or stop the scan: its name is bytes, its uid comes from
+/// `status` (a non-dumpable process's `/proc/<pid>` says root), and one whose file can't be read is
+/// a stray. Needs `--privileged`: reading another uid's `exe` takes `CAP_SYS_PTRACE`, which root in
+/// a container hasn't got, and `docker exec` can't add just that.
+///
+/// It's no wall: a command can start an allowed program with a library of its own, a page in the
+/// browser is a page, and the list of what the desktop runs is kept by hand. It ends what was left
+/// running, which is what's there to be left. The separate uid for commands is what closes these.
 const CLEAR: &str = r#"
 import fnmatch, json, os, signal, time
 ALLOWED = ['/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
@@ -159,25 +167,31 @@ def table():
         if not d.isdigit():
             continue
         try:
-            stat = open('/proc/%s/stat' % d).read()
-            rest = stat[stat.rindex(')') + 2:].split()
-            if rest[0] == 'Z' or os.stat('/proc/' + d).st_uid != BOX_UID:
+            stat = open('/proc/%s/stat' % d, 'rb').read()
+            status = open('/proc/%s/status' % d, 'rb').read()
+            rest = stat[stat.rindex(b')') + 2:].split()
+            uid = int(status[status.index(b'\nUid:') + 5:].split()[0])
+            if rest[0] == b'Z' or uid != BOX_UID:
                 continue
-            out[int(d)] = (int(rest[1]), os.readlink('/proc/%s/exe' % d), stat[stat.index('(') + 1:stat.rindex(')')])
-        except OSError:
+            try:
+                exe = os.readlink('/proc/%s/exe' % d)
+            except OSError:
+                exe = ''
+            out[int(d)] = (int(rest[1]), exe, stat[stat.index(b'(') + 1:stat.rindex(b')')].decode('utf-8', 'replace'), int(rest[19]))
+        except (OSError, ValueError, IndexError):
             pass
     return out
 ended = []
 for _ in range(20):
     procs = table()
-    keepers = [p for p, (parent, exe, _) in procs.items() if parent == 1 and exe == KEEPER]
+    keepers = [p for p, (parent, exe, _, _) in procs.items() if parent == 1 and exe == KEEPER]
     if not keepers:
         raise SystemExit('no keeper')
-    keeper = min(keepers)
-    children = {p for p, (parent, _, _) in procs.items() if parent == keeper}
-    grandchildren = {p for p, (parent, _, _) in procs.items() if parent in children and procs[parent][1] != EXEC}
+    keeper = min(keepers, key=lambda p: (procs[p][3], p))
+    children = {p for p, (parent, _, _, _) in procs.items() if parent == keeper}
+    grandchildren = {p for p, (parent, _, _, _) in procs.items() if parent in children and procs[parent][1] != EXEC}
     kept = {1, keeper} | children | grandchildren
-    strays = [p for p, (_, exe, _) in procs.items() if p not in kept and not any(fnmatch.fnmatch(exe, a) for a in ALLOWED)]
+    strays = [p for p, (_, exe, _, _) in procs.items() if p not in kept and not any(fnmatch.fnmatch(exe, a) for a in ALLOWED)]
     if not strays:
         print(json.dumps(sorted(set(ended))))
         raise SystemExit(0)

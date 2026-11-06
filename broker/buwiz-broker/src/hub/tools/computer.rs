@@ -287,7 +287,10 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
         Ok(r) => r,
         Err(p) => return no(&p),
     };
-    // nothing is handed over beside what can't be cleared
+    // nothing is handed over beside what can't be cleared. This goes through the whole computer, so
+    // on a shared one it ends the other Bots' work too. Accepted until each Bot has its own uid:
+    // `computer_run` is already refused there, so what's lost is a command from before it was shared
+    // or one in flight
     let ended_programs = match live.provider.clear_strays(&live.machine).await {
         Ok(names) => names,
         Err(p) => return no(&p),
