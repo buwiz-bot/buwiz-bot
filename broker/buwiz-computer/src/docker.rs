@@ -137,6 +137,74 @@ except FileNotFoundError:
     pass
 "#;
 
+/// Ends the programs a hand-over mustn't run beside, as root from outside, with nothing but python3
+/// in the image. A process in the box can't hide from this or ignore it. Prints what it ended, as a
+/// JSON list. Safe to repeat.
+///
+/// What's spared is decided by what can't be forged from a command: the real `box-keeper`, its
+/// children, and theirs, except what `box-exec` is running; and programs of the desktop and
+/// browser, by the path of the file they run, which a command can't write to. The real keeper is
+/// the oldest by the kernel's start time: tini's first child, so nothing a command starts can be
+/// older, whatever pid it lands on. Being able to run a program isn't enough: `voxl`, `box-exec`
+/// and an interpreter are spared only as the keeper's own. Passes repeat until one finds nothing,
+/// so a forking loop doesn't get away.
+///
+/// Nothing a process controls can hide it or stop the scan: its name is bytes, its uid comes from
+/// `status` (a non-dumpable process's files under `/proc/<pid>` say root, though that directory
+/// itself doesn't), and one whose file can't be read is a stray. Needs `--privileged`: reading another uid's `exe` takes `CAP_SYS_PTRACE`, which root in
+/// a container hasn't got, and `docker exec` can't add just that.
+///
+/// It's no wall: a command can start an allowed program with a library of its own, a page in the
+/// browser is a page, and the list of what the desktop runs is kept by hand. It ends what was left
+/// running, which is what's there to be left. The separate uid for commands is what closes these.
+const CLEAR: &str = r#"
+import fnmatch, json, os, signal, time
+ALLOWED = ['/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
+KEEPER, EXEC, BOX_UID = '/usr/local/bin/box-keeper', '/usr/local/bin/box-exec', 1000
+def table():
+    out = {}
+    for d in os.listdir('/proc'):
+        if not d.isdigit():
+            continue
+        try:
+            stat = open('/proc/%s/stat' % d, 'rb').read()
+            status = open('/proc/%s/status' % d, 'rb').read()
+            rest = stat[stat.rindex(b')') + 2:].split()
+            uid = int(status[status.index(b'\nUid:') + 5:].split()[0])
+            if rest[0] == b'Z' or uid != BOX_UID:
+                continue
+            try:
+                exe = os.readlink('/proc/%s/exe' % d)
+            except OSError:
+                exe = ''
+            out[int(d)] = (int(rest[1]), exe, stat[stat.index(b'(') + 1:stat.rindex(b')')].decode('utf-8', 'replace'), int(rest[19]))
+        except (OSError, ValueError, IndexError):
+            pass
+    return out
+ended = []
+for _ in range(20):
+    procs = table()
+    keepers = [p for p, (parent, exe, _, _) in procs.items() if parent == 1 and exe == KEEPER]
+    if not keepers:
+        raise SystemExit('no keeper')
+    keeper = min(keepers, key=lambda p: (procs[p][3], p))
+    children = {p for p, (parent, _, _, _) in procs.items() if parent == keeper}
+    grandchildren = {p for p, (parent, _, _, _) in procs.items() if parent in children and procs[parent][1] != EXEC}
+    kept = {1, keeper} | children | grandchildren
+    strays = [p for p, (_, exe, _, _) in procs.items() if p not in kept and not any(fnmatch.fnmatch(exe, a) for a in ALLOWED)]
+    if not strays:
+        print(json.dumps(sorted(set(ended))))
+        raise SystemExit(0)
+    for p in strays:
+        try:
+            os.kill(p, signal.SIGKILL)
+            ended.append(procs[p][2])
+        except ProcessLookupError:
+            pass
+    time.sleep(0.05)
+raise SystemExit('programs kept coming')
+"#;
+
 /// The local Docker computers.
 pub struct DockerProvider {
     image: String,
@@ -737,6 +805,12 @@ impl Provider for DockerProvider {
             return Err(Problem::Unwalled("its network changed under it".to_owned()));
         }
         self.net_up(name, &found, false).await
+    }
+
+    async fn clear_strays(&self, machine: &Machine) -> Result<Vec<String>> {
+        let name = container(machine)?;
+        let out = self.docker(&["exec", "--user", "0", "--privileged", name, "/usr/bin/python3", "-I", "-S", "-c", CLEAR], None).await?;
+        serde_json::from_str(out.trim()).map_err(|_| Problem::Failed("the programs left on it couldn't be told apart".to_owned()))
     }
 
     async fn screens(&self, machine: &Machine) -> Result<Vec<String>> {

@@ -124,6 +124,19 @@ fn main_bundle_name() -> Option<(String, String)> {
     Some((id, name))
 }
 
+/// The id of the bundle this binary runs in, read from the bundle itself.
+pub fn bundle_id() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        use nsh_platform_macos::objc2_foundation::NSBundle;
+        NSBundle::mainBundle().bundleIdentifier().map(|id| id.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Elsewhere (iOS, packaged by `ios.sh` as com.buwiz.bot) there are no
 /// test or dev instances to tell apart: the app's own name.
 #[cfg(not(target_os = "macos"))]
@@ -205,7 +218,12 @@ pub fn App() -> impl IntoElement {
 }
 
 #[cfg(test)]
+mod computer_ui_tests;
+#[cfg(test)]
 mod sidebar_ui_tests;
+
+#[cfg(test)]
+mod mini_ui_tests;
 
 #[cfg(test)]
 mod app_name_tests {

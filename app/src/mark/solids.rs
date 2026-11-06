@@ -24,7 +24,8 @@
 //!    head and near ones after it, so one brim passes in front of the head
 //!    on one side and behind it on the other. The head is about convex and
 //!    no face sits inside it (a face wholly inside the head or another
-//!    solid is dropped at build time), so this plane decides right.
+//!    solid is dropped at build time, and one that enters the head is cut
+//!    back to its surface), so this plane decides right.
 //! 3. Within a half, faces draw in order of distance from the head's
 //!    centre: outward in the near half, inward in the far half. Two points
 //!    on one line of sight and one side of the plane differ only in depth,
@@ -142,6 +143,10 @@ const COARSE: Detail = Detail {
 };
 /// Below this size (px of the mark's sprite) a mark draws [`COARSE`].
 const SMALL: f64 = 48.0;
+
+/// Halvings to find where an edge meets the head: past a thousandth of a
+/// pixel at any size an avatar draws.
+const CUT_STEPS: usize = 20;
 
 /// The direction the light comes from, in view space (x right, y up, z
 /// toward the viewer): high on the viewer's left.
@@ -273,6 +278,10 @@ impl Head {
         // the ring this direction meets: height over scale is the slope
         // of the direction, in the loft's own proportions
         let slope = d[2].abs() / b * rho / self.depth;
+        // past the last ring: on the head's axis, where the surface is its depth
+        if self.rings.last().is_some_and(|r| slope >= r.0) {
+            return self.depth;
+        }
         let i = self.rings.partition_point(|r| r.0 < slope).min(self.rings.len() - 1);
         let (lo, hi) = (self.rings[i.saturating_sub(1)], self.rings[i]);
         let t = if hi.0 > lo.0 { ((slope - lo.0) / (hi.0 - lo.0)).clamp(0.0, 1.0) } else { 0.0 };
@@ -751,6 +760,85 @@ struct Face {
     /// [`Scene::rings`]).
     above: Option<usize>,
     fragments: Vec<Fragment>,
+}
+
+/// Where the edge from `inside` the head to `outside` it meets the surface,
+/// as a fraction of the way along.
+fn crossing(head: &Head, inside: V3, outside: V3) -> f64 {
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..CUT_STEPS {
+        let mid = (lo + hi) / 2.0;
+        if head.contains(lerp3(inside, outside, mid)) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    hi
+}
+
+/// `face` with what's inside the head cut away, as one face or two. Left
+/// whole, a face drawn after the head shows the part that should be inside
+/// it, and a solid sinking into the head ends in stairs a face wide.
+///
+/// A face carrying marks stays whole: they're cut to its shape already.
+fn cut_at_head(face: Face, points: &mut Vec<V3>, head: &Head) -> Vec<Face> {
+    let corners = face.corners.map(|c| points[c as usize]);
+    let buried = corners.map(|p| head.contains(p));
+    if !face.fragments.is_empty() || buried.iter().all(|b| *b) || !buried.iter().any(|b| *b) {
+        return vec![face];
+    }
+    let cross = |from: usize, to: usize, points: &mut Vec<V3>| -> (u32, V3) {
+        let t = crossing(head, corners[from], corners[to]);
+        let at = u32::try_from(points.len()).expect("a scene's points fit u32");
+        points.push(lerp3(corners[from], corners[to], t));
+        (at, unit(lerp3(face.shading[from], face.shading[to], t)))
+    };
+    // each run of corners left is its own piece, between its two crossings:
+    // buried corners can alternate, and what lies between two runs is inside
+    let mut pieces = Vec::with_capacity(2);
+    for buried_one in 0..4 {
+        let first = (buried_one + 1) % 4;
+        if !buried[buried_one] || buried[first] {
+            continue;
+        }
+        let mut run = vec![cross(buried_one, first, points)];
+        let mut i = first;
+        while !buried[i] {
+            run.push((face.corners[i], face.shading[i]));
+            let next = (i + 1) % 4;
+            if buried[next] {
+                run.push(cross(next, i, points));
+            }
+            i = next;
+        }
+        fan(&run, &face, points, &mut pieces);
+    }
+    pieces
+}
+
+/// `run`, a convex outline of corners and their normals, as faces like `face`:
+/// quads fanned from its first corner. A piece of three repeats its last.
+fn fan(run: &[(u32, V3)], face: &Face, points: &[V3], pieces: &mut Vec<Face>) {
+    let last = run.len() - 1;
+    let mut start = 1;
+    while start < last {
+        let (b, c, d) = (start, start + 1, (start + 2).min(last));
+        let piece = [run[0], run[b], run[c], run[d]];
+        // the centre sorts the face: a repeated corner mustn't pull it over
+        let distinct = if d == c { 3 } else { 4 };
+        let sum = piece[..distinct].iter().fold([0.0; 3], |sum, (i, _)| add(sum, points[*i as usize]));
+        pieces.push(Face {
+            corners: piece.map(|(i, _)| i),
+            normal: face.normal,
+            shading: piece.map(|(_, n)| n),
+            centre: scale(sum, 1.0 / distinct as f64),
+            paint: face.paint,
+            above: face.above,
+            fragments: Vec::new(),
+        });
+        start += 2;
+    }
 }
 
 /// A lathe's widest ring. From below it, the disc it spans hides what's
@@ -1417,7 +1505,7 @@ impl Scene {
             }
         }
         // a face wholly inside the head or another solid never shows
-        let Builder { points, faces, owners, volumes, rings, paints, .. } = b;
+        let Builder { mut points, faces, owners, volumes, rings, paints, .. } = b;
         let hidden = |f: &Face, owner: usize| -> bool {
             let samples = f.corners.map(|c| points[c as usize]);
             let mut all = samples.to_vec();
@@ -1429,7 +1517,8 @@ impl Scene {
                     .any(|(i, v)| i != owner && all.iter().all(|p| v.contains(*p, head)))
         };
         let keep: Vec<bool> = faces.iter().zip(&owners).map(|(f, o)| !hidden(f, *o)).collect();
-        let mut faces: Vec<Face> = faces.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f)).collect();
+        let kept = faces.into_iter().zip(keep).filter_map(|(f, k)| k.then_some(f));
+        let mut faces: Vec<Face> = kept.flat_map(|f| cut_at_head(f, &mut points, head)).collect();
         let distance = |f: &Face| length(sub(f.centre, head.center));
         faces.sort_by(|a, b| distance(a).total_cmp(&distance(b)));
         let mut steps = vec![0];
@@ -1770,6 +1859,143 @@ mod tests {
             assert!(band(&pose(yaw, 40.0)), "above at {yaw}");
             assert!(!band(&pose(yaw, -55.0)), "below at {yaw}");
         }
+    }
+
+    /// A plain quad at `corners`, for the cut to work on.
+    fn quad(points: &mut Vec<V3>, corners: [V3; 4]) -> Face {
+        let at = points.len() as u32;
+        points.extend(corners);
+        Face {
+            corners: [at, at + 1, at + 2, at + 3],
+            normal: [0.0, 0.0, 1.0],
+            shading: [[0.0, 0.0, 1.0]; 4],
+            centre: scale(add(add(corners[0], corners[1]), add(corners[2], corners[3])), 0.25),
+            paint: 0,
+            above: None,
+            fragments: Vec::new(),
+        }
+    }
+
+    /// How far under the surface a chord of the unit disc head may run here.
+    const CHORD: f64 = 0.4;
+
+    fn disc_head() -> Head {
+        let rim: Vec<V3> = (0..90)
+            .map(|i| {
+                let t = TAU * i as f64 / 90.0;
+                [t.cos(), t.sin(), 0.0]
+            })
+            .collect();
+        Head::new(&rim, 0.72)
+    }
+
+    /// However a face enters the head, what's left of it is outside, and
+    /// reaches the surface along the cut.
+    #[test]
+    fn a_face_entering_the_head_stops_at_its_surface() {
+        let head = disc_head();
+        let (near, far) = (0.5, 1.5);
+        // the same square, moved so one, two or three corners are buried
+        for (name, x, y) in [("one", far, far), ("two", far, near), ("three", 0.8, 0.8)] {
+            let mut points = Vec::new();
+            let c = |dx: f64, dy: f64| [dx, dy, 0.0];
+            let (x0, y0) = (x - 1.0, y - 1.0);
+            let face = quad(&mut points, [c(x0, y0), c(x, y0), c(x, y), c(x0, y)]);
+            let pieces = cut_at_head(face, &mut points, &head);
+            assert!(!pieces.is_empty(), "{name}");
+            let mut on_surface = 0;
+            for p in pieces.iter().flat_map(|f| f.corners) {
+                let p = points[p as usize];
+                assert!(!head.contains(p), "{name}: {p:?} is inside");
+                if length(sub(p, head.center)) < 1.0 + 1e-3 {
+                    on_surface += 1;
+                }
+            }
+            assert!(on_surface >= 2, "{name}: {on_surface} corners on the surface");
+            for f in &pieces {
+                assert!(buried_by(f.centre) < CHORD, "{name}: centre {:?}", f.centre);
+            }
+        }
+    }
+
+    /// Straight out from the centre the surface is the head's depth, however
+    /// close to the axis: a point just off it isn't buried a head away.
+    #[test]
+    fn the_head_ends_at_its_depth_on_its_axis() {
+        let head = disc_head();
+        for lean in [0.0, 1e-6, 1e-3, 5e-3] {
+            let d = unit([lean, 0.0, 1.0]);
+            assert!(head.radius(d) < 0.8, "{lean}: {}", head.radius(d));
+        }
+        assert!(!head.contains([0.001, 0.0, 1.5]), "a point past the depth is outside");
+    }
+
+    /// How far a point lies inside the unit disc head.
+    fn buried_by(p: V3) -> f64 {
+        1.0 - length(p)
+    }
+
+    /// Buried corners that alternate leave two separate pieces, with the
+    /// head between them: nothing bridges it. An edge between two crossings
+    /// is a chord, so it runs a little under a curved surface, no more.
+    #[test]
+    fn alternate_buried_corners_leave_two_pieces() {
+        let head = disc_head();
+        let mut points = Vec::new();
+        let corners = [[0.95, 0.0, 0.0], [1.2, 1.2, 0.0], [0.0, 0.95, 0.0], [-1.2, -1.2, 0.0]];
+        let face = quad(&mut points, corners);
+        let pieces = cut_at_head(face, &mut points, &head);
+        assert_eq!(pieces.len(), 2);
+        for f in &pieces {
+            let at = f.corners.map(|c| points[c as usize]);
+            assert!(buried_by(f.centre) < CHORD, "centre {:?}", f.centre);
+            for i in 0..4 {
+                let mid = scale(add(at[i], at[(i + 1) % 4]), 0.5);
+                assert!(buried_by(mid) < CHORD, "edge {i} of {at:?}");
+            }
+        }
+    }
+
+    /// A piece of three corners repeats its last, and its centre is still
+    /// the middle of the three: the centre decides which half it draws in.
+    #[test]
+    fn a_cut_triangle_centres_on_its_three_corners() {
+        let head = disc_head();
+        let mut points = Vec::new();
+        let face = quad(&mut points, [[-0.2, -0.2, 0.0], [0.8, -0.2, 0.0], [0.8, 0.8, 0.0], [-0.2, 0.8, 0.0]]);
+        let pieces = cut_at_head(face, &mut points, &head);
+        assert_eq!(pieces.len(), 1);
+        let [a, b, c, d] = pieces[0].corners;
+        assert_eq!(c, d, "three corners, the last repeated");
+        let middle = scale(add(add(points[a as usize], points[b as usize]), points[c as usize]), 1.0 / 3.0);
+        assert!(length(sub(pieces[0].centre, middle)) < 1e-9, "{:?} against {middle:?}", pieces[0].centre);
+    }
+
+    /// A face wholly outside comes back as it was.
+    #[test]
+    fn a_face_outside_the_head_is_left_whole() {
+        let head = disc_head();
+        let mut points = Vec::new();
+        let face = quad(&mut points, [[2.0, 2.0, 0.0], [3.0, 2.0, 0.0], [3.0, 3.0, 0.0], [2.0, 3.0, 0.0]]);
+        let corners = face.corners;
+        let pieces = cut_at_head(face, &mut points, &head);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].corners, corners);
+        assert_eq!(points.len(), 4, "no new points");
+    }
+
+    /// A dome sunk into the head ends at the surface, not a face past it.
+    #[test]
+    fn a_solid_sinking_into_the_head_has_no_face_inside_it() {
+        let dome = serde_json::json!({"kind": "lathe", "color": "#F2C062", "at": [50, 74, 6], "tilt": [90, 0, 0],
+            "oval": 0.72, "profile": [[0, 16], [8, 15], [16, 11], [22, 3], [22, 0], [0, 0]]});
+        let (name, rich) = body(serde_json::json!([dome]));
+        let scene = rich.solids.as_ref().unwrap().at_size(100.0);
+        let base = custom::find(name).unwrap();
+        let head = Head::new(&base.loft_points, base.depth);
+        let buried = scene.faces.iter().flat_map(|f| f.corners).filter(|c| head.contains(scene.points[*c as usize]));
+        assert_eq!(buried.count(), 0, "corners inside the head");
+        assert!(!scene.faces.is_empty());
     }
 
     /// Hair covers the head from the side and the back, where a flat pad

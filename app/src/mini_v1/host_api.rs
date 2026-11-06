@@ -158,6 +158,9 @@ pub fn settle_notice(b: &dyn Broker, chat: &str, kind: &str, id: &str, state: &s
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginAction {
     Enable,
+    /// A person's Retry: an enable that may take the keystore's key, when
+    /// the plugin stopped because its record names another.
+    Retry,
     Disable,
     Uninstall,
 }
@@ -169,12 +172,13 @@ pub fn plugin_action(b: &dyn Broker, plugin: &str, action: PluginAction) -> Resu
     if !super::perms::plugin_id_ok(plugin) {
         return Err(RoxError::new("invalid_args", "not a plugin id"));
     }
-    let verb = match action {
-        PluginAction::Enable => "enable",
-        PluginAction::Disable => "disable",
-        PluginAction::Uninstall => "uninstall",
+    let (verb, body) = match action {
+        PluginAction::Enable => ("enable", json!({})),
+        PluginAction::Retry => ("enable", json!({"adopt_key": true})),
+        PluginAction::Disable => ("disable", json!({})),
+        PluginAction::Uninstall => ("uninstall", json!({})),
     };
-    post(b, &format!("/v1/host/plugins/{plugin}/{verb}"), json!({}), Duration::from_secs(30))
+    post(b, &format!("/v1/host/plugins/{plugin}/{verb}"), body, Duration::from_secs(30))
 }
 
 /// `POST /v1/host/plugins/:id/tools`: the per-tool switch (8.3).

@@ -389,6 +389,7 @@ impl Route {
                 let id = js::decode_uri_component(raw).map_err(|_| V1Error::new("internal", "URI malformed"))?;
                 let host = ctx.plugins.as_ref().ok_or_else(no_host)?;
                 match *action {
+                    "enable" if b.get("adopt_key") == Some(&Value::Bool(true)) => host.retry(&id).await,
                     "enable" => host.enable(&id).await,
                     "disable" => host.disable(&id).await,
                     "uninstall" => {

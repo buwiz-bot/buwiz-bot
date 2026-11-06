@@ -1174,6 +1174,20 @@ fn account_pill(connect: Signal<bool>) -> impl IntoElement {
         .label("Account")
 }
 
+/// The names on the Connect apps pill: the v1 mini app plugins (BIR,
+/// Books…) lead, then the catalog's. A disabled one isn't named.
+pub(crate) fn connect_apps() -> Vec<String> {
+    let st = store();
+    let v1 = st
+        .v1
+        .listed
+        .get()
+        .into_iter()
+        .filter(|p| st.v1_reach(&p.id) != crate::mini_v1::connect::Reach::Gone)
+        .map(|p| if p.title.is_empty() { p.id } else { p.title });
+    v1.chain(st.plugins.get().iter().filter(|p| p.installed).map(|p| p.name.clone())).take(3).collect()
+}
+
 /// The connect pill, Grok Bot's: the connected apps' logos (v1 plugins
 /// first) stacked 12pt apart (each on an 18pt card ring); hovered it takes
 /// the row and leads with "Connect apps", keeping the logos that still fit.
@@ -1185,12 +1199,7 @@ fn connect_pill(hovered: Signal<bool>) -> impl IntoElement {
     // Hovered: row − gap − circle − border − 16/12 padding − label − 6.
     let room = ROW - 8.0 - 36.0 - 2.0 - 16.0 - 12.0 - label_w - 6.0;
     let fits = ((room - 18.0) / 12.0).floor().max(0.0) as usize + 1;
-    // the v1 mini app plugins (BIR, Books…) lead, then the catalog's
-    let apps = move || -> Vec<String> {
-        let st = store();
-        let v1 = st.v1.listed.get().into_iter().map(|p| if p.title.is_empty() { p.id } else { p.title });
-        v1.chain(st.plugins.get().iter().filter(|p| p.installed).map(|p| p.name.clone())).take(3).collect()
-    };
+    let apps = connect_apps;
     view()
         .flex_row()
         .items_center()

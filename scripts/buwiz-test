@@ -2,8 +2,10 @@
 # A test Buwiz Bot: its own data dir, its own TMPDIR (so its dev hook file is its
 # own), its own gpui-agent port and token, its window on AeroSpace
 # workspace 3 (the owner's own Bot is on 4). A watcher lives as long as it does:
-# if this Bot takes the front while the owner isn't on workspace 3, the app
-# that had it gets it back. Prints the pid; drive it
+# if this Bot takes the front with no input just before it, that's a steal, and
+# the workspace and window that had it get it back. It's for launches by agents:
+# one the owner starts by hand, with no key pressed since, is handed back too.
+# Prints the pid; drive it
 # with scripts/test-agent. Exits 1, the instance stopped, when AeroSpace
 # never lists its window within 30 seconds.
 #   scripts/buwiz-test [--name <name>] <app binary> <instance dir> <agent port> [VAR=value ...]
@@ -88,13 +90,17 @@ umask 077
 head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/buwiz-gpui-agent-token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 # who the front belongs to, before this Bot could take it
-front_app() { lsappinfo info -only bundleid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*="\(.*\)"$/\1/p'; }
+case "${BUWIZ_TEST_VISIT_NS:-0}" in
+  *[!0-9]*) echo "buwiz-test: BUWIZ_TEST_VISIT_NS must be a number of nanoseconds" >&2; exit 2
+esac
+front_app() { lsappinfo info -only bundleid "${1:-$(lsappinfo front)}" 2>/dev/null | sed -n 's/.*="\(.*\)"$/\1/p'; }
 # an app to give the front back to: a failed read or this Bot's last run is none
 other_app() { [ -n "$1" ] && [ "$1" != "dev.buwiz.bot.test-$NAME" ]; }
 focused_window() { aerospace list-windows --focused --format '%{window-id} %{app-pid}' 2>/dev/null; }
 A=$(front_app)
 other_app "$A" || A=""
 WIN=$(focused_window | awk '{print $1}')
+SPACE=$(aerospace list-workspaces --focused 2>/dev/null || true)
 # VAR=value arguments by both names: ROX_<X> and BUWIZ_<X> alike
 VARS=()
 for a in "$@"; do
@@ -104,6 +110,11 @@ for a in "$@"; do
     *) VARS+=("$a") ;;
   esac
 done
+# a test Bot names a broker or it won't start: with none given, one nobody runs
+case " ${VARS[*]-} " in
+  *" BUWIZ_BACKEND="*) ;;
+  *) VARS+=("BUWIZ_BACKEND=http://127.0.0.1:1" "ROX_BACKEND=http://127.0.0.1:1") ;;
+esac
 env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKGROUND=1 ROX_BACKGROUND=1 \
   GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
   GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN_FILE="$R/buwiz-gpui-agent-token" ${VARS[@]+"${VARS[@]}"} \
@@ -113,8 +124,19 @@ echo "$P" > "$R/pid"
 # macOS can hand this Bot the front at any time, when the front app gives it up
 # and this is the next app with a window, so the watch lasts as long as the Bot.
 # Polling macOS costs little; AeroSpace is asked only when this Bot is in front.
-front_pid() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*=//p'; }
+front_pid() { lsappinfo info -only pid "$1" 2>/dev/null | sed -n 's/.*=//p'; }
+# Whether the person touched the keyboard or mouse just now. The workspace can't
+# tell a visit from a steal: AeroSpace follows an app macOS activates, so both
+# end on workspace 3 within milliseconds. A visit comes from a key or a click.
+# The limit: a steal while the person is typing or moving the mouse looks like a
+# visit and stays. That's the worst moment for it, and this can't catch it.
+input_just_now() {
+  local idle
+  idle="$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {print $NF; exit}')"
+  [ -n "$idle" ] && [ "$idle" -lt "${BUWIZ_TEST_VISIT_NS:-500000000}" ]
+}
 give_back() {
+  [ -z "$3" ] || aerospace workspace "$3" 2>/dev/null || true
   # the exact window if it's still there, else its app, if it's still running
   if [ -n "$1" ] && aerospace focus --window-id "$1" 2>/dev/null; then
     return
@@ -124,22 +146,45 @@ give_back() {
   fi
 }
 watch_front() {
-  local was="$A" win="$WIN" pid now seen
+  # one failed read mustn't end the watch
+  set +e
+  local was="$A" win="$WIN" space="$SPACE" asn pid now seen still tick=0
   while kill -0 "$P" 2>/dev/null; do
-    pid="$(front_pid)"
-    if [ "$pid" = "$P" ]; then
-      # on its workspace the owner came to look at it, and it's theirs to leave
-      if [ "$(aerospace list-workspaces --focused 2>/dev/null)" != 3 ]; then
-        give_back "$win" "$was"
+    asn="$(lsappinfo front 2>/dev/null)"
+    pid="$(front_pid "$asn")"
+    tick=$((tick + 1))
+    if [ -z "$pid" ]; then
+      : # a failed read says nothing: whoever was in front still is
+    elif [ "$pid" = "$P" ]; then
+      # decided once, as it arrives, and acted on once: later input is the owner
+      # using what they came to
+      if [ "$last" != "$P" ] && ! input_just_now; then
+        give_back "$win" "$was" "$space"
       fi
-    elif [ "$pid" != "$last" ]; then
-      # the front can change between these reads: never this Bot's own name
-      now="$(front_app)"
-      other_app "$now" && was="$now"
-      seen="$(focused_window)"
-      [ "${seen#* }" = "$P" ] || win="${seen%% *}"
+      last="$pid"
+    else
+      if [ "$pid" != "$last" ]; then
+        # the front can change between these reads: never this Bot's own name
+        now="$(front_app "$asn")"
+        other_app "$now" && was="$now"
+      fi
+      # where to go back to, kept fresh: by the time a steal is seen AeroSpace has
+      # followed it, and a workspace can change with no app changing
+      if [ "$pid" != "$last" ] || [ $((tick % ${BUWIZ_TEST_REFRESH:-10})) = 0 ]; then
+        seen="$(focused_window)"
+        if [ -n "$seen" ] && [ "${seen#* }" != "$P" ]; then
+          now="$(aerospace list-workspaces --focused 2>/dev/null)"
+          # a steal between those reads takes AeroSpace with it: then they're its
+          # own workspace, not where to go back to
+          still="$(front_pid "$(lsappinfo front 2>/dev/null)")"
+          if [ -n "$still" ] && [ "$still" != "$P" ]; then
+            win="${seen%% *}"
+            [ -z "$now" ] || space="$now"
+          fi
+        fi
+      fi
+      last="$pid"
     fi
-    last="$pid"
     sleep "${BUWIZ_TEST_TICK:-0.1}"
   done
 }

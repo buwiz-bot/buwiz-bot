@@ -138,6 +138,11 @@ fn ui_sets() -> Vec<nsh_core::element::Registry> {
 
 #[cfg(target_os = "macos")]
 fn main() -> impl std::process::Termination {
+    // first of all: a test bundle started bare would act as the owner's Bot
+    if let Some(why) = buwiz_bot::broker::refusal() {
+        eprintln!("buwiz-bot: {why}");
+        std::process::exit(2);
+    }
     jank_log::init();
     // Rox's data dir becomes Buwiz Bot's, once, before anything opens it
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());

@@ -3696,7 +3696,11 @@ impl Store {
                     .find(|t| t.id == it.id && !t.hidden && !t.archived && t.agents.is_none())
                     .cloned()
                     .map(GroupRow::Chat),
-                "app" => Some(GroupRow::App(it.id.clone(), it.title.clone())),
+                // a v1 app whose plugin is uninstalled or disabled stays in
+                // the group for when it is back, unseen
+                "app" => crate::mini_v1::V1Key::parse(&it.id)
+                    .map_or(true, |k| self.v1_reach(&k.plugin) != crate::mini_v1::connect::Reach::Gone)
+                    .then(|| GroupRow::App(it.id.clone(), it.title.clone())),
                 _ => it.artifact.clone().map(|a| GroupRow::Artifact(Box::new(a))),
             })
             .collect()

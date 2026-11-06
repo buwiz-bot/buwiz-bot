@@ -465,7 +465,7 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                         ),
                 )
                 .child(view().flex_1())
-                .when(crate::computer::bot_of_key(&key).is_some(), |v| v.child(crate::computer::record_button(&key)))
+                .when(crate::computer::bot_of_key(&key).is_some(), |v| v.child(crate::computer::drive_button(&key)).child(crate::computer::record_button(&key)))
                 .child(pin_button(&key, n))
                 .when(crate::slash::attachable(&token), |v| v.child(attach_button(&key, n, &token)))
                 .child(
@@ -483,16 +483,26 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
         .child(
             view()
                 .flex_1()
+                .child(crate::mini_v1::ui::banners(&key, true))
+                .child(match crate::computer::bot_of_key(&key) {
+                    Some(bot) => crate::computer::live_view(bot).into_element(),
+                    None => mini_app(&key, 0.0, None, None).into_element(),
+                })
+                .child(crate::mini_v1::ui::error_overlay(&key))
                 .child(when(
                     move || !store().mini_err(&k3).get().is_empty(),
                     {
                         let k = key.clone();
                         move || {
-                            let (k, k2) = (k.clone(), k.clone());
+                            let (k, k2, retry) = (k.clone(), k.clone(), k.clone());
                             // the plugin's own words, under which app of
-                            // which plugin failed
+                            // which plugin failed: over the app, the whole
+                            // height, in the window's one colour
                             view()
-                                .flex_1()
+                                .label("Mini app error")
+                                .absolute()
+                                .size_full()
+                                .bg(tc("#161616"))
                                 .items_center()
                                 .justify_center()
                                 .px_6()
@@ -519,18 +529,13 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                                                 .number_of_lines(8)
                                                 .text_size(px(13.0))
                                                 .text_color(tc("#f5f5f5c8")),
-                                        ),
+                                        )
+                                        .when(crate::mini_v1::is_v1(&retry), |v| v.child(crate::mini_v1::ui::retry_button(&retry))),
                                 )
                                 .into_element()
                         }
                     },
-                ))
-                .child(crate::mini_v1::ui::banners(&key, true))
-                .child(match crate::computer::bot_of_key(&key) {
-                    Some(bot) => crate::computer::live_view(bot).into_element(),
-                    None => mini_app(&key, 0.0, None, None).into_element(),
-                })
-                .child(crate::mini_v1::ui::error_overlay(&key)),
+                )),
         )
 }
 

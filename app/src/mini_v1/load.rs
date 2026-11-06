@@ -60,7 +60,7 @@ pub mod say {
     }
 
     pub fn unavailable(plugin_title: &str) -> String {
-        format!("{plugin_title} is not running. Retry")
+        format!("{plugin_title} is not running.")
     }
 
     /// A native screen (`apps[].native`) this build has no screen for.
@@ -857,7 +857,7 @@ mod tests {
         assert_eq!(runtime_message("Forms", K::Asset, "font"), None);
         let long = runtime_message("Forms", K::Uncaught, &"e".repeat(300)).unwrap();
         assert_eq!(long.len(), "Forms stopped: .".len() + 200);
-        assert_eq!(say::unavailable("Fixture"), "Fixture is not running. Retry");
+        assert_eq!(say::unavailable("Fixture"), "Fixture is not running.");
     }
 
     /// A broker listing one plugin whose `card` app is `listed` and

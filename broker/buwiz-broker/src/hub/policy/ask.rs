@@ -289,6 +289,10 @@ pub fn host_answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
     if answer == Answer::Rule && (key != "shell" || prefix.is_none()) {
         return V1Error::err("invalid_args", "only a shell card with a rule to save takes \"rule\"");
     }
+    // a person's own hands, one time: whatever a client sends, there's no standing yes
+    if answer == Answer::Chat && key == crate::hub::tools::computer::ASK_KEY {
+        return V1Error::err("invalid_args", "a hand-over is answered each time: \"once\" or \"no\"");
+    }
     // the parked call, if it still waits (a restart, a stopped turn: it doesn't)
     let Some(tx) = waiting().remove(id) else {
         let n = settle(ctx, chat, id, "expired", None).unwrap_or(n);
