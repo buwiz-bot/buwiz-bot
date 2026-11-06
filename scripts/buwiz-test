@@ -89,7 +89,12 @@ head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/buwiz-gpui-agent-token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 # who the front belongs to, before this Bot could take it
 front_app() { lsappinfo info -only bundleid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*="\(.*\)"$/\1/p'; }
+# an app to give the front back to: a failed read or this Bot's last run is none
+other_app() { [ -n "$1" ] && [ "$1" != "dev.buwiz.bot.test-$NAME" ]; }
+focused_window() { aerospace list-windows --focused --format '%{window-id} %{app-pid}' 2>/dev/null; }
 A=$(front_app)
+other_app "$A" || A=""
+WIN=$(focused_window | awk '{print $1}')
 # VAR=value arguments by both names: ROX_<X> and BUWIZ_<X> alike
 VARS=()
 for a in "$@"; do
@@ -109,19 +114,30 @@ echo "$P" > "$R/pid"
 # and this is the next app with a window, so the watch lasts as long as the Bot.
 # Polling macOS costs little; AeroSpace is asked only when this Bot is in front.
 front_pid() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*=//p'; }
+give_back() {
+  # the exact window if it's still there, else its app, if it's still running
+  if [ -n "$1" ] && aerospace focus --window-id "$1" 2>/dev/null; then
+    return
+  fi
+  if [ -n "$2" ] && [ -n "$(lsappinfo find bundleid="$2" 2>/dev/null)" ]; then
+    open -b "$2" 2>/dev/null || true
+  fi
+}
 watch_front() {
-  local was="$A" pid now
+  local was="$A" win="$WIN" pid now seen
   while kill -0 "$P" 2>/dev/null; do
     pid="$(front_pid)"
     if [ "$pid" = "$P" ]; then
       # on its workspace the owner came to look at it, and it's theirs to leave
-      if [ "$(aerospace list-workspaces --focused 2>/dev/null)" != 3 ] && [ -n "$was" ]; then
-        open -b "$was" 2>/dev/null || true
+      if [ "$(aerospace list-workspaces --focused 2>/dev/null)" != 3 ]; then
+        give_back "$win" "$was"
       fi
     elif [ "$pid" != "$last" ]; then
-      # the front can change between the two reads: never this Bot's own name
+      # the front can change between these reads: never this Bot's own name
       now="$(front_app)"
-      [ "$now" = "dev.buwiz.bot.test-$NAME" ] || was="$now"
+      other_app "$now" && was="$now"
+      seen="$(focused_window)"
+      [ "${seen#* }" = "$P" ] || win="${seen%% *}"
     fi
     last="$pid"
     sleep "${BUWIZ_TEST_TICK:-0.1}"
