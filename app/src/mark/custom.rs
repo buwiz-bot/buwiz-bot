@@ -3556,6 +3556,9 @@ mod tests {
     /// viewer's right eye shut, a patch on that cheek (an over layer, clear of
     /// the eye), three silver studs on the viewer's left ear.
     const CHESTNUT_CROP: &str = r##"{"o":"M26 56 L20 54 C17 58 18 66 26 68 C30 82 40 90 50 90 C60 90 70 82 74 68 C82 66 83 58 80 54 L74 56 C73 42 62 36 50 36 C38 36 27 42 26 56 Z","c":"#F2C9A0","l":[["M19 59 L21 59 L21 61 L19 61 Z","#C0C7D0"],["M19 62 L21 62 L21 64 L19 64 Z","#C0C7D0"],["M19.5 65 L21.5 65 L21.5 67 L19.5 67 Z","#C0C7D0"],["M58 72 L68 72 L68 78 L58 78 Z","#6B4A3A",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85,"shut":"r"},"p":[{"o":"M24 56 C18 40 32 24 50 24 C68 24 82 40 76 56 C72 46 62 42 50 42 C38 42 28 46 24 56 Z","c":"#7A4E2D","z":-0.1,"d":1.1}]}"##;
+    /// A striped eye: the crop's head, the viewer's right eye shut, a thin stripe
+    /// across it (an over layer) that crosses the eye without covering it.
+    const STRIPED_EYE: &str = r##"{"o":"M26 56 L20 54 C17 58 18 66 26 68 C30 82 40 90 50 90 C60 90 70 82 74 68 C82 66 83 58 80 54 L74 56 C73 42 62 36 50 36 C38 36 27 42 26 56 Z","c":"#F2C9A0","l":[["M50 60.5 L70 60.5 L70 63 L50 63 Z","#6B4A3A",1,"over"]],"e":{"c":"#111111","at":[50,62],"gap":18,"s":0.85,"shut":"r"}}"##;
     /// A teal fringe: a skin head, teal hair (d 1.1, z -0.1), a teal fringe over
     /// the viewer's right eye (over), a straight brow above the left eye and
     /// a small beard.
@@ -3583,8 +3586,27 @@ mod tests {
     /// state clip, pokes); the open eye still opens and blinks.
     #[test]
     fn shut_eye_stays_shut() {
+        shut_eye_holds(CHESTNUT_CROP);
+    }
+
+    /// An over layer across a shut eye, not covering it: the eye is still
+    /// drawn, still shut, and the layer goes over it.
+    #[test]
+    fn shut_eye_stays_shut_under_an_over_layer() {
+        shut_eye_holds(STRIPED_EYE);
+        let name = rich_body(STRIPED_EYE).unwrap();
         let tab = shared_tables();
-        let name = rich_body(CHESTNUT_CROP).unwrap();
+        let tree = render_ink(&Mark::new(&tab, Some(name), 1.0, false, false, 1), 120.71, 78.72, "#1884FC");
+        let mut ps = Vec::new();
+        all_paths(&tree, &mut ps);
+        let eye = ps.iter().rposition(|p| p.attr("data-eye").is_some()).expect("eyes");
+        let stripe = ps.iter().position(|p| p.attr("fill") == Some("#6B4A3A")).expect("the stripe");
+        assert!(stripe > eye, "the stripe draws over the eye");
+    }
+
+    fn shut_eye_holds(recipe: &str) {
+        let tab = shared_tables();
+        let name = rich_body(recipe).unwrap();
         let open = eye_loops(&render_ink(&Mark::new(&tab, Some(name), 1.0, false, false, 1), 120.71, 78.72, "#1884FC"));
         assert_eq!(open.len(), 2);
         let (left_open, right_shut) = (height(&open[0]), height(&open[1]));
