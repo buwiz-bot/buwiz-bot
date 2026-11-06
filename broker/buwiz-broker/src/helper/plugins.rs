@@ -40,6 +40,10 @@ use crate::v1::package::{self, Package};
 use crate::v1::trust::Trust;
 use crate::v1::{get, kind_of, tpl, V1Error};
 
+/// A plugin's record and the keystore name different keys.
+const KEY_CHANGED: &str = "plugin_key_changed";
+/// What the keystore holds for a plugin is no key.
+const KEY_INVALID: &str = "plugin_key_invalid";
 pub const BACKOFF_S: [u64; 7] = [1, 2, 4, 8, 16, 32, 60];
 pub const RESTART_WINDOW_MS: f64 = 10.0 * 60.0 * 1000.0;
 pub const MAX_RESTARTS: usize = 6;
@@ -742,6 +746,10 @@ impl Host {
                 return "failed";
             }
         };
+        if let Err(e) = Self::check_key(&row, &seed) {
+            self.set_state(id, "failed", Some(&e.code), &e.message);
+            return "failed";
+        }
         let g = match self.bootstrap(&row.spec(), &seed, Some(id), id).await {
             Ok(g) => g,
             // a process that would not start or answer counts as a crash; a
@@ -783,26 +791,21 @@ impl Host {
                 return "failed";
             }
         }
-        if let Err(e) = self.keep_key_on_record(&row, &seed) {
-            g.conn.close().await;
-            self.set_state(id, "failed", Some(&e.code), &e.message);
-            return "failed";
-        }
         self.adopt(id, g);
         "running"
     }
 
-    /// Records the public half of `seed`, the key the plugin was just
-    /// provisioned with, when `row` names another. The two part when the
-    /// keystore's item is replaced under an installed plugin, and every
-    /// certificate then fails until they agree. The record is no check on
-    /// the keystore: it is derived from it, as an update's is (9.4), and
-    /// who can write either can read the seed.
-    fn keep_key_on_record(&self, row: &Row, seed: &str) -> Res<()> {
-        let Ok(public) = buwiz_protocol::keys::SessionKey::from_seed(seed).map(|k| k.public()) else { return Ok(()) };
-        if public != row.plugin_pub {
-            eprintln!("  plugin {}: its record named another key than the keystore's; recording the keystore's", row.id);
-            self.sql(|db| db.execute("UPDATE v1_plugins SET plugin_pub=? WHERE id=?", params![public, row.id]))?;
+    /// Whether `seed` is the key `row` was installed with. The record pins
+    /// it: a keystore item replaced under an installed plugin stops the
+    /// plugin here, before it is handed the key, until a person's
+    /// [`Host::retry`] takes the new one.
+    fn check_key(row: &Row, seed: &str) -> Res<()> {
+        let Ok(key) = buwiz_protocol::keys::SessionKey::from_seed(seed) else {
+            return V1Error::err(KEY_INVALID, "the keystore's key for this plugin is not a key; reinstall it");
+        };
+        if key.public() != row.plugin_pub {
+            eprintln!("  plugin {}: its record named another key than the keystore's; it stays stopped until a person's Retry", row.id);
+            return V1Error::err(KEY_CHANGED, "Buwiz Bot holds another key for this plugin than the one it was installed with. Retry to use the one it holds.");
         }
         Ok(())
     }
@@ -1130,6 +1133,22 @@ impl Host {
         Ok(self.with_rt(id, |rt| {
             json!({"ok": rt.state == "running", "state": rt.state, "code": rt.code, "message": rt.message, "generation": rt.generation})
         }))
+    }
+
+    /// A person's Retry of a failed plugin: [`Host::enable`], taking the
+    /// keystore's key first when that is why it stopped. Only the host
+    /// route's `adopt_key` comes here: an agent's enable can't accept a
+    /// replaced key.
+    pub async fn retry(&self, id: &str) -> Res {
+        let row = self.must_row(id)?;
+        if self.with_rt(id, |rt| rt.code.clone()).as_deref() == Some(KEY_CHANGED) {
+            let public = self.key(id).await.and_then(|seed| buwiz_protocol::keys::SessionKey::from_seed(&seed).ok()).map(|k| k.public());
+            if let Some(public) = public {
+                eprintln!("  plugin {}: a person's Retry recorded the keystore's key", row.id);
+                self.sql(|db| db.execute("UPDATE v1_plugins SET plugin_pub=? WHERE id=?", params![public, row.id]))?;
+            }
+        }
+        self.enable(id).await
     }
 
     /// 9.6, broker side: buwiz.uninstall (best effort, 5 s), end the opens,

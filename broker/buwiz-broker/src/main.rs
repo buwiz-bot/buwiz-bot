@@ -100,7 +100,7 @@ async fn main() {
         let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
         let trust = config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
-        match (plugin_host(&db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
+        match (plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
                 let token = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
                 config.node_env.push(("BUWIZ_V1_LINE".to_owned(), format!("http://127.0.0.1:{}", config.port)));
@@ -132,7 +132,7 @@ async fn main() {
             ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
         }
         if ctx.plugins.is_none() {
-            match plugin_host(&db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), accounts.clone()) {
+            match plugin_host(&data, &db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), accounts.clone()) {
                 Ok(host) => {
                     ctx.sessions = Some(buwiz_broker::helper::sessions::Sessions::new(host.clone()));
                     ctx.plugins = Some(host);
@@ -227,7 +227,6 @@ async fn main() {
 /// whether its public half is the one `v1_plugins` recorded. Prints the
 /// public key only, never the seed.
 fn keystore_check(args: &[String]) -> i32 {
-    use buwiz_broker::helper::keystore::Keystore;
     let (Some(id), rest) = (args.first(), args.get(1..).unwrap_or(&[])) else {
         eprintln!("usage: buwiz-broker keystore-check <plugin id> [--data DIR]");
         return 2;
@@ -240,7 +239,7 @@ fn keystore_check(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let store = match data.as_deref().map_or_else(|| Keystore::from_spec(&keystore_spec()), data_keystore) {
+    let store = match data_keystore(data.as_deref().unwrap_or(&buwiz_protocol::broker_dir::dir_in(&home()))) {
         Ok(store) => store,
         Err(e) => {
             eprintln!("buwiz-broker: {e}");
@@ -303,8 +302,8 @@ fn manifest_op(args: &[String]) -> i32 {
     }
 }
 
-fn keystore_spec() -> String {
-    std::env::var("BUWIZ_KEYSTORE").unwrap_or_default()
+fn home() -> std::path::PathBuf {
+    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default()
 }
 
 /// The keystore of a broker on `data` ([`Keystore::for_data`]).
@@ -312,14 +311,14 @@ fn keystore_spec() -> String {
 /// [`Keystore::for_data`]: buwiz_broker::helper::keystore::Keystore::for_data
 fn data_keystore(data: &std::path::Path) -> Result<buwiz_broker::helper::keystore::Keystore, String> {
     let no_keychain = std::env::var("BUWIZ_NO_KEYCHAIN").as_deref() == Ok("1");
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    buwiz_broker::helper::keystore::Keystore::for_data(&keystore_spec(), no_keychain, data, &home)
+    let spec = std::env::var("BUWIZ_KEYSTORE").unwrap_or_default();
+    buwiz_broker::helper::keystore::Keystore::for_data(&spec, no_keychain, data, &home())
 }
 
-/// The v1 plugin host on `db` (`<data dir>/generated/app.db`), its keystore
-/// that data dir's; `accounts` where its sign-ins go.
-fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
-    let keys = data_keystore(db.ancestors().nth(2).unwrap_or(db))?;
+/// The v1 plugin host on `db`, its keystore that of data dir `data`;
+/// `accounts` where its sign-ins go.
+fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
+    let keys = data_keystore(data)?;
     let mut timeouts = Timeouts::default();
     // BUWIZ_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
     if let Some(ms) = buwiz_protocol::env::var("BUWIZ_V1_CALL_TIMEOUT_MS").and_then(|v| v.parse::<u64>().ok()).filter(|ms| *ms > 0) {
@@ -338,18 +337,19 @@ fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_
     Ok(host)
 }
 
-/// `buwiz-broker helper --db FILE [--log-dir DIR] [--port P]`: the v1
+/// `buwiz-broker helper --db FILE [--data DIR] [--log-dir DIR] [--port P]`: the v1
 /// plugin host alone, its line on 127.0.0.1 (port 0 picks one; the first
 /// line of stdout names it). `BUWIZ_LINE_TOKEN` is the line's token,
 /// `BUWIZ_TRUST_FILE` the trust store, `BUWIZ_V1_MANUAL_CLOCK=1` a clock the
 /// line moves (tests).
 async fn helper(args: &[String]) -> i32 {
-    let usage = "usage: buwiz-broker helper --db FILE [--log-dir DIR] [--port P]";
-    let (mut db, mut log_dir, mut port) = (None, None, 0u16);
+    let usage = "usage: buwiz-broker helper --db FILE [--data DIR] [--log-dir DIR] [--port P]";
+    let (mut db, mut data, mut log_dir, mut port) = (None, None, None, 0u16);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match (a.as_str(), it.next()) {
             ("--db", Some(v)) => db = Some(std::path::PathBuf::from(v)),
+            ("--data", Some(v)) => data = Some(std::path::PathBuf::from(v)),
             ("--log-dir", Some(v)) => log_dir = Some(std::path::PathBuf::from(v)),
             ("--port", Some(v)) if v.parse::<u16>().is_ok() => port = v.parse().unwrap_or(0),
             _ => {
@@ -372,7 +372,9 @@ async fn helper(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let host = match plugin_host(&db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, accounts) {
+    // `--db` is any file: its data dir, when not named, is its own folder
+    let data = data.unwrap_or_else(|| db.parent().map(std::path::PathBuf::from).unwrap_or_default());
+    let host = match plugin_host(&data, &db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, accounts) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("buwiz-broker helper: {e}");
