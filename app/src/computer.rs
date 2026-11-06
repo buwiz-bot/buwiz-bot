@@ -490,13 +490,29 @@ pub(crate) fn refusal(reply: Option<&Value>) -> Option<String> {
     (v.get("ok").and_then(Value::as_bool) == Some(false)).then(|| v.get("message").and_then(Value::as_str).unwrap_or("The computer said no.").to_owned())
 }
 
+/// What a test's broker answers, in order, and what it was sent. A headless engine has no network.
+#[cfg(test)]
+pub(crate) static CANNED: std::sync::Mutex<(Vec<Value>, Vec<(String, Value)>)> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+
+#[cfg(not(test))]
+async fn form_post(path: &str, body: Value) -> Option<Value> {
+    client::post_any(path, body).await
+}
+
+#[cfg(test)]
+async fn form_post(path: &str, body: Value) -> Option<Value> {
+    let mut canned = CANNED.lock().unwrap();
+    canned.1.push((path.to_owned(), body));
+    (!canned.0.is_empty()).then(|| canned.0.remove(0))
+}
+
 /// Asks the broker about what's in the form, with what's been trusted so far.
 fn test_remote() {
     let f = form();
     f.note.set(String::new());
     f.stage.set(Stage::Busy);
     spawn_detached(async move {
-        let reply = client::post_any("/v1/host/computer/remote/test", f.body()).await;
+        let reply = form_post("/v1/host/computer/remote/test", f.body()).await;
         match stage_of(reply.as_ref()) {
             Ok(stage) => f.stage.set(stage),
             Err(why) => {
@@ -515,7 +531,7 @@ fn add_remote(bot: String) {
     spawn_detached(async move {
         let mut body = f.body();
         body["consent"] = json!(true);
-        let reply = client::post_any(&route(&bot, "/remote"), body).await;
+        let reply = form_post(&route(&bot, "/remote"), body).await;
         match refusal(reply.as_ref()) {
             Some(why) => {
                 f.note.set(why);
@@ -647,16 +663,25 @@ fn stage_part(stage: Stage) -> impl IntoElement {
                 f.pin.set(pin.clone());
                 test_remote();
             })),
-        Stage::Ready { what, consent } => out.child(note(what)).child(view().test_id("computer-remote-consent").child(note(consent))).child(small_button("computer-remote-add", "I understand, add it", || {
-            if let Some(b) = store().active_bot() {
-                add_remote(b.id);
-            }
-        })),
+        Stage::Ready { what, consent } => out.child(note(what)).child(view().test_id("computer-remote-consent").child(note(consent))).child(small_button("computer-remote-add", "I understand, add it", || add_remote(pane_signal().with_untracked(|p| p.bot.clone())))),
     }
 }
 
+/// For a test: the tab is on `bot`, with nothing behind it.
+#[cfg(test)]
+pub(crate) fn pane_for(bot: &str) {
+    pane_signal().set(Pane { bot: bot.to_owned(), ..Pane::default() });
+}
+
+/// For a test: whether any field still holds something.
+#[cfg(test)]
+pub(crate) fn form_is_empty() -> bool {
+    let f = form();
+    [f.url, f.key_file, f.token, f.viewer, f.pin].iter().all(|s| s.with(String::is_empty)) && f.stage.with(|s| *s == Stage::Closed)
+}
+
 /// Connecting a remote computer: the address, what proves who you are, a test, then a yes.
-fn remote_form() -> impl IntoElement {
+pub(crate) fn remote_form() -> impl IntoElement {
     let f = form();
     view()
         .pt(px(10.0))
