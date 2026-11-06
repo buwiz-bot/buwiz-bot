@@ -382,7 +382,7 @@ fn b(v: Value) -> Value {
 /// The JS file's cases in its order (each builds on the last).
 #[tokio::test]
 async fn rtn_v1_routines_in_order() {
-    let w = World::new("rtn", rtn_routines(), &[("chat-1", "uid-chat-1", "Piccolo")], |_, _| {});
+    let w = World::new("rtn", rtn_routines(), &[("chat-1", "uid-chat-1", "Scout")], |_, _| {});
     w.fake.mail(json!([mail1()]));
     let (ctx, v1) = (&w.ctx, &w.v1);
     let searches = || w.fake.calls_to("gws_search_mail");
@@ -651,7 +651,7 @@ fn ins_routines() -> Value {
 async fn ins_v1_instances_in_order() {
     let reads = json!([{"plugin": GWS, "tools": ["gws_search_mail", "gws_read_mail"]}]);
     let old_run = START - 1000.0;
-    let w = World::new("ins", ins_routines(), &[("chat-1", "uid-chat-1", "Piccolo"), ("chat-2", "uid-chat-2", "Second chat")], |ctx, host| {
+    let w = World::new("ins", ins_routines(), &[("chat-1", "uid-chat-1", "Scout"), ("chat-2", "uid-chat-2", "Second chat")], |ctx, host| {
         // the thread of a routine from before instances
         let mut s = host.lock();
         s.list.push(super::host::MemThread {
@@ -859,7 +859,7 @@ async fn text(res: crate::hub::types::HubResponse) -> (u16, String) {
 async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
     let dir = temp("host");
     let host = Arc::new(MemoryHost::new(0));
-    host.add_chat("chat-1", "uid-chat-1", "Piccolo");
+    host.add_chat("chat-1", "uid-chat-1", "Scout");
     let routines = json!([{"id": "fx-digest", "name": "Fixture digest", "description": "d", "every_s": 300, "query": {"tool": "fx_search", "field": "query"}, "prompt": "p", "reads": [{"plugin": FX, "tools": ["fx_search"]}]}]);
     let fake = Fake::new(routines);
     let ctx = context(&dir, None);

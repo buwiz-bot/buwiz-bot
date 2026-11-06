@@ -11,7 +11,7 @@ use nsh_base::input;
 use nsh_core::prelude::*;
 use nsh_core::element::View;
 
-use crate::avatar::{bot_avatar, sleeping_blob, BlobEdit, BlobGaze, BotAvatarProps};
+use crate::avatar::{bot_avatar, BlobEdit, BlobGaze, BotAvatarProps};
 use crate::live::store;
 use crate::store::{AppMeta, Crop, Store, RoxApp};
 use crate::theme;
@@ -276,7 +276,7 @@ fn bot_profile() -> impl IntoElement {
                         .pt(px(4.0))
                         .into_element(),
                     (None, Some(b)) => {
-                        // "Made by Piccolo" under an agent another one made
+                        // "Made by Scout" under an agent another one made
                         let made = crate::agents::made_by_line(&b, &store().bots.get());
                         let parent = b.helper.as_ref().map(|h| h.parent.clone()).unwrap_or_else(|| b.made_by.clone());
                         view()
@@ -413,7 +413,7 @@ fn tab_pills() -> impl IntoElement {
 fn detail_body() -> impl IntoElement {
     match store().detail_tab.get().as_str() {
         "library" => library_tab().into_element(),
-        "computer" => computer_tab().into_element(),
+        "computer" => crate::computer::pane().into_element(),
         _ => details_tab().into_element(),
     }
 }
@@ -477,7 +477,7 @@ fn details_tab() -> impl IntoElement {
 
 // ————————————————————————— agents' conversations —————————————————————————
 
-/// "Made by Piccolo" under an agent's label: opens the parent's chat.
+/// "Made by Scout" under an agent's label: opens the parent's chat.
 fn made_by(line: String, parent: String) -> impl IntoElement {
     let hov = signal(false);
     text(line.clone())
@@ -1493,43 +1493,6 @@ fn clock(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Computer — the sleeping avatar card (App.tsx:2814).
-fn computer_tab() -> impl IntoElement {
-    view()
-        .child(
-            view()
-                .h(px(180.0))
-                .rounded(px(12.0))
-                .bg(theme::MAIN)
-                .items_center()
-                .justify_center()
-                .label("Wake computer")
-                .child(
-                    dynamic(|| {
-                        let shape = store().active_bot().map(|b| b.shape).unwrap_or_else(|| "blob".into());
-                        sleeping_blob(&shape, 33.0, "#f5f5f58a").into_element()
-                    })
-                    .into_element(),
-                )
-                .child(
-                    text("Computer is asleep")
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::TEXT)
-                        .pt(px(6.0)),
-                ),
-        )
-        .child(
-            text(move || {
-                let name = store().active_bot().map(|b| b.name).unwrap_or_else(|| crate::app_name().to_owned());
-                format!("{name}'s screen")
-            })
-            .text_size(px(12.0))
-            .text_color(theme::MUTED)
-            .pt(px(10.0)),
-        )
-}
-
 /// `detail() && !activeBot()` — the app detail: tile, title, pills,
 /// kvs, actions (App.tsx:2845).
 fn app_detail() -> impl IntoElement {
@@ -2398,10 +2361,10 @@ mod tests {
             {"id": "payments", "name": "BIR payments", "every_s": 300, "enabled": true, "available": true,
              "thread": "t2", "home": "t3", "last_run": 1793194720000u64, "last_items": 0}]}))];
         let at = |_: f64| "3:42 PM".to_owned();
-        assert_eq!(routines_section(None, &listed, "Piccolo", at), RoutinesSection::List, "a chat lists its routines");
+        assert_eq!(routines_section(None, &listed, "Scout", at), RoutinesSection::List, "a chat lists its routines");
         let open = RoutineOf { plugin: "app.buwiz.ebirforms".into(), id: "payments".into(), instance: String::new(), name: "BIR payments".into(), thread: "t2".into() };
         assert_eq!(
-            routines_section(Some(open.clone()), &listed, "Piccolo", at),
+            routines_section(Some(open.clone()), &listed, "Scout", at),
             RoutinesSection::This(Box::new(ThisRoutine {
                 name: "BIR payments".into(),
                 plugin: "app.buwiz.ebirforms".into(),
@@ -2414,17 +2377,17 @@ mod tests {
                 enabled: true,
                 pending: false,
                 chat: "t2".into(),
-                go: "Go to Piccolo chat".into(),
+                go: "Go to Scout chat".into(),
             }))
         );
         // a failure reads as one; before the plugins are listed, the name
         // and the way back still show
         let mut failing = listed.clone();
         failing[0].routines[0].last_error = "fx_query: offline".into();
-        let RoutinesSection::This(r) = routines_section(Some(open.clone()), &failing, "Piccolo", at) else { panic!() };
+        let RoutinesSection::This(r) = routines_section(Some(open.clone()), &failing, "Scout", at) else { panic!() };
         assert_eq!((r.status.as_str(), r.failed), ("Last check failed: fx_query: offline", true));
-        let RoutinesSection::This(r) = routines_section(Some(open), &[], "Piccolo", at) else { panic!() };
-        assert_eq!((r.by.as_str(), r.status.as_str(), r.go.as_str()), ("", "", "Go to Piccolo chat"));
+        let RoutinesSection::This(r) = routines_section(Some(open), &[], "Scout", at) else { panic!() };
+        assert_eq!((r.by.as_str(), r.status.as_str(), r.go.as_str()), ("", "", "Go to Scout chat"));
         assert!(!r.enabled, "no Run now or Pause before the plugins are listed");
     }
 
@@ -2437,7 +2400,7 @@ mod tests {
             {"id": "elsewhere", "name": "Other chat", "every_s": 300, "enabled": true, "available": true, "thread": "t9"},
             {"id": "never", "name": "Never enabled", "every_s": 300, "enabled": false, "available": false}]}))];
         let server = vec![
-            crate::routines::Routine::of(&serde_json::json!({"id": "r1", "name": "Calendar sync", "thread": "t2", "enabled": true, "botName": "Piccolo", "last_error": "offline"})),
+            crate::routines::Routine::of(&serde_json::json!({"id": "r1", "name": "Calendar sync", "thread": "t2", "enabled": true, "botName": "Scout", "last_error": "offline"})),
             crate::routines::Routine::of(&serde_json::json!({"id": "r2", "name": "Not here", "thread": "t5", "enabled": true})),
         ];
         let got = chat_routines("t2", &listed, &server, "Buwiz Bot");
@@ -2464,7 +2427,7 @@ mod tests {
             got[2],
             ChatRoutine {
                 name: "Calendar sync".into(),
-                by: "Piccolo".into(),
+                by: "Scout".into(),
                 status: "Last run failed: offline".into(),
                 failed: true,
                 enabled: true,
@@ -2498,7 +2461,7 @@ mod tests {
         assert_eq!(got[0].key(), "v1:app.buwiz.ebirforms/ri_a", "a run is the instance's");
         // a routine thread's card is its instance's
         let open = RoutineOf { plugin: "app.buwiz.ebirforms".into(), id: "confirm".into(), instance: "ri_b".into(), name: "BIR confirmations · Taxpayer B".into(), thread: "t2".into() };
-        let RoutinesSection::This(r) = routines_section(Some(open), &listed, "Piccolo", |_| "3:42 PM".to_owned()) else { panic!() };
+        let RoutinesSection::This(r) = routines_section(Some(open), &listed, "Scout", |_| "3:42 PM".to_owned()) else { panic!() };
         assert_eq!((r.instance.as_str(), r.pending, r.enabled, r.status.as_str(), r.schedule.as_str()), ("ri_b", true, false, "Waiting for your Enable", "Runs on its webhook"));
     }
 }

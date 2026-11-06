@@ -1,5 +1,5 @@
 [workspace]
-members = ["buwiz-broker", "buwiz-mcp", "buwiz-protocol"]
+members = ["buwiz-broker", "buwiz-computer", "buwiz-mcp", "buwiz-protocol"]
 resolver = "2"
 
 # /file/render's highlighter matches every line with fancy-regex: unoptimized

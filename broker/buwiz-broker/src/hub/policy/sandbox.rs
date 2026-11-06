@@ -11,6 +11,7 @@
 //!   key opens its database, and a process holding both skips every check the app makes.
 //! - A dev Bot's automation files ([`AUTOMATION_FILES`]).
 //! - The broker's own port: its open routes would let a shell start a turn or change a Bot.
+//! - Every computer's control and viewer ports, a fixed range ([`computer_ports`]).
 //!
 //! - Everything that would run a command outside this sandbox. A process started by something
 //!   else isn't sandboxed, so the rule is what the shell may ask of the rest of the Mac:
@@ -165,6 +166,13 @@ pub fn profile(data: &Path, ports: &[u16], home: &Path) -> Option<String> {
     Some(out)
 }
 
+/// Every port a computer's control API or viewer can be on, here or on any broker of this Mac: a
+/// range, because a wake picks new ones and a command may already be running. Its token is out of
+/// reach too, in a folder closed above.
+fn computer_ports() -> Vec<u16> {
+    (buwiz_computer::PORT_FIRST..=buwiz_computer::PORT_LAST).collect()
+}
+
 /// Shuts `port` on this Mac alone.
 pub fn local_rule(port: u16) -> String {
     format!("(deny network-outbound (remote ip \"localhost:{port}\"))")
@@ -178,7 +186,7 @@ fn escapes(home: &Path, local: &[u16]) -> Option<String> {
     out.push_str("(deny lsopen)(deny appleevent-send)(deny signal)(allow signal (target same-sandbox))");
     out.push_str(&format!("(deny process-exec* (regex #\"{NO_EXEC}\") (regex #\"/lsregister$\"))"));
     out.push_str(&format!("(deny network-outbound (remote unix-socket))(allow network-outbound (regex #\"{UNIX_SOCKETS}\"))"));
-    out.extend(local.iter().map(|port| local_rule(*port)));
+    out.extend(local.iter().chain(&computer_ports()).map(|port| local_rule(*port)));
     out.push_str(&format!("(deny file-read* file-write* (regex #\"{KEYCHAIN_FILES}\"))"));
     out.push_str(&format!("(deny file-write* (regex #\"{RUNS_LATER_FOLDERS}\") (regex #\"{RUNS_LATER_FILES}\") (regex #\"{GIT_HOOKS}\")"));
     for name in STARTUP_FILES {

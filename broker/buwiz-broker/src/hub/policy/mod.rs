@@ -93,8 +93,9 @@ impl Pos {
 }
 
 /// The switches that start off for every profile: looking at the screen, and acting on it, are
-/// turned on per Bot, each by itself. A person's data is on it.
-pub const OFF_BY_DEFAULT: [&str; 2] = ["screens", "screen_actions"];
+/// turned on per Bot, each by itself, because a person's data is on it. So is letting a routine
+/// use the computer: nobody is there to watch.
+pub const OFF_BY_DEFAULT: [&str; 3] = ["screens", "screen_actions", crate::hub::tools::computer::ROUTINES_KEY];
 
 /// The switches that start at Ask for every profile: a command runs as the person, so nothing
 /// runs without a person's yes until they turn a Bot's shell On.

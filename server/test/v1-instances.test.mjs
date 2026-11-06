@@ -34,7 +34,7 @@ const turns = [];
 const chats = new Set(["chat-1", "chat-2"]);
 const store = {
   list: [
-    { id: "chat-1", uid: "uid-chat-1", title: "Piccolo", turns: [] },
+    { id: "chat-1", uid: "uid-chat-1", title: "Scout", turns: [] },
     { id: "chat-2", uid: "uid-chat-2", title: "Second chat", turns: [] },
     // the thread of a routine from before instances
     { id: "t50", uid: "uid-t50", title: "BIR mail", turns: [{ id: "old", role: "user", text: "New item" }], routine: { plugin: FX, id: "bir-mail", name: "BIR mail", thread: "chat-1" } },

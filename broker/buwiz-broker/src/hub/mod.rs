@@ -10,6 +10,7 @@
 
 pub mod agent;
 pub mod agents;
+pub mod computer;
 pub mod ctx;
 pub mod jobs;
 pub mod library;
@@ -116,6 +117,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes::popout::install(routes, ctx);
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);
+    computer::install(routes, ctx);
     routines::install(routes, ctx);
     // phase 7: /file/render of every other kind, and GET / (before
     // office's: it hands office files on to office's render)

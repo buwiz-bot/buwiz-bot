@@ -697,7 +697,7 @@ fn notice_dot() -> impl IntoElement {
 }
 
 /// An agents' notice: one centered, dim line as a routine's run is —
-/// "Piccolo → Boss · Q3 payments · 2 messages · Open". A paused
+/// "Scout → Boss · Q3 payments · 2 messages · Open". A paused
 /// conversation's adds Resume while it is paused; a line inside the
 /// conversation it names has no Open.
 fn agents_notice_row(n: crate::agents::AgentsNotice) -> impl IntoElement {
@@ -894,7 +894,7 @@ fn message_row(i: i64, m: crate::agents::AgentMessage) -> impl IntoElement {
         })
 }
 
-/// "Reply from Boss · Open" (or "For Piccolo's request · Open") over a
+/// "Reply from Boss · Open" (or "For Scout's request · Open") over a
 /// turn another agent's message brought: Open shows the conversation at
 /// that message.
 fn reply_caption(r: crate::agents::ReplyFrom) -> impl IntoElement {

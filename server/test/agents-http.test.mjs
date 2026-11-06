@@ -62,7 +62,7 @@ const bridge = (method, path, tok, obj) =>
 before(async () => {
   nodeIn(dataDir, `
     const { store, nextThreadSeq, uuidv7, writeIndex } = await import("./src/state.mjs");
-    for (const name of ["Piccolo", "Boss"]) {
+    for (const name of ["Scout", "Boss"]) {
       const tid = "t" + nextThreadSeq();
       store.list.push({ id: tid, uid: uuidv7(), title: name, turns: [] });
       store.bots.push({ id: name.toLowerCase(), name, shape: "blob", color: "#FFFFFF", threadId: tid, memories: [], integrations: [] });
@@ -132,7 +132,7 @@ test("AGH-01 endpoints: create, list, rotate, delete; secrets only when made or 
     }),
   );
   assert.deepEqual((await host("/v1/host/agents/endpoints/list", {})).json.endpoints.length, 3, "every agent's");
-  assert.deepEqual((await host("/v1/host/agents/endpoints/list", { bot: "piccolo" })).json, { ok: true, endpoints: [] });
+  assert.deepEqual((await host("/v1/host/agents/endpoints/list", { bot: "scout" })).json, { ok: true, endpoints: [] });
   // rotate: the old secret stops working
   const temp = (await host("/v1/host/agents/endpoints/create", { bot: "boss", kind: "hook", name: "Temp" })).json;
   const rot = await host("/v1/host/agents/endpoints/rotate", { id: temp.id });
@@ -224,7 +224,7 @@ test("AGH-03 hook refusals: secret, signature, staleness, replay, size, JSON, ve
   await is(await hook(ci, "[1]"), 400, "invalid_args", "the body is an envelope object");
   await is(await hook(ci, envelope({ v: 2 })), 400, "unsupported_version", "v must be 1");
   await is(await hook(ci, envelope({ id: "nope" })), 400, "invalid_args", "id is msg_ and 8 to 80 letters, digits, _ or -");
-  await is(await hook(ci, envelope({ to: ["piccolo"] })), 400, "not_allowed", "Piccolo does not take messages from you");
+  await is(await hook(ci, envelope({ to: ["scout"] })), 400, "not_allowed", "Scout does not take messages from you");
   await is(await hook(ci, envelope({ subject: "" })), 400, "invalid_args", "`subject` is required for a new conversation");
   // a hook route of no endpoint kind, and a GET
   assert.equal((await request("GET", ci.path)).status, 404);
@@ -255,8 +255,8 @@ test("AGH-05 accepts, archive, resume: refusals, a hook's agent that takes no me
   const no = await hook(ci, envelope());
 
   assert.deepEqual([no.status, no.json], [400, refusal("invalid_args", "no agent to send to")]);
-  assert.equal((await host("/v1/host/agents/accepts", { bot: "boss", accepts: ["piccolo"] })).status, 200);
-  assert.deepEqual((await threads()).bots.find((b) => b.id === "boss").accepts, ["piccolo"]);
+  assert.equal((await host("/v1/host/agents/accepts", { bot: "boss", accepts: ["scout"] })).status, 200);
+  assert.deepEqual((await threads()).bots.find((b) => b.id === "boss").accepts, ["scout"]);
   assert.equal((await host("/v1/host/agents/accepts", { bot: "boss", accepts: "all" })).status, 200);
   // archive and back
   assert.equal((await host("/v1/host/agents/archive", { conversation: conv })).text, '{"ok":true}');

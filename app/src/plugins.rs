@@ -4,6 +4,9 @@
 //! radius 14, `#1f1f1f` surface.
 //!
 //! Layout constants — `MK` (App.tsx:1367).
+/// What the person agrees to on a mini app's Uninstall. It names unsaved files
+/// because an app's working copies go too, and those can't be fetched again.
+const UNINSTALL_CONFIRM: &str = "Uninstall: remove its pins, attachments, data and unsaved files";
 const MK_BAND: f32 = 48.0;
 const MK_TITLE: f32 = 42.0;
 const MK_LEFT: f32 = 33.0;
@@ -3404,7 +3407,7 @@ fn v1_plugin_page() -> impl IntoElement {
                             view()
                                 .flex_row()
                                 .gap(px(8.0))
-                                .child(sm_btn(Btn::DangerSolid, || "Uninstall: remove its pins, attachments and data".to_owned(), move || {
+                                .child(sm_btn(Btn::DangerSolid, || UNINSTALL_CONFIRM.to_owned(), move || {
                                     confirm.set(false);
                                     store().v1_uninstall(&id);
                                 }))
@@ -4064,4 +4067,12 @@ fn v1_install_page() -> impl IntoElement {
             )
             .into_element()
         })))
+}
+
+#[cfg(test)]
+mod uninstall_tests {
+    #[test]
+    fn the_confirmation_says_unsaved_files_go_too() {
+        assert!(super::UNINSTALL_CONFIRM.contains("unsaved files"));
+    }
 }
