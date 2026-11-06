@@ -383,9 +383,13 @@ mod tests {
         let id = "cmp_0123abcd";
         assert_eq!(keys.get_computer_key(id).unwrap(), None);
         let text = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
+        // whatever was there, and whatever this process's umask
+        let path = dir.join("computer-keys/cmp_0123abcd.key");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         keys.put_computer_key(id, text).unwrap();
         assert_eq!(keys.get_computer_key(id).unwrap().as_deref(), Some(text));
-        let path = dir.join("computer-keys/cmp_0123abcd.key");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         keys.remove_computer_key(id).unwrap();
         assert!(!path.exists());
