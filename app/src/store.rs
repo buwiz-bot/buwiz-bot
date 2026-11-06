@@ -3047,6 +3047,9 @@ pub struct Store {
     /// A list's rows are where the last pass found them. Until then they all
     /// count as seen.
     pub(crate) side_settled: [Signal<bool>; 2],
+    /// How many passes have been asked for: an answer only settles a list if
+    /// nothing newer was asked.
+    pub(crate) side_asked: [std::cell::Cell<u32>; 2],
     /// Passes in a row that couldn't see everything.
     pub(crate) side_retries: [std::cell::Cell<u32>; 2],
     /// The detached root the ticker runs under — no component owns it,
@@ -3331,6 +3334,7 @@ impl Store {
             side_list: Default::default(),
             side_placing: Default::default(),
             side_settled: [signal(false), signal(false)],
+            side_asked: Default::default(),
             side_retries: Default::default(),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),

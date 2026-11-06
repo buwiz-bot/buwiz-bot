@@ -179,7 +179,19 @@ fn Side() -> impl IntoElement {
                 }))
                 .child(view().label("lose the scroll").w(px(40.0)).h_full().on_press(|| {
                     store().side_window[1].update(|w| w.top = 0.0);
+                }))
+                .child(view().label("stale answer").w(px(40.0)).h_full().on_press(|| {
+                    let asked = store().side_asked[1].get();
                     crate::sidebar::place_rows(1);
+                    crate::sidebar::settle(1, asked);
+                    RECORD.store(store().side_settled[1].get_untracked(), Ordering::Relaxed);
+                }))
+                .child(view().label("check settled").w(px(40.0)).h_full().on_press(|| {
+                    RECORD.store(store().side_settled[1].get_untracked(), Ordering::Relaxed);
+                }))
+                .child(view().label("same height").w(px(40.0)).h_full().on_press(|| {
+                    let h = store().side_window[1].get_untracked().height;
+                    crate::sidebar::list_laid_out(true, h);
                 }))
                 .child(view().label("lose the list").w(px(40.0)).h_full().on_press(|| {
                     store().side_content[1].set(None);
@@ -783,7 +795,8 @@ fn a_scroll_nobody_reported_is_found() {
     app.pump(Duration::from_millis(600));
     scroll_to(&mut app, "Bot list", 1000.0);
     app.press("lose the scroll");
-    app.pump(Duration::from_millis(300));
+    // nothing asks: the watch on the offset finds it
+    app.pump(Duration::from_millis(1600));
     let now = paints_of(&mut app, 0..BOTS);
     println!("after a lost scroll: {now:?}");
     assert!(now[BOTS - 1] > 5, "the last row is in view: {now:?}");
@@ -810,6 +823,59 @@ fn rows_nobody_can_place_paint() {
     let now = paints_of(&mut app, 0..BOTS);
     println!("unplaced: {now:?}");
     assert!(now[BOTS - 1] > 5, "unplaced, the last row paints: {now:?}");
+}
+
+/// An answer to an older ask doesn't settle a list with a newer one waiting.
+#[test]
+fn an_older_pass_doesnt_settle_a_newer_ask() {
+    if !in_child("an_older_pass_doesnt_settle_a_newer_ask") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(600));
+    app.press("stale answer");
+    app.pump(Duration::from_millis(100));
+    assert!(!RECORD.load(Ordering::Relaxed), "settled by the older answer");
+    app.pump(Duration::from_millis(300));
+    app.press("check settled");
+    app.pump(Duration::from_millis(100));
+    assert!(RECORD.load(Ordering::Relaxed), "the newer pass settles it");
+}
+
+/// Each ask gets its own tries, not what the last one left.
+#[test]
+fn each_ask_gets_its_own_tries() {
+    if !in_child("each_ask_gets_its_own_tries") {
+        return;
+    }
+    let passes = || crate::sidebar::ROW_PASSES.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(600));
+    app.press("lose the list");
+    app.pump(Duration::from_millis(1000));
+    let at = passes();
+    app.press("place");
+    app.pump(Duration::from_millis(1000));
+    println!("passes for a second ask: {}", passes() - at);
+    assert!(passes() - at > 3, "tries for the second ask: {}", passes() - at);
+}
+
+/// A layout that changes nothing asks for nothing.
+#[test]
+fn a_layout_at_the_same_height_places_nothing() {
+    if !in_child("a_layout_at_the_same_height_places_nothing") {
+        return;
+    }
+    let passes = || crate::sidebar::ROW_PASSES.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(600));
+    let at = passes();
+    app.press("same height");
+    app.pump(Duration::from_millis(200));
+    assert_eq!(passes() - at, 0, "passes for a layout that moved nothing");
 }
 
 /// What shows can change with the ids the same: a pin, a hide, a new section.

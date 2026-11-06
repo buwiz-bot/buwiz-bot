@@ -27,6 +27,8 @@ pub(crate) fn sidebar() -> impl IntoElement {
         place_rows(0);
         place_rows(1);
     });
+    watch_offset(0);
+    watch_offset(1);
     view()
         .flex_row()
         .h_full()
@@ -45,6 +47,8 @@ pub(crate) fn what_shows(bots: &[RoxBot]) -> Vec<(String, bool, bool, String)> {
 const SEEN_MARGIN: f32 = 80.0;
 /// How many times a pass that couldn't see everything looks again.
 const PLACE_RETRIES: u32 = 5;
+/// How often a shown list's real offset is checked.
+const OFFSET_WATCH: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Whether the row at `node` can be seen: its form is on screen and it's in
 /// the list's window. The cost of avatars is then what fits on screen, however
@@ -73,7 +77,14 @@ fn row_seen(full: bool, node: ElementRef) -> std::rc::Rc<dyn Fn() -> bool> {
 /// a scroll that never reported. Detached, so a row going away can't take the
 /// pass with it and leave the list waiting for one forever.
 pub(crate) fn place_rows(i: usize) {
+    // each ask from outside gets its own tries
+    store().side_retries[i].set(0);
+    queue_pass(i);
+}
+
+fn queue_pass(i: usize) {
     let st = store();
+    st.side_asked[i].set(st.side_asked[i].get().wrapping_add(1));
     st.side_settled[i].set(false);
     if st.side_placing[i].replace(true) {
         return;
@@ -81,6 +92,7 @@ pub(crate) fn place_rows(i: usize) {
     spawn_detached(async move {
         timer(std::time::Duration::ZERO).await;
         st.side_placing[i].set(false);
+        let asked = st.side_asked[i].get();
         #[cfg(test)]
         ROW_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let rows = {
@@ -110,9 +122,17 @@ pub(crate) fn place_rows(i: usize) {
         if lost {
             return place_again(i);
         }
-        st.side_retries[i].set(0);
-        st.side_settled[i].set(true);
+        settle(i, asked);
     });
+}
+
+/// A pass for ask `asked` is done: the list is settled, unless a newer ask
+/// came in meanwhile and its pass has yet to answer.
+pub(crate) fn settle(i: usize, asked: u32) {
+    let st = store();
+    if st.side_asked[i].get() == asked {
+        st.side_settled[i].set(true);
+    }
 }
 
 /// A pass couldn't see everything: the list stays unsettled, so its rows
@@ -124,8 +144,41 @@ fn place_again(i: usize) {
     if tries <= PLACE_RETRIES {
         spawn_detached(async move {
             timer(std::time::Duration::from_millis(100)).await;
-            place_rows(i);
+            queue_pass(i);
         });
+    }
+}
+
+/// Looks at a shown list's real offset now and then, and places its rows if
+/// that moved: a scroll nobody reported can't leave them blank for long.
+fn watch_offset(i: usize) {
+    spawn(async move {
+        loop {
+            timer(OFFSET_WATCH).await;
+            let st = store();
+            if !st.side_shown.get_untracked() || (st.side_mode.get_untracked() == "full") != (i == 1) {
+                continue;
+            }
+            let (Some(list), Some(content)) = (st.side_list[i].get(), st.side_content[i].get()) else {
+                continue;
+            };
+            let (view, top) = (list.measure(), content.measure());
+            if let (Some(view), Some(top)) = (view.await, top.await)
+                && (view.page.y.0 - top.page.y.0 - st.side_window[i].get_untracked().top).abs() > 0.5
+            {
+                place_rows(i);
+            }
+        }
+    });
+}
+
+/// A size changed height: what's in the list may have moved.
+fn height_changed(i: usize) -> impl Fn(f32) + 'static {
+    let was = std::cell::Cell::new(f32::NAN);
+    move |h: f32| {
+        if was.replace(h) != h {
+            place_rows(i);
+        }
     }
 }
 
@@ -143,11 +196,15 @@ fn row_moved(i: usize) -> impl Fn(&Bounds<Points>) + 'static {
 #[cfg(test)]
 pub(crate) static ROW_PASSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// A list's view laid out: keeps its height and has its rows look again.
-fn list_laid_out(full: bool, height: f32) {
+/// A list's view laid out: if its height changed, keeps it and has its rows
+/// look again. Anything else would have every row paint for a layout that
+/// moved nothing.
+pub(crate) fn list_laid_out(full: bool, height: f32) {
     let i = full as usize;
-    store().side_window[i].update(|w| w.height = height);
-    place_rows(i);
+    if store().side_window[i].get_untracked().height != height {
+        store().side_window[i].update(|w| w.height = height);
+        place_rows(i);
+    }
 }
 
 /// A list scrolled.
@@ -378,7 +435,10 @@ fn rail() -> impl IntoElement {
                         .child(
                         view()
                             .element_ref(&rail_content)
-                            .on_layout(|_: &Bounds<Points>| place_rows(0))
+                            .on_layout({
+                                let changed = height_changed(0);
+                                move |b: &Bounds<Points>| changed(b.size.height.0)
+                            })
                             .items_center()
                             .gap_1()
                             .pt(px(RAIL_TOP + 8.0))
@@ -916,6 +976,7 @@ fn full_sidebar() -> impl IntoElement {
     // goes back to the top (once, a moment after launch).
     let list = element_ref();
     let list_content = element_ref();
+    let content_height = height_changed(1);
     store().side_list[1].set(Some(list));
     store().side_content[1].set(Some(list_content));
     {
@@ -993,7 +1054,7 @@ fn full_sidebar() -> impl IntoElement {
                             .element_ref(&list_content)
                             .on_layout(move |b: &Bounds<Points>| {
                                 dd3.width.set(b.size.width.0);
-                                place_rows(1);
+                                content_height(b.size.height.0);
                             })
                             .on_mouse_move(move |e: &MouseEvent| {
                                 let at = (e.position.x.0, e.position.y.0);
