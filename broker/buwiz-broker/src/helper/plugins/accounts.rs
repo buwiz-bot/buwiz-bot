@@ -104,10 +104,20 @@ impl Default for AccountsConfig {
 }
 
 impl AccountsConfig {
-    /// A release: Google, and the system browser. Nothing can change that.
+    /// A release: Google, and the system browser. Nothing can change that,
+    /// so a test Bot started on this build stops here rather than send its
+    /// sign-in to the real Google.
     #[cfg(not(feature = "test-google"))]
     pub fn from_env(port: u16) -> Result<Self, String> {
-        Ok(Self { port, ..Self::default() })
+        Self::for_release(port, std::env::var_os(TEST_GOOGLE_ENV).as_deref())
+    }
+
+    #[cfg(not(feature = "test-google"))]
+    fn for_release(port: u16, value: Option<&std::ffi::OsStr>) -> Result<Self, String> {
+        match value {
+            Some(_) => Err(format!("{TEST_GOOGLE_ENV} is set, but this broker isn't a test-google build; not starting, so a test Bot can't reach the real Google")),
+            None => Ok(Self { port, ..Self::default() }),
+        }
     }
 
     /// A test build signs in at the stub or not at all: it never reaches the
@@ -125,8 +135,7 @@ impl AccountsConfig {
     }
 }
 
-/// In a test build, names the stub Google on loopback. A release has no such variable.
-#[cfg(feature = "test-google")]
+/// Names the stub Google on loopback, in a test build. A release refuses it.
 pub const TEST_GOOGLE_ENV: &str = "BUWIZ_TEST_GOOGLE";
 
 /// `http://127.0.0.1:<port>` and the rest, split: `None` for anything else.
@@ -159,7 +168,7 @@ fn stub_google(port: u16, base: &str) -> Option<AccountsConfig> {
 }
 
 /// GETs a loopback `url` and the redirects it answers, as the browser would.
-/// Every hop must stay on loopback, and a silent server can't hold it for long.
+/// Every hop must stay on loopback, and each read waits ten seconds at most.
 #[cfg(feature = "test-google")]
 fn follow(url: &str) -> Result<(), String> {
     use std::io::{Read as _, Write as _};
@@ -434,7 +443,7 @@ impl Host {
     async fn promote_next(&self, plugin: &str, account: &str) -> Option<String> {
         while let Some(n) = self.active_label(plugin, account) {
             self.set_active(plugin, account, &n);
-            let r = self.account_row(plugin, account, &n)?;
+            let Some(r) = self.account_row(plugin, account, &n) else { return None };
             if self.push_label(&r).await {
                 self.account_changed(plugin, account, &n, "connected");
                 return Some(n);
@@ -906,6 +915,7 @@ impl Host {
             subject: subject_of(t.get("id_token")),
             token_ref: token_ref(&p.plugin, &p.account, &p.label),
             state: "connected".into(),
+            // Google's token answer carries `scope`; the fallback is for others
             scopes: scopes_of(t.get("scope")).unwrap_or(p.scopes.clone()),
             updated_at: 0,
             active: true,
@@ -1205,6 +1215,14 @@ mod tests {
     fn a_release_signs_in_at_google() {
         let cfg = AccountsConfig::from_env(8810).unwrap();
         assert_eq!((cfg.port, cfg.google_authorize.as_str(), cfg.google_token.as_str()), (8810, GOOGLE_AUTHORIZE, GOOGLE_TOKEN));
+    }
+
+    #[cfg(not(feature = "test-google"))]
+    #[test]
+    fn a_release_refuses_the_test_variable() {
+        let refused = AccountsConfig::for_release(8810, Some(std::ffi::OsStr::new("http://127.0.0.1:9"))).err();
+        assert!(refused.is_some_and(|e| e.contains("isn't a test-google build")));
+        assert!(AccountsConfig::for_release(8810, None).is_ok());
     }
 
     #[cfg(feature = "test-google")]

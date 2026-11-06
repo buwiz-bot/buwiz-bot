@@ -326,6 +326,36 @@ pub(crate) mod tests {
         ]
     }
 
+    /// Mail as `gws-screens` draws it: fixed labels on rows and labels, with
+    /// the data as their values and as the row's texts.
+    fn mail() -> Vec<Seen> {
+        let row = |n: &str, who: &str, subject: &str, snippet: &str| {
+            seen(n, "button", "Open conversation", Some(&format!("{who}, {subject}")), vec![
+                text(&format!("{n}a"), who),
+                text(&format!("{n}b"), "Nov 6"),
+                text(&format!("{n}c"), subject),
+                text(&format!("{n}d"), snippet),
+            ])
+        };
+        vec![
+            seen("l1", "button", "Open this label", Some("Clients"), vec![text("l1a", "Clients"), text("l1b", "68")]),
+            seen("s1", "textfield", "", None, vec![seen("s2", "textfield", "Search mail", Some("from:ana"), vec![])]),
+            row("r1", "Ana Fakerson", "Your invoice 1042", "Hello, the amount is due"),
+            row("r2", "Ben Fakerson", "Re: Lunch", "See you at noon"),
+            seen("b1", "button", "Open this link", None, vec![text("b1a", "Open")]),
+            text("u1", "Open https://evil.example/x?"),
+        ]
+    }
+
+    /// What goes to the model, byte for byte, has nothing of a mail in it.
+    #[test]
+    fn the_bytes_of_a_mail_screen_hold_no_mail() {
+        let bytes = serde_json::to_string(&readable(&mail(), Reading::Structure)).unwrap();
+        for word in ["Ana", "Ben", "Fakerson", "invoice", "1042", "Lunch", "amount", "noon", "Clients", "68", "from:ana", "evil.example"] {
+            assert!(!bytes.contains(word), "{word} in {bytes}");
+        }
+    }
+
     /// A person toggling a choice leaves every word on the screen as it was.
     #[test]
     fn a_checked_or_selected_state_changes_the_rev() {

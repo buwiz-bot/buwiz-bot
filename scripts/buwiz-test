@@ -1,9 +1,9 @@
 #!/bin/bash
 # A test Buwiz Bot: its own data dir, its own TMPDIR (so its dev hook file is its
 # own), its own gpui-agent port and token, its window on AeroSpace
-# workspace 3 (the owner's own Bot is on 4). The focus stays where it was
-# (the window that had it gets it back) and the visible workspace never
-# changes. Prints the pid; drive it
+# workspace 3 (the owner's own Bot is on 4). If the launch takes the front, at
+# any point until the watch ends, the window and workspace that had it get it
+# back. Prints the pid; drive it
 # with scripts/test-agent. Exits 1, the instance stopped, when AeroSpace
 # never lists its window within 30 seconds.
 #   scripts/buwiz-test [--name <name>] <app binary> <instance dir> <agent port> [VAR=value ...]
@@ -88,6 +88,7 @@ umask 077
 head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/buwiz-gpui-agent-token"
 echo "127.0.0.1:$PORT" > "$R/addr"
 F=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
+S=$(aerospace list-workspaces --focused 2>/dev/null || true)
 # VAR=value arguments by both names: ROX_<X> and BUWIZ_<X> alike
 VARS=()
 for a in "$@"; do
@@ -103,7 +104,17 @@ env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKG
   nohup "$APP/Contents/MacOS/$EXE" > "$R/rox.log" 2>&1 < /dev/null &
 P=$!
 echo "$P" > "$R/pid"
-for _ in $(seq 1 120); do
+# asked of macOS, not AeroSpace, which can lag or never list the window
+front() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | grep -q "=$P\$"; }
+# only if this launch took it: the owner may have moved on since $F was read,
+# and refocusing $F then would take it from them
+give_back() {
+  [ -n "$F" ] || return 0
+  [ -z "$S" ] || aerospace workspace "$S" 2>/dev/null || true
+  aerospace focus --window-id "$F" 2>/dev/null || true
+}
+for _ in $(seq 1 "${BUWIZ_TEST_LIST_TRIES:-120}"); do
+  front && give_back
   W=$(aerospace list-windows --all --format '%{window-id} %{app-pid}' 2>/dev/null | awk -v p="$P" '$2==p {print $1; exit}')
   [ -n "$W" ] && break
   sleep 0.25
@@ -111,18 +122,17 @@ done
 # a window AeroSpace never lists stays where macOS put it, over every
 # workspace: stop this instance (its own pid) rather than leave it there
 if [ -z "$W" ]; then
+  TOOK=
+  front && TOOK=1
   kill "$P" 2>/dev/null || true
+  [ -z "$TOOK" ] || give_back
   echo "pid $P: AeroSpace never listed its window; stopped" >&2
   exit 1
 fi
-# give focus back only if this window took it, which can come a moment after
-# it appears: the owner may have moved on since $F was read, and refocusing
-# $F then would take it from them
-TOOK=
-for _ in 1 2 3 4 5; do
-  [ "$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)" = "$W" ] && { TOOK=1; break; }
+aerospace move-node-to-workspace 3 --window-id "$W"
+# an app can take the front well after its window shows, so the watch goes on
+for _ in $(seq 1 "${BUWIZ_TEST_WATCH:-50}"); do
+  front && give_back
   sleep 0.1
 done
-aerospace move-node-to-workspace 3 --window-id "$W"
-[ -n "$TOOK" ] && [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
 echo "pid $P window $W"

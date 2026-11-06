@@ -3404,7 +3404,7 @@ fn v1_plugin_page() -> impl IntoElement {
                             view()
                                 .flex_row()
                                 .gap(px(8.0))
-                                .child(sm_btn(Btn::DangerSolid, uninstall_confirm, move || {
+                                .child(sm_btn(Btn::DangerSolid, { let id = id.clone(); move || uninstall_confirm(&id) }, move || {
                                     confirm.set(false);
                                     store().v1_uninstall(&id);
                                 }))
@@ -4072,14 +4072,15 @@ fn v1_install_page() -> impl IntoElement {
 }
 
 /// What the person agrees to on a mini app's Uninstall.
-fn uninstall_confirm() -> String {
-    format!("Uninstall: remove its {}", buwiz_protocol::ui::UNINSTALL_REMOVES)
+fn uninstall_confirm(plugin: &str) -> String {
+    format!("Uninstall: remove its {}", buwiz_protocol::ui::uninstall_removes(plugin))
 }
 
 #[cfg(test)]
 mod uninstall_tests {
     #[test]
-    fn the_confirmation_says_unsaved_files_go_too() {
-        assert!(super::uninstall_confirm().contains("unsaved files"));
+    fn the_confirmation_names_unsaved_files_only_where_they_exist() {
+        assert!(super::uninstall_confirm("app.buwiz.google-workspace").contains("unsaved files"));
+        assert!(!super::uninstall_confirm("app.buwiz.books").contains("unsaved files"));
     }
 }

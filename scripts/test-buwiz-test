@@ -1,0 +1,60 @@
+#!/bin/bash
+# scripts/buwiz-test's focus rules, against fake aerospace and lsappinfo: no
+# window opens and nothing real moves. Each case says what the launch does, and
+# what must end up focused.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(mktemp -d)"
+trap 'pkill -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT
+mkdir -p "$T/bin"
+cat > "$T/bin/aerospace" <<FAKE
+#!/bin/bash
+S="\$STATE"
+case "\$1 \${2:-}" in
+  "list-windows --focused") cat "\$S/focused" ;;
+  "list-workspaces --focused") cat "\$S/workspace" ;;
+  "list-windows --all") [ -f "\$S/listed" ] && echo "900 \$(cat "\$S/app.pid")" ;;
+  "focus --window-id") echo "\$3" > "\$S/focused"; echo owner > "\$S/front"; echo "focus \$3" >> "\$S/log" ;;
+  workspace*) echo "\$2" > "\$S/workspace"; echo "workspace \$2" >> "\$S/log" ;;
+  move-node-to-workspace*) echo "moved" >> "\$S/log" ;;
+esac
+exit 0
+FAKE
+cat > "$T/bin/lsappinfo" <<FAKE
+#!/bin/bash
+case "\$1" in
+  front) echo ASN:0x1 ;;
+  info) echo "\"pid\"=\$(cat "\$STATE/front")" ;;
+esac
+FAKE
+printf '#!/bin/bash\nexit 0\n' > "$T/bin/codesign"
+chmod +x "$T"/bin/*
+# the fake Bot: $LIST_AFTER and $TAKE_AFTER are seconds, or "never"
+cat > "$T/bot" <<FAKE
+#!/bin/bash
+echo \$\$ > "\$STATE/app.pid"
+[ "\$LIST_AFTER" = never ] || { sleep "\$LIST_AFTER"; touch "\$STATE/listed"; } &
+[ "\$TAKE_AFTER" = never ] || { sleep "\$TAKE_AFTER"; cat "\$STATE/app.pid" > "\$STATE/front"; echo 900 > "\$STATE/focused"; } &
+sleep 30
+FAKE
+chmod +x "$T/bot"
+fails=0
+case_() { # name, list after, take after, seconds until the owner moves (or never), want focused, want exit
+  local name="$1" list="$2" take="$3" move="$4" want="$5" code="$6" S="$T/s-$RANDOM"
+  mkdir -p "$S" "$S/inst"; echo 100 > "$S/focused"; echo 1 > "$S/workspace"; echo owner > "$S/front"
+  [ "$move" = never ] || { (sleep "$move"; echo 200 > "$S/focused") & }
+  STATE="$S" LIST_AFTER="$list" TAKE_AFTER="$take" BUWIZ_TEST_LIST_TRIES=8 BUWIZ_TEST_WATCH=25 \
+    PATH="$T/bin:$PATH" "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1
+  local got=$? at
+  sleep 2 # what a launch does after this script ends counts too
+  at="$(cat "$S/focused")"
+  pkill -f "$S/" 2>/dev/null
+  if [ "$at" = "$want" ] && [ "$got" = "$code" ]; then echo "ok   $name"
+  else echo "FAIL $name: focused $at, want $want; exit $got, want $code"; fails=1; fi
+}
+case_ "the window takes the front as it shows"   0.2 0.3 never 100 0
+case_ "the app takes the front long after"       0.2 1.5 never 100 0
+case_ "no window, and the app took the front"    never 0.2 never 100 1
+case_ "nothing taken, the owner moved on"        0.2 never 0.5 200 0
+case_ "no window, nothing taken, the owner moved" never never 0.5 200 1
+exit "$fails"

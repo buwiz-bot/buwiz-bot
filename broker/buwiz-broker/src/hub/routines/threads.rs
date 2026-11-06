@@ -22,7 +22,7 @@ pub fn notice_text(n: &Value) -> String {
     match n.get("kind").and_then(Value::as_str) {
         Some("tool_ask") => return s("title"),
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
-        Some("app_uninstall") => return format!("Uninstall {}? It removes its {}.", s("title"), buwiz_protocol::ui::UNINSTALL_REMOVES),
+        Some("app_uninstall") => return format!("Uninstall {}? It removes its {}.", s("title"), buwiz_protocol::ui::uninstall_removes(&s("id"))),
         Some("app_accounts") => {
             let to = if s("provider") == "google" { "Google".to_owned() } else { s("label") };
             return match s("mode").as_str() {
@@ -158,7 +158,9 @@ mod tests {
         let install = json!({"kind": "app_install", "id": "app.buwiz.x", "title": "X", "version": "1.1.0", "source": "https://github.com/o/r/releases/tag/v1.1.0", "state": "pending"});
         assert_eq!(notice_text(&install), "Install X 1.1.0 from https://github.com/o/r/releases/tag/v1.1.0?");
         let uninstall = json!({"kind": "app_uninstall", "id": "app.buwiz.x", "title": "X", "version": "1.1.0", "state": "pending"});
-        assert_eq!(notice_text(&uninstall), "Uninstall X? It removes its pins, attachments, data and unsaved files.");
+        assert_eq!(notice_text(&uninstall), format!("Uninstall X? It removes its {}.", buwiz_protocol::ui::UNINSTALL_REMOVES));
+        let keeps = json!({"kind": "app_uninstall", "id": "app.buwiz.google-workspace", "title": "X"});
+        assert_eq!(notice_text(&keeps), format!("Uninstall X? It removes its {}.", buwiz_protocol::ui::UNINSTALL_REMOVES_FILES));
         assert_eq!(notice_text(&json!({"kind": "app_setup", "id": "app.buwiz.x", "title": "X", "provider": "google"})), "Change the Google client of X");
         let acc = |mode: &str| notice_text(&json!({"kind": "app_accounts", "id": "app.buwiz.x", "title": "X", "provider": "google", "mode": mode}));
         assert_eq!((acc("login"), acc("logout"), acc("switch")), ("Your Google account for X".into(), "Sign out of Google for X?".into(), "Switch the Google account for X".into()));

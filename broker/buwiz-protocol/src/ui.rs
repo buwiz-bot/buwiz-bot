@@ -31,6 +31,17 @@ const _: () = assert!(CALLS_WAIT.as_secs() > PRESS_ROUTE.as_secs() + 3 * CALL.as
 const _: () = assert!(ACT_LIMIT.as_secs() > INPUT.as_secs() + CALLS_WAIT.as_secs());
 const _: () = assert!(ACT_WAIT.as_secs() > ACT_LIMIT.as_secs());
 
-/// What uninstalling a mini app takes with it, as every place that asks the
-/// person says it. Unsaved files are named because they can't be fetched again.
-pub const UNINSTALL_REMOVES: &str = "pins, attachments, data and unsaved files";
+/// What uninstalling a mini app takes with it. Most hold no files of their own.
+pub const UNINSTALL_REMOVES: &str = "pins, attachments and data";
+/// The same for an app that keeps working copies: unsaved files are named
+/// because they can't be fetched again.
+pub const UNINSTALL_REMOVES_FILES: &str = "pins, attachments, data and unsaved files";
+/// Apps with working copies, whose uninstall deletes them: Google Workspace's
+/// `open-<id>/` goes in its `buwiz.uninstall` (its test
+/// `uninstall_takes_every_token_and_every_file`).
+const KEEPS_FILES: [&str; 1] = ["app.buwiz.google-workspace"];
+
+/// What uninstalling `plugin` takes with it, as every place that asks says it.
+pub fn uninstall_removes(plugin: &str) -> &'static str {
+    if KEEPS_FILES.contains(&plugin) { UNINSTALL_REMOVES_FILES } else { UNINSTALL_REMOVES }
+}

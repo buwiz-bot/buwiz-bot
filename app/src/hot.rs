@@ -741,6 +741,14 @@ fn routine_pill(name: String) -> impl IntoElement {
 /// Opens the right-click menu a `rox-agent-menu` line names (see the
 /// watcher in `hot_area`).
 #[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
+/// `link`, if it's a mini app's screen: this hook skips the person's gate, so
+/// it can't reach a new chat, a draft or anything else a link can do.
+fn screen_link(link: &str) -> Option<&str> {
+    let link = link.trim();
+    let rest = link.strip_prefix("buwiz://app/")?;
+    (rest.split('/').count() >= 2 && !rest.starts_with('/')).then_some(link)
+}
+
 fn agent_menu(line: &str) {
     // `card <path>`: a wire file's cards (a CUSTOM frame, a `form` call, an
     // array of them) as a local reply in the open chat; `cards-clear` drops
@@ -779,10 +787,13 @@ fn agent_menu(line: &str) {
         store().mini_dev_type.set(format!("{n}|{rest}"));
         return;
     }
-    // `open <link>`: a link as the person's own click on it opens it, with no
-    // gesture, so a test never has to activate the app and take the keyboard
+    // `open <link>`: a mini app's screen, as a click on its link opens it, with
+    // no gesture, so a test never has to activate the app and take the keyboard
     if let Some(link) = line.strip_prefix("open ") {
-        store().open_link(link.trim());
+        match screen_link(link) {
+            Some(link) => store().open_link(link),
+            None => log::warn!("dev hook: `open` takes a mini app's screen only"),
+        }
         return;
     }
     // `printpdf <path>`: the viewer's page printed to a PDF, as ⌘P would
@@ -820,4 +831,18 @@ fn agent_menu(line: &str) {
         _ => return,
     };
     crate::ctx::open_at(x, y, items);
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::screen_link;
+
+    #[test]
+    fn the_open_hook_reaches_screens_and_nothing_else() {
+        let screen = "buwiz://app/app.buwiz.google-workspace/mail";
+        assert_eq!(screen_link(screen), Some(screen));
+        for no in ["buwiz://chat/new", "buwiz://chat/t1?draft=hi", "buwiz://view/x", "buwiz://plugin/x", "buwiz://app/", "https://a.example/"] {
+            assert_eq!(screen_link(no), None, "{no}");
+        }
+    }
 }

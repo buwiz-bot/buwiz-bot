@@ -3,6 +3,8 @@ target/
 *.log
 .DS_Store
 .env
+# a signed buwiz-gws manifest: a release artifact, never in this public repo
+plugins/google-workspace/manifest.signed.json
 
 # Private, managed by stow (hexuria/rox-stow)
 .stow/
