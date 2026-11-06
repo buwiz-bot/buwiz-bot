@@ -6,12 +6,12 @@
 //! One computer serves one or more Bots, and each gets a [`Screen`] of its own: its own display,
 //! input and folder. Everything that acts takes the screen it acts on; the hub picks it, from
 //! the Bot, and the model never names one.
-//! Only Docker is built. The others have their slot ([`planned::Planned`]), and each says so in
-//! a sentence until it is built.
+//! Docker and a remote computer a person points at are built ([`remote::RemoteProvider`]). The
+//! others have their slot ([`planned::Planned`]), and each says so in a sentence until it is built.
 //!
 //! What a provider can't do stays a method: it answers [`Problem::Unsupported`], so the hub's
-//! routes and tools are the same whatever the computer is. A plain URL has a viewer and nothing
-//! else; an SSH host has `run` and files and no screen.
+//! routes and tools are the same whatever the computer is. An SSH host with no box has `run` and
+//! files and no screen.
 //!
 //! Nothing here panics: a gone box, a daemon that is down and a quiet guest are all typed
 //! [`Problem`]s, each with the sentence a person reads.
@@ -23,8 +23,11 @@ pub mod docker;
 pub mod gate;
 pub mod guest;
 #[cfg(feature = "mock")]
+pub mod loopback;
+#[cfg(feature = "mock")]
 pub mod mock;
 pub mod planned;
+pub mod remote;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -36,6 +39,7 @@ pub use docker::DockerProvider;
 pub use gate::{Gate, Mode};
 pub use guest::BoxGuest;
 pub use planned::Planned;
+pub use remote::RemoteProvider;
 
 /// The loopback ports a computer's control and viewer ports are published on, and the ones the
 /// broker's viewer gate binds: all of them, on every broker of this Mac, so the Bot's sandboxed
@@ -94,7 +98,7 @@ pub enum ProviderKind {
     Sbx,
     /// an AWS instance
     Ec2,
-    /// any URL, SSH host, VNC or RDP a person gives it
+    /// a machine a person points at: a box over SSH or TLS, or a plain SSH host
     Remote,
 }
 
@@ -132,8 +136,25 @@ impl ProviderKind {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Reach {
     Container { name: String },
+    /// a box behind TLS, at `https://<name>`: see [`remote`]
     Url { url: String },
     Ssh { host: String, user: Option<String>, port: Option<u16> },
+}
+
+/// What a person handed over for a computer that isn't the Bot's to run. No secret here is ever
+/// sent to the far end but the box's own token and viewer password.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Link {
+    /// a `buwiz-computer` box answers there. Without one: commands and files over SSH, no screen
+    pub boxed: bool,
+    /// who the far end must prove to be: an SSH host key line (`ssh-ed25519 AAAA…`), or the SHA-256
+    /// of a TLS certificate in hex. A person saw it and said yes. `None` until they have, and
+    /// nothing is sent before then
+    pub pin: Option<String>,
+    /// the SSH private key. Never in the saved record: the broker keeps it in its keystore and
+    /// puts it here when it reads the record
+    #[serde(skip)]
+    pub key: Option<Secret>,
 }
 
 /// A computer as the broker saves it. The secrets stay in the broker's data dir, in a file
@@ -149,6 +170,9 @@ pub struct Machine {
     pub viewer_password: Secret,
     /// the folder the broker keeps for it
     pub dir: PathBuf,
+    /// set for a remote computer
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Link>,
     /// what [`Provider::look`] found for this request; never saved
     #[serde(skip)]
     pub seen: Option<Seen>,
@@ -179,12 +203,18 @@ impl Machine {
     /// `text` without this computer's secrets: the last check on anything bound for the model.
     pub fn scrub(&self, text: &str) -> String {
         let mut out = text.to_owned();
-        for s in [&self.token, &self.viewer_password] {
+        let key = self.link.as_ref().and_then(|l| l.key.as_ref());
+        for s in [&self.token, &self.viewer_password].into_iter().chain(key) {
             if !s.expose().is_empty() {
                 out = out.replace(s.expose(), "[hidden]");
             }
         }
         out
+    }
+
+    /// Whether it has a screen at all: a plain SSH host hasn't.
+    pub fn has_screen(&self) -> bool {
+        self.link.as_ref().is_none_or(|l| l.boxed)
     }
 }
 
@@ -265,6 +295,15 @@ pub struct Viewer {
     /// `127.0.0.1:port`
     pub addr: String,
     pub password: Secret,
+    /// it isn't ours: what comes back from it is read too (`gate.rs`)
+    pub far: Option<Far>,
+}
+
+/// A viewer at the far end of a connection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Far {
+    /// the name to ask for instead of `addr`, when a proxy in front goes by it
+    pub name: Option<String>,
 }
 
 /// A finished command.
@@ -372,6 +411,8 @@ pub enum Problem {
     PersonOn,
     /// it's walled off from the Mac, or it doesn't start
     Unwalled(String),
+    /// a connection to a remote computer: already the sentence a person reads
+    Remote(String),
     Failed(String),
 }
 
@@ -390,6 +431,7 @@ impl Problem {
             Self::Held => "held",
             Self::PersonOn => "person_on",
             Self::Unwalled(_) => "unwalled",
+            Self::Remote(_) => "remote",
             Self::Failed(_) => "failed",
         }
     }
@@ -400,7 +442,7 @@ impl Problem {
             Self::ProviderMissing(what) => format!("{what} isn't installed on this Mac. Install it, then click the computer again."),
             Self::ProviderDown(what) => format!("{what} isn't running. Open it, wait until it says it's running, then click the computer again."),
             Self::ImageMissing(image) => format!("This Mac doesn't have the computer's image ({image}). Build or pull it, then click the computer again."),
-            Self::NotBuilt(kind) => format!("{} computers aren't built yet. Only Docker on this Mac works today.", kind.label()),
+            Self::NotBuilt(kind) => format!("{} computers aren't built yet. Docker on this Mac and remote computers work today.", kind.label()),
             Self::Gone => "This computer is gone. Click it to make a new one.".to_owned(),
             Self::Unsupported(what) => format!("This computer can't {what}."),
             Self::Guest { message, .. } => format!("The computer said: {message}"),
@@ -408,6 +450,7 @@ impl Problem {
             Self::Held => "Another run of this Bot is using this screen, and it keeps it until it ends. Nothing was done here: try again once it has finished.".to_owned(),
             Self::PersonOn => "A person is still using this screen, so nothing was done. Try again later, or ask them when they'll be finished.".to_owned(),
             Self::Unwalled(why) => format!("The computer didn't start, because it couldn't be walled off from this Mac: {why}"),
+            Self::Remote(why) => why.clone(),
             Self::Failed(why) => format!("The computer failed: {why}"),
         }
     }
@@ -563,10 +606,12 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// The provider for `kind`: Docker's, or the slot of one that isn't built.
+/// The provider for `kind`: Docker's, a remote one, or the slot of one that isn't built. A remote
+/// provider holds its connections, so the hub keeps one and doesn't ask here for each call.
 pub fn provider_for(kind: ProviderKind) -> std::sync::Arc<dyn Provider> {
     match kind {
         ProviderKind::Docker => std::sync::Arc::new(DockerProvider::from_env()),
+        ProviderKind::Remote => std::sync::Arc::new(RemoteProvider::new()),
         other => std::sync::Arc::new(Planned(other)),
     }
 }
@@ -584,6 +629,7 @@ mod tests {
             token: Secret::new("tok-123"),
             viewer_password: Secret::new("pw-456"),
             dir: PathBuf::from("/tmp/x"),
+            link: None,
             seen: None,
         }
     }
@@ -598,6 +644,35 @@ mod tests {
     #[test]
     fn scrub_hides_both_secrets() {
         assert_eq!(machine().scrub("a tok-123 b pw-456 c"), "a [hidden] b [hidden] c");
+    }
+
+    #[test]
+    fn scrub_hides_a_remote_computers_key_and_debug_doesnt_show_it() {
+        let m = Machine { link: Some(Link { boxed: false, pin: None, key: Some(Secret::new("key-789")) }), ..machine() };
+        assert_eq!(m.scrub("a key-789 c"), "a [hidden] c");
+        assert!(!format!("{m:?}").contains("key-789"));
+    }
+
+    #[test]
+    fn a_saved_record_doesnt_hold_the_ssh_key() {
+        let m = Machine { link: Some(Link { boxed: false, pin: Some("p".into()), key: Some(Secret::new("key-789")) }), ..machine() };
+        let saved = serde_json::to_string(&m).unwrap();
+        assert!(!saved.contains("key-789"), "{saved}");
+        assert_eq!(serde_json::from_str::<Machine>(&saved).unwrap().link.unwrap().key, None);
+    }
+
+    #[test]
+    fn only_a_plain_ssh_host_has_no_screen() {
+        assert!(machine().has_screen());
+        let link = |boxed| Some(Link { boxed, pin: None, key: None });
+        assert!(Machine { link: link(true), ..machine() }.has_screen());
+        assert!(!Machine { link: link(false), ..machine() }.has_screen());
+    }
+
+    #[test]
+    fn a_record_from_before_links_still_reads() {
+        let old = r#"{"provider":"docker","reach":{"kind":"container","name":"c"},"image":null,"token":"t","viewer_password":"v","dir":"/x"}"#;
+        assert_eq!(serde_json::from_str::<Machine>(old).unwrap().link, None);
     }
 
     #[test]

@@ -145,6 +145,9 @@ impl host_api::Broker for FakeBroker {
                             _ => json!({"content": [{"type": "text", "text": "switched"}], "structuredContent": {"switched": true}}),
                         };
                         r["_meta"] = json!({"buwiz/account_use": args["field"]});
+                        if !args["document"].is_null() {
+                            r["_meta"]["buwiz/document"] = args["document"].clone();
+                        }
                         r
                     }
                     "fx_slow" | "fx_count" => {

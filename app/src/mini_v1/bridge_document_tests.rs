@@ -6,7 +6,7 @@ use std::fs;
 
 use super::*;
 
-const TOOLS: [&str; 3] = ["fx_document", "fx_document_fail", "fx_document_big"];
+const TOOLS: [&str; 4] = ["fx_document", "fx_document_fail", "fx_document_big", "fx_account_use"];
 
 /// A plugin's folder holding `open/1/a.docx` and `open/1/b.xlsx`, and a
 /// docx outside it.
@@ -65,6 +65,16 @@ fn in_flight(o: &Open) {
         assert!(Instant::now() < deadline, "the call never reached the broker");
         std::thread::yield_now();
     }
+}
+
+/// A switch that failed is about the switch: what the call opened still opens.
+#[test]
+fn a_failed_switch_still_opens_the_document_beside_it() {
+    let bed = Bed::new();
+    let args = json!({"field": {"account": "google", "label": "gone"}, "document": bed.field("open/1/a.docx")});
+    let mut o = bed.open(true, false, "fx_account_use", args);
+    assert!(o.wait("{").contains("needs_signin"));
+    assert_eq!(opened(&o), ["a.docx"]);
 }
 
 #[test]

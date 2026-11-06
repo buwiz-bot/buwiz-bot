@@ -1258,9 +1258,13 @@ mod tests {
         b.host.enable(FX).await.unwrap();
         assert_eq!(account_pushes(&b).await, [json!({"push": "set", "label": "default", "accounts": after})]);
 
-        // a label typed as an address stays out of the list, active or not
+        // a label typed as an address stays out of the list, but while it's
+        // active its row says someone is, with no label
         connect_as(&b, "me@example.com", "at-m", "m@example.com").await;
-        assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "set", "label": "me@example.com", "accounts": [entry("default", false), entry("work", false)]}));
+        let in_use = json!({"account": "google", "active": true});
+        assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "set", "label": "me@example.com", "accounts": [entry("default", false), in_use, entry("work", false)]}));
+        b.host.account_use(FX, "google", &json!({"label": "work"})).await.unwrap();
+        assert_eq!(account_pushes(&b).await.last().unwrap()["accounts"], json!([entry("default", false), entry("work", true)]));
 
         // a label signed out leaves it; the last one out leaves it empty
         b.host.account_signout(FX, "google", &json!({"label": "me@example.com"})).await.unwrap();
@@ -1287,6 +1291,32 @@ mod tests {
         let pushes = account_pushes(&b).await;
         assert!(pushes.len() >= 4, "{pushes:?}");
         assert!(pushes.iter().all(|p| p.get("accounts").is_none()), "{pushes:?}");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// It never had the label that expired, so it has no clear to hear.
+    #[tokio::test]
+    async fn a_plugin_that_isnt_first_party_hears_nothing_of_a_label_it_never_had() {
+        let b = accounts_bed("acctthirdexp", HostClock::manual()).await;
+        revoke(&b);
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        let before = account_pushes(&b).await.len();
+        token_answer(&b.files, 400, json!({"error": "invalid_grant"}));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "default's refresh, the first due");
+        until("it expires", async || b.host.account_rows(FX).iter().any(|r| r.label == "default" && r.state == "expired")).await;
+        assert_eq!(account_pushes(&b).await.len(), before, "a refresh that failed");
+
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        connect_as(&b, "third", "at-t", "t@example.com").await;
+        keys.remove_token(&format!("{FX}/google/default")).unwrap();
+        b.host.account_use(FX, "google", &json!({"label": "work"})).await.unwrap();
+        keys.remove_token(&format!("{FX}/google/third")).unwrap();
+        let _ = b.host.account_use(FX, "google", &json!({"label": "third"})).await;
+        let pushes = account_pushes(&b).await;
+        let cleared = pushes.iter().filter(|p| p["push"] == "clear" && p["label"] == "third").count();
+        assert_eq!(cleared, 1, "the switch away, not the expiry too: {pushes:?}");
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }

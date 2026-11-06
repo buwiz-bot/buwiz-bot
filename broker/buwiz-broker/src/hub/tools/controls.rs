@@ -201,7 +201,10 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
     if !external && (pos == Pos::On || asking::granted(ctx, &run.thread_id(), &key)) {
         return None;
     }
-    let (title, lines, preview) = describe(run, name, &key, input);
+    let (title, mut lines, preview) = describe(run, name, &key, input);
+    if key == computer::KEY {
+        lines.extend(computer::card_note(run));
+    }
     let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None };
     asking::ask(run, a).await.err().map(Out::err)
 }

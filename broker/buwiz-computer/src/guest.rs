@@ -1,7 +1,9 @@
 //! The client for the services inside a box: `box-exec` (commands, files, input, screenshots,
 //! waits and recordings) and `box-host` (readiness, what it can do, its screens). Every provider
 //! that runs the computer image reaches them the same way, over whatever address it got. Plain
-//! HTTP/1 on loopback: no TLS, no redirects.
+//! HTTP/1 on loopback: no TLS, no redirects. A remote box is reached through a tunnel that ends on
+//! loopback here, so this is the same client. What answers can be anything there: every call has
+//! a limit that covers its whole answer, and what the far end says is cut to a size.
 //!
 //! The contract is `computer.md`'s and the image's `docs/openapi.yaml`. Bearer on everything; a
 //! guest's error is `{error: {code, message}}`. What acts on a screen says which with
@@ -33,6 +35,10 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const SCREEN_PATIENCE: Duration = Duration::from_secs(50);
 /// What the guest may answer with before it counts as broken.
 const MAX_BODY: usize = 64 * 1024 * 1024;
+/// The most pixels a screenshot may say it has: unpacking takes four bytes each, on this Mac.
+const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+/// The most of what a guest says that goes on: to a person, or the model.
+const MAX_SAID: usize = 300;
 
 /// One computer's services.
 pub struct BoxGuest {
@@ -40,6 +46,8 @@ pub struct BoxGuest {
     host: String,
     token: Secret,
     http: Client<HttpConnector, Full<Bytes>>,
+    /// the names to ask for, when `exec` and `host` are a tunnel to a proxy that goes by them
+    names: Option<(String, String)>,
 }
 
 impl BoxGuest {
@@ -47,17 +55,33 @@ impl BoxGuest {
     pub fn connect(exec: &str, host: &str, token: Secret) -> Self {
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(CONNECT_TIMEOUT));
-        Self { exec: exec.trim_end_matches('/').to_owned(), host: host.trim_end_matches('/').to_owned(), token, http: Client::builder(TokioExecutor::new()).build(connector) }
+        Self { exec: exec.trim_end_matches('/').to_owned(), host: host.trim_end_matches('/').to_owned(), token, http: Client::builder(TokioExecutor::new()).build(connector), names: None }
+    }
+
+    /// Asks for `exec` and `host` by these names. A tunnel's address means nothing at the far end.
+    pub fn named(mut self, exec: &str, host: &str) -> Self {
+        self.names = Some((exec.to_owned(), host.to_owned()));
+        self
     }
 
     /// Whether it answers `/v1/ready`: its services and its screen are up.
     pub async fn ready(&self) -> bool {
-        self.send(Method::GET, &format!("{}/v1/ready", self.host), "application/json", None, Duration::from_secs(2)).await.is_ok()
+        self.ready_within(Duration::from_secs(2)).await
+    }
+
+    /// [`BoxGuest::ready`], over a link that may be slower than loopback.
+    pub async fn ready_within(&self, patience: Duration) -> bool {
+        self.send(Method::GET, &format!("{}/v1/ready", self.host), "application/json", None, patience).await.is_ok()
     }
 
     /// `GET /v1/info`.
     pub async fn info(&self) -> Result<Value> {
         parse(&self.send(Method::GET, &format!("{}/v1/info", self.host), "application/json", None, PATIENCE).await?)
+    }
+
+    /// `GET /v1/screens`.
+    pub async fn listed(&self) -> Result<Value> {
+        parse(&self.send(Method::GET, &format!("{}/v1/screens", self.host), "application/json", None, PATIENCE).await?)
     }
 
     /// `box-screen`, through `POST /v1/screen`: what it printed, or the error it gave.
@@ -66,7 +90,7 @@ impl BoxGuest {
         let bytes = self.send(Method::POST, &url, "application/json", Some(body.to_string()), SCREEN_PATIENCE).await?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         match serde_json::from_str::<Value>(text.trim()).ok().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned)) {
-            Some(said) => Err(Problem::Guest { status: 500, message: said }),
+            Some(said) => Err(Problem::Guest { status: 500, message: short(&said) }),
             None => Ok(text),
         }
     }
@@ -96,6 +120,9 @@ impl BoxGuest {
         let url = format!("{}/v1/cua/screenshot?display={}", self.exec, query(&screen.display));
         let png = self.send(Method::POST, &url, "image/png", None, PATIENCE).await?;
         let (width, height) = png_dimensions(&png).ok_or_else(|| Problem::Guest { status: 502, message: "its screenshot isn't a PNG".to_owned() })?;
+        if u64::from(width) * u64::from(height) > MAX_PIXELS {
+            return Err(Problem::Guest { status: 502, message: "its screenshot is too big".to_owned() });
+        }
         Ok(Screenshot { png: png.to_vec(), width, height })
     }
 
@@ -123,7 +150,7 @@ impl BoxGuest {
         let out = command_output(&v);
         if out.exit_code != Some(0) {
             let said = serde_json::from_str::<Value>(out.stdout.trim()).ok().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
-            return Err(Problem::Guest { status: 500, message: said.unwrap_or_else(|| format!("{} failed", argv.first().unwrap_or(&""))) });
+            return Err(Problem::Guest { status: 500, message: said.map_or_else(|| format!("{} failed", argv.first().unwrap_or(&"")), |s| short(&s)) });
         }
         Ok(out)
     }
@@ -184,7 +211,7 @@ impl BoxGuest {
     /// The recording's path, relative to the workspace.
     pub async fn record_stop(&self, screen: &Screen, id: u64) -> Result<String> {
         let v = self.post(&on("/v1/cua/record/stop", screen), &json!({"id": id}), Duration::from_secs(120)).await?;
-        v.get("path").and_then(Value::as_str).map(str::to_owned).ok_or_else(|| Problem::Guest { status: 502, message: "the recording has no path".to_owned() })
+        v.get("path").and_then(Value::as_str).map(short).ok_or_else(|| Problem::Guest { status: 502, message: "the recording has no path".to_owned() })
     }
 
     async fn post(&self, path: &str, body: &Value, patience: Duration) -> Result<Value> {
@@ -198,20 +225,25 @@ impl BoxGuest {
 
     async fn send(&self, method: Method, url: &str, accept: &str, body: Option<String>, patience: Duration) -> Result<Bytes> {
         let mut request = Request::builder().method(method).uri(url).header("authorization", format!("Bearer {}", self.token.expose())).header("accept", accept);
+        if let Some((exec, host)) = &self.names {
+            request = request.header("host", if url.starts_with(&self.exec) { exec } else { host });
+        }
         if body.is_some() {
             request = request.header("content-type", "application/json");
         }
         let request = request.body(Full::new(Bytes::from(body.unwrap_or_default()))).map_err(|e| Problem::Failed(format!("a bad request: {e}")))?;
-        let response = tokio::time::timeout(patience, self.http.request(request))
-            .await
-            .map_err(|_| Problem::Guest { status: 504, message: format!("no answer in {}s", patience.as_secs()) })?
-            .map_err(|_| Problem::Guest { status: 503, message: "it isn't answering".to_owned() })?;
-        let status = response.status().as_u16();
-        let body = Limited::new(response.into_body(), MAX_BODY).collect().await.map_err(|_| Problem::Guest { status: 502, message: "its answer broke off".to_owned() })?.to_bytes();
-        if !(200..300).contains(&status) {
-            return Err(Problem::Guest { status, message: error_text(&body, status) });
-        }
-        Ok(body)
+        // the whole answer, body included: a far end that stops halfway mustn't hold a call for good
+        tokio::time::timeout(patience, async {
+            let response = self.http.request(request).await.map_err(|_| Problem::Guest { status: 503, message: "it isn't answering".to_owned() })?;
+            let status = response.status().as_u16();
+            let body = Limited::new(response.into_body(), MAX_BODY).collect().await.map_err(|_| Problem::Guest { status: 502, message: "its answer broke off".to_owned() })?.to_bytes();
+            if !(200..300).contains(&status) {
+                return Err(Problem::Guest { status, message: error_text(&body, status) });
+            }
+            Ok(body)
+        })
+        .await
+        .map_err(|_| Problem::Guest { status: 504, message: format!("no answer in {}s", patience.as_secs()) })?
     }
 }
 
@@ -260,7 +292,12 @@ fn parse(body: &[u8]) -> Result<Value> {
 
 /// A guest error's message, else the status.
 fn error_text(body: &[u8], status: u16) -> String {
-    serde_json::from_slice::<Value>(body).ok().and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_owned)).unwrap_or_else(|| format!("status {status}"))
+    serde_json::from_slice::<Value>(body).ok().and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(short)).unwrap_or_else(|| format!("status {status}"))
+}
+
+/// What a guest said, cut to a size that fits a sentence.
+fn short(said: &str) -> String {
+    said.chars().take(MAX_SAID).collect()
 }
 
 /// `value` percent-encoded for a query.
@@ -379,6 +416,95 @@ mod tests {
     fn a_killed_command_has_no_exit_code() {
         let out = command_output(&json!({"stdout": "a", "stderr": "", "exit_code": null, "timed_out": true}));
         assert_eq!((out.exit_code, out.timed_out, out.stdout.as_str()), (None, true, "a"));
+    }
+
+    /// A guest on loopback that answers every connection with `reply`, then holds it open.
+    async fn answering(reply: Vec<u8>) -> BoxGuest {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut head = [0u8; 4096];
+                    let _ = s.read(&mut head).await;
+                    let _ = s.write_all(&reply).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+            }
+        });
+        BoxGuest::connect(&addr, &addr, Secret::new("t"))
+    }
+
+    fn http(status: &str, extra: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[tokio::test]
+    async fn a_guest_that_stops_halfway_through_its_answer_doesnt_hold_the_call() {
+        let guest = answering(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhalf".to_vec()).await;
+        let done = tokio::time::timeout(Duration::from_secs(5), guest.ready_within(Duration::from_millis(200))).await;
+        assert!(!done.expect("the call hung on the body"));
+    }
+
+    #[tokio::test]
+    async fn a_redirect_isnt_followed_and_is_a_no() {
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let to = format!("Location: http://{}/v1/info\r\n", elsewhere.local_addr().unwrap());
+        let guest = answering(http("302 Found", &to, b"")).await;
+        assert!(matches!(guest.info().await, Err(Problem::Guest { status: 302, .. })));
+        assert!(tokio::time::timeout(Duration::from_millis(100), elsewhere.accept()).await.is_err(), "the token went to the other host");
+    }
+
+    #[tokio::test]
+    async fn what_a_guest_says_is_cut_to_a_size() {
+        let said = "x".repeat(100_000);
+        let guest = answering(http("500 No", "", json!({"error": {"message": said}}).to_string().as_bytes())).await;
+        match guest.info().await {
+            Err(Problem::Guest { message, .. }) => assert_eq!(message.len(), MAX_SAID),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_screenshot_that_claims_to_be_huge_is_refused_before_anything_unpacks_it() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&60_000u32.to_be_bytes());
+        png.extend_from_slice(&60_000u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let guest = answering(http("200 OK", "Content-Type: image/png\r\n", &png)).await;
+        let screen = parse_screen(r#"{"display":":2","viewer_port":6902}"#, "b_1").unwrap();
+        assert!(matches!(guest.screenshot(&screen).await, Err(Problem::Guest { status: 502, .. })));
+    }
+
+    #[tokio::test]
+    async fn a_named_guest_asks_for_each_service_by_its_name() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let exec = format!("http://{}", other.local_addr().unwrap());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        for l in [listener, other] {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let (mut s, _) = l.accept().await.unwrap();
+                let mut head = vec![0u8; 4096];
+                let n = s.read(&mut head).await.unwrap();
+                tx.send(String::from_utf8_lossy(&head[..n]).to_lowercase()).await.unwrap();
+                s.write_all(&http("200 OK", "", b"{}")).await.unwrap();
+            });
+        }
+        let guest = BoxGuest::connect(&exec, &addr, Secret::new("t")).named("exec.a.example", "host.a.example");
+        guest.info().await.unwrap();
+        assert!(rx.recv().await.unwrap().contains("host: host.a.example"));
+        guest.post("/v1/x", &json!({}), Duration::from_secs(2)).await.unwrap();
+        assert!(rx.recv().await.unwrap().contains("host: exec.a.example"));
     }
 
     #[test]

@@ -490,9 +490,13 @@ dependencies = [
  "hyper-util",
  "jpeg-encoder",
  "png",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "tokio-rustls",
+ "webpki-roots",
 ]
 
 [[package]]

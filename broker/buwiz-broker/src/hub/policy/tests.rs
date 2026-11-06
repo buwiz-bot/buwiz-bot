@@ -550,6 +550,28 @@ async fn the_shell_cant_reach_a_computers_ports() {
     }
 }
 
+/// The master's socket logs anything that reaches it in as that login, with no key.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_cant_reach_a_remote_computers_connection_or_its_key() {
+    // short: a socket's path has a limit, which is why `ssh` is given it relative to its folder
+    let data = std::path::PathBuf::from(format!("/private/tmp/c3s-{}", std::process::id()));
+    let dir = data.join("computers/cmp_1/ssh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("key"), "the-key").unwrap();
+    let socket = dir.join("c");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (ok, out) = sandboxed_on(&data, &[], &format!("cat '{}'", dir.join("key").display())).await;
+    assert!(!ok && !out.contains("the-key"), "{out}");
+    let (ok, out) = sandboxed_on(&data, &[], &format!("/usr/bin/nc -w 1 -U '{}' </dev/null", socket.display())).await;
+    assert!(!ok, "{out}");
+    assert!(listener.accept().is_err(), "the shell reached the socket");
+    // the same call from here does reach it, so the refusal above is the sandbox's
+    let _reached = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    assert!(listener.accept().is_ok());
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shell_cant_read_a_computers_saved_token() {
     let data = temp("sandbox-computer-token");

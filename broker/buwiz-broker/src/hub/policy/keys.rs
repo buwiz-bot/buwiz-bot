@@ -74,7 +74,7 @@ pub fn label_of(ctx: &HubCtx, key: &str) -> Option<(String, String)> {
         "agents" => return fixed("Other agents", "Messages and makes other agents."),
         "screens" => return fixed("Mini app screens", "Reads the names of the buttons and fields on open mini app screens."),
         ui::ACT_KEY => return fixed("Act on mini app screens", "Presses buttons and fills fields on the mini app screen on top, up to saving a draft. What only you can do waits on a card for your OK, each time."),
-        computer::KEY => return fixed("Its computer", "Uses its own screen on its computer, once you've woken it. That computer is walled off from this Mac."),
+        computer::KEY => return fixed("Its computer", "Uses its own screen on its computer, once you've woken it. A computer on this Mac is walled off from it. A remote one you connect isn't walled off from anything on that machine."),
         computer::ROUTINES_KEY => return fixed("Computer in routines", "Lets this Bot's routines wake its computer and use it with nobody watching."),
         _ => {}
     }
