@@ -179,45 +179,8 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
     if !errs.is_empty() {
         return Err(errs.join("; "));
     }
-    // each layer as stored: {path, fill, opacity?}
-    let layer_of = |x: &Value| {
-        let mut m = serde_json::Map::new();
-        m.insert("path".into(), x.get("path").cloned().unwrap_or(Value::Null));
-        m.insert("fill".into(), x.get("fill").cloned().unwrap_or(Value::Null));
-        if let Some(op) = x.get("opacity").filter(|v| v.is_number()) {
-            m.insert("opacity".into(), op.clone());
-        }
-        // stored only when true
-        if x.get("over") == Some(&Value::Bool(true)) {
-            m.insert("over".into(), json!(true));
-        }
-        Value::Object(m)
-    };
-    let layers: Option<Vec<Value>> = l.map(|l| l.iter().map(layer_of).collect());
-    // each part as stored: {outline, color, layers?, z?}
-    let parts: Option<Vec<Value>> = p.map(|p| {
-        p.iter()
-            .map(|x| {
-                let mut m = serde_json::Map::new();
-                let o = x.get("outline").cloned().unwrap_or(Value::Null);
-                m.insert("outline".into(), match o {
-                    Value::String(s) => json!(s.trim_matches(js::is_space)),
-                    v => v,
-                });
-                m.insert("color".into(), x.get("color").cloned().unwrap_or(Value::Null));
-                if let Some(ls) = x.get("layers").and_then(Value::as_array).filter(|l| !l.is_empty()) {
-                    m.insert("layers".into(), Value::Array(ls.iter().map(layer_of).collect()));
-                }
-                if let Some(z) = x.get("z").filter(|v| v.is_number()) {
-                    m.insert("z".into(), z.clone());
-                }
-                if let Some(d) = x.get("d").filter(|v| v.is_number()) {
-                    m.insert("d".into(), d.clone());
-                }
-                Value::Object(m)
-            })
-            .collect()
-    });
+    let layers: Option<Vec<Value>> = l.map(|l| l.iter().map(avatar_shape::layer_of).collect());
+    let parts: Option<Vec<Value>> = p.map(|p| p.iter().map(avatar_shape::part_of).collect());
     Ok(Avatar {
         shape: s.unwrap_or_default().to_owned(),
         color: c.unwrap_or_default().to_owned(),
@@ -759,16 +722,18 @@ async fn avatar_gen(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// `POST /avatar/packs {link?, pick?, list?}` → the packs at a link (`list`), or the sound
 /// designs `pick` means there. It reads and checks; the Bot adds what it wants to its list.
 async fn avatar_packs(_ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    use crate::hub::library::avatar_packs::{get_public, list, read};
+    use crate::hub::library::avatar_packs::{get_public, list, read, Budget};
     let b = match parse(&req.body) {
         Ok(b) => b,
         Err(e) => return refused(&e, false),
     };
     let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default();
+    let budget = Budget::default();
+    let get = |url, max| get_public(url, max, &budget);
     let got = if b.get("list").and_then(Value::as_bool) == Some(true) {
-        list(text("link"), get_public).await
+        list(text("link"), get).await
     } else {
-        read(text("link"), text("pick"), get_public).await
+        read(text("link"), text("pick"), get).await
     };
     match got {
         Ok(v) => ok(&v),

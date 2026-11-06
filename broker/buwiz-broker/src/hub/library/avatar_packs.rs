@@ -14,6 +14,7 @@
 
 use std::future::Future;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -33,6 +34,28 @@ const NAME_MAX: usize = 80;
 const WHY_MAX: usize = 300;
 const HOPS: usize = 3;
 const WAIT: Duration = Duration::from_secs(20);
+/// All of one read: every file of it, however many packs.
+const READ_WAIT: Duration = Duration::from_secs(60);
+const READ_BYTES: usize = 16 * 1024 * 1024;
+const TOO_BIG: &str = "those packs are too big";
+const TOO_MANY: &str = "those packs hold too many designs";
+
+/// What one read may still take in bytes. Counted as they arrive, so a file cut off just short
+/// of its cap costs as much as one that got there.
+pub struct Budget(AtomicUsize);
+
+impl Default for Budget {
+    fn default() -> Self {
+        Budget(AtomicUsize::new(READ_BYTES))
+    }
+}
+
+impl Budget {
+    /// Takes `n` bytes, or says the read is over.
+    pub fn spend(&self, n: usize) -> Result<(), String> {
+        self.0.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(n)).map(|_| ()).map_err(|_| TOO_BIG.to_owned())
+    }
+}
 
 /// A pack an index lists.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,6 +83,11 @@ fn refused_url(u: &Url) -> Option<&'static str> {
     }
 }
 
+/// Whether `part` of a GitHub link is a plain name: no escapes, and no dots standing for a folder.
+fn plain(part: &str) -> bool {
+    !part.chars().all(|c| c == '.') && part.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+}
+
 /// The index a link means: `index.json` at the top of a GitHub repo, on its default branch or
 /// the one in a `/tree/<branch>` link, or the `.json` file a link names.
 pub fn index_url(link: &str) -> Result<Url, String> {
@@ -70,6 +98,10 @@ pub fn index_url(link: &str) -> Result<Url, String> {
         return Err(why.to_owned());
     }
     let index = if u.host_str() == Some("github.com") {
+        // the parser undoes `%2e%2e` before anyone can look at it
+        if link.contains('%') {
+            return Err("link a GitHub repo, or a branch of one".to_owned());
+        }
         let parts: Vec<&str> = u.path().split('/').filter(|p| !p.is_empty()).collect();
         let (owner, repo, branch) = match parts[..] {
             [owner, repo] => (owner, repo, "HEAD"),
@@ -77,6 +109,9 @@ pub fn index_url(link: &str) -> Result<Url, String> {
             _ => return Err("link a GitHub repo, or a branch of one".to_owned()),
         };
         let repo = repo.strip_suffix(".git").unwrap_or(repo);
+        if ![owner, repo, branch].into_iter().all(plain) {
+            return Err("link a GitHub repo, or a branch of one".to_owned());
+        }
         format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/index.json")
     } else if u.path().ends_with(".json") {
         u.to_string()
@@ -119,11 +154,11 @@ pub fn public_ip(ip: IpAddr) -> bool {
 
 /// `url`'s body, up to `max` bytes, from public hosts only: each hop is looked at before it's
 /// asked, and what the connection really reached after.
-pub async fn get_public(url: Url, max: usize) -> Result<Vec<u8>, String> {
-    tokio::time::timeout(WAIT, follow(url, max)).await.map_err(|_| "the link took too long".to_owned())?
+pub async fn get_public(url: Url, max: usize, budget: &Budget) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(WAIT, follow(url, max, budget)).await.map_err(|_| "the link took too long".to_owned())?
 }
 
-async fn follow(mut url: Url, max: usize) -> Result<Vec<u8>, String> {
+async fn follow(mut url: Url, max: usize, budget: &Budget) -> Result<Vec<u8>, String> {
     let lost = || "couldn't read that link".to_owned();
     for _ in 0..=HOPS {
         if let Some(why) = refused_url(&url) {
@@ -153,6 +188,7 @@ async fn follow(mut url: Url, max: usize) -> Result<Vec<u8>, String> {
         }
         let mut body = Vec::new();
         while let Some(chunk) = res.chunk().await.map_err(|_| lost())? {
+            budget.spend(chunk.len())?;
             if body.len() + chunk.len() > max {
                 res.cancel();
                 return Err("that file is too big".to_owned());
@@ -170,15 +206,18 @@ fn line(v: Option<&Value>, max: usize) -> String {
     s.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_owned()
 }
 
-/// The pack file `file` names, under the index's own folder.
+/// The pack file `file` names, under the index's own folder. A URL parser undoes `%2e`, so
+/// nothing escaped gets through, and the place it resolved to is what's checked last.
 fn pack_url(index: &Url, file: &str) -> Option<Url> {
-    if !file.ends_with(".json") || file.contains(['\\', '?', '#', ':']) || file.starts_with('/') {
+    if !file.ends_with(".json") || file.contains(['\\', '?', '#', ':', '%']) || file.starts_with('/') {
         return None;
     }
     if file.split('/').any(|part| part == ".." || part == "." || part.is_empty()) {
         return None;
     }
-    index.join(file).ok()
+    let url = index.join(file).ok()?;
+    let folder = &index.path()[..=index.path().rfind('/')?];
+    (url.origin() == index.origin() && url.path().starts_with(folder)).then_some(url)
 }
 
 /// The packs in `index.json`. One with a bad entry isn't read; the others are.
@@ -203,15 +242,17 @@ pub fn parse_index(bytes: &[u8], index: &Url) -> Result<Vec<Pack>, String> {
     Ok(packs)
 }
 
-/// `d` with only the fields a design has, if it's a sound one. Everything else in a pack is
-/// dropped here: an `image`, a link, whatever a later Bot might act on.
+/// `d` with only the fields a design has, at every depth, if it's a sound one, by the rules a
+/// bot's own avatar goes by. Everything else in a pack is dropped here: an `image`, a link,
+/// whatever a later Bot might act on.
 pub fn clean_design(d: &Value) -> Result<Value, String> {
     let name = line(d.get("name"), NAME_MAX);
     if name.is_empty() {
         return Err("no name".to_owned());
     }
     let text = |k: &str| d.get(k).and_then(Value::as_str);
-    let errs = avatar_shape::validate_avatar(text("shape"), text("color"), text("outline"), d.get("layers"), d.get("eyes"), d.get("parts"), d.get("solids"));
+    let set = |k: &str| d.get(k).filter(|v| !v.is_null());
+    let errs = avatar_shape::validate_avatar(text("shape"), text("color"), text("outline"), set("layers"), set("eyes"), set("parts"), set("solids"));
     if !errs.is_empty() {
         return Err(errs.join("; "));
     }
@@ -221,10 +262,19 @@ pub fn clean_design(d: &Value) -> Result<Value, String> {
     if !why.is_empty() {
         out.insert("why".to_owned(), why.into());
     }
-    for k in ["shape", "color", "outline", "layers", "eyes", "parts", "solids"] {
-        if let Some(v) = d.get(k).filter(|v| !v.is_null()) {
-            out.insert(k.to_owned(), v.clone());
-        }
+    out.insert("shape".to_owned(), d["shape"].clone());
+    out.insert("color".to_owned(), d["color"].clone());
+    // a kit shape has none of these: what it came with would only ride along
+    if text("shape") == Some("custom") {
+        let each = |k: &str, of: fn(&Value) -> Value| d.get(k).and_then(Value::as_array).map(|l| Value::Array(l.iter().map(of).collect()));
+        let fields = [
+            ("outline", set("outline").cloned()),
+            ("layers", each("layers", avatar_shape::layer_of)),
+            ("eyes", set("eyes").map(avatar_shape::eyes_of)),
+            ("parts", each("parts", avatar_shape::part_of)),
+            ("solids", each("solids", avatar_shape::solid_of)),
+        ];
+        out.extend(fields.into_iter().filter_map(|(k, v)| Some((k.to_owned(), v?))));
     }
     Ok(Value::Object(out))
 }
@@ -242,7 +292,7 @@ pub fn parse_pack(bytes: &[u8], found: &mut Found) -> Result<(), String> {
     let list = v.get("designs").and_then(Value::as_array).ok_or("a pack has no designs")?;
     for d in list {
         if found.designs.len() + found.refused.len() >= DESIGNS_MAX {
-            return Err("those packs hold too many designs".to_owned());
+            return Err(TOO_MANY.to_owned());
         }
         match clean_design(d) {
             Ok(design) => found.designs.push(design),
@@ -278,9 +328,25 @@ where
     Ok(json!({"ok": true, "packs": packs}))
 }
 
-/// The sound designs `pick` means at `link`. A pack that can't be read is reported with the
-/// refused, and the others still count.
+/// The sound designs `pick` means at `link`, all within [`READ_WAIT`]. A pack that can't be read
+/// is reported with the refused, and the others still count; too much of anything ends the read.
 pub async fn read<F, Fut>(link: &str, pick: &str, get: F) -> Result<Value, String>
+where
+    F: Fn(Url, usize) -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, String>>,
+{
+    read_within(READ_WAIT, link, pick, get).await
+}
+
+async fn read_within<F, Fut>(wait: Duration, link: &str, pick: &str, get: F) -> Result<Value, String>
+where
+    F: Fn(Url, usize) -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, String>>,
+{
+    tokio::time::timeout(wait, read_all(link, pick, get)).await.map_err(|_| "those packs took too long".to_owned())?
+}
+
+async fn read_all<F, Fut>(link: &str, pick: &str, get: F) -> Result<Value, String>
 where
     F: Fn(Url, usize) -> Fut,
     Fut: Future<Output = Result<Vec<u8>, String>>,
@@ -294,8 +360,10 @@ where
             Ok(bytes) => parse_pack(&bytes, &mut found),
             Err(e) => Err(e),
         };
-        if let Err(why) = got {
-            found.refused.push(json!({"name": p.title, "why": why}));
+        match got {
+            Err(why) if why == TOO_BIG || why == TOO_MANY => return Err(why),
+            Err(why) => found.refused.push(json!({"name": p.title, "why": why})),
+            Ok(()) => {}
         }
     }
     if let Some(name) = name {

@@ -86,6 +86,10 @@ fn a_link_that_could_reach_something_private_is_refused() {
         "https://printer.local/index.json",
         "https://example.com/page",
         "https://github.com/just-an-owner",
+        "https://github.com/%2e%2e/mine",
+        "https://github.com/me/%2e%2e",
+        "https://github.com/me/mine/tree/%2e%2e",
+        "https://github.com/me/mine/tree/a%2fb",
         "not a link",
     ] {
         assert!(index_url(bad).is_err(), "{bad}");
@@ -120,6 +124,11 @@ fn a_pack_file_stays_beside_its_index() {
         "x.txt",
         "x.json?y=1",
         "packs\\x.json",
+        "%2e%2e/x.json",
+        "%2E%2E/x.json",
+        "packs/%2e%2e/%2e%2e/x.json",
+        ".%2e/x.json",
+        "%2fetc/x.json",
     ] {
         assert_eq!(pack_url(&at, bad), None, "{bad}");
     }
@@ -241,10 +250,102 @@ async fn a_missing_index_says_so() {
     assert_eq!(read_site(&site, "").await.unwrap_err(), "no packs at that link");
 }
 
+#[test]
+fn a_kit_shape_carries_nothing_of_a_custom_one() {
+    let d = json!({"name": "K", "shape": "cloud", "color": "#FFFFFF", "outline": OUTLINE, "eyes": null});
+    let clean = clean_design(&d).unwrap();
+    assert_eq!(clean, json!({"name": "K", "shape": "cloud", "color": "#FFFFFF"}));
+}
+
+#[test]
+fn nothing_extra_rides_inside_a_design() {
+    let layer = json!({"path": "M47 61 L53 61 L50 64 Z", "fill": "#112233", "href": "https://evil.example/x"});
+    let mark = json!({"path": "M1 1 L9 1 L5 9 Z", "fill": "#112233", "src": "x"});
+    let d = json!({
+        "name": "N", "shape": "custom", "color": "#FFFFFF", "outline": OUTLINE,
+        "eyes": {"c": "#000000", "at": [50, 40], "script": "x"},
+        "layers": [layer],
+        "parts": [{"outline": OUTLINE, "color": "#112233", "z": 1, "layers": [layer], "src": "x"}],
+        "solids": [{"kind": "lathe", "color": "#112233", "at": [50, 20, 0], "profile": [[0, 5], [5, 0], [0, -5]], "marks": [mark], "url": "x"}],
+    });
+    let clean = clean_design(&d).unwrap();
+    let text = clean.to_string();
+    for extra in ["href", "evil", "script", "src", "url"] {
+        assert!(!text.contains(extra), "{extra} in {text}");
+    }
+    let tidy = json!({"path": "M47 61 L53 61 L50 64 Z", "fill": "#112233"});
+    assert_eq!(clean["layers"][0], tidy);
+    assert_eq!(clean["parts"][0]["layers"][0], tidy);
+    assert_eq!(clean["solids"][0]["marks"][0], json!({"path": "M1 1 L9 1 L5 9 Z", "fill": "#112233"}));
+    assert_eq!(clean["eyes"], json!({"c": "#000000", "at": [50, 40]}));
+}
+
+#[test]
+fn a_budget_runs_out() {
+    let budget = Budget::default();
+    budget.spend(READ_BYTES - 1).unwrap();
+    budget.spend(1).unwrap();
+    assert_eq!(budget.spend(1).unwrap_err(), TOO_BIG);
+}
+
+/// A site where every pack is the same size, with a count of what it's asked for.
+fn many_packs(n: usize, designs: usize) -> Site {
+    let packs: Vec<Value> = (0..n).map(|i| json!({"id": format!("p{i}"), "file": format!("p{i}.json")})).collect();
+    let mut site = Site::with(&[("https://example.com/a/index.json", index(json!(packs)))]);
+    let list: Vec<Value> = (0..designs).map(|_| fox()).collect();
+    let body = json!({"designs": list}).to_string().into_bytes();
+    for i in 0..n {
+        site.files.insert(format!("{ROOT}p{i}.json"), body.clone());
+    }
+    site
+}
+
+#[tokio::test]
+async fn the_design_cap_ends_the_read_at_once() {
+    let site = many_packs(5, DESIGNS_MAX / 2 + 1);
+    assert_eq!(read_site(&site, "").await.unwrap_err(), TOO_MANY);
+    assert_eq!(site.asked.borrow().len(), 3, "the index and two packs, then no more");
+}
+
+#[tokio::test]
+async fn the_byte_budget_ends_the_read_at_once() {
+    let site = many_packs(5, 1);
+    let budget = Budget::default();
+    let get = |u: Url, m| {
+        let pack = u.path().contains("/p");
+        let at = site.get(u, m);
+        let budget = &budget;
+        async move {
+            let bytes = at.await?;
+            if pack {
+                // each pack as dear as half of what a read may take, and a little more
+                budget.spend(READ_BYTES / 2 + 1)?;
+            }
+            Ok(bytes)
+        }
+    };
+    assert_eq!(read(&format!("{ROOT}index.json"), "", get).await.unwrap_err(), TOO_BIG);
+    assert_eq!(site.asked.borrow().len(), 3, "the index and two packs, then no more");
+}
+
+#[tokio::test]
+async fn a_slow_read_ends_on_time() {
+    let site = many_packs(3, 1);
+    let get = |u, m| {
+        let at = site.get(u, m);
+        async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            at.await
+        }
+    };
+    let got = read_within(Duration::from_millis(45), &format!("{ROOT}index.json"), "", get).await;
+    assert_eq!(got.unwrap_err(), "those packs took too long");
+}
+
 #[tokio::test]
 async fn this_mac_is_never_read() {
     // a name that resolves here gets as far as the look at its address
-    assert_eq!(get_public(url("https://localhost.localdomain.invalid/x.json"), 10).await.unwrap_err(), "couldn't read that link");
-    assert_eq!(get_public(url("http://127.0.0.1:8787/state/x"), 10).await.unwrap_err(), "a pack link must be https");
-    assert_eq!(get_public(url("https://127.0.0.1/x"), 10).await.unwrap_err(), "a pack link must name a public host");
+    assert_eq!(get_public(url("https://localhost.localdomain.invalid/x.json"), 10, &Budget::default()).await.unwrap_err(), "couldn't read that link");
+    assert_eq!(get_public(url("http://127.0.0.1:8787/state/x"), 10, &Budget::default()).await.unwrap_err(), "a pack link must be https");
+    assert_eq!(get_public(url("https://127.0.0.1/x"), 10, &Budget::default()).await.unwrap_err(), "a pack link must name a public host");
 }
