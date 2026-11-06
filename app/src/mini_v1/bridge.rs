@@ -41,6 +41,7 @@ use super::{
     RoxError, V1Key,
     attribution::Actor,
     cards::{self, CardAction, CardMeta},
+    document::{self, Document, Refused},
     host_api, keys,
     load::Prepared,
     perms,
@@ -103,6 +104,18 @@ pub trait HostUi: Send + Sync {
     fn preview(&self, doc: Preview) -> Result<(), RoxError> {
         let _ = doc;
         Err(RoxError::new("not_supported", "this Buwiz Bot shows no print previews"))
+    }
+    /// The data folder of `plugin`, the only place a document of its may
+    /// open from. A host that can't say opens none.
+    fn plugin_folder(&self, plugin: &str) -> Option<PathBuf> {
+        let _ = plugin;
+        None
+    }
+    /// Shows `doc`, already checked, in the Bot's own viewer over this open,
+    /// if `live()` holds and the open is still what the person sees. Hosts
+    /// without a viewer ignore it.
+    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+        let _ = (doc, live);
     }
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
@@ -826,8 +839,29 @@ impl OpenContext {
                 Ok(_) => log::info!("mini v1: {}/{} signed call {tool}: ok", p.plugin.id, p.key.app),
                 Err(e) => log::info!("mini v1: {}/{} signed call {tool}: {}", p.plugin.id, p.key.app, e.code),
             }
-            tool_result(result?, max)
+            let result = result?;
+            let document = result.pointer("/_meta/buwiz~1document").cloned();
+            let answer = tool_result(result, max)?;
+            me.open_document(document, who.actor);
+            Ok(answer)
         });
+    }
+
+    /// A result's `_meta["buwiz/document"]`, from a call `actor` made
+    /// (`mini_v1::document`): `None`, from an older plugin, changes nothing.
+    /// Nothing of the path goes to the log.
+    fn open_document(&self, field: Option<Value>, actor: Actor) {
+        let Some(field) = field else { return };
+        let p = &self.prepared;
+        let live = self.session.check_live().map_err(|_| Refused::Closed);
+        let folder = self.ui.plugin_folder(&p.plugin.id);
+        match live.and_then(|()| document::check(p.plugin.first_party, actor, folder.as_deref(), &field)) {
+            Ok(doc) => {
+                let session = self.session.clone();
+                self.ui.open_document(doc, Box::new(move || session.check_live().is_ok()));
+            }
+            Err(why) => log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app),
+        }
     }
 
     /// `buwiz.ticket.title(ticket)` (7.4), rate-limited as calls are.
