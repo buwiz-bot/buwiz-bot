@@ -467,6 +467,9 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let face = AvatarFace::of(b);
+    // memos, so a row reads these two and not the whole record each time
+    let thread = computed(move || b.get().thread_id);
+    let label = computed(move || b.get().name);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
@@ -476,7 +479,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .items_center()
         .justify_center()
         .bg(move || {
-            if store().active_id.get() == b.get().thread_id {
+            if store().active_id.get() == thread.get() {
                 theme::tc("#f5f5f514")
             } else if hovered.get() {
                 plate_hover()
@@ -563,7 +566,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
-        .label(move || b.get().name)
+        .label(move || label.get())
 }
 
 /// What a Bot's avatar is drawn from. A rebuilt avatar starts its animation
@@ -2295,6 +2298,9 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
     let face = AvatarFace::of(b);
+    // memos, so a row reads these two and not the whole record each time
+    let thread = computed(move || b.get().thread_id);
+    let label = computed(move || b.get().name);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
@@ -2310,7 +2316,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .gap(px(6.0))
         .items_center()
         .bg(move || {
-            if store().active_id.get() == b.get().thread_id {
+            if store().active_id.get() == thread.get() {
                 theme::ACTIVE
             } else {
                 AdaptiveColor::TRANSPARENT
@@ -2414,7 +2420,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
         .on_context_menu(move |e: &ContextMenuEvent| {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
-        .label(move || b.get().name)
+        .label(move || label.get())
 }
 
 /// `railPop` (App.tsx:3011) — the bot hover card: avatar + name over a

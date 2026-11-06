@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use buwiz_office_kit::testing::{Headless, run};
+use buwiz_office_kit::testing::{Headless, num, read, run};
 use nsh_core::element::Root;
 use nsh_core::prelude::*;
 use nsh_engine::{App, EngineConfig};
@@ -119,6 +119,11 @@ fn Side() -> impl IntoElement {
                     store().set_threads(v);
                 }))
                 .child(view().label("rename").w(px(40.0)).h_full().on_press(rename))
+                .child(view().label("unpin and open").w(px(40.0)).h_full().on_press(|| {
+                    let n = REPLY.fetch_add(1, Ordering::Relaxed);
+                    store().set_threads(threads("first words"));
+                    store().active_id.set(format!("t{}", n % BOTS));
+                }))
                 .child(view().label("seed rich").w(px(40.0)).h_full().on_press(seed_rich))
                 .child(view().label("stop").w(px(40.0)).h_full().on_press(|| {
                     for i in 0..BOTS {
@@ -133,7 +138,10 @@ fn Side() -> impl IntoElement {
                     store().agent_set("t3".to_owned(), Some("b3".to_owned()), Some(("thinking".to_owned(), "Thinking".to_owned())));
                 }))
                 .child(view().label("rest").w(px(40.0)).h_full().on_press(|| store().agent_set("t3".to_owned(), Some("b3".to_owned()), None)))
-                .child(text("probe ready=1").text_size(px(8.0))),
+                .child(text(|| {
+                    let grouped = store().groups.get().iter().any(|g| g.items.iter().any(|it| it.id == "b1"));
+                    format!("probe ready=1 grouped={}", grouped as u8)
+                }).text_size(px(8.0))),
         )
         .child(view().flex_1().child(crate::sidebar::sidebar()))
 }
@@ -277,17 +285,46 @@ fn a_tile_follows_its_bots_name_and_thread() {
     app.press("pin");
     app.press("rail");
     app.pump(Duration::from_millis(400));
+    assert_eq!(num(&read(&app), "grouped"), 1.0, "Bot 1 is in the group");
     app.press("rename");
     app.pump(Duration::from_millis(300));
     for i in [1, 10, 20] {
         let name = format!("Renamed {i}");
         assert!(app.has(&name), "{name}: the tile's label");
         let tile = app.view(&name);
-        let dark = app.styles.get(&tile).map(|s| format!("{s:?}"));
+        let fill = |app: &Headless| app.styles.get(&tile).map(|s| s.background_color);
+        let dark = fill(&app);
         app.press(&format!("open {i}"));
         app.pump(Duration::from_millis(200));
-        assert_ne!(app.styles.get(&tile).map(|s| format!("{s:?}")), dark, "{name}: lit when its chat opens");
+        let lit = fill(&app).expect("a tile's style");
+        assert_ne!(Some(lit), dark, "{name}: lit when its chat opens");
+        assert!(lit.0 & 0xff > 0, "{name}: an active fill, not a transparent one");
     }
+}
+
+/// A tile leaving while what it reads changes, in one update: unpinned as a
+/// chat opens, over and over. Nothing may read the row after it's gone.
+#[test]
+fn a_tile_can_go_while_it_is_changing() {
+    if !in_child("a_tile_can_go_while_it_is_changing") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    for mode in ["full", "rail"] {
+        if mode == "rail" {
+            app.press("rail");
+        }
+        for _ in 0..12 {
+            app.press("pin");
+            app.pump(Duration::from_millis(40));
+            app.press("unpin and open");
+            app.pump(Duration::from_millis(40));
+        }
+    }
+    app.press("reply");
+    app.pump(Duration::from_millis(100));
+    assert!(app.has("Bot 20"), "the unpinned Bot keeps its tile");
 }
 
 /// Once every run ends the avatars come to rest and stop painting: an idle
@@ -344,6 +381,7 @@ fn a_hovered_avatar_goes_back_to_sleep() {
     let at = paints();
     app.pump(Duration::from_millis(1000));
     println!("before any hover: {} paints in a second", paints() - at);
+    let quiet = paints();
     for i in 0..12 {
         let row = format!("Bot {i}");
         app.hover(&row, true);
@@ -352,6 +390,7 @@ fn a_hovered_avatar_goes_back_to_sleep() {
         }
         app.hover(&row, false);
     }
+    assert!(paints() > quiet, "the hover woke no avatar, so this proves nothing");
     for s in 0..12 {
         let at = paints();
         app.pump(Duration::from_millis(1000));

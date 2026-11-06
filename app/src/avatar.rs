@@ -379,11 +379,8 @@ impl Inner {
             dirty = true;
         }
         #[cfg(test)]
-        {
-            PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if let Some(seed) = &props.seed {
-                PAINTED.lock().unwrap().insert(seed.clone(), state);
-            }
+        if let Some(seed) = &props.seed {
+            PAINTED.lock().unwrap().insert(seed.clone(), state);
         }
         let compact = (props.size as f64 * 0.82) < 48.0;
         if compact != self.last_compact {
@@ -454,6 +451,8 @@ impl Inner {
 
     /// `draw`'s paint section.
     fn paint(&mut self, p: Painter, props: &BotBlobProps, resting: bool) -> Painter {
+        #[cfg(test)]
+        PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let size = props.size as f64;
         let canvas_size = size * 1.5;
         let box_ = size * 0.82;
