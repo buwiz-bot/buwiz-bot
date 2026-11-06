@@ -215,13 +215,9 @@ async fn a_certificate_the_public_roots_take_still_gets_no_token_before_a_yes() 
             tokio::spawn(async move {
                 let mut got = Vec::new();
                 let mut buf = [0u8; 2048];
-                while let Ok(n) = s.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
+                if let Ok(n @ 1..) = s.read(&mut buf).await {
                     got.extend_from_slice(&buf[..n]);
                     let _ = s.write_all(b"HTTP/1.1 401 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
-                    break;
                 }
                 let _ = ended.send(String::from_utf8_lossy(&got).into_owned());
             });
