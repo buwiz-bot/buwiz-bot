@@ -750,7 +750,8 @@ mod tests {
         let watching = [text("a,1"), text("v,1"), text("au,0"), text("kf"), text("po,12"), frame(0x89, b"hi")].concat();
         ws.write_all(&watching).await.unwrap();
         assert!(hears(&heard, &watching).await, "what watching needs was stopped");
-        assert_eq!(heard.lock().unwrap().len(), watching.len(), "a watcher's input got through: {:?}", heard.lock().unwrap());
+        let got = heard.lock().unwrap().clone();
+        assert_eq!(got.len(), watching.len(), "a watcher's input got through: {got:?}");
         assert!(!gate.driving("b_1", QUIET), "watching isn't driving");
         assert!(!heads.lock().unwrap().to_lowercase().contains("sec-websocket-extensions"), "compressed frames couldn't be read");
     }
@@ -901,7 +902,8 @@ mod tests {
         }
         s.write_all(b"POST /record/stop HTTP/1.1\r\n\r\n").await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(heard.lock().unwrap().is_empty(), "{:?}", String::from_utf8_lossy(&heard.lock().unwrap()));
+        let got = heard.lock().unwrap().clone();
+        assert!(got.is_empty(), "{:?}", String::from_utf8_lossy(&got));
         let head = heads.lock().unwrap().to_lowercase();
         assert!(head.contains("connection: close") && !head.contains("upgrade"), "{head}");
     }
