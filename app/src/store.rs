@@ -3016,6 +3016,8 @@ pub struct Store {
     frame_started: std::cell::Cell<bool>,
     /// A canvas read the clock since the last tick: keep ticking.
     frame_want: std::cell::Cell<bool>,
+    /// The chat and Bot the last `/status` left playing.
+    mock_run: std::cell::RefCell<Option<(String, Option<String>)>>,
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3291,6 +3293,7 @@ impl Store {
             frame_clock: signal(0.0),
             frame_started: std::cell::Cell::new(false),
             frame_want: std::cell::Cell::new(false),
+            mock_run: std::cell::RefCell::new(None),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
@@ -6245,10 +6248,17 @@ impl Store {
         let thread = self.active_id.get_untracked();
         let bot = self.active_bot_untracked().map(|b| b.id);
         self.settled.set(None);
+        // the last `/status` may have left another chat's Bot playing
+        if let Some((last, last_bot)) = self.mock_run.replace(None)
+            && last != thread
+        {
+            self.agent_set(last, last_bot, None);
+        }
         if arg.is_empty() || arg == "off" || arg == "idle" || arg == "clear" {
             self.agent_set(thread, bot, None);
             return;
         }
+        self.mock_run.replace(Some((thread.clone(), bot.clone())));
         if arg == "demo" {
             // `names = STATES.filter(n => n !== "idle")`, 1.7s each.
             let names: Vec<&'static str> = crate::mark::STATES
@@ -6279,6 +6289,8 @@ impl Store {
                 }
                 timer(std::time::Duration::from_millis(1700)).await;
                 if live() {
+                    // finished, so nothing is left for the next one to clear
+                    self.mock_run.replace(None);
                     self.agent_set(thread, bot, None);
                 }
             });

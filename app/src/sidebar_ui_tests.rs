@@ -119,6 +119,9 @@ fn Side() -> impl IntoElement {
                     store().set_threads(v);
                 }))
                 .child(view().label("rename").w(px(40.0)).h_full().on_press(rename))
+                .child(view().label("chats").w(px(40.0)).h_full().on_press(chats))
+                .child(view().label("status 3").w(px(40.0)).h_full().on_press(|| status_on(3)))
+                .child(view().label("status 4").w(px(40.0)).h_full().on_press(|| status_on(4)))
                 .child(view().label("unpin and open").w(px(40.0)).h_full().on_press(|| {
                     let n = REPLY.fetch_add(1, Ordering::Relaxed);
                     store().set_threads(threads("first words"));
@@ -191,6 +194,22 @@ fn rename() {
         v["bots"][i]["threadId"] = format!("new{i}").into();
     }
     store().set_threads(v);
+}
+
+/// Chat rows for Bots 3 and 4: `/status` finds its Bot through them.
+fn chats() {
+    let mut v = threads("first words");
+    v["list"] = serde_json::json!([
+        {"id": "t3", "title": "Three", "bot": {"id": "b3", "name": "Bot 3"}},
+        {"id": "t4", "title": "Four", "bot": {"id": "b4", "name": "Bot 4"}},
+    ]);
+    store().set_threads(v);
+}
+
+/// `/status:thinking` in Bot `i`'s chat.
+fn status_on(i: usize) {
+    store().active_id.set(format!("t{i}"));
+    store().mock_status("thinking");
 }
 
 /// The first `n` Bots in a group, as the broker gives groups.
@@ -399,6 +418,27 @@ fn a_hovered_avatar_goes_back_to_sleep() {
     let at = paints();
     app.pump(Duration::from_millis(1000));
     assert_eq!(paints() - at, 0, "paints a second, long after the pointer left");
+}
+
+/// A new `/status` clears what the last one left playing in another chat,
+/// or every Bot it was ever run on keeps animating.
+#[test]
+fn a_new_status_clears_the_last_one() {
+    if !in_child("a_new_status_clears_the_last_one") {
+        return;
+    }
+    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
+    let mut app = start();
+    app.press("seed");
+    app.press("chats");
+    app.pump(Duration::from_millis(400));
+    app.press("status 3");
+    app.pump(Duration::from_millis(300));
+    assert_eq!(painted("b3"), Some("thinking"));
+    app.press("status 4");
+    app.pump(Duration::from_millis(300));
+    assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
+    assert_eq!(painted("b3"), Some("idle"), "the last one is cleared");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.
