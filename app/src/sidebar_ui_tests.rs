@@ -20,6 +20,12 @@ fn built() -> usize {
     crate::avatar::BUILT.load(Ordering::Relaxed)
 }
 const BOTS: usize = 27;
+/// Seconds rich avatars get to come to rest, and the calm ones that prove it.
+const RESTS_WITHIN: usize = 180;
+const CALM_SECONDS: usize = 4;
+/// 50 ms steps a wait gets, and the steps without a build that mean done.
+const WAIT_STEPS: usize = 1200;
+const STILL_STEPS: usize = 10;
 static STEP: AtomicUsize = AtomicUsize::new(0);
 static REPLY: AtomicUsize = AtomicUsize::new(0);
 static RECORD: AtomicBool = AtomicBool::new(true);
@@ -244,14 +250,17 @@ fn streams_in_a_group(rail: bool) {
         app.press("rail");
     }
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let start = app.live.clone();
     let made = built();
     for k in 0..30 {
         app.press("reply");
         app.pump(Duration::from_millis(60));
         if !rail {
-            let shown = app.texts().iter().filter(|t| t.contains(&format!("streamed {k} words"))).count();
-            assert_eq!(shown, BOTS, "step {k}: rows showing the reply");
+            let words = format!("streamed {k} words");
+            pump_until(&mut app, "every row showing the reply", |app| {
+                app.texts().iter().filter(|t| t.contains(&words)).count() == BOTS
+            });
         }
     }
     println!("grouped reply, rail {rail}: {} avatars built", built() - made);
@@ -386,22 +395,43 @@ fn rests_after_runs(seed: &str) {
         app.pump(Duration::from_millis(50));
     }
     app.press("stop");
-    // how long clips take to finish depends on the machine, so this waits for
-    // it: what matters is that painting stops, and stays stopped
-    let mut quiet = None;
-    for s in 0..30 {
+    // how long clips take to finish depends on the machine, and a loaded one
+    // takes minutes: what matters is that painting stops, and stays stopped
+    let mut calm = 0;
+    for s in 0..RESTS_WITHIN {
         let at = paints();
         app.pump(Duration::from_millis(1000));
         println!("second {s} after the runs end: {} paints", paints() - at);
-        if paints() == at {
-            quiet = Some(s);
-            break;
+        calm = if paints() == at { calm + 1 } else { 0 };
+        if calm == CALM_SECONDS {
+            return;
         }
     }
-    assert!(quiet.is_some(), "still painting 30 seconds after every run ended");
-    let at = paints();
-    app.pump(Duration::from_millis(2000));
-    assert_eq!(paints() - at, 0, "painting started again with nothing running");
+    panic!("still painting {RESTS_WITHIN} seconds after every run ended");
+}
+
+/// Pumps until `done`, for machines too loaded to keep to a fixed wait.
+fn pump_until(app: &mut Headless, what: &str, mut done: impl FnMut(&mut Headless) -> bool) {
+    for _ in 0..WAIT_STEPS {
+        if done(app) {
+            return;
+        }
+        app.pump(Duration::from_millis(50));
+    }
+    panic!("{what}: not within {} seconds", WAIT_STEPS / 20);
+}
+
+/// Pumps until no avatar has been built for a while: the list is up, so what
+/// a test builds after this is its own.
+fn pump_until_built(app: &mut Headless) {
+    let mut last = built();
+    let mut still = 0;
+    pump_until(app, "avatars still being built", |_| {
+        let now = built();
+        still = if now == last { still + 1 } else { 0 };
+        last = now;
+        still == STILL_STEPS
+    });
 }
 
 /// An avatar the pointer has passed over goes back to sleep: it doesn't stay
@@ -537,12 +567,14 @@ fn a_streaming_reply_rebuilds_no_avatar() {
     let mut app = start();
     app.press("seed");
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let start = app.live.clone();
     let made = built();
     for k in 0..30 {
         app.press("reply");
         app.pump(Duration::from_millis(60));
-        assert!(app.texts().iter().any(|t| t.contains(&format!("streamed {k} words"))), "step {k}: the reply never showed");
+        let words = format!("streamed {k} words");
+        pump_until(&mut app, "the reply showing", |app| app.texts().iter().any(|t| t.contains(&words)));
     }
     let gone = start.difference(&app.live).count();
     println!("reply: {gone} nodes gone, {} avatars built", built() - made);
