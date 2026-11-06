@@ -173,6 +173,18 @@ fn Side() -> impl IntoElement {
                         crate::sidebar::place_rows(1);
                     }
                 }))
+                .child(view().label("place and go").w(px(40.0)).h_full().on_press(|| {
+                    let (owner, _) = nsh_core::element::create_root(|| crate::sidebar::place_rows(1));
+                    owner.dispose();
+                }))
+                .child(view().label("lose the scroll").w(px(40.0)).h_full().on_press(|| {
+                    store().side_window[1].update(|w| w.top = 0.0);
+                    crate::sidebar::place_rows(1);
+                }))
+                .child(view().label("lose the list").w(px(40.0)).h_full().on_press(|| {
+                    store().side_content[1].set(None);
+                    crate::sidebar::place_rows(1);
+                }))
                 .child(view().label("seed photos").w(px(40.0)).h_full().on_press(|| {
                     let bots: Vec<_> = (0..BOTS)
                         .map(|i| serde_json::json!({"id": format!("b{i}"), "name": format!("Bot {i}"), "threadId": format!("t{i}"),
@@ -648,7 +660,7 @@ fn paints_of(app: &mut Headless, bots: std::ops::Range<usize>) -> Vec<usize> {
 
 fn scroll_to(app: &mut Headless, list: &str, y: f32) {
     let id = app.view(list);
-    app.send(id, nsh_core::EventKind::Scroll, nsh_core::EventPayload::Scroll(nsh_core::geometry::point(px(0.0), px(y))));
+    app.scroll(id, y);
     app.pump(Duration::from_millis(300));
 }
 
@@ -735,6 +747,85 @@ fn rows_are_placed_once_a_tick() {
     app.press("place often");
     app.pump(Duration::from_millis(200));
     assert_eq!(passes() - at, 1, "passes for 50 asks in a tick");
+}
+
+/// A row going away with a pass on its way doesn't stop the list being
+/// placed from then on.
+#[test]
+fn a_row_going_away_leaves_the_list_placed() {
+    if !in_child("a_row_going_away_leaves_the_list_placed") {
+        return;
+    }
+    let passes = || crate::sidebar::ROW_PASSES.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(600));
+    app.press("place and go");
+    app.pump(Duration::from_millis(200));
+    let at = passes();
+    app.press("place");
+    app.pump(Duration::from_millis(200));
+    assert_eq!(passes() - at, 1, "a pass after the one whose owner went");
+}
+
+/// A scroll that never reported is found by the next pass.
+#[test]
+fn a_scroll_nobody_reported_is_found() {
+    if !in_child("a_scroll_nobody_reported_is_found") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.resize(1200.0, 400.0);
+    app.pump(Duration::from_millis(300));
+    app.press("run all");
+    app.pump(Duration::from_millis(600));
+    scroll_to(&mut app, "Bot list", 1000.0);
+    app.press("lose the scroll");
+    app.pump(Duration::from_millis(300));
+    let now = paints_of(&mut app, 0..BOTS);
+    println!("after a lost scroll: {now:?}");
+    assert!(now[BOTS - 1] > 5, "the last row is in view: {now:?}");
+    assert_eq!(now[0], 0, "the first row isn't: {now:?}");
+}
+
+/// A pass that can't see the list leaves its rows painting: unknown is seen.
+#[test]
+fn rows_nobody_can_place_paint() {
+    if !in_child("rows_nobody_can_place_paint") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.resize(1200.0, 400.0);
+    app.pump(Duration::from_millis(300));
+    app.press("run all");
+    app.pump(Duration::from_millis(600));
+    let before = paints_of(&mut app, 0..BOTS);
+    assert_eq!(before[BOTS - 1], 0, "placed, the last row is out of view: {before:?}");
+    app.press("lose the list");
+    app.pump(Duration::from_millis(300));
+    let now = paints_of(&mut app, 0..BOTS);
+    println!("unplaced: {now:?}");
+    assert!(now[BOTS - 1] > 5, "unplaced, the last row paints: {now:?}");
+}
+
+/// What shows can change with the ids the same: a pin, a hide, a new section.
+#[test]
+fn what_shows_follows_pins_and_hiding() {
+    let bots = || vec![crate::store::RoxBot { id: "a".to_owned(), ..Default::default() }];
+    let before = crate::sidebar::what_shows(&bots());
+    for change in [
+        (|b: &mut crate::store::RoxBot| b.pinned = true) as fn(&mut crate::store::RoxBot),
+        |b| b.hidden = true,
+        |b| b.section = "team".to_owned(),
+    ] {
+        let mut now = bots();
+        change(&mut now[0]);
+        assert_ne!(crate::sidebar::what_shows(&now), before);
+    }
 }
 
 /// A state change on a hidden Bot draws nothing, and it shows on return.

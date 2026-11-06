@@ -3040,8 +3040,15 @@ pub struct Store {
     pub(crate) side_rows: [std::cell::RefCell<Vec<ListRow>>; 2],
     /// What each list scrolls: rows are placed against it.
     pub(crate) side_content: [std::cell::Cell<Option<ElementRef>>; 2],
+    /// The scroll views themselves, for their real offset.
+    pub(crate) side_list: [std::cell::Cell<Option<ElementRef>>; 2],
     /// A pass over a list's rows is on its way.
     pub(crate) side_placing: [std::cell::Cell<bool>; 2],
+    /// A list's rows are where the last pass found them. Until then they all
+    /// count as seen.
+    pub(crate) side_settled: [Signal<bool>; 2],
+    /// Passes in a row that couldn't see everything.
+    pub(crate) side_retries: [std::cell::Cell<u32>; 2],
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3321,7 +3328,10 @@ impl Store {
             side_window: [signal(ListWindow::default()), signal(ListWindow::default())],
             side_rows: Default::default(),
             side_content: Default::default(),
+            side_list: Default::default(),
             side_placing: Default::default(),
+            side_settled: [signal(false), signal(false)],
+            side_retries: Default::default(),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
