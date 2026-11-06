@@ -1047,15 +1047,18 @@ fn OneLane() -> impl IntoElement {
     Owner::detached().run(|| {
         let _ = store();
     });
-    view().children((0..12).map(|_| {
-        canvas(|| {
-            store().tick_giving_way(0);
-            LANE_PAINTS.fetch_add(1, Ordering::Relaxed);
-            Painter::new()
-        })
-        .size(px(10.0))
-        .into_element()
-    }))
+    view()
+        .size_full()
+        .child(text("probe ready=1"))
+        .children((0..12).map(|_| {
+            canvas(|| {
+                store().tick_giving_way(0);
+                LANE_PAINTS.fetch_add(1, Ordering::Relaxed);
+                Painter::new()
+            })
+            .size(px(10.0))
+            .into_element()
+        }))
 }
 
 /// Which avatars are live is anyone's guess, so a crowd can leave lanes empty.
@@ -1065,7 +1068,9 @@ fn a_crowd_in_one_lane_keeps_moving() {
     if !in_child("a_crowd_in_one_lane_keeps_moving") {
         return;
     }
-    let mut app = run(EngineConfig::new(App::Rust(Root::new::<OneLane>(|| ()))));
+    let mut config = EngineConfig::new(App::Rust(Root::new::<OneLane>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(400.0), px(400.0));
+    let mut app = run(config);
     app.pump(Duration::from_millis(1500));
     let at = LANE_PAINTS.load(Ordering::Relaxed);
     app.pump(Duration::from_millis(1000));
