@@ -93,6 +93,19 @@ export function stripMeta(r) {
   return out;
 }
 
+/** A tool result as the Bot gets it from an app's call: stripped, but for
+ * `_meta["buwiz/document"]`, the one key the Bot itself acts on. The Bot is
+ * the host's other half and judges it (`mini_v1::document`); the app and the
+ * model still never see it (16.5). */
+export function hostResult(r) {
+  const out = stripMeta(r);
+  const document = r?._meta?.["buwiz/document"];
+
+  if (document !== undefined) out._meta = { "buwiz/document": document };
+
+  return out;
+}
+
 /** An open request a plugin made (resolve `open`, `_meta["buwiz/open"]`)
  *  checked against its own manifest `m`: the app is one of its apps (no
  *  other plugin's), props validate (11.5), the ticket follows the grammar.
@@ -310,7 +323,7 @@ export function createSessions(plugins) {
     else s.active--;
   }
 
-  /** POST /v1/host/call {envelope, sig} → {ok, result} with `_meta` stripped. */
+  /** POST /v1/host/call {envelope, sig} → {ok, result}, as `hostResult` has it. */
   async function call(b) {
     if (!isObject(b) || !isObject(b.envelope) || !isString(b.sig)) refuse("invalid_args", "send {envelope, sig}");
     const { envelope, sig } = b;
@@ -358,7 +371,7 @@ export function createSessions(plugins) {
 
     if (resultBytes(r) > max) refuse("result_too_large", `${envelope.tool}'s result is over ${preview ? `${Math.round((max / 1048576) * 10) / 10} MiB` : "1 MiB"}`);
 
-    return { ok: true, result: stripMeta(r) };
+    return { ok: true, result: hostResult(r) };
   }
 
   // ── tickets, resolve, app source ─────────────────────────────────────

@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
-import { PROMPT_MAX, checkPrompt, mayReach, originOf, pressOf } from "../src/v1/sessions.mjs";
+import { PROMPT_MAX, checkPrompt, hostResult, mayReach, originOf, pressOf } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -65,10 +65,19 @@ test("BRG-03 a validly signed call with a fresh nonce succeeds; the plugin sees 
   const caller = r.result.structuredContent.caller;
 
   assert.deepEqual({ ...caller, ts: 0 }, { origin: "app", plugin: FX, app: "board", open_id: board.open_id, ts: 0 });
-  // a result's _meta never leaves the broker
+  // a result's _meta never leaves the broker, but for buwiz/document
   const o = await call(board, "fx_open");
 
   assert.equal(o.result._meta, undefined);
+});
+
+test("only the document key of _meta reaches the Bot", () => {
+  const document = { path: "/a/b.docx", name: "b.docx", mime: "x" };
+  const r = { content: [], _meta: { "buwiz/document": document, "buwiz/open": { app: "x" }, "buwiz/suggest": [] } };
+
+  assert.deepEqual(hostResult(r), { content: [], _meta: { "buwiz/document": document } });
+  assert.deepEqual(hostResult({ content: [], _meta: { "buwiz/open": {} } }), { content: [] });
+  assert.deepEqual(hostResult({ content: [] }), { content: [] });
 });
 
 test("BRG-04 the same envelope twice: the second is replayed", async () => {

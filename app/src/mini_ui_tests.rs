@@ -18,7 +18,14 @@ use serde_json::{Value, json};
 use buwiz_office_kit::testing::{Headless, run};
 
 use crate::live::store;
-use crate::mini_v1::{V1Key, connect::Listed, records::Pin, ui};
+use crate::mini_v1::{
+    V1Key,
+    attribution::Actor,
+    connect::Listed,
+    document::{Document, check},
+    records::Pin,
+    ui,
+};
 use crate::store::{AccountRequiredNotice, AppAccountsNotice, AppSetupNotice, DriveLink, GroupItem, MiniOpen, PluginNav, RoxGroup, Turn};
 
 const CHILD: &str = "BUWIZ_MINI_UI_TEST";
@@ -137,8 +144,13 @@ fn Stage() -> impl IntoElement {
                     store().mini_full.set(vec![MiniOpen { key: key.clone(), title: "Books".to_owned(), n: 1, token: String::new() }]);
                     store().mini_err(&key).set("Books is not running.".to_owned());
                 }))
-                .child(button("refreshed", || store().v1_close_gone())),
+                .child(button("refreshed", || store().v1_close_gone()))
+                .child(button("doc", || store().v1_document(&key(BOOKS, "books"), &document("a.csv"), true)))
+                .child(button("doc dead", || store().v1_document(&key(BOOKS, "books"), &document("a.csv"), false)))
+                .child(button("doc other", || store().v1_document(&key(TAX, "forms"), &document("a.csv"), true)))
+                .child(button("doc next", || store().v1_document(&key(BOOKS, "books"), &document("b.csv"), true))),
         )
+        .child(text(|| format!("viewer={}", store().viewing.get().map_or("none".to_owned(), |f| f.name))))
         .child(text(|| {
             format!(
                 "probe ready=1 rows={} full={} pill={}",
@@ -168,6 +180,14 @@ fn start() -> Headless {
     let mut app = boot();
     app.press("seed");
     app
+}
+
+/// A checked document of a plugin's folder, on this disk.
+fn document(name: &str) -> Document {
+    let folder = crate::mini_v1::storage::scratch_root("mini-ui-document");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(name), "a,b\n").unwrap();
+    check(true, Actor::Person, Some(&folder), &json!({"path": folder.join(name)})).unwrap()
 }
 
 /// The Connect Apps page of failed eBIRForms.
@@ -353,6 +373,28 @@ fn opening_a_gone_app_opens_nothing() {
     app.press("running");
     app.press("pin press");
     assert!(says(&app, "full=1"), "it opens once the plugin is back: {:?}", app.texts());
+}
+
+/// A checked document opens over its own screen, on top and alive, only: a
+/// result can come after the person left, and the viewer drops what it
+/// shows unasked.
+#[test]
+fn a_document_opens_only_over_its_own_screen() {
+    if !in_child("a_document_opens_only_over_its_own_screen") {
+        return;
+    }
+    let mut app = start();
+    app.press("doc");
+    assert!(says(&app, "viewer=none"), "its screen closed, the chat shows: {:?}", app.texts());
+    app.press("full page");
+    app.press("doc other");
+    assert!(says(&app, "viewer=none"), "another screen is on top: {:?}", app.texts());
+    app.press("doc dead");
+    assert!(says(&app, "viewer=none"), "its open ended, and the same app is on top again: {:?}", app.texts());
+    app.press("doc");
+    assert!(says(&app, "viewer=a.csv"), "{:?}", app.texts());
+    app.press("doc next");
+    assert!(says(&app, "viewer=a.csv"), "the open file keeps its edits: {:?}", app.texts());
 }
 
 /// A page left open closes when its plugin goes behind it.
