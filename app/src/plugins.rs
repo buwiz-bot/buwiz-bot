@@ -3331,7 +3331,7 @@ fn v1_current() -> Option<crate::mini_v1::connect::Listed> {
 /// A v1 plugin's page: state (a failed plugin's Retry and Open logs),
 /// Disable/Enable, Uninstall, its apps, the per-tool switches and its
 /// routines (approve once, then enable or disable).
-fn v1_plugin_page() -> impl IntoElement {
+pub(crate) fn v1_plugin_page() -> impl IntoElement {
     let confirm = signal(false);
     view()
         .flex_1()
@@ -3372,7 +3372,7 @@ fn v1_plugin_page() -> impl IntoElement {
                             view()
                                 .flex_row()
                                 .gap(px(8.0))
-                                .child(sm_btn(Btn::Primary, || "Retry".to_owned(), move || store().v1_set_enabled(&id1, true)))
+                                .child(sm_btn(Btn::Primary, || "Retry".to_owned(), move || store().v1_retry_plugin(&id1, || {})).label("Retry"))
                                 .child(sm_btn(Btn::Secondary, || "Open logs".to_owned(), move || store().v1_open_logs(&id2))),
                         ),
                 );

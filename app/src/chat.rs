@@ -628,7 +628,7 @@ pub(crate) fn routine_status_line() -> impl IntoElement {
 }
 
 /// One turn of chat `chat` (its bot colors the user's bubbles).
-fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
+pub(crate) fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
     if let Some(n) = t.notice.clone() {
         notice_row(n).into_element()
     } else if let Some(n) = t.agents_notice.clone() {
@@ -640,11 +640,14 @@ fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
     } else if let Some(n) = t.app_uninstall.clone() {
         app_uninstall_row(n, chat.to_owned(), t.i).into_element()
     } else if let Some(n) = t.account_required.clone() {
-        account_required_row(n, chat.to_owned(), t.i).into_element()
+        let (chat, i, plugin) = (chat.to_owned(), t.i, n.plugin.clone());
+        crate::mini_v1::ui::while_there(&plugin, move || account_required_row(n.clone(), chat.clone(), i).into_element()).into_element()
     } else if let Some(n) = t.app_setup.clone() {
-        app_setup_row(n, chat.to_owned(), t.i).into_element()
+        let (chat, i, plugin) = (chat.to_owned(), t.i, n.plugin.clone());
+        crate::mini_v1::ui::while_there(&plugin, move || app_setup_row(n.clone(), chat.clone(), i).into_element()).into_element()
     } else if let Some(n) = t.app_accounts.clone() {
-        app_accounts_row(n, chat.to_owned(), t.i).into_element()
+        let (chat, i, plugin) = (chat.to_owned(), t.i, n.plugin.clone());
+        crate::mini_v1::ui::while_there(&plugin, move || app_accounts_row(n.clone(), chat.clone(), i).into_element()).into_element()
     } else if let Some(n) = t.tools_change.clone() {
         crate::tools::notice_row(n, chat.to_owned()).into_element()
     } else if let Some(n) = t.tool_ask.clone() {

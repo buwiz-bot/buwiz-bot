@@ -25,7 +25,7 @@ use super::{
     RoxError, V1Key,
     cards::{self, CardAction, CardMeta, OpenCard, Opener, Placement},
     connect, consent,
-    host_api::{self, HttpBroker},
+    host_api::{self, HttpBroker, PluginAction},
     lifecycle, links,
     load::PluginEntry,
     records::{self, Records},
@@ -1321,21 +1321,31 @@ impl Store {
         );
     }
 
-    /// Retry on an open that failed: an enable sends its plugin through the
-    /// gate again (13.5), then the open starts over.
-    pub fn v1_retry(&'static self, key: &str) {
-        let Ok(k) = V1Key::parse(key) else { return };
-        let key = key.to_owned();
-        self.v1_job("Starting…", move || connect::set_enabled(&broker(), &k.plugin, true), move |_| self.v1_reload(&key));
-    }
-
-    /// Disable or enable (13.4, 13.5); Retry of a failed plugin enables it.
+    /// Disable or enable (13.4, 13.5).
     pub fn v1_set_enabled(&'static self, plugin: &str, on: bool) {
-        let p = plugin.to_owned();
         if !on {
             self.v1_close_opens(plugin);
         }
-        self.v1_job(if on { "Starting…" } else { "Stopping…" }, move || connect::set_enabled(&broker(), &p, on), |_| {});
+        self.v1_switch(plugin, if on { PluginAction::Enable } else { PluginAction::Disable }, || {});
+    }
+
+    /// A person's Retry of failed `plugin` (14.4): the one way its stored
+    /// key can replace the recorded one; then through the gate again.
+    pub fn v1_retry_plugin(&'static self, plugin: &str, then: impl FnOnce() + 'static) {
+        self.v1_switch(plugin, PluginAction::Retry, then);
+    }
+
+    /// Retry on an open that failed: its plugin's, then the open over.
+    pub fn v1_retry(&'static self, key: &str) {
+        let Ok(k) = V1Key::parse(key) else { return };
+        let key = key.to_owned();
+        self.v1_retry_plugin(&k.plugin, move || self.v1_reload(&key));
+    }
+
+    fn v1_switch(&'static self, plugin: &str, action: PluginAction, then: impl FnOnce() + 'static) {
+        let p = plugin.to_owned();
+        let label = if action == PluginAction::Disable { "Stopping…" } else { "Starting…" };
+        self.v1_job(label, move || connect::switch(&broker(), &p, action), move |_| then());
     }
 
     /// The per-tool switch (8.3).
@@ -1890,10 +1900,17 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
         .w_full()
         .children(cards.into_iter().zip(slots).map(move |((id, card), slot)| {
             let aged = user_after.clone();
-            match slot {
-                cards::Slot::Link => card_row(card, id, true),
-                _ => dynamic(move || card_row(card.clone(), id.clone(), cards::aged(aged()))).into_element(),
-            }
+            let plugin = card.plugin.clone();
+            let shows = computed(move || store().v1_reach(&plugin) != connect::Reach::Gone);
+            // nothing while its plugin is uninstalled or disabled, in any
+            // chat; it comes back with the plugin
+            dynamic(move || {
+                if !shows.get() {
+                    return view().into_element();
+                }
+                card_row(card.clone(), id.clone(), slot == cards::Slot::Link || cards::aged(aged()))
+            })
+            .into_element()
         }))
         .into_element()
 }
@@ -1908,20 +1925,8 @@ pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
 /// A card of an answer or a tool result. An inline app is one card (its
 /// header shows or hides the app under it: [`inline_card`]); a full app is
 /// a row with Open. A `collapsed` one (aged, or past an answer's one main
-/// and two small ones) shows its header only until it is opened. Nothing
-/// shows while its plugin is uninstalled or disabled, in any chat; it comes
-/// back with the plugin.
+/// and two small ones) shows its header only until it is opened.
 fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
-    let plugin = card.plugin.clone();
-    let shows = computed(move || store().v1_reach(&plugin) != connect::Reach::Gone);
-    view()
-        .w_full()
-        .child(when(move || shows.get(), move || card_of(card.clone(), card_id.clone(), collapsed)))
-        .into_element()
-}
-
-/// [`card_row`] of a plugin that is there.
-fn card_of(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
     let entry = store().v1.entry(&card.plugin);
     let plugin_title = entry.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| card.plugin.clone());
     let auto = !collapsed
@@ -2198,7 +2203,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                 .child(icon_button("maximize", "Open full screen", move || store().open_v1(c.key(), &c.title, Opener::User))),
         )
         .child(when(open, move || {
-            let (key, key_err, plugin_id) = (key.clone(), key.clone(), plugin_id.clone());
+            let (key, key_err, plugin_stuck, plugin_id) = (key.clone(), key.clone(), plugin_id.clone(), plugin_id.clone());
             let (h, title, plugin_shown) = (h.clone(), title.clone(), plugin_shown.clone());
             // an app that can't open is no app to mount: its card says why
             // and offers Retry, and mounts it once it can run
@@ -2207,7 +2212,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
             });
             dynamic(move || {
                 if stuck.get() {
-                    return card_stuck(&key, &plugin_shown).into_element();
+                    return card_stuck(&key, &plugin_stuck, &plugin_shown).into_element();
                 }
                 let h2 = h.clone();
                 let h = h.clone();
@@ -2228,10 +2233,17 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
         }))
 }
 
+/// `row` while `plugin` is there: nothing for one uninstalled or disabled.
+pub fn while_there(plugin: &str, row: impl Fn() -> AnyElement + 'static) -> impl IntoElement {
+    let plugin = plugin.to_owned();
+    let shows = computed(move || store().v1_reach(&plugin) != connect::Reach::Gone);
+    when(move || shows.get(), row)
+}
+
 /// The body of a card whose app can't open: the reason, in the card's own
 /// colours, and Retry.
-fn card_stuck(key: &str, plugin: &str) -> impl IntoElement {
-    let (k, plugin) = (key.to_owned(), plugin.to_owned());
+fn card_stuck(key: &str, plugin_id: &str, plugin: &str) -> impl IntoElement {
+    let (k, plugin_id, plugin) = (key.to_owned(), plugin_id.to_owned(), plugin.to_owned());
     view()
         .label("Card can't open")
         .flex_row()
@@ -2243,7 +2255,10 @@ fn card_stuck(key: &str, plugin: &str) -> impl IntoElement {
         .child(
             text(move || {
                 let err = store().mini_err(&k).get();
-                if err.is_empty() { super::load::say::unavailable(&plugin) } else { err }
+                if !err.is_empty() {
+                    return err;
+                }
+                store().v1.listed.with(|l| connect::why_down(l, &plugin_id)).unwrap_or_else(|| super::load::say::unavailable(&plugin))
             })
             .flex_auto()
             .min_w(px(0.0))

@@ -670,6 +670,13 @@ pub fn reach(listed: &[Listed], plugin: &str) -> Reach {
     }
 }
 
+/// Why `plugin` isn't running, as the broker lists it: its message, else
+/// its code.
+pub fn why_down(listed: &[Listed], plugin: &str) -> Option<String> {
+    let p = listed.iter().find(|p| p.id == plugin)?;
+    Some(if p.message.is_empty() { p.code.clone() } else { p.message.clone() }).filter(|why| !why.is_empty())
+}
+
 /// A message that is only `@short:login` (or `logout`, `switch`, `setup`)
 /// for a listed plugin that offers it: (plugin id, command). Any other
 /// message, or a short whose plugin declares no accounts: None (it goes to
@@ -1010,11 +1017,10 @@ fn refusal_reason(e: &RoxError) -> Option<Installed> {
     }
 }
 
-/// Disable or enable (13.4, 13.5); a failed plugin's Retry is an enable.
-pub fn set_enabled(b: &dyn Broker, plugin: &str, enabled: bool) -> Result<(), RoxError> {
-    let action = if enabled { PluginAction::Enable } else { PluginAction::Disable };
+/// Enable, disable (13.4, 13.5) or a failed plugin's Retry.
+pub fn switch(b: &dyn Broker, plugin: &str, action: PluginAction) -> Result<(), RoxError> {
     host_api::plugin_action(b, plugin, action)?;
-    if !enabled {
+    if action == PluginAction::Disable {
         session::end_plugin(plugin, Ended::Closed);
     }
     Ok(())
@@ -1253,6 +1259,17 @@ mod tests {
         let mut silent = older.clone();
         silent.downgrade = false;
         assert_eq!(install(&b, &silent).unwrap(), Installed::NeedsDowngrade);
+    }
+
+    /// Only a person's Retry asks the broker to take the keystore's key.
+    #[test]
+    fn retry_asks_for_the_stored_key_and_an_enable_does_not() {
+        let b = Lifecycle::default();
+        switch(&b, "app.buwiz.fixture", PluginAction::Enable).unwrap();
+        switch(&b, "app.buwiz.fixture", PluginAction::Retry).unwrap();
+        let sent = b.routes.lock().unwrap().clone();
+        let route = "POST /v1/host/plugins/app.buwiz.fixture/enable".to_owned();
+        assert_eq!(sent, [(route.clone(), json!({})), (route, json!({"adopt_key": true}))]);
     }
 
     #[test]
