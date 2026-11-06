@@ -7,11 +7,11 @@
 //! guest's error is `{error: {code, message}}`. What acts on a screen says which with
 //! `?display=:N`; the broker's model tools can't set it, the broker does, from the Bot.
 //!
-//! Until the image runs its services as another user, a process in the box can take one of these
-//! ports over, so nothing here is believed for a security decision: `box-screen`'s answer is
-//! checked, and no capability the box claims widens what a tool may do. The bearer goes to the
-//! port Docker maps to this box, freshly read, so at worst that same box's process hears its own
-//! box's token, which opens nothing else: each computer has its own.
+//! What runs in the box runs as a user of its own, chosen there from the Bot named here: `bot` on
+//! a command or a file, `/v1/screen` for what takes root. A command can't take over these ports,
+//! which sit below the box's unprivileged range. Even so, nothing here is believed for a security
+//! decision: `box-screen`'s answer is checked, and no capability the box claims widens what a tool
+//! may do. What the Bot relies on, it reads from outside ([`crate::Provider::users_apart`]).
 
 use std::time::Duration;
 
@@ -29,6 +29,8 @@ use crate::{CommandOutput, Input, Problem, Result, Screen, Screenshot, Secret, S
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// What a call that isn't a command gets.
 const PATIENCE: Duration = Duration::from_secs(30);
+/// What a screen request gets: `box-screen` waits its turn, then for an X server and a viewer.
+const SCREEN_PATIENCE: Duration = Duration::from_secs(50);
 /// What the guest may answer with before it counts as broken.
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
@@ -58,28 +60,36 @@ impl BoxGuest {
         parse(&self.send(Method::GET, &format!("{}/v1/info", self.host), "application/json", None, PATIENCE).await?)
     }
 
-    /// `box-screen up <bot>`: the Bot's screen, started or found.
-    pub async fn screen_up(&self, bot: &str) -> Result<Screen> {
-        let out = self.run_argv(&["box-screen", "up", bot]).await?;
-        parse_screen(&out.stdout, bot)
+    /// `box-screen`, through `POST /v1/screen`: what it printed, or the error it gave.
+    async fn screen(&self, body: Value) -> Result<String> {
+        let url = format!("{}/v1/screen", self.exec);
+        let bytes = self.send(Method::POST, &url, "application/json", Some(body.to_string()), SCREEN_PATIENCE).await?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        match serde_json::from_str::<Value>(text.trim()).ok().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned)) {
+            Some(said) => Err(Problem::Guest { status: 500, message: said }),
+            None => Ok(text),
+        }
     }
 
-    /// Stops `bot`'s screen and frees its slot: `box-screen down` keeps it, and there are few.
+    /// `box-screen up <bot>`: the Bot's screen, started or found.
+    pub async fn screen_up(&self, bot: &str) -> Result<Screen> {
+        parse_screen(&self.screen(json!({"action": "up", "bot": bot})).await?, bot)
+    }
+
+    /// Stops `bot`'s screen and frees its slot. Its commands are asked to stop, and get two seconds.
     pub async fn screen_down(&self, bot: &str) -> Result<()> {
-        self.run_argv(&["box-screen", "down", bot]).await?;
-        self.run_argv(&["sh", "-c", r#"rm -f -- "$HOME/.box-screens/$1""#, "sh", bot]).await.map(|_| ())
+        self.screen(json!({"action": "forget", "bot": bot})).await.map(|_| ())
     }
 
     /// `box-screen list`: the Bots with a slot.
     pub async fn screens(&self) -> Result<Vec<String>> {
-        let out = self.run_argv(&["box-screen", "list"]).await?;
-        Ok(parse_screens(&out.stdout))
+        Ok(parse_screens(&self.screen(json!({"action": "list"})).await?))
     }
 
-    /// `path`, relative to the workspace, with its links followed.
+    /// `path`, relative to the workspace, with its links followed, as far as its owner can see.
     pub async fn resolve(&self, path: &str) -> Result<String> {
         let full = format!("/workspace/{path}");
-        Ok(self.run_argv(&["realpath", "-m", "--", &full]).await?.stdout.trim_end_matches('\n').to_owned())
+        Ok(self.run_argv(owner_of(path), &["realpath", "-m", "--", &full]).await?.stdout.trim_end_matches('\n').to_owned())
     }
 
     pub async fn screenshot(&self, screen: &Screen) -> Result<Screenshot> {
@@ -94,21 +104,22 @@ impl BoxGuest {
         self.post(&on(path, screen), &body, PATIENCE).await.map(|_| ())
     }
 
-    /// A shell command for `screen`: its display, in its folder.
+    /// A shell command of `screen`'s Bot, as its user, in its folder. It gets no display: only
+    /// what the box's services do reaches a screen.
     pub async fn run(&self, screen: &Screen, command: &str, timeout_ms: u64) -> Result<CommandOutput> {
         let patience = Duration::from_millis(timeout_ms) + Duration::from_secs(5);
-        let v = self.post("/v1/exec", &json!({"command": command, "timeout_ms": timeout_ms, "cwd": screen.folder, "env": screen_env(screen)}), patience).await?;
+        let v = self.post("/v1/exec", &json!({"command": command, "timeout_ms": timeout_ms, "cwd": screen.folder, "bot": screen.bot()}), patience).await?;
         Ok(command_output(&v))
     }
 
-    /// Opens `url` in `screen`'s browser. No shell, so nothing in it is read as one, and a session
-    /// of its own: box-exec ends a job's process group at its timeout, and a browser outlives that.
+    /// Opens `url` in `screen`'s browser, as its desktop's user. No shell, so nothing in it is read
+    /// as one.
     pub async fn open_url(&self, screen: &Screen, url: &str) -> Result<()> {
-        self.post("/v1/exec", &json!({"command": open_command(url), "cwd": screen.folder, "env": screen_env(screen)}), PATIENCE).await.map(|_| ())
+        self.screen(open_request(screen, url)?).await.map(|_| ())
     }
 
-    async fn run_argv(&self, argv: &[&str]) -> Result<CommandOutput> {
-        let v = self.post("/v1/exec", &json!({"command": argv, "timeout_ms": 30000}), Duration::from_secs(35)).await?;
+    async fn run_argv(&self, bot: Option<&str>, argv: &[&str]) -> Result<CommandOutput> {
+        let v = self.post("/v1/exec", &json!({"command": argv, "timeout_ms": 30000, "bot": bot}), Duration::from_secs(35)).await?;
         let out = command_output(&v);
         if out.exit_code != Some(0) {
             let said = serde_json::from_str::<Value>(out.stdout.trim()).ok().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
@@ -119,7 +130,8 @@ impl BoxGuest {
 
     /// The bytes of a file under the workspace.
     pub async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-        let url = format!("{}/v1/files?path={}&encoding=base64", self.exec, query(path));
+        let bot = owner_of(path).map(|b| format!("&bot={}", query(b))).unwrap_or_default();
+        let url = format!("{}/v1/files?path={}&encoding=base64{bot}", self.exec, query(path));
         let v = parse(&self.send(Method::GET, &url, "application/json", None, PATIENCE).await?)?;
         if v.get("kind").and_then(Value::as_str) == Some("directory") {
             return Err(Problem::Guest { status: 400, message: format!("{path} is a folder") });
@@ -129,7 +141,7 @@ impl BoxGuest {
     }
 
     pub async fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
-        let body = json!({"path": path, "content": base64::engine::general_purpose::STANDARD.encode(content), "encoding": "base64", "create_dirs": true});
+        let body = json!({"path": path, "content": base64::engine::general_purpose::STANDARD.encode(content), "encoding": "base64", "create_dirs": true, "bot": owner_of(path)});
         let url = format!("{}/v1/files", self.exec);
         self.send(Method::PUT, &url, "application/json", Some(body.to_string()), PATIENCE).await.map(|_| ())
     }
@@ -208,22 +220,21 @@ async fn pause() -> Settled {
     Settled { waited_ms: 500, fallback: true, ..Settled::default() }
 }
 
-fn open_command(url: &str) -> Value {
-    json!(["setsid", "-f", "box-chromium", url])
+fn open_request(screen: &Screen, url: &str) -> Result<Value> {
+    let bot = screen.bot().ok_or_else(|| Problem::Failed("this screen has no browser of its own".to_owned()))?;
+    Ok(json!({"action": "open", "bot": bot, "url": url}))
+}
+
+/// The Bot whose folder `path` is in, with or without the workspace in front. Files anywhere else
+/// are the shared user's.
+fn owner_of(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/workspace/").unwrap_or(path).strip_prefix("agents/")?;
+    rest.split('/').next().filter(|b| !b.is_empty())
 }
 
 /// `path` on `screen`.
 fn on(path: &str, screen: &Screen) -> String {
     format!("{path}?display={}", query(&screen.display))
-}
-
-/// What a command needs to land on `screen`.
-fn screen_env(screen: &Screen) -> Value {
-    let mut env = json!({"DISPLAY": screen.display, "BOX_DISPLAY": screen.display});
-    if let Some(profile) = &screen.profile {
-        env["BOX_CHROME_PROFILE"] = json!(profile);
-    }
-    env
 }
 
 /// `box-screen up`'s line for `bot`. Each field is checked, and the folder is the one a Bot has
@@ -321,7 +332,7 @@ mod tests {
         let line = r#"{"bot":"b_1","slot":2,"display":":2","viewer_port":6902,"workspace":"agents/b_1","profile":"/home/box/chrome-profile/bots/b_1","running":true}"#;
         let s = parse_screen(line, "b_1").unwrap();
         assert_eq!((s.display.as_str(), s.viewer_port, s.folder.as_str()), (":2", 6902, "agents/b_1"));
-        assert_eq!(screen_env(&s)["DISPLAY"], ":2");
+        assert_eq!(s.bot(), Some("b_1"));
         assert_eq!(on("/v1/cua/click", &s), "/v1/cua/click?display=%3A2");
         assert!(parse_screen(r#"{"error":"full"}"#, "b_1").is_err());
     }
@@ -335,8 +346,20 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_runs_in_a_session_of_its_own() {
-        assert_eq!(open_command("https://a.example"), json!(["setsid", "-f", "box-chromium", "https://a.example"]));
+    fn a_page_opens_through_the_screens_own_route() {
+        let screen = parse_screen(r#"{"display":":2","viewer_port":6902}"#, "b_1").unwrap();
+        assert_eq!(open_request(&screen, "https://a.example").unwrap(), json!({"action": "open", "bot": "b_1", "url": "https://a.example"}));
+        let shared = Screen { folder: "shared".into(), ..screen };
+        assert!(open_request(&shared, "https://a.example").is_err());
+    }
+
+    #[test]
+    fn a_file_belongs_to_the_bot_whose_folder_its_in() {
+        assert_eq!(owner_of("agents/b_1/notes/a.txt"), Some("b_1"));
+        assert_eq!(owner_of("/workspace/agents/b_1/a.txt"), Some("b_1"));
+        assert_eq!(owner_of("kept.txt"), None);
+        assert_eq!(owner_of("/etc/passwd"), None);
+        assert_eq!(owner_of("agents/"), None);
     }
 
     #[test]
