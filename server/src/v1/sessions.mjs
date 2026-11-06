@@ -93,6 +93,31 @@ export function stripMeta(r) {
   return out;
 }
 
+// the `_meta` key a first-party plugin's tool answers with to switch the active account: {account, label}
+const ACCOUNT_USE = "buwiz/account_use";
+
+/** A tool result as the Bot gets it from an app's call: stripped, but for
+ * `_meta["buwiz/document"]` and `buwiz/account_use`, the keys the Bot itself
+ * acts on. The Bot is the host's other half and judges them
+ * (`mini_v1::document`, `mini_v1::bridge`); the app and the model still never
+ * see them (16.5). */
+export function hostResult(r) {
+  const out = stripMeta(r);
+  const kept = Object.fromEntries(["buwiz/document", ACCOUNT_USE].filter((k) => r?._meta?.[k] !== undefined).map((k) => [k, r._meta[k]]));
+
+  if (Object.keys(kept).length) out._meta = kept;
+
+  return out;
+}
+
+/** Whether a result asking for an account switch may stand: only on the
+ * person's own signed call to a first-party plugin. An agent's press, a
+ * routine or anything else the Bot might sign is refused, whatever the tool
+ * declares, so a plugin's own opt-in can't bring a switch in. */
+export function mayUseAccount(actor, firstParty) {
+  return firstParty === true && actor === "person";
+}
+
 /** An open request a plugin made (resolve `open`, `_meta["buwiz/open"]`)
  *  checked against its own manifest `m`: the app is one of its apps (no
  *  other plugin's), props validate (11.5), the ticket follows the grammar.
@@ -310,7 +335,7 @@ export function createSessions(plugins) {
     else s.active--;
   }
 
-  /** POST /v1/host/call {envelope, sig} → {ok, result} with `_meta` stripped. */
+  /** POST /v1/host/call {envelope, sig} → {ok, result}, as `hostResult` has it. */
   async function call(b) {
     if (!isObject(b) || !isObject(b.envelope) || !isString(b.sig)) refuse("invalid_args", "send {envelope, sig}");
     const { envelope, sig } = b;
@@ -358,7 +383,9 @@ export function createSessions(plugins) {
 
     if (resultBytes(r) > max) refuse("result_too_large", `${envelope.tool}'s result is over ${preview ? `${Math.round((max / 1048576) * 10) / 10} MiB` : "1 MiB"}`);
 
-    return { ok: true, result: stripMeta(r) };
+    if (r?._meta?.[ACCOUNT_USE] !== undefined && !mayUseAccount(envelope.actor, plugins.firstParty(plugins.rowOf(s.plugin)))) refuse("permission_denied", "only a person's own press in a first-party plugin switches accounts");
+
+    return { ok: true, result: hostResult(r) };
   }
 
   // ── tickets, resolve, app source ─────────────────────────────────────

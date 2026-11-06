@@ -9,7 +9,7 @@ import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { FX, FIXTURE_DIR, bed, broker, codeOf, envelope, installFixture, openApp, until } from "./v1-helpers.mjs";
 import { readFileSync } from "node:fs";
-import { PROMPT_MAX, checkPrompt, mayReach, originOf, pressOf } from "../src/v1/sessions.mjs";
+import { PROMPT_MAX, checkPrompt, hostResult, mayReach, mayUseAccount, originOf, pressOf } from "../src/v1/sessions.mjs";
 
 const b = bed("sessions");
 const { plugins, sessions } = broker(b, { timeouts: { call: 800 } });
@@ -65,10 +65,55 @@ test("BRG-03 a validly signed call with a fresh nonce succeeds; the plugin sees 
   const caller = r.result.structuredContent.caller;
 
   assert.deepEqual({ ...caller, ts: 0 }, { origin: "app", plugin: FX, app: "board", open_id: board.open_id, ts: 0 });
-  // a result's _meta never leaves the broker
+  // a result's _meta never leaves the broker, but for buwiz/document
   const o = await call(board, "fx_open");
 
   assert.equal(o.result._meta, undefined);
+});
+
+test("only the Bot's own keys of _meta reach it", () => {
+  const document = { path: "/a/b.docx", name: "b.docx", mime: "x" };
+  const r = { content: [], _meta: { "buwiz/document": document, "buwiz/open": { app: "x" }, "buwiz/suggest": [] } };
+
+  assert.deepEqual(hostResult(r), { content: [], _meta: { "buwiz/document": document } });
+  const use = { account: "google", label: "work" };
+
+  assert.deepEqual(hostResult({ content: [], _meta: { "buwiz/account_use": use, "buwiz/open": {} } }), { content: [], _meta: { "buwiz/account_use": use } });
+  assert.deepEqual(hostResult({ content: [], _meta: { "buwiz/open": {} } }), { content: [] });
+  assert.deepEqual(hostResult({ content: [] }), { content: [] });
+});
+
+test("only a person's call to a first-party plugin may switch an account", () => {
+  assert.equal(mayUseAccount("person", true), true);
+  assert.equal(mayUseAccount("person", false), false);
+
+  for (const actor of ["agent", "routine", "app", "Person", true, ["person"], null, undefined]) assert.equal(mayUseAccount(actor, true), false, String(actor));
+});
+
+test("a switch stands only on the person's signed call to a first-party plugin", async () => {
+  // an open of its own: these calls would use up board's 20 a second
+  const open = await openApp(sessions, m, "board");
+  const use = { account: "google", label: "work" };
+  const asks = { result_meta: { "buwiz/account_use": use } };
+
+  for (const tool of ["fx_echo", "fx_search"]) assert.deepEqual((await call(open, tool, asks)).result._meta, { "buwiz/account_use": use }, tool);
+
+  // fx_search is a read: the AI's press and anything else reach it, and the switch is still refused
+  for (const actor of ["agent", "routine", "app", "Person", true, null]) {
+    await assert.rejects(call(open, "fx_search", asks, { actor }), { code: "permission_denied", message: "only a person's own press in a first-party plugin switches accounts" }, String(actor));
+    assert.equal((await call(open, "fx_search", {}, { actor })).result._meta, undefined, "a plain read still goes");
+  }
+
+  assert.equal(await codeOf(call(open, "fx_echo", asks, { actor: "agent" })), "permission_denied");
+  const trust = readFileSync(b.trustFile, "utf8");
+
+  try {
+    writeFileSync(b.trustFile, JSON.stringify({ ...JSON.parse(trust), approved_plugins: [] }));
+    assert.equal(await codeOf(call(open, "fx_echo", asks)), "permission_denied", "no longer first-party");
+    assert.equal((await call(open, "fx_echo")).ok, true);
+  } finally {
+    writeFileSync(b.trustFile, trust);
+  }
 });
 
 test("BRG-04 the same envelope twice: the second is replayed", async () => {
