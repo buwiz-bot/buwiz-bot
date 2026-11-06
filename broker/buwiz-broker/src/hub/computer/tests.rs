@@ -524,7 +524,7 @@ async fn a_failed_read_of_the_seats_removes_nothing() {
     break_the_seats_read(&b);
     assert!(b.computers.detach(&b.ctx, &b.ann.0).await.is_err(), "nobody else here is what a failed read looked like");
     assert!(b.computers.leave(&b.ctx, &b.ann.0).await.is_err());
-    assert_eq!(Computers::ids(&b.ctx), [id.clone()], "a computer others sit at was marked for removal");
+    assert_eq!(Computers::ids(&b.ctx), std::slice::from_ref(&id), "a computer others sit at was marked for removal");
     assert!(Computers::seat(&b.ctx, &b.ann.0).is_some() && Computers::seat(&b.ctx, &b.bea.0).is_some());
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(!b.mock.calls().contains(&"destroy".to_owned()));
