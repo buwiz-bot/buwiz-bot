@@ -788,41 +788,57 @@ fn cut_at_head(face: Face, points: &mut Vec<V3>, head: &Head) -> Vec<Face> {
     if !face.fragments.is_empty() || buried.iter().all(|b| *b) || !buried.iter().any(|b| *b) {
         return vec![face];
     }
-    // the corners left, each with its smooth normal, and the two crossings
-    let mut kept: Vec<(u32, V3)> = Vec::with_capacity(6);
-    for i in 0..4 {
-        let j = (i + 1) % 4;
-        if !buried[i] {
-            kept.push((face.corners[i], face.shading[i]));
-        }
-        if buried[i] != buried[j] {
-            let (from, to) = if buried[i] { (i, j) } else { (j, i) };
-            let t = crossing(head, corners[from], corners[to]);
-            let at = u32::try_from(points.len()).expect("a scene's points fit u32");
-            points.push(lerp3(corners[from], corners[to], t));
-            kept.push((at, unit(lerp3(face.shading[from], face.shading[to], t))));
-        }
-    }
-    // a fan of quads; a piece of three corners repeats its last
+    let cross = |from: usize, to: usize, points: &mut Vec<V3>| -> (u32, V3) {
+        let t = crossing(head, corners[from], corners[to]);
+        let at = u32::try_from(points.len()).expect("a scene's points fit u32");
+        points.push(lerp3(corners[from], corners[to], t));
+        (at, unit(lerp3(face.shading[from], face.shading[to], t)))
+    };
+    // each run of corners left is its own piece, between its two crossings:
+    // buried corners can alternate, and what lies between two runs is inside
     let mut pieces = Vec::with_capacity(2);
+    for buried_one in 0..4 {
+        let first = (buried_one + 1) % 4;
+        if !buried[buried_one] || buried[first] {
+            continue;
+        }
+        let mut run = vec![cross(buried_one, first, points)];
+        let mut i = first;
+        while !buried[i] {
+            run.push((face.corners[i], face.shading[i]));
+            let next = (i + 1) % 4;
+            if buried[next] {
+                run.push(cross(next, i, points));
+            }
+            i = next;
+        }
+        fan(&run, &face, points, &mut pieces);
+    }
+    pieces
+}
+
+/// `run`, a convex outline of corners and their normals, as faces like `face`:
+/// quads fanned from its first corner. A piece of three repeats its last.
+fn fan(run: &[(u32, V3)], face: &Face, points: &[V3], pieces: &mut Vec<Face>) {
+    let last = run.len() - 1;
     let mut start = 1;
-    while start + 1 < kept.len() {
-        let last = kept.len() - 1;
-        let (b, c, d) = (start, (start + 1).min(last), (start + 2).min(last));
-        let piece = [kept[0], kept[b], kept[c], kept[d]];
-        let at = piece.map(|(i, _)| points[i as usize]);
+    while start < last {
+        let (b, c, d) = (start, start + 1, (start + 2).min(last));
+        let piece = [run[0], run[b], run[c], run[d]];
+        // the centre sorts the face: a repeated corner mustn't pull it over
+        let distinct = if d == c { 3 } else { 4 };
+        let sum = piece[..distinct].iter().fold([0.0; 3], |sum, (i, _)| add(sum, points[*i as usize]));
         pieces.push(Face {
             corners: piece.map(|(i, _)| i),
             normal: face.normal,
             shading: piece.map(|(_, n)| n),
-            centre: scale(add(add(at[0], at[1]), add(at[2], at[3])), 0.25),
+            centre: scale(sum, 1.0 / distinct as f64),
             paint: face.paint,
             above: face.above,
             fragments: Vec::new(),
         });
         start += 2;
     }
-    pieces
 }
 
 /// A lathe's widest ring. From below it, the disc it spans hides what's
@@ -1860,6 +1876,9 @@ mod tests {
         }
     }
 
+    /// How far under the surface a chord of the unit disc head may run here.
+    const CHORD: f64 = 0.4;
+
     fn disc_head() -> Head {
         let rim: Vec<V3> = (0..90)
             .map(|i| {
@@ -1893,6 +1912,9 @@ mod tests {
                 }
             }
             assert!(on_surface >= 2, "{name}: {on_surface} corners on the surface");
+            for f in &pieces {
+                assert!(buried_by(f.centre) < CHORD, "{name}: centre {:?}", f.centre);
+            }
         }
     }
 
@@ -1906,6 +1928,47 @@ mod tests {
             assert!(head.radius(d) < 0.8, "{lean}: {}", head.radius(d));
         }
         assert!(!head.contains([0.001, 0.0, 1.5]), "a point past the depth is outside");
+    }
+
+    /// How far a point lies inside the unit disc head.
+    fn buried_by(p: V3) -> f64 {
+        1.0 - length(p)
+    }
+
+    /// Buried corners that alternate leave two separate pieces, with the
+    /// head between them: nothing bridges it. An edge between two crossings
+    /// is a chord, so it runs a little under a curved surface, no more.
+    #[test]
+    fn alternate_buried_corners_leave_two_pieces() {
+        let head = disc_head();
+        let mut points = Vec::new();
+        let corners = [[0.95, 0.0, 0.0], [1.2, 1.2, 0.0], [0.0, 0.95, 0.0], [-1.2, -1.2, 0.0]];
+        let face = quad(&mut points, corners);
+        let pieces = cut_at_head(face, &mut points, &head);
+        assert_eq!(pieces.len(), 2);
+        for f in &pieces {
+            let at = f.corners.map(|c| points[c as usize]);
+            assert!(buried_by(f.centre) < CHORD, "centre {:?}", f.centre);
+            for i in 0..4 {
+                let mid = scale(add(at[i], at[(i + 1) % 4]), 0.5);
+                assert!(buried_by(mid) < CHORD, "edge {i} of {at:?}");
+            }
+        }
+    }
+
+    /// A piece of three corners repeats its last, and its centre is still
+    /// the middle of the three: the centre decides which half it draws in.
+    #[test]
+    fn a_cut_triangle_centres_on_its_three_corners() {
+        let head = disc_head();
+        let mut points = Vec::new();
+        let face = quad(&mut points, [[-0.2, -0.2, 0.0], [0.8, -0.2, 0.0], [0.8, 0.8, 0.0], [-0.2, 0.8, 0.0]]);
+        let pieces = cut_at_head(face, &mut points, &head);
+        assert_eq!(pieces.len(), 1);
+        let [a, b, c, d] = pieces[0].corners;
+        assert_eq!(c, d, "three corners, the last repeated");
+        let middle = scale(add(add(points[a as usize], points[b as usize]), points[c as usize]), 1.0 / 3.0);
+        assert!(length(sub(pieces[0].centre, middle)) < 1e-9, "{:?} against {middle:?}", pieces[0].centre);
     }
 
     /// A face wholly outside comes back as it was.
