@@ -213,6 +213,32 @@ fn an_answer_for_what_was_typed_before_an_edit_is_no_answer() {
 }
 
 #[test]
+fn an_answer_after_cancel_doesnt_open_the_form_again() {
+    if !in_child("an_answer_after_cancel_doesnt_open_the_form_again") {
+        return;
+    }
+    use std::sync::atomic::Ordering;
+    crate::computer::CANNED.lock().unwrap().0 = vec![json!({"ok": true, "screen": false, "system": "Linux", "consent": "The AI will act on this machine."})];
+    let mut config = EngineConfig::new(App::Rust(Root::new::<RemoteForm>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(700.0));
+    let mut app = run(config);
+    app.press("Connect a remote computer");
+    wait_for(&mut app, "Test");
+    crate::computer::SLOW.store(true, Ordering::SeqCst);
+    app.press("Test");
+    wait_for(&mut app, "Asking that machine");
+    app.press("Cancel");
+    wait_for(&mut app, "Connect a remote computer");
+    crate::computer::SLOW.store(false, Ordering::SeqCst);
+    while crate::computer::CANNED.lock().unwrap().1.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for _ in 0..10 {
+        assert!(!shows(&mut app, "The AI will act"), "the yes came back for an empty form: {:?}", app.texts());
+    }
+}
+
+#[test]
 fn cancelling_the_form_drops_what_was_typed_and_a_no_stays_on_it() {
     if !in_child("cancelling_the_form_drops_what_was_typed_and_a_no_stays_on_it") {
         return;

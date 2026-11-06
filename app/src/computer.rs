@@ -301,6 +301,7 @@ impl Form {
 
     /// Back to nothing: no secret stays once the form is done with.
     fn clear(&self) {
+        self.edits.update(|n| *n += 1);
         for field in [self.url, self.key_file, self.token, self.viewer, self.pin, self.note] {
             field.set(String::new());
         }
@@ -515,7 +516,10 @@ pub(crate) fn refusal(reply: Option<&Value>) -> Option<String> {
 
 /// What a test's broker answers, in order, and what it was sent. A headless engine has no network.
 #[cfg(test)]
-pub(crate) static CANNED: std::sync::Mutex<(Vec<Value>, Vec<(String, Value)>)> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+pub(crate) static CANNED: std::sync::Mutex<Canned> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+/// The answers still to give, then each path and body that was sent.
+#[cfg(test)]
+pub(crate) type Canned = (Vec<Value>, Vec<(String, Value)>);
 
 #[cfg(not(test))]
 async fn form_post(path: &str, body: Value) -> Option<Value> {
