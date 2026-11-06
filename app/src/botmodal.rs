@@ -142,7 +142,7 @@ fn body() -> impl IntoElement {
         )
         // Design: describe the bot (and add a picture) → 3 mark avatars;
         // a pick becomes the draft the preview shows.
-        .child(view().w_full().mt_4().child(crate::design::panel(true)))
+        .child(view().w_full().mt_4().child(crate::design::panel()))
         .child(
             text("Or pick by hand")
                 .mt_4()
