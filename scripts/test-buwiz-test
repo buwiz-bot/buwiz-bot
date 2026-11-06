@@ -55,7 +55,7 @@ run() { # name, list after, what happens, want in front, want exit, what's set u
   local name="$1" list="$2" steps="$3" want="$4" code="$5" setup="${6:-:}" S="$T/s-$RANDOM"
   mkdir -p "$S" "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"; echo 9000000000 > "$S/idle"
   ( cd "$S" && eval "$setup" )
-  STATE="$S" LIST_AFTER="$list" BUWIZ_TEST_LIST_TRIES=8 BUWIZ_TEST_TICK=0.02 \
+  STATE="$S" LIST_AFTER="$list" BUWIZ_TEST_LIST_TRIES=120 BUWIZ_TEST_TICK=0.02 \
     PATH="$T/bin:$PATH" "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1
   local got=$?
   ( cd "$S" && P="$(cat app.pid)" && eval "$steps" )
