@@ -151,16 +151,29 @@ pub fn strip_meta(r: &Value) -> Value {
     out
 }
 
+/// The `_meta` key a first-party plugin's tool answers with to switch the
+/// active account: `{account, label}`.
+const ACCOUNT_USE: &str = "buwiz/account_use";
+
 /// A tool result as the Bot gets it from an app's call: stripped, but for
-/// `_meta["buwiz/document"]`, the one key the Bot itself acts on. The Bot is
-/// the host's other half and judges it (`mini_v1::document`); the app and
-/// the model still never see it (16.5).
+/// `_meta["buwiz/document"]` and [`ACCOUNT_USE`], the keys the Bot itself acts
+/// on. The Bot is the host's other half and judges them (`mini_v1::document`,
+/// `mini_v1::bridge`); the app and the model still never see them (16.5).
 pub fn host_result(r: &Value) -> Value {
     let mut out = strip_meta(r);
-    if let (Some(document), Some(o)) = (r.pointer("/_meta/buwiz~1document"), out.as_object_mut()) {
-        o.insert("_meta".to_owned(), json!({"buwiz/document": document}));
+    let kept: serde_json::Map<String, Value> = ["buwiz/document", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    if let (false, Some(o)) = (kept.is_empty(), out.as_object_mut()) {
+        o.insert("_meta".to_owned(), Value::Object(kept));
     }
     out
+}
+
+/// Whether a result asking for an account switch may stand: only on the
+/// person's own signed call to a first-party plugin. An agent's press, a
+/// routine or anything else the Bot might sign is refused, whatever the tool
+/// declares, so a plugin's own opt-in can't bring a switch in.
+fn may_use_account(actor: Option<&Value>, first_party: bool) -> bool {
+    first_party && actor == Some(&json!("person"))
 }
 
 /// An open request a plugin made (resolve `open`) checked against its own
@@ -525,6 +538,9 @@ impl Sessions {
             let limit = if preview { format!("{} MiB", js::number(((max / 1_048_576.0) * 10.0).round() / 10.0)) } else { "1 MiB".to_owned() };
             return V1Error::err("result_too_large", format!("{tool}'s result is over {limit}"));
         }
+        if r.get("_meta").and_then(|m| get(m, ACCOUNT_USE)).is_some() && !may_use_account(get(envelope, "actor"), self.host.row(&plugin).is_some_and(|row| self.host.first_party(&row))) {
+            return V1Error::err("permission_denied", "only a person's own press in a first-party plugin switches accounts");
+        }
         Ok(json!({"ok": true, "result": host_result(&r)}))
     }
 
@@ -823,12 +839,24 @@ mod tests {
     }
 
     #[test]
-    fn only_the_document_key_of_meta_reaches_the_bot() {
+    fn only_the_bots_own_keys_of_meta_reach_it() {
         let document = json!({"path": "/a/b.docx", "name": "b.docx", "mime": "x"});
         let r = json!({"content": [], "_meta": {"buwiz/document": document, "buwiz/open": {"app": "x"}, "buwiz/suggest": []}});
         assert_eq!(host_result(&r), json!({"content": [], "_meta": {"buwiz/document": document}}));
+        let switch = json!({"account": "google", "label": "work"});
+        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}})), json!({"content": [], "_meta": {"buwiz/account_use": switch}}));
         assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}})), json!({"content": []}));
         assert_eq!(host_result(&json!({"content": []})), json!({"content": []}));
+    }
+
+    #[test]
+    fn only_a_persons_call_to_a_first_party_plugin_may_switch_an_account() {
+        assert!(may_use_account(Some(&json!("person")), true));
+        assert!(!may_use_account(Some(&json!("person")), false), "a third party");
+        assert!(!may_use_account(None, true), "no actor");
+        for claim in [json!("agent"), json!("routine"), json!("app"), json!("Person"), json!(true), json!(["person"]), Value::Null] {
+            assert!(!may_use_account(Some(&claim), true), "{claim}");
+        }
     }
 
     #[test]
