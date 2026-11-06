@@ -1072,13 +1072,19 @@ impl Host {
 
         let lock = self.lock_of(&id);
         let _held = lock.lock().await;
-        // an uninstall, a disable or another update that got the lock first: what was checked
-        // above is out of date, and carrying on would undo it
-        if let Some(seen) = &row {
-            let same = self.row(&id).is_some_and(|now| now.manifest_sha256 == seen.manifest_sha256 && now.plugin_pub == seen.plugin_pub && now.enabled == seen.enabled);
-            if !same {
-                return V1Error::err("manifest_changed", "the installed plugin changed while this update waited; inspect it again");
+        // an install, an uninstall, a disable or an update that got the lock first: what was
+        // checked above is out of date, and carrying on would undo it. A second first install
+        // would replace the first one's key
+        let same = match (&row, self.row(&id)) {
+            (None, None) => true,
+            (Some(seen), Some(now)) => now.manifest_sha256 == seen.manifest_sha256 && now.plugin_pub == seen.plugin_pub && now.enabled == seen.enabled,
+            _ => false,
+        };
+        if !same {
+            if row.is_none() {
+                g0.conn.close().await;
             }
+            return V1Error::err("manifest_changed", "the installed plugin changed while this waited; inspect it again");
         }
         let g = if row.is_some() {
             // 9.4: stop the old version; its opens end with it
@@ -1595,6 +1601,14 @@ mod tests {
 
     impl UpdateBed {
         async fn new(label: &str) -> Self {
+            let bed = Self::empty(label);
+            let first = bed.reviewed("1.0.0").await;
+            bed.host.install(&first).await.unwrap();
+            bed
+        }
+
+        /// With nothing installed.
+        fn empty(label: &str) -> Self {
             let root = std::env::temp_dir().join(format!("buwiz-plugin-update-{label}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
@@ -1613,10 +1627,7 @@ mod tests {
                 apps_dir: None,
             })
             .unwrap();
-            let bed = Self { host, root };
-            let first = bed.reviewed("1.0.0").await;
-            bed.host.install(&first).await.unwrap();
-            bed
+            Self { host, root }
         }
 
         /// The fixture at `version`, signed and inspected: an install's body.
@@ -1636,7 +1647,12 @@ mod tests {
 
         /// An update to 1.0.1, left waiting on the plugin's lock that `lock` is, held by the caller.
         async fn update_at_the_lock(&self, lock: &Arc<AsyncMutex<()>>) -> tokio::task::JoinHandle<Res> {
-            let (host, body) = (self.host.clone(), self.reviewed("1.0.1").await);
+            let body = self.reviewed("1.0.1").await;
+            self.install_at_the_lock(lock, body).await
+        }
+
+        async fn install_at_the_lock(&self, lock: &Arc<AsyncMutex<()>>, body: Value) -> tokio::task::JoinHandle<Res> {
+            let host = self.host.clone();
             let waiters = Arc::strong_count(lock);
             let update = tokio::spawn(async move { host.install(&body).await });
             for _ in 0..2000 {
@@ -1683,6 +1699,26 @@ mod tests {
         assert_eq!(answer["updated"], true, "{answer}");
         let row = b.host.row(FX).unwrap();
         assert_eq!((row.version.as_str(), row.disabled_tools.as_str()), ("1.0.1", r#"["waited","restarted"]"#));
+        b.done().await;
+    }
+
+    #[tokio::test]
+    async fn of_two_first_installs_the_second_is_refused_and_the_first_keeps_its_key() {
+        let b = UpdateBed::empty("two-installs");
+        let body = b.reviewed("1.0.0").await;
+        let lock = b.host.lock_of(FX);
+        let held = lock.lock().await;
+        let one = b.install_at_the_lock(&lock, body.clone()).await;
+        let two = b.install_at_the_lock(&lock, body).await;
+        drop(held);
+        let answers = [one.await.unwrap(), two.await.unwrap()];
+        let won: Vec<&Value> = answers.iter().filter_map(|a| a.as_ref().ok()).collect();
+        let lost: Vec<&str> = answers.iter().filter_map(|a| a.as_ref().err()).map(|e| e.code.as_str()).collect();
+        assert_eq!((won.len(), lost), (1, vec!["manifest_changed"]));
+        let row = b.host.row(FX).unwrap();
+        assert_eq!(won[0]["plugin_pub"], json!(row.plugin_pub));
+        let seed = b.host.keys.get(FX).unwrap().unwrap();
+        assert_eq!(Host::public_of(&seed).unwrap(), row.plugin_pub, "the keystore holds the key the record names");
         b.done().await;
     }
 
