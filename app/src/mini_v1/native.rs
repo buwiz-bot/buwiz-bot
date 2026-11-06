@@ -37,6 +37,7 @@ use super::{
     attribution::{self, Actor},
     bridge::{self, Consent, Emit, HostUi, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
+    document::{self, Document},
     host_api, load,
     load::Prepared,
     screens,
@@ -79,6 +80,8 @@ pub struct MacUi {
     n: u64,
     /// The open's nsh surface: whose input its calls follow.
     surface: u64,
+    /// A card in the chat, not a full-screen open.
+    inline: bool,
 }
 
 impl HostUi for MacUi {
@@ -147,6 +150,21 @@ impl HostUi for MacUi {
     fn preview(&self, doc: bridge::Preview) -> Result<(), RoxError> {
         super::to_store(move |st| st.v1_preview(doc));
         Ok(())
+    }
+
+    fn plugin_folder(&self, plugin: &str) -> Option<PathBuf> {
+        document::folder_of(std::env::var_os("HOME").as_deref(), plugin)
+    }
+
+    /// Only over the full-screen app on top: a hidden chat keeps its cards
+    /// running, so a live card may be off the screen. The store decides,
+    /// when the job runs, for the person may have left since the call.
+    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+        if self.inline {
+            return log::info!("mini v1: a card's document opened nothing");
+        }
+        let key = self.key.clone();
+        super::to_store(move |st| st.v1_document(&key, &doc, live()));
     }
 
     fn fit(&self, height: f32) {
@@ -391,6 +409,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
     crate::agent_hub::opened(id, &key, &prepared.plugin.short, &prepared.plugin.title, &prepared.key.app, &prepared.title, Rc::downgrade(view));
     let channel = view.host();
     let surface = view.surface_key();
+    let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     let slot = Arc::new(Slot::default());
     let s = slot.clone();
     std::thread::spawn(move || {
@@ -423,7 +442,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
                 return super::to_store(move |st| st.mini_err(&key).set(text));
             }
         };
-        let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone(), n: id, surface });
+        let ui = Arc::new(MacUi { key: key.clone(), title: p.title.clone(), n: id, surface, inline });
         let dir = super::plugins_dir();
         let ctx = OpenContext::new(prepared.clone(), session, broker, ui, &dir, bridge::Limits::default());
         {

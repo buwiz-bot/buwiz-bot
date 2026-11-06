@@ -35,6 +35,7 @@ pub use buwiz_protocol::{jcs, keys, tokens};
 pub mod cards;
 pub mod connect;
 pub mod consent;
+pub mod document;
 pub mod host_api;
 pub mod lifecycle;
 pub mod links;

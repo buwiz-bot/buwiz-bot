@@ -151,6 +151,18 @@ pub fn strip_meta(r: &Value) -> Value {
     out
 }
 
+/// A tool result as the Bot gets it from an app's call: stripped, but for
+/// `_meta["buwiz/document"]`, the one key the Bot itself acts on. The Bot is
+/// the host's other half and judges it (`mini_v1::document`); the app and
+/// the model still never see it (16.5).
+pub fn host_result(r: &Value) -> Value {
+    let mut out = strip_meta(r);
+    if let (Some(document), Some(o)) = (r.pointer("/_meta/buwiz~1document"), out.as_object_mut()) {
+        o.insert("_meta".to_owned(), json!({"buwiz/document": document}));
+    }
+    out
+}
+
 /// An open request a plugin made (resolve `open`) checked against its own
 /// manifest `m`: one of its own apps, props valid (11.5), a ticket of the
 /// grammar. The normalized open.
@@ -452,7 +464,7 @@ impl Sessions {
         Ok(())
     }
 
-    /// POST /v1/host/call {envelope, sig} → {ok, result} with `_meta` stripped.
+    /// POST /v1/host/call {envelope, sig} → {ok, result}, as [`host_result`] has it.
     pub async fn call(&self, b: &Value) -> Res {
         let (Some(envelope), Some(sig)) = (get(b, "envelope").filter(|e| e.is_object()), get(b, "sig").and_then(Value::as_str)) else {
             return V1Error::err("invalid_args", "send {envelope, sig}");
@@ -513,7 +525,7 @@ impl Sessions {
             let limit = if preview { format!("{} MiB", js::number(((max / 1_048_576.0) * 10.0).round() / 10.0)) } else { "1 MiB".to_owned() };
             return V1Error::err("result_too_large", format!("{tool}'s result is over {limit}"));
         }
-        Ok(json!({"ok": true, "result": strip_meta(&r)}))
+        Ok(json!({"ok": true, "result": host_result(&r)}))
     }
 
     // ── tickets, resolve, app source ─────────────────────────────────────
@@ -808,6 +820,15 @@ mod tests {
         let r = json!({"content": [{"type": "text", "text": "héllo"}, {"type": "resource", "resource": {"blob": "abcd"}}, {"type": "image", "data": "zzzz"}], "structuredContent": {"a": 1}});
         assert_eq!(result_bytes(&r), 6 + 4 + 7);
         assert_eq!(strip_meta(&json!({"_meta": {}, "content": []})), json!({"content": []}));
+    }
+
+    #[test]
+    fn only_the_document_key_of_meta_reaches_the_bot() {
+        let document = json!({"path": "/a/b.docx", "name": "b.docx", "mime": "x"});
+        let r = json!({"content": [], "_meta": {"buwiz/document": document, "buwiz/open": {"app": "x"}, "buwiz/suggest": []}});
+        assert_eq!(host_result(&r), json!({"content": [], "_meta": {"buwiz/document": document}}));
+        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}})), json!({"content": []}));
+        assert_eq!(host_result(&json!({"content": []})), json!({"content": []}));
     }
 
     #[test]
