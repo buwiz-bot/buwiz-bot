@@ -4,6 +4,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -11,6 +12,24 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 const ID: &str = "app.buwiz.keyfx";
+
+/// A broker built with the stub sign-in starts only with this set, and one
+/// built without it refuses to: `cargo test` and `--all-features` both run here.
+fn stub_sign_in(c: &mut Command) {
+    if cfg!(feature = "test-google") {
+        c.env("BUWIZ_TEST_GOOGLE", "http://127.0.0.1:9");
+    }
+}
+
+/// `path` to take a broker's stderr, so a test that fails can say why.
+fn file_for(path: &Path) -> std::fs::File {
+    std::fs::File::create(path).unwrap()
+}
+
+/// What a broker wrote to `path`.
+fn said(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
 
 struct Broker {
     child: Child,
@@ -30,8 +49,11 @@ impl Broker {
         let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
         let data = root.join(data);
         std::fs::create_dir_all(&data).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"))
-            .env_clear()
+        let log = root.join(format!("broker-{port}.log"));
+        let mut broker = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"));
+        broker.env_clear();
+        stub_sign_in(&mut broker);
+        let child = broker
             .env("PATH", std::env::var_os("PATH").unwrap())
             .env("HOME", root)
             .env("BUWIZ_KEYSTORE", format!("file:{}", keys.display()))
@@ -39,18 +61,21 @@ impl Broker {
             .env("BUWIZ_BROKER_HUB", "1")
             .env("BUWIZ_BROKER_V1_HOST", "1")
             .env("MOCK", "1")
-            // a build with the stub sign-in starts only with this set
-            .env("BUWIZ_TEST_GOOGLE", "http://127.0.0.1:9")
             .args(["--port", &port.to_string(), "--no-node", "--assets"])
             .arg(root)
             .arg("--data")
             .arg(&data)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(file_for(&log))
             .spawn()
             .unwrap();
-        let b = Broker { child, port, data };
-        b.until(|b| b.call("GET", "/v1/host/plugins", None).0 == 200, "the broker to answer");
+        let mut b = Broker { child, port, data };
+        let start = Instant::now();
+        while b.call("GET", "/v1/host/plugins", None).0 != 200 {
+            let gone = b.child.try_wait().unwrap();
+            assert!(gone.is_none() && start.elapsed() < Duration::from_secs(20), "the broker on {port} never answered ({gone:?}):\n{}", said(&log));
+            std::thread::sleep(Duration::from_millis(50));
+        }
         b
     }
 
@@ -131,7 +156,8 @@ fn bed(root: &Path) -> Value {
 fn signed(root: &Path, version: &str, out: &str) -> Value {
     let seed = buwiz_protocol::keys::b64(&[7; 32]);
     let public = buwiz_protocol::keys::SessionKey::from_seed(&seed).unwrap().public();
-    std::fs::write(root.join("publisher.key"), &seed).unwrap();
+    // a key file is the owner's alone, whatever the umask: sign-manifest checks
+    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(root.join("publisher.key")).unwrap().write_all(seed.as_bytes()).unwrap();
     let trust = json!({"v": 1, "publishers": {"keyfx-test-01": {"publisher": "app.buwiz", "alg": "ed25519", "public_key": public}},
         "approved_plugins": [{"id": ID, "publisher_key_id": "keyfx-test-01"}]});
     std::fs::write(root.join("trust.json"), trust.to_string()).unwrap();
@@ -309,8 +335,8 @@ fn what_is_no_key_fails_closed() {
 /// The broker with nothing but `env`, on a throwaway `HOME`.
 fn bare(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"));
-    // the stub sign-in's build starts only with its variable set
-    c.env_clear().env("PATH", std::env::var_os("PATH").unwrap()).env("HOME", root).env("BUWIZ_TEST_GOOGLE", "http://127.0.0.1:9").envs(env.iter().copied()).args(args);
+    c.env_clear().env("PATH", std::env::var_os("PATH").unwrap()).env("HOME", root).envs(env.iter().copied()).args(args);
+    stub_sign_in(&mut c);
     c
 }
 
@@ -334,23 +360,26 @@ fn a_helper_with_a_bare_db_name_needs_its_data_dir() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let port = free_port();
+    let log = std::env::temp_dir().join(format!("buwiz-plugin-bare-{}.log", std::process::id()));
     let mut helper = bare(&root, &["helper", "--db", "app.db", "--port", &port], &[("BUWIZ_LINE_TOKEN", "t")])
         .current_dir(&root)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(file_for(&log))
         .spawn()
         .unwrap();
     let start = Instant::now();
     let status = loop {
         match helper.try_wait().unwrap() {
             Some(status) => break Some(status),
-            None if start.elapsed() > Duration::from_secs(5) => break None,
+            None if start.elapsed() > Duration::from_secs(20) => break None,
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     };
     let _ = helper.kill();
     let _ = helper.wait();
-    assert_eq!(status.and_then(|s| s.code()), Some(2), "it refuses");
+    assert_eq!(status.and_then(|s| s.code()), Some(2), "it refuses: {}", said(&log));
+    assert!(said(&log).contains("needs --data"), "for this reason: {}", said(&log));
+    let _ = std::fs::remove_file(&log);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0, "nothing lands in the working folder");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -359,15 +388,27 @@ fn a_helper_with_a_bare_db_name_needs_its_data_dir() {
 /// marker of its one-time key move beside the database, and with no plugin
 /// installed that move reads nothing from the Keychain.
 fn took_the_keychain(db: &Path, port: &str, mut broker: Command) -> bool {
-    let mut child = broker.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let log = db.with_file_name(format!("broker-{port}.log"));
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    let mut child = broker.stdout(std::process::Stdio::null()).stderr(file_for(&log)).spawn().unwrap();
     let start = Instant::now();
-    while TcpStream::connect(format!("127.0.0.1:{port}")).is_err() {
-        assert!(start.elapsed() < Duration::from_secs(20), "waited for the broker on {port}");
+    // an answer, not a connection: it binds its port before its plugin host
+    while !answers(port) {
+        let gone = child.try_wait().unwrap();
+        assert!(gone.is_none() && start.elapsed() < Duration::from_secs(20), "the broker on {port} never answered ({gone:?}):\n{}", said(&log));
         std::thread::sleep(Duration::from_millis(50));
     }
     unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     let _ = child.wait();
     db.with_file_name(buwiz_broker::helper::keystore::MOVED_MARKER).exists()
+}
+
+/// Whether something on `port` answers a request.
+fn answers(port: &str) -> bool {
+    let Ok(mut s) = TcpStream::connect(format!("127.0.0.1:{port}")) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = s.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    s.read(&mut [0; 1]).is_ok_and(|n| n > 0)
 }
 
 fn free_port() -> String {
