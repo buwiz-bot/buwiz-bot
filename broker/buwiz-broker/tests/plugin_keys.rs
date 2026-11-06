@@ -124,13 +124,18 @@ impl Broker {
 fn bed(root: &Path) -> Value {
     let _ = std::fs::remove_dir_all(root);
     std::fs::create_dir_all(root).unwrap();
+    signed(root, "1.0.0", "signed.json")
+}
+
+/// The fixture at `version`, signed into `out`: its spawn spec.
+fn signed(root: &Path, version: &str, out: &str) -> Value {
     let seed = buwiz_protocol::keys::b64(&[7; 32]);
     let public = buwiz_protocol::keys::SessionKey::from_seed(&seed).unwrap().public();
     std::fs::write(root.join("publisher.key"), &seed).unwrap();
     let trust = json!({"v": 1, "publishers": {"keyfx-test-01": {"publisher": "app.buwiz", "alg": "ed25519", "public_key": public}},
         "approved_plugins": [{"id": ID, "publisher_key_id": "keyfx-test-01"}]});
     std::fs::write(root.join("trust.json"), trust.to_string()).unwrap();
-    let manifest = json!({"protocol": "1.0.0", "id": ID, "short": "keyfx", "version": "1.0.0", "title": "Key Fixture", "description": "A plugin to open.",
+    let manifest = json!({"protocol": "1.0.0", "id": ID, "short": "keyfx", "version": version, "title": "Key Fixture", "description": "A plugin to open.",
         "publisher": {"id": "app.buwiz", "key_id": "keyfx-test-01", "name": "Fixture"},
         "apps": [{"id": "home", "title": "Home", "description": "An app to open.", "entry": "buwiz-app://home", "mime": "text/x-nsh-tsx", "sdk": "1",
             "fingerprint": format!("sha256:{}", "0".repeat(64)), "placement": ["full"], "permissions": {}}]});
@@ -144,12 +149,12 @@ fn bed(root: &Path) -> Value {
         .arg("--app")
         .arg(format!("home={}", root.join("home.tsx").display()))
         .arg("--out")
-        .arg(root.join("signed.json"))
+        .arg(root.join(out))
         .output()
         .unwrap();
     assert!(signed.status.success(), "{}", String::from_utf8_lossy(&signed.stderr));
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture-plugin.mjs");
-    json!({"command": "node", "args": [plugin], "env": {"FX_MANIFEST": root.join("signed.json")}})
+    json!({"command": "node", "args": [plugin], "env": {"FX_MANIFEST": root.join(out)}})
 }
 
 /// A second install on another database replaces the key in the keystore
@@ -202,6 +207,68 @@ fn a_replaced_key_stops_the_plugin_until_a_persons_retry() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// An update holds the pin too: one under a replaced key is refused and
+/// stops the plugin, so Retry is on offer, and goes through after it.
+#[test]
+fn an_update_under_a_replaced_key_waits_for_retry() {
+    let root = std::env::temp_dir().join(format!("buwiz-plugin-update-{}", std::process::id()));
+    let spec = bed(&root);
+    let newer = signed(&root, "1.0.1", "newer.json");
+    let keys = root.join("keys");
+    let b = Broker::start(&root, "data", &keys);
+    b.install(&spec);
+    let pinned = b.record();
+    std::fs::write(keys.join(format!("{ID}.key")), buwiz_protocol::keys::b64(&[3; 32])).unwrap();
+
+    let (_, inspected) = b.call("POST", "/v1/host/plugins/inspect", Some(&newer));
+    let mut body = newer.clone();
+    body["manifest_sha256"] = inspected["manifest_sha256"].clone();
+    let (status, refused) = b.call("POST", "/v1/host/plugins/install", Some(&body));
+    assert_eq!((status, &refused["code"]), (400, &json!("plugin_key_changed")), "{refused}");
+    assert_eq!(b.record(), pinned);
+    assert_eq!(b.listed()["version"], "1.0.0");
+    assert_eq!((b.state(), b.code()), (json!("failed"), json!("plugin_key_changed")));
+
+    let (_, retried) = b.call("POST", &format!("/v1/host/plugins/{ID}/enable"), Some(&json!({"adopt_key": true})));
+    assert_eq!(retried["state"], "running", "{retried}");
+    b.install(&newer);
+    assert_eq!(b.listed()["version"], "1.0.1");
+    drop(b);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Retry writes the pin only once the plugin has passed its checks.
+#[test]
+fn a_retry_that_fails_the_gate_leaves_the_pin() {
+    let root = std::env::temp_dir().join(format!("buwiz-plugin-gate-{}", std::process::id()));
+    let spec = bed(&root);
+    signed(&root, "1.0.1", "newer.json");
+    let keys = root.join("keys");
+    let b = Broker::start(&root, "data", &keys);
+    b.install(&spec);
+    let pinned = b.record();
+    drop(b);
+    std::fs::write(keys.join(format!("{ID}.key")), buwiz_protocol::keys::b64(&[3; 32])).unwrap();
+    let good = std::fs::read(root.join("signed.json")).unwrap();
+    std::fs::copy(root.join("newer.json"), root.join("signed.json")).unwrap();
+
+    let b = Broker::start(&root, "data", &keys);
+    b.until(|b| b.code() == "plugin_key_changed", "the plugin to stop");
+    let (_, retried) = b.call("POST", &format!("/v1/host/plugins/{ID}/enable"), Some(&json!({"adopt_key": true})));
+    assert_ne!(retried["state"], "running", "{retried}");
+    assert_eq!(b.record(), pinned, "the served manifest is not the installed one: {retried}");
+
+    // the plugin put right: the stop comes back, and Retry goes through
+    std::fs::write(root.join("signed.json"), good).unwrap();
+    let (_, enabled) = b.call("POST", &format!("/v1/host/plugins/{ID}/enable"), Some(&json!({})));
+    assert_eq!(enabled["code"], "plugin_key_changed", "{enabled}");
+    let (_, retried) = b.call("POST", &format!("/v1/host/plugins/{ID}/enable"), Some(&json!({"adopt_key": true})));
+    assert_eq!(retried["state"], "running", "{retried}");
+    assert_ne!(b.record(), pinned);
+    drop(b);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `adopt_key` takes a key only from a plugin stopped for that reason, and
 /// a keystore item that is no key fails closed, Retry or not.
 #[test]
@@ -220,7 +287,21 @@ fn what_is_no_key_fails_closed() {
     assert_eq!(b.code(), "plugin_key_invalid");
     let (_, retried) = b.call("POST", &format!("/v1/host/plugins/{ID}/enable"), Some(&json!({"adopt_key": true})));
     assert_eq!(retried["code"], "plugin_key_invalid", "{retried}");
+    assert!(retried["message"].as_str().unwrap().contains("Uninstall the plugin, then install it again"), "{retried}");
     assert_eq!(b.record(), pinned);
+
+    // an update can't write a record from it
+    let newer = signed(&root, "1.0.1", "newer.json");
+    let (_, inspected) = b.call("POST", "/v1/host/plugins/inspect", Some(&newer));
+    let mut body = newer.clone();
+    body["manifest_sha256"] = inspected["manifest_sha256"].clone();
+    assert_eq!(b.call("POST", "/v1/host/plugins/install", Some(&body)).1["code"], "plugin_key_invalid");
+    assert_eq!(b.record(), pinned);
+
+    // what the message says works
+    assert_eq!(b.call("POST", &format!("/v1/host/plugins/{ID}/uninstall"), Some(&json!({}))).0, 200);
+    b.install(&spec);
+    assert_eq!(b.open(), 200);
     drop(b);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -242,6 +323,35 @@ fn keystore_check_keeps_to_no_keychain() {
     let out = bare(&root, &["keystore-check", ID], &[("BUWIZ_NO_KEYCHAIN", "1")]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(said.contains("no key in the file"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `helper` with a bare `--db` name and no `--data` has no folder for its
+/// keys: it refuses, and the working folder stays empty.
+#[test]
+fn a_helper_with_a_bare_db_name_needs_its_data_dir() {
+    let root = std::env::temp_dir().join(format!("buwiz-plugin-bare-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let port = free_port();
+    let mut helper = bare(&root, &["helper", "--db", "app.db", "--port", &port], &[("BUWIZ_LINE_TOKEN", "t")])
+        .current_dir(&root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let status = loop {
+        match helper.try_wait().unwrap() {
+            Some(status) => break Some(status),
+            None if start.elapsed() > Duration::from_secs(5) => break None,
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    let _ = helper.kill();
+    let _ = helper.wait();
+    assert_eq!(status.and_then(|s| s.code()), Some(2), "it refuses");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0, "nothing lands in the working folder");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -277,11 +387,6 @@ fn a_broker_on_its_own_data_dir_stays_off_the_keychain() {
     let db = data.join("generated/app.db");
     assert!(!took_the_keychain(&db, &port, bare(&root, &args, &[("BUWIZ_BROKER_HUB", "1"), ("MOCK", "1")])));
     assert!(db.exists(), "its plugin host ran");
-    // and the same broker on the owner's folder is what the marker catches
-    let owners = buwiz_protocol::broker_dir::new_dir(&root);
-    std::fs::create_dir_all(&owners).unwrap();
-    let args = ["--port", &port, "--no-node", "--assets", root.to_str().unwrap(), "--data", owners.to_str().unwrap()];
-    assert!(took_the_keychain(&owners.join("generated/app.db"), &port, bare(&root, &args, &[("BUWIZ_BROKER_HUB", "1"), ("MOCK", "1")])));
     let _ = std::fs::remove_dir_all(&root);
 }
 

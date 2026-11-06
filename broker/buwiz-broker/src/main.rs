@@ -372,8 +372,12 @@ async fn helper(args: &[String]) -> i32 {
             return 2;
         }
     };
-    // `--db` is any file: its data dir, when not named, is its own folder
-    let data = data.unwrap_or_else(|| db.parent().map(std::path::PathBuf::from).unwrap_or_default());
+    // `--db` is any file: its data dir, when not named, is its own folder;
+    // a bare file name has none, and keys never land in the working folder
+    let Some(data) = data.or_else(|| db.parent().filter(|p| !p.as_os_str().is_empty()).map(std::path::PathBuf::from)) else {
+        eprintln!("{usage} (a bare --db file name needs --data)");
+        return 2;
+    };
     let host = match plugin_host(&data, &db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, accounts) {
         Ok(h) => h,
         Err(e) => {

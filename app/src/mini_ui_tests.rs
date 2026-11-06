@@ -195,6 +195,9 @@ fn stub_broker() -> Arc<Mutex<Vec<String>>> {
             let mut raw = Vec::new();
             let mut buf = [0; 4096];
             while let Ok(n) = s.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
                 raw.extend_from_slice(&buf[..n]);
                 let text = String::from_utf8_lossy(&raw).into_owned();
                 let Some((head, body)) = text.split_once("\r\n\r\n") else { continue };
