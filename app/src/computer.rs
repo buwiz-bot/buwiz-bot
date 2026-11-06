@@ -241,13 +241,23 @@ pub(crate) enum Stage {
     Ready { what: String, consent: String },
 }
 
+const BOX_READY: &str = "The way in works. The box's token and viewer password haven't been sent: they go when you say yes, and the box itself is checked then.";
+
+/// What the form is at once a field has changed: nothing tested is what's typed now.
+pub(crate) fn stage_after_edit(stage: &Stage) -> Stage {
+    match stage {
+        Stage::Closed => Stage::Closed,
+        _ => Stage::Editing,
+    }
+}
+
 /// What the broker's test said, for the form.
 pub(crate) fn stage_of(reply: Option<&Value>) -> Result<Stage, String> {
     let Some(v) = reply else { return Err("The broker didn't answer.".to_owned()) };
     let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
     if v.get("ok").and_then(Value::as_bool) == Some(true) {
         let system = v.get("system").and_then(Value::as_str).unwrap_or("a plain SSH host");
-        let what = if v.get("screen").and_then(Value::as_bool) == Some(true) { "A Buwiz computer answered, with its screen.".to_owned() } else { format!("{system} answered over SSH. There's no screen: commands and files only.") };
+        let what = if v.get("screen").and_then(Value::as_bool) == Some(true) { BOX_READY.to_owned() } else { format!("{system} answered over SSH. There's no screen: commands and files only.") };
         return Ok(Stage::Ready { what, consent: text("consent") });
     }
     if text("code") == "trust" {
@@ -266,15 +276,27 @@ struct Form {
     viewer: Signal<String>,
     pin: Signal<String>,
     note: Signal<String>,
+    /// how many edits there have been: a Test's answer for older ones is no answer
+    edits: Signal<u64>,
 }
 
 impl Form {
     fn new() -> Self {
-        Self { stage: signal(Stage::Closed), url: signal(String::new()), key_file: signal(String::new()), token: signal(String::new()), viewer: signal(String::new()), pin: signal(String::new()), note: signal(String::new()) }
+        Self { stage: signal(Stage::Closed), url: signal(String::new()), key_file: signal(String::new()), token: signal(String::new()), viewer: signal(String::new()), pin: signal(String::new()), note: signal(String::new()), edits: signal(0) }
     }
 
     fn body(&self) -> Value {
         json!({"url": self.url.get_untracked(), "keyFile": self.key_file.get_untracked(), "token": self.token.get_untracked(), "viewerPassword": self.viewer.get_untracked(), "pin": self.pin.get_untracked()})
+    }
+
+    /// A person changed a field. A key trusted for one address says nothing of another.
+    fn edited(&self, address: bool) {
+        self.edits.update(|n| *n += 1);
+        if address {
+            self.pin.set(String::new());
+        }
+        let next = stage_after_edit(&self.stage.get_untracked());
+        self.stage.set(next);
     }
 
     /// Back to nothing: no secret stays once the form is done with.
@@ -500,8 +522,15 @@ async fn form_post(path: &str, body: Value) -> Option<Value> {
     client::post_any(path, body).await
 }
 
+/// A test's broker takes its time while this is set.
+#[cfg(test)]
+pub(crate) static SLOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(test)]
 async fn form_post(path: &str, body: Value) -> Option<Value> {
+    while SLOW.load(std::sync::atomic::Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     let mut canned = CANNED.lock().unwrap();
     canned.1.push((path.to_owned(), body));
     (!canned.0.is_empty()).then(|| canned.0.remove(0))
@@ -512,8 +541,12 @@ fn test_remote() {
     let f = form();
     f.note.set(String::new());
     f.stage.set(Stage::Busy);
+    let asked_at = f.edits.get_untracked();
     spawn_detached(async move {
         let reply = form_post("/v1/host/computer/remote/test", f.body()).await;
+        if f.edits.get_untracked() != asked_at {
+            return;
+        }
         match stage_of(reply.as_ref()) {
             Ok(stage) => f.stage.set(stage),
             Err(why) => {
@@ -664,6 +697,7 @@ pub(crate) fn pane() -> impl IntoElement {
 
 /// A field of the form.
 fn field(id: &'static str, hint: &'static str, masked: bool, value: Signal<String>) -> impl IntoElement {
+    let address = id == "computer-remote-url";
     view().h(px(32.0)).rounded(px(8.0)).bg(theme::HOVER).px(px(10.0)).justify_center().child(
         input()
             .test_id(id)
@@ -675,7 +709,13 @@ fn field(id: &'static str, hint: &'static str, masked: bool, value: Signal<Strin
             .text_size(px(12.0))
             .text_color(theme::TEXT)
             .h(px(32.0))
-            .on_change(move |t: &str| value.set(t.to_owned())),
+            .on_change(move |t: &str| {
+                // a field set from here isn't a person's edit
+                if value.with_untracked(|v| v != t) {
+                    value.set(t.to_owned());
+                    form().edited(address);
+                }
+            }),
     )
 }
 
@@ -1207,6 +1247,16 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_takes_the_form_back_from_anything_tested() {
+        let trust = Stage::Trust { fingerprint: "f".into(), pin: "p".into(), vouched: false };
+        let ready = Stage::Ready { what: "w".into(), consent: "c".into() };
+        for stage in [trust, ready, Stage::Busy, Stage::Editing] {
+            assert_eq!(stage_after_edit(&stage), Stage::Editing, "{stage:?}");
+        }
+        assert_eq!(stage_after_edit(&Stage::Closed), Stage::Closed);
+    }
+
+    #[test]
     fn the_form_goes_by_what_the_broker_says() {
         assert_eq!(stage_of(Some(&json!({"ok": false, "code": "trust", "fingerprint": "SHA256:x", "pin": "ssh-ed25519 A", "vouched": true}))), Ok(Stage::Trust { fingerprint: "SHA256:x".into(), pin: "ssh-ed25519 A".into(), vouched: true }));
         assert_eq!(stage_of(Some(&json!({"ok": false, "code": "remote", "message": "That machine can't be reached."}))), Err("That machine can't be reached.".to_owned()));
@@ -1215,6 +1265,6 @@ mod tests {
         assert!(what.contains("Linux") && what.contains("no screen"), "{what}");
         assert_eq!(consent, "words");
         let Ok(Stage::Ready { what, .. }) = stage_of(Some(&json!({"ok": true, "screen": true, "consent": "w"}))) else { panic!() };
-        assert!(what.contains("with its screen"));
+        assert!(what.contains("haven't been sent") && what.contains("when you say yes"), "{what}");
     }
 }

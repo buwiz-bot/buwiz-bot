@@ -58,6 +58,7 @@ async fn a_plain_ssh_host_runs_commands_and_files_and_has_no_screen() {
     assert!(String::from_utf8_lossy(&shown.stdout).contains(&fingerprint), "the fingerprint a person compares");
     asked.pin = Some(pin);
     let m = asked.machine(&computer).unwrap();
+    assert!(matches!(provider.trial(&m).await.unwrap(), Probed::Ready { boxed: false, system: Some(_) }));
     assert!(matches!(provider.probe(&m).await.unwrap(), Probed::Ready { boxed: false, system: Some(_) }));
     assert_eq!(provider.power(&m).await.unwrap(), Power::Asleep, "a test leaves nothing open");
 
@@ -229,8 +230,9 @@ async fn a_certificate_the_public_roots_take_still_gets_no_token_before_a_yes() 
     std::fs::create_dir_all(&computer).unwrap();
     let mut asked = Asked { url: "https://box.c3t.test".into(), token: Some(Secret::new("the-token")), viewer_password: Some(Secret::new("the-password")), ..Asked::default() };
     let m = asked.machine(&computer).unwrap();
-    let said = provider.probe(&m).await.unwrap();
+    let said = provider.trial(&m).await.unwrap();
     assert_eq!(said, Probed::Trust { fingerprint: fingerprint(&cert), pin: fingerprint(&cert), vouched: true });
+    assert_eq!(provider.probe(&m).await.unwrap(), said, "nor does the check made after a yes, with nothing trusted");
     assert!(provider.wake(&m).await.is_err());
     // the handshake that found the roots take it got this far, and hung up with nothing said
     let first = tokio::time::timeout(Duration::from_secs(5), heard.recv()).await.expect("the proxy never reached what's behind it").unwrap();
@@ -239,9 +241,14 @@ async fn a_certificate_the_public_roots_take_still_gets_no_token_before_a_yes() 
         assert_eq!(more, "", "something went before a yes");
     }
 
-    // and the same way in does carry it, after a yes: so that silence was the code's
+    // a Test after a person trusted it sends nothing either
     asked.pin = Some(fingerprint(&cert));
     let m = asked.machine(&computer).unwrap();
+    assert_eq!(provider.trial(&m).await.unwrap(), Probed::Ready { boxed: true, system: None });
+    let first = tokio::time::timeout(Duration::from_secs(5), heard.recv()).await.expect("the trial never reached what's behind it").unwrap();
+    assert_eq!(first, "", "a secret went on a Test");
+
+    // and the same way in does carry it, after a yes: so that silence was the code's
     assert_eq!(provider.wake(&m).await.unwrap_err().sentence(), "The box refused this token.");
     let sent = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -376,6 +383,9 @@ async fn a_real_box_works_over_real_ssh_and_a_disconnect_leaves_it_alone() {
     let wrong = asked("not-the-token").machine(&computer).unwrap();
     assert_eq!(provider.probe(&wrong).await.unwrap_err().sentence(), "The box refused this token.");
 
+    // a Test logs in and asks nothing of the box, so a wrong token isn't found until the yes
+    assert!(matches!(provider.trial(&wrong).await.unwrap(), Probed::Ready { boxed: true, system: Some(_) }));
+
     let m = asked(local.machine.token.expose()).machine(&computer).unwrap();
     assert_eq!(provider.probe(&m).await.unwrap(), Probed::Ready { boxed: true, system: None });
     provider.wake(&m).await.unwrap();
@@ -418,7 +428,7 @@ async fn a_real_box_works_over_real_tls_with_a_pin_and_refuses_any_other() {
 
     // no root vouches for it: nothing past the handshake, and a person gets its hash
     let unknown = asked(None).machine(&computer).unwrap();
-    let Probed::Trust { fingerprint: shown, pin, vouched: false } = provider.probe(&unknown).await.unwrap() else { panic!() };
+    let Probed::Trust { fingerprint: shown, pin, vouched: false } = provider.trial(&unknown).await.unwrap() else { panic!() };
     assert_eq!(shown, fingerprint(&cert));
     assert!(provider.wake(&unknown).await.unwrap_err().sentence().contains("isn't trusted yet"));
 

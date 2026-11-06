@@ -31,7 +31,7 @@
 //! - Nothing but a person's click sleeps a computer a run or a hand-over has.
 //!
 //! A remote computer ([`buwiz_computer::RemoteProvider`]) is the same record with a connection in
-//! it, and only a person adds one, with a yes to [`CONSENT`]: the wall that makes a computer safe to
+//! it, and only a person adds one, with a yes to [`consent_for`] after a Test of the same thing: the wall that makes a computer safe to
 //! leave on isn't there, so that's theirs to say, and a Bot at one starts at Ask until a person says
 //! otherwise ([`ask_first`]). Waking is connecting and sleeping is hanging up.
 //! Removing or retiring one drops the connection and this record: nothing at the far end is told
@@ -90,8 +90,16 @@ const SLEEP_POLL: Duration = Duration::from_millis(20);
 /// How long opencodex's word on which models see images holds: every model call asks.
 const SIGHT_TTL: Duration = Duration::from_secs(60);
 
-/// What a person says yes to when they add a remote computer. The form shows it, word for word.
-pub const CONSENT: &str = "The AI will act on this machine with every right this login has. It can run commands, read and change files and use the screen there, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine. A copy of the SSH key is kept in this Mac's Keychain until you remove the computer.";
+/// What a person says yes to when they add a remote computer, for the kind it is. The form shows it,
+/// word for word. Only what doesn't apply drops out: a plain host has no screen, and https no key.
+pub fn consent_for(reach: &Reach, boxed: bool) -> String {
+    let can = if boxed { "run commands, read and change files and use the screen there" } else { "run commands, read and change files there" };
+    let key = if matches!(reach, Reach::Ssh { .. }) { " A copy of the SSH key is kept in this Mac's Keychain until you remove the computer." } else { "" };
+    format!("The AI will act on this machine with every right this login has. It can {can}, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine.{key}")
+}
+
+/// How long a person has between a Test and their yes.
+const TESTED_LIFE: Duration = Duration::from_secs(10 * 60);
 /// Who a switch's Ask is from, when it came with a remote computer and no person chose it.
 const REMOTE_ACTOR: &str = "remote-computer";
 const UNREAD: &str = "This computer's record couldn't be read. Try again in a moment.";
@@ -254,6 +262,10 @@ pub struct Computers {
     provider: Arc<dyn Provider>,
     /// one for the broker: it holds the connections
     remote: Arc<RemoteProvider>,
+    /// what a person's Test passed, as [`Computers::fingerprint`]s: a yes covers that and nothing
+    /// else. In memory, and with this broker's own salt
+    tested: Mutex<HashMap<String, Instant>>,
+    tested_salt: String,
     gate: tokio::sync::OnceCell<Option<Gate>>,
     now: Mutex<Now>,
     machines: Mutex<HashMap<String, Machine>>,
@@ -288,7 +300,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, remote: Arc::new(RemoteProvider::new()), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default() }
+        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).unwrap_or_default(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default() }
     }
 
     /// With this remote provider (tests).
@@ -862,10 +874,39 @@ impl Computers {
 
     // ---- remote computers ----
 
-    /// A person's test of what they typed: who the far end says it is, or that it works.
-    pub async fn probe_remote(&self, ctx: &HubCtx, asked: &Asked) -> Result<Probed, Problem> {
+    /// Everything a yes is for: where, as who, with what, and who it must prove to be.
+    fn fingerprint(&self, m: &Machine) -> String {
+        use sha2::{Digest, Sha256};
+        let link = m.link.as_ref();
+        let key = link.and_then(|l| l.key.as_ref()).map_or("", Secret::expose);
+        let pin = link.and_then(|l| l.pin.as_deref()).unwrap_or_default();
+        let reach = serde_json::to_string(&m.reach).unwrap_or_default();
+        let parts = [self.tested_salt.as_str(), reach.as_str(), m.token.expose(), m.viewer_password.expose(), key, pin];
+        let mut hash = Sha256::new();
+        for part in parts {
+            hash.update(part.len().to_le_bytes());
+            hash.update(part.as_bytes());
+        }
+        hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Whether this exact record passed a Test in time. Once: a yes that fails starts again.
+    fn take_tested(&self, m: &Machine) -> bool {
+        let mut tested = self.tested.lock().unwrap_or_else(|e| e.into_inner());
+        tested.retain(|_, at| at.elapsed() < TESTED_LIFE);
+        tested.remove(&self.fingerprint(m)).is_some()
+    }
+
+    /// A person's test of what they typed: who the far end says it is, or that the way in works, and
+    /// the words their yes would be to. No token or viewer password leaves here.
+    pub async fn probe_remote(&self, ctx: &HubCtx, asked: &Asked) -> Result<(Probed, String), Problem> {
         let dir = Scratch::new(ctx)?;
-        self.remote.probe(&asked.machine(&dir.0)?).await
+        let machine = asked.machine(&dir.0)?;
+        let probed = self.remote.trial(&machine).await?;
+        if matches!(probed, Probed::Ready { .. }) {
+            self.tested.lock().unwrap_or_else(|e| e.into_inner()).insert(self.fingerprint(&machine), Instant::now());
+        }
+        Ok((probed, consent_for(&machine.reach, machine.has_screen())))
     }
 
     /// A person added a remote computer for `bot`: tested again here, then seated at it, asleep. The
@@ -886,6 +927,9 @@ impl Computers {
 
     async fn seat_remote(&self, ctx: &HubCtx, bot: &str, id: &str, dir: &std::path::Path, asked: &Asked) -> Result<(), Problem> {
         let machine = asked.machine(dir)?;
+        if !self.take_tested(&machine) {
+            return Err(Problem::Remote(NOT_TESTED.to_owned()));
+        }
         if let Probed::Trust { .. } = self.remote.probe(&machine).await? {
             return Err(Problem::Remote("A person has to trust this computer's key first: test it, check what it shows, and say yes.".to_owned()));
         }
@@ -1253,6 +1297,8 @@ impl Computers {
 }
 
 const HAS_ONE: &str = "This Bot already has a computer.";
+const NOT_TESTED: &str = "This isn't what was tested. Test it again, read what it shows, and say yes then.";
+const NO_YES: &str = "A person has to read the words on the form and say yes first.";
 
 /// The keystore of this broker's data dir: the Keychain for the owner's, a file store for any other.
 fn keys(ctx: &HubCtx) -> Result<Keystore, Problem> {
@@ -1570,18 +1616,19 @@ async fn test_remote(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let Some(computers) = Computers::of(&ctx) else { return unavailable() };
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     match computers.probe_remote(&ctx, &asked(&body)).await {
-        Ok(Probed::Ready { boxed, system }) => types::json(StatusCode::OK, &json!({"ok": true, "screen": boxed, "system": system, "consent": CONSENT})),
-        Ok(Probed::Trust { fingerprint, pin, vouched }) => types::json(StatusCode::OK, &json!({"ok": false, "code": "trust", "fingerprint": fingerprint, "pin": pin, "vouched": vouched})),
+        Ok((Probed::Ready { boxed, system }, consent)) => types::json(StatusCode::OK, &json!({"ok": true, "screen": boxed, "system": system, "consent": consent})),
+        Ok((Probed::Trust { fingerprint, pin, vouched }, _)) => types::json(StatusCode::OK, &json!({"ok": false, "code": "trust", "fingerprint": fingerprint, "pin": pin, "vouched": vouched})),
         Err(p) => refused(&p),
     }
 }
 
-/// Adds a remote computer for this Bot. `{consent: true}` is a person's yes to [`CONSENT`].
+/// Adds a remote computer for this Bot. `{consent: true}` is a person's yes to what the Test showed
+/// them, and it's for what was tested: the record is checked against that here, not in the app.
 async fn add_remote(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     if body.get("consent").and_then(Value::as_bool) != Some(true) {
-        return refused(&Problem::Remote(CONSENT.to_owned()));
+        return refused(&Problem::Remote(NO_YES.to_owned()));
     }
     match computers.add_remote(&ctx, &bot, &asked(&body)).await {
         Ok(_) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),

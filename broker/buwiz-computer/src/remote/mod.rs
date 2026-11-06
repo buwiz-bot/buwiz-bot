@@ -376,7 +376,41 @@ impl RemoteProvider {
         open.close().await;
     }
 
-    /// Asks the far end who it is and whether it answers, with this record. Leaves nothing open.
+    /// What a person's Test does: who the far end says it is and, once they've trusted that, whether
+    /// the way in works. No box token or viewer password goes: those wait for their yes, and
+    /// [`RemoteProvider::probe`]. Over TLS that leaves the handshake, and over SSH the login.
+    pub async fn trial(&self, machine: &Machine) -> Result<Probed> {
+        let link = link_of(machine)?;
+        match &machine.reach {
+            Reach::Url { url } => match tls::look(&tls::Far::parse(url)?, link.pin.as_deref(), self.dial, self.root.as_deref()).await? {
+                tls::Seen::Unknown { fingerprint, vouched } => Ok(Probed::Trust { fingerprint: fingerprint.clone(), pin: fingerprint, vouched }),
+                tls::Seen::Trusted => Ok(Probed::Ready { boxed: true, system: None }),
+            },
+            Reach::Ssh { host, port, .. } if link.pin.is_none() => {
+                let (fingerprint, pin) = ssh::scan(&self.keyscan, host, *port).await?;
+                Ok(Probed::Trust { fingerprint, pin, vouched: false })
+            }
+            _ => {
+                let mut bare = machine.clone();
+                bare.token = Secret::new("");
+                bare.viewer_password = Secret::new("");
+                if let Some(l) = bare.link.as_mut() {
+                    l.boxed = false;
+                }
+                let open = self.connect(&bare).await?;
+                let system = self.system(&open).await;
+                open.close().await;
+                // a login made for tunnels may run no command, and a box needs none
+                if !link.boxed && system.is_none() {
+                    return Err(Problem::Remote(NOT_POSIX.to_owned()));
+                }
+                Ok(Probed::Ready { boxed: link.boxed, system })
+            }
+        }
+    }
+
+    /// Asks the far end who it is and whether it answers, with this record, its secrets included:
+    /// for after a person's yes. Leaves nothing open.
     pub async fn probe(&self, machine: &Machine) -> Result<Probed> {
         let link = link_of(machine)?;
         match &machine.reach {

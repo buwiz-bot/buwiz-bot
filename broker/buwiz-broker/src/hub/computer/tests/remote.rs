@@ -46,7 +46,7 @@ async fn no_yes_no_computer() {
     let b = bed("remote-consent");
     let (status, body) = answer_of(super::add_remote(b.ctx.clone(), route_body("b_ann", "/remote", json!({"url": "ssh://me@h", "pin": KEYLESS_PIN}))).await).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["message"].as_str().unwrap().contains("every right this login has"), "{body}");
+    assert!(body["message"].as_str().unwrap().contains("say yes first"), "{body}");
     assert_eq!(seated(&b.ctx, "b_ann"), None);
     let (status, _) = answer_of(super::add_remote(b.ctx.clone(), route_body("b_ann", "/remote", json!({"url": "ssh://me@h", "consent": "yes"}))).await).await;
     assert_eq!(status, StatusCode::CONFLICT, "a yes is true and nothing else");
@@ -171,9 +171,57 @@ async fn ask_comes_with_a_remote_computer_and_a_persons_choice_stands() {
     assert_eq!(policy::tool_state(&b.ctx, "b_bea", tools::KEY), Pos::Off, "off isn't widened to Ask");
 }
 
+/// What every kind must say, whichever sentences it drops.
+fn says_the_rest(words: &str) {
+    for part in ["every right this login has", "that includes deleting things", "Nothing walls it off", "Sleep only disconnects", "with its computer switch at On"] {
+        assert!(words.contains(part), "{part}: {words}");
+    }
+}
+
 #[test]
-fn the_yes_says_a_copy_of_the_key_stays_here() {
-    assert!(CONSENT.contains("copy of the SSH key is kept in this Mac's Keychain until you remove the computer"));
+fn each_kind_of_computer_is_told_only_what_is_true_of_it() {
+    let ssh = Reach::Ssh { host: "h".into(), user: None, port: None };
+    let https = Reach::Url { url: "https://a.example".into() };
+    let (box_ssh, plain, box_https) = (consent_for(&ssh, true), consent_for(&ssh, false), consent_for(&https, true));
+    for words in [&box_ssh, &plain, &box_https] {
+        says_the_rest(words);
+    }
+    assert!(box_ssh.contains("use the screen there") && box_ssh.contains("kept in this Mac's Keychain"), "{box_ssh}");
+    assert!(!plain.contains("screen") && plain.contains("read and change files there") && plain.contains("kept in this Mac's Keychain"), "{plain}");
+    assert!(box_https.contains("use the screen there") && !box_https.contains("Keychain") && !box_https.contains("SSH"), "{box_https}");
+}
+
+#[test]
+fn a_yes_covers_what_was_tested_and_nothing_else() {
+    let dir = far_dir("tested");
+    let b = bed("remote-tested");
+    let c = &b.computers;
+    let other = far_dir("tested-other");
+    std::fs::write(key_at(&other), "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\nZZ==\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    let asked = |url: &str, key: &std::path::Path, token: Option<&str>, viewer: Option<&str>, pin: &str| Asked { url: url.into(), key_file: Some(key.to_owned()), token: token.map(Secret::new), viewer_password: viewer.map(Secret::new), pin: Some(pin.into()) }.machine(&dir).unwrap();
+    let (key_a, key_b) = (key_at(&dir), other.join("id"));
+    let tested = asked("ssh://me@h", &key_a, Some("t"), Some("v"), KEYLESS_PIN);
+    let pass = |m: &Machine| {
+        c.tested.lock().unwrap().insert(c.fingerprint(&tested), Instant::now());
+        c.take_tested(m)
+    };
+    assert!(pass(&tested));
+    assert!(!c.take_tested(&tested), "a yes is good once");
+    for (what, m) in [
+        ("the login", asked("ssh://root@h", &key_a, Some("t"), Some("v"), KEYLESS_PIN)),
+        ("the host", asked("ssh://me@other", &key_a, Some("t"), Some("v"), KEYLESS_PIN)),
+        ("the key", asked("ssh://me@h", &key_b, Some("t"), Some("v"), KEYLESS_PIN)),
+        ("the token", asked("ssh://me@h", &key_a, Some("x"), Some("v"), KEYLESS_PIN)),
+        ("the viewer password", asked("ssh://me@h", &key_a, Some("t"), Some("x"), KEYLESS_PIN)),
+        ("the host key", asked("ssh://me@h", &key_a, Some("t"), Some("v"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIQ==")),
+    ] {
+        assert!(!pass(&m), "{what} changed after the Test");
+        c.tested.lock().unwrap().clear();
+    }
+    c.tested.lock().unwrap().insert(c.fingerprint(&tested), Instant::now() - TESTED_LIFE);
+    assert!(!c.take_tested(&tested), "a Test from long ago");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 #[tokio::test]
@@ -212,6 +260,8 @@ fn the_switch_doesnt_promise_a_wall_for_a_remote_computer() {
 
 /// A Bed with a real far end's Bot `b_ann` added and connected.
 async fn added(b: &Bed, body: Value) -> String {
+    let (_, tested) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_ann", "", body.clone())).await).await;
+    assert_eq!(tested["ok"], true, "{tested}");
     let mut body = body;
     body["consent"] = json!(true);
     let (status, said) = answer_of(super::add_remote(b.ctx.clone(), route_body("b_ann", "/remote", body)).await).await;
@@ -247,7 +297,9 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
     assert_eq!((offered["code"].as_str(), offered["pin"].as_str()), (Some("trust"), Some(sshd.pin.as_str())), "{offered}");
     let (_, tested) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_ann", "", asked_for(&sshd))).await).await;
     assert_eq!((tested["ok"].as_bool(), tested["screen"].as_bool()), (Some(true), Some(false)), "{tested}");
-    assert!(tested["consent"].as_str().unwrap().contains("Nothing walls it off"));
+    let yes = tested["consent"].as_str().unwrap();
+    says_the_rest(yes);
+    assert!(!yes.contains("screen") && yes.contains("kept in this Mac's Keychain"), "a plain host: {yes}");
     assert_eq!(std::fs::read_dir(b.ctx.data.join("computers")).unwrap().count(), 0, "a test leaves nothing");
 
     let id = added(&b, asked_for(&sshd)).await;
@@ -354,6 +406,54 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
     assert!(Computers::ids(&b.ctx).is_empty());
     assert_eq!(tree(&sshd.home), far, "removing touched the machine");
     assert_eq!(b.mock.calls(), Vec::<String>::new(), "the local provider had no part in it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs sshd"]
+async fn the_form_gets_a_boxs_words_over_ssh_and_a_yes_to_another_login_is_refused() {
+    let dir = far_dir("words");
+    let sshd = Sshd::start(&dir);
+    let b = bed("remote-words-ssh");
+    let mut body = asked_for(&sshd);
+    body["token"] = json!("a-token");
+    body["viewerPassword"] = json!("a-password");
+    let (_, tested) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_ann", "", body.clone())).await).await;
+    assert_eq!((tested["ok"].as_bool(), tested["screen"].as_bool()), (Some(true), Some(true)), "{tested}");
+    let words = tested["consent"].as_str().unwrap();
+    says_the_rest(words);
+    assert!(words.contains("use the screen there") && words.contains("kept in this Mac's Keychain"), "{words}");
+
+    // the login changed after the Test: same pinned host, so only the binding can say no
+    let mut other = body.clone();
+    other["url"] = json!(format!("ssh://nobody-else@127.0.0.1:{}", sshd.port));
+    other["consent"] = json!(true);
+    let (status, said) = answer_of(super::add_remote(b.ctx.clone(), route_body("b_ann", "/remote", other)).await).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(said["message"].as_str().unwrap().contains("isn't what was tested"), "{said}");
+    assert_eq!(seated(&b.ctx, "b_ann"), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs openssl"]
+async fn the_form_gets_https_words_and_no_token_goes_on_a_test() {
+    let dir = far_dir("words-tls");
+    let (exec, host) = ("exec.box.c3t.test".to_owned(), "host.box.c3t.test".to_owned());
+    let (root, cert, key) = loopback::vouched_certificate(&dir, &[exec.clone(), host.clone()]);
+    let behind = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let to = behind.local_addr().unwrap().to_string();
+    let at = loopback::terminator(cert.clone(), key, std::collections::HashMap::from([(exec, to.clone()), (host, to)])).await;
+    let b = bed_with("remote-words-tls", |p| Computers::new(p).with_remote(buwiz_computer::RemoteProvider::new().with_dial(at).with_root(root)));
+    let mut body = json!({"url": "https://box.c3t.test", "token": "a-token", "viewerPassword": "a-password"});
+    let (_, offered) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_ann", "", body.clone())).await).await;
+    assert_eq!((offered["code"].as_str(), offered["vouched"].as_bool()), (Some("trust"), Some(true)), "{offered}");
+    body["pin"] = offered["pin"].clone();
+    let (_, tested) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_ann", "", body)).await).await;
+    assert_eq!((tested["ok"].as_bool(), tested["screen"].as_bool()), (Some(true), Some(true)), "{tested}");
+    let words = tested["consent"].as_str().unwrap();
+    says_the_rest(words);
+    assert!(words.contains("use the screen there") && !words.contains("Keychain") && !words.contains("SSH"), "{words}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

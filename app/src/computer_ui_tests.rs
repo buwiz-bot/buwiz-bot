@@ -135,6 +135,83 @@ fn the_form_trusts_a_key_only_on_a_press_and_adds_only_on_a_yes_and_keeps_no_sec
     assert!(sent[2].0.ends_with("/computer/bot/b1/remote") && sent[2].1["consent"] == true, "{sent:?}");
 }
 
+fn reach_ready(app: &mut Headless) {
+    app.press("Test");
+    wait_for(app, "SHA256:abc");
+    app.press("I checked, trust it");
+    wait_for(app, "The AI will act");
+}
+
+#[test]
+fn an_edit_after_a_test_takes_back_the_yes_and_a_new_address_the_trust() {
+    if !in_child("an_edit_after_a_test_takes_back_the_yes_and_a_new_address_the_trust") {
+        return;
+    }
+    let trust = json!({"ok": false, "code": "trust", "fingerprint": "SHA256:abc", "pin": "ssh-ed25519 AAAA"});
+    let ready = json!({"ok": true, "screen": false, "system": "Linux", "consent": "The AI will act on this machine."});
+    crate::computer::CANNED.lock().unwrap().0 = vec![trust.clone(), ready.clone(), ready, trust];
+    let mut config = EngineConfig::new(App::Rust(Root::new::<RemoteForm>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(700.0));
+    let mut app = run(config);
+    app.press("on b1");
+    app.press("Connect a remote computer");
+    wait_for(&mut app, "Test");
+    let (url, key) = ("ssh://you@host or https://box.example.com", "SSH key file, like ~/.ssh/id_ed25519");
+    app.type_text(url, "ssh://me@h");
+    app.type_text(key, "~/.ssh/a");
+    reach_ready(&mut app);
+
+    // another key: the yes is gone, and the host's key is still the one trusted
+    app.type_text(key, "~/.ssh/b");
+    wait_for(&mut app, "Test");
+    assert!(!shows(&mut app, "I understand") && !shows(&mut app, "The AI will act"), "{:?}", app.texts());
+    app.press("Test");
+    wait_for(&mut app, "The AI will act");
+
+    // another login: the trust goes too, so the next Test asks again
+    app.type_text(url, "ssh://root@h");
+    wait_for(&mut app, "Test");
+    assert!(!shows(&mut app, "I understand"), "{:?}", app.texts());
+    app.press("Test");
+    wait_for(&mut app, "SHA256:abc");
+
+    // and from a Trust that's showing
+    app.type_text(key, "~/.ssh/c");
+    wait_for(&mut app, "Test");
+    assert!(!shows(&mut app, "I checked"), "{:?}", app.texts());
+
+    let sent = std::mem::take(&mut crate::computer::CANNED.lock().unwrap().1);
+    assert_eq!(sent.len(), 4, "{sent:?}");
+    assert_eq!(sent[2].1["pin"], "ssh-ed25519 AAAA", "a key change keeps what was trusted of the host");
+    assert_eq!(sent[3].1["pin"], "", "an address change doesn't");
+}
+
+#[test]
+fn an_answer_for_what_was_typed_before_an_edit_is_no_answer() {
+    if !in_child("an_answer_for_what_was_typed_before_an_edit_is_no_answer") {
+        return;
+    }
+    use std::sync::atomic::Ordering;
+    crate::computer::CANNED.lock().unwrap().0 = vec![json!({"ok": true, "screen": false, "system": "Linux", "consent": "The AI will act on this machine."})];
+    let mut config = EngineConfig::new(App::Rust(Root::new::<RemoteForm>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(700.0));
+    let mut app = run(config);
+    app.press("Connect a remote computer");
+    wait_for(&mut app, "Test");
+    let key = "SSH key file, like ~/.ssh/id_ed25519";
+    app.type_text(key, "~/.ssh/a");
+    crate::computer::SLOW.store(true, Ordering::SeqCst);
+    app.press("Test");
+    wait_for(&mut app, "Asking that machine");
+    app.type_text(key, "~/.ssh/b");
+    wait_for(&mut app, "Test");
+    crate::computer::SLOW.store(false, Ordering::SeqCst);
+    for _ in 0..10 {
+        assert!(!shows(&mut app, "The AI will act"), "the yes came back for the old key: {:?}", app.texts());
+    }
+    assert_eq!(crate::computer::CANNED.lock().unwrap().1.len(), 1, "the answer did arrive");
+}
+
 #[test]
 fn cancelling_the_form_drops_what_was_typed_and_a_no_stays_on_it() {
     if !in_child("cancelling_the_form_drops_what_was_typed_and_a_no_stays_on_it") {
