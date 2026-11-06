@@ -137,24 +137,29 @@ impl Computers {
             .flatten()
     }
 
-    pub fn seats(ctx: &HubCtx, computer: &str) -> Vec<Seat> {
+    /// Who sits at `computer`. A failed read is an error, never an empty list: "nobody else is
+    /// here" is what removes a computer.
+    pub fn seats(ctx: &HubCtx, computer: &str) -> Result<Vec<Seat>, Problem> {
         ctx.db
             .with(|c| {
                 let mut q = c.prepare("SELECT bot_id, computer_id, role, screen FROM computer_seats WHERE computer_id=? ORDER BY attached_at, bot_id")?;
                 let rows = q.query_map([computer], seat_row)?;
                 rows.collect()
             })
-            .unwrap_or_default()
+            .map_err(db_problem)
     }
 
+    fn try_ids_where(ctx: &HubCtx, clause: &str) -> Result<Vec<String>, String> {
+        ctx.db.with(|c| {
+            let mut q = c.prepare(&format!("SELECT id FROM computers WHERE {clause} ORDER BY created_at, id"))?;
+            let rows = q.query_map([], |r| r.get(0))?;
+            rows.collect()
+        })
+    }
+
+    /// For going through them: a failed read is nothing to do this time.
     fn ids_where(ctx: &HubCtx, clause: &str) -> Vec<String> {
-        ctx.db
-            .with(|c| {
-                let mut q = c.prepare(&format!("SELECT id FROM computers WHERE {clause} ORDER BY created_at, id"))?;
-                let rows = q.query_map([], |r| r.get(0))?;
-                rows.collect()
-            })
-            .unwrap_or_default()
+        Self::try_ids_where(ctx, clause).unwrap_or_default()
     }
 
     fn ids(ctx: &HubCtx) -> Vec<String> {
@@ -257,14 +262,14 @@ impl Computers {
     }
 
     /// Where `id` was, as its row says.
-    fn reach_of(ctx: &HubCtx, id: &str) -> Option<Reach> {
-        let text: Option<String> = ctx.db.with(|c| c.query_row("SELECT reach FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).ok().flatten().flatten();
-        text.and_then(|t| serde_json::from_str(&t).ok())
+    fn reach_of(ctx: &HubCtx, id: &str) -> Result<Option<Reach>, Problem> {
+        let text: Option<Option<String>> = ctx.db.with(|c| c.query_row("SELECT reach FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).map_err(db_problem)?;
+        Ok(text.flatten().and_then(|t| serde_json::from_str(&t).ok()))
     }
 
-    /// Whether `id` is marked for removal: nothing may bring it up again.
+    /// Whether `id` is marked for removal: nothing may bring it up again. A failed read says yes.
     fn retired(ctx: &HubCtx, id: &str) -> bool {
-        Self::ids_where(ctx, "gone_at IS NOT NULL").iter().any(|i| i == id)
+        Self::try_ids_where(ctx, "gone_at IS NOT NULL").map_or(true, |ids| ids.iter().any(|i| i == id))
     }
 
     /// A person clicked: makes the computer if `bot` has none, or if its record is lost (the Bots
@@ -308,7 +313,7 @@ impl Computers {
         }
         // its record is lost: what's left of the computer gets a new one, files and all
         let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
-        if let Some(machine) = self.provider.recover(&spec, Self::reach_of(ctx, &seat.computer).as_ref()).await? {
+        if let Some(machine) = self.provider.recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await? {
             std::fs::create_dir_all(&spec.dir).map_err(|e| Problem::Failed(e.to_string()))?;
             Self::save_machine(ctx, &seat.computer, &machine)?;
             self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(seat.computer.clone(), machine);
@@ -358,7 +363,8 @@ impl Computers {
         let Ok(machine) = self.machine(ctx, id) else { return };
         let provider = self.provider_of(&machine);
         let Ok((_, machine)) = provider.look(&machine).await else { return };
-        let seats = Self::seats(ctx, id);
+        // not knowing who sits here is no reason to take a screen down
+        let Ok(seats) = Self::seats(ctx, id) else { return };
         for bot in provider.screens(&machine).await.unwrap_or_default() {
             if !seats.iter().any(|s| s.bot == bot) {
                 let _ = provider.screen_down(&machine, &bot).await;
@@ -376,7 +382,7 @@ impl Computers {
         let provider = self.provider_of(&machine);
         let woke = provider.wake(&machine).await?;
         // resumed, the screens it had are as they were: only a Bot that joined meanwhile needs one
-        let seats = Self::seats(ctx, id);
+        let seats = Self::seats(ctx, id)?;
         let waiting: Vec<_> = seats.into_iter().filter(|s| woke == Woke::Started || s.screen.is_none()).collect();
         if waiting.is_empty() {
             return Ok(());
@@ -400,7 +406,7 @@ impl Computers {
     pub async fn sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep) -> Result<(), Problem> {
         let machine = self.machine(ctx, id)?;
         if let Some(gate) = self.gate().await {
-            for seat in Self::seats(ctx, id) {
+            for seat in Self::seats(ctx, id).unwrap_or_default() {
                 gate.close(&seat.bot);
             }
         }
@@ -440,7 +446,8 @@ impl Computers {
 
     async fn watched(&self, ctx: &HubCtx, id: &str) -> bool {
         let Some(gate) = self.gate().await else { return false };
-        Self::seats(ctx, id).iter().any(|s| gate.watched(&s.bot))
+        // not knowing counts as watched: it stays up
+        Self::seats(ctx, id).map_or(true, |seats| seats.iter().any(|s| gate.watched(&s.bot)))
     }
 
     // ---- seats ----
@@ -455,7 +462,7 @@ impl Computers {
             return Err(Problem::Gone);
         }
         let machine = self.machine(ctx, computer)?;
-        if Self::seats(ctx, computer).len() as i64 >= MAX_SEATS {
+        if Self::seats(ctx, computer)?.len() as i64 >= MAX_SEATS {
             return Err(Problem::Failed(format!("a computer has room for {MAX_SEATS} Bots")));
         }
         // the seat comes last: a Bot that can't use the computer isn't seated at it
@@ -482,8 +489,10 @@ impl Computers {
 
     /// `bot` is off its computer because a person deleted it. The last Bot's going marks the
     /// computer for removal, and the sweep removes it and what it kept
-    /// ([`Computers::sleep_the_idle`]), so nothing here waits on the provider: with Docker off or
-    /// hung a Bot still goes, and nobody else's click waits behind it.
+    /// ([`Computers::sleep_the_idle`]), so that removal isn't waited on: with Docker off or hung a
+    /// Bot still goes, and nobody else's click waits behind it. Taking a Bot off a shared computer
+    /// does ask the provider to bring its screen down, outside the lock and best effort. Fails if
+    /// the seats can't be read: nothing is removed on a guess.
     pub async fn detach(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
         self.take_off(ctx, bot, true).await
     }
@@ -494,7 +503,7 @@ impl Computers {
         let seat = {
             let _seating = self.seating.lock().await;
             let Some(seat) = Self::seat(ctx, bot) else { return Ok(()) };
-            let last = Self::seats(ctx, &seat.computer).len() <= 1;
+            let last = Self::seats(ctx, &seat.computer)?.len() <= 1;
             if last && !may_be_last {
                 return Err(Problem::Failed("the last Bot at a computer can't leave it: its files would go".to_owned()));
             }
@@ -529,7 +538,11 @@ impl Computers {
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
         let removed = match self.machine(ctx, id) {
             Ok(m) => self.provider_of(&m).destroy(&m).await,
-            Err(_) => self.provider.sweep(id, Self::reach_of(ctx, id).as_ref()).await,
+            Err(_) => match Self::reach_of(ctx, id) {
+                Ok(reach) => self.provider.sweep(id, reach.as_ref()).await,
+                // the next look tries again, with the name that finds its files
+                Err(e) => Err(e),
+            },
         };
         if matches!(removed, Ok(()) | Err(Problem::NotBuilt(_) | Problem::Gone)) {
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
@@ -605,7 +618,7 @@ impl Computers {
             };
         };
         let id = seat.computer.clone();
-        let bots: Vec<Value> = Self::seats(ctx, &id).iter().map(|s| json!({"id": s.bot, "name": bot_name(ctx, &s.bot)})).collect();
+        let bots: Vec<Value> = Self::seats(ctx, &id).unwrap_or_default().iter().map(|s| json!({"id": s.bot, "name": bot_name(ctx, &s.bot)})).collect();
         let (waking, problem, wake_ms) = {
             let now = self.now();
             (now.waking.contains(&id), now.problems.get(&id).cloned(), now.wake_ms.get(&id).copied())
@@ -655,7 +668,7 @@ impl Computers {
         let rows: Vec<Value> = Self::ids(ctx)
             .into_iter()
             .map(|id| {
-                let seats = Self::seats(ctx, &id);
+                let seats = Self::seats(ctx, &id).unwrap_or_default();
                 let names: Vec<String> = seats.iter().map(|s| bot_name(ctx, &s.bot)).collect();
                 json!({"id": id, "bots": names, "full": seats.len() as i64 >= MAX_SEATS})
             })

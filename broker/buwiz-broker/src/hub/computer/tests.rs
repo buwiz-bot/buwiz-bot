@@ -511,6 +511,62 @@ async fn removing_a_new_computer_doesnt_hold_the_seats() {
     b.ctx.db.with(|c| c.execute("ALTER TABLE seats_away RENAME TO computer_seats", [])).unwrap();
 }
 
+/// `seat` reads, `seats` can't: it sorts on the column this takes away.
+fn break_the_seats_read(b: &Bed) {
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computer_seats DROP COLUMN attached_at", [])).unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_read_of_the_seats_removes_nothing() {
+    let b = bed("seats-read");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    break_the_seats_read(&b);
+    assert!(b.computers.detach(&b.ctx, &b.ann.0).await.is_err(), "nobody else here is what a failed read looked like");
+    assert!(b.computers.leave(&b.ctx, &b.ann.0).await.is_err());
+    assert_eq!(Computers::ids(&b.ctx), [id.clone()], "a computer others sit at was marked for removal");
+    assert!(Computers::seat(&b.ctx, &b.ann.0).is_some() && Computers::seat(&b.ctx, &b.bea.0).is_some());
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(!b.mock.calls().contains(&"destroy".to_owned()));
+}
+
+#[tokio::test]
+async fn a_failed_read_of_the_seats_fails_closed_everywhere_else() {
+    let b = bed("seats-closed");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    let r = run(&b, &b.ann.1, None);
+    break_the_seats_read(&b);
+    b.mock.calls.lock().unwrap().clear();
+    assert_eq!(call(&r, "computer_run", json!({"command": "ls"})).await.is_error, Some(true), "a shared computer's commands stay off");
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("run ")), "{:?}", b.mock.calls());
+    b.computers.clear_empty_screens(&b.ctx, &id).await;
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("screen_down")), "every Bot's screen came down: {:?}", b.mock.calls());
+    assert!(b.computers.watched(&b.ctx, &id).await, "not knowing keeps it up");
+}
+
+#[tokio::test]
+async fn a_failed_read_of_retired_keeps_a_computer_down() {
+    let b = bed("retired-read");
+    let id = awake(&b, &b.ann.0).await;
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME TO computers_away", [])).unwrap();
+    assert!(Computers::retired(&b.ctx, &id));
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers_away RENAME TO computers", [])).unwrap();
+    assert!(!Computers::retired(&b.ctx, &id));
+}
+
+#[tokio::test]
+async fn a_failed_read_of_the_name_doesnt_give_up_on_the_files() {
+    let b = bed("reach-read");
+    let id = awake(&b, &b.ann.0).await;
+    std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers DROP COLUMN reach", [])).unwrap();
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    b.mock.calls.lock().unwrap().clear();
+    assert!(fresh.click(&b.ctx, &b.ann.0).await.is_err(), "it would have looked for nothing and made a new one");
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("create") || c.starts_with("recover")), "{:?}", b.mock.calls());
+}
+
 #[tokio::test]
 async fn a_hung_docker_doesnt_hold_up_other_bots() {
     let b = bed("hung");

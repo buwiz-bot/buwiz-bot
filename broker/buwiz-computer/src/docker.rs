@@ -66,6 +66,9 @@ const PORT_TRIES: usize = 4;
 /// How long `guard` trusts the addresses it read: it runs on every request, and a Mac changes
 /// networks rarely. A wake reads them anyway.
 const ADDRESS_LIFE: Duration = Duration::from_secs(60);
+/// `ifconfig` failures in a row a running box rides out on the addresses it has: the wall it has
+/// stays up meanwhile, so one bad read is no reason to kill its work.
+const ADDRESS_TRIES: usize = 3;
 
 /// Where Docker Desktop puts its CLI: an app started from Finder has a bare `PATH`.
 const DOCKER_DIRS: [&str; 4] = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin", "~/.docker/bin"];
@@ -147,11 +150,13 @@ pub struct DockerProvider {
     /// this Mac's addresses, and when they were read
     addresses: Mutex<Option<(Instant, Vec<String>)>>,
     address_life: Duration,
+    /// failed reads in a row
+    address_failures: std::sync::atomic::AtomicUsize,
 }
 
 impl DockerProvider {
     pub fn new(image: impl Into<String>, prefix: impl Into<String>) -> Self {
-        Self { image: image.into(), prefix: prefix.into(), program: None, ifconfig: PathBuf::from(IFCONFIG), walled: Mutex::new(HashMap::new()), addresses: Mutex::new(None), address_life: ADDRESS_LIFE }
+        Self { image: image.into(), prefix: prefix.into(), program: None, ifconfig: PathBuf::from(IFCONFIG), walled: Mutex::new(HashMap::new()), addresses: Mutex::new(None), address_life: ADDRESS_LIFE, address_failures: std::sync::atomic::AtomicUsize::new(0) }
     }
 
     /// From `BUWIZ_COMPUTER_IMAGE` and `BUWIZ_COMPUTER_PREFIX`.
@@ -178,17 +183,37 @@ impl DockerProvider {
         self
     }
 
-    /// This Mac's addresses: read now when `fresh`, else as last read while that's recent.
+    /// This Mac's addresses: read now when `fresh`, else as last read while that's recent. A
+    /// fresh read that fails is a failure: a wake doesn't go on without knowing. On the timer, a
+    /// box with a wall carries on with what was known, and tries again at the next timer, until
+    /// [`ADDRESS_TRIES`] reads in a row have failed.
     async fn addresses(&self, fresh: bool) -> Result<Vec<String>> {
+        use std::sync::atomic::Ordering;
         if !fresh {
             let known = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((_, macs)) = known.as_ref().filter(|(at, _)| at.elapsed() < self.address_life) {
                 return Ok(macs.clone());
             }
         }
-        let macs = mac_addresses(&self.ifconfig).await?;
-        *self.addresses.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), macs.clone()));
-        Ok(macs)
+        match mac_addresses(&self.ifconfig).await {
+            Ok(macs) => {
+                self.address_failures.store(0, Ordering::SeqCst);
+                *self.addresses.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), macs.clone()));
+                Ok(macs)
+            }
+            Err(e) => {
+                let failures = self.address_failures.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut known = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+                match known.as_mut() {
+                    Some((at, macs)) if !fresh && failures < ADDRESS_TRIES => {
+                        eprintln!("buwiz-computer: this Mac's addresses can't be read ({failures} in a row); keeping the wall that's up");
+                        *at = Instant::now();
+                        Ok(macs.clone())
+                    }
+                    _ => Err(e),
+                }
+            }
+        }
     }
 
     fn network(&self) -> String {
@@ -342,6 +367,18 @@ impl DockerProvider {
         let image = machine.image.as_deref().unwrap_or(&self.image);
         let id = machine.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.make_containers(image, name, &id, &start).await
+    }
+
+    /// Whether either of `name`'s volumes is there: each holds files.
+    async fn any_volume(&self, name: &str) -> Result<bool> {
+        for volume in [format!("{name}-workspace"), format!("{name}-home")] {
+            match self.docker(&["volume", "inspect", "--format", "{{.Name}}", &volume], None).await {
+                Ok(_) => return Ok(true),
+                Err(Problem::Gone) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(false)
     }
 
     async fn make_containers(&self, image: &str, name: &str, id: &str, start: &Path) -> Result<()> {
@@ -673,16 +710,17 @@ impl Provider for DockerProvider {
         let name = match (found, last) {
             (Some(name), _) => name,
             // no container left: its files may be
-            (None, Some(Reach::Container { name })) => match self.docker(&["volume", "inspect", "--format", "{{.Name}}", &format!("{name}-workspace")], None).await {
-                Ok(_) => name.clone(),
-                Err(Problem::Gone) => return Ok(None),
-                Err(e) => return Err(e),
-            },
+            (None, Some(Reach::Container { name })) => {
+                if !self.any_volume(name).await? {
+                    return Ok(None);
+                }
+                name.clone()
+            }
             (None, _) => return Ok(None),
         };
-        // what's running still has the old secrets: stopped, it starts with the new ones
+        // what's running still has the old secrets, and the seats wait on this: at once
         if let Ok(found) = self.inspect(&name).await {
-            self.halt(&name, &found, STOP_SECONDS).await;
+            self.halt(&name, &found, AT_ONCE).await;
         }
         Ok(Some(Machine {
             provider: ProviderKind::Docker,
@@ -1060,6 +1098,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_surviving_home_volume_counts_as_files() {
+        let dir = tmp("home-only");
+        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error: No such volume' >&2; exit 1;; esac;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        let found = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap();
+        assert!(found.is_some(), "its home would be swept as nothing left");
+    }
+
+    #[tokio::test]
     async fn a_docker_that_cant_say_doesnt_read_as_no_files() {
         let dir = tmp("volumes-down");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in volume) echo 'Cannot connect to the Docker daemon' >&2; exit 1;; esac"));
@@ -1111,7 +1158,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_guard_rereads_the_addresses_on_its_timer() {
+    async fn a_guard_rereads_the_addresses_once_their_life_is_up() {
         let dir = tmp("address-timer");
         let program = fake_ifconfig(&dir);
         let p = faked(&dir, &inspected("running", "running", "T1"), "true", "true").with_ifconfig(program).with_address_life(Duration::ZERO);
@@ -1120,6 +1167,40 @@ mod tests {
         std::fs::write(dir.join("addresses"), "\tinet 203.0.113.77 netmask 0xffffff00\n").unwrap();
         p.guard(&m).await.unwrap();
         assert_eq!(calls(&dir).matches(WALL_CALL).count(), 2, "the Mac moved and the wall didn't: {}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_running_box_rides_out_a_bad_read_but_not_three_in_a_row() {
+        let dir = tmp("bad-reads");
+        let program = fake_ifconfig(&dir);
+        let p = faked(&dir, &inspected("running", "running", "T1"), "true", "true").with_ifconfig(program.clone()).with_address_life(Duration::ZERO);
+        let m = machine(&dir);
+        p.guard(&m).await.unwrap();
+        let broken = || std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        broken();
+        p.guard(&m).await.expect("one failed read killed a running box");
+        p.guard(&m).await.expect("the wall it has stays up meanwhile");
+        assert!(!calls(&dir).contains("stop -t 0"), "{}", calls(&dir));
+        assert_eq!(p.guard(&m).await.unwrap_err().code(), "unwalled");
+        assert!(calls(&dir).contains("stop -t 0 c2-x"), "the third in a row halts it: {}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_good_read_clears_the_count_and_a_wake_never_rides_it_out() {
+        let dir = tmp("good-read");
+        let program = fake_ifconfig(&dir);
+        let p = faked(&dir, &inspected("running", "running", "T1"), "true", "true").with_ifconfig(program.clone()).with_address_life(Duration::ZERO);
+        let m = machine(&dir);
+        let good = std::fs::read(&program).unwrap();
+        p.guard(&m).await.unwrap();
+        for _ in 0..3 {
+            std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+            p.guard(&m).await.unwrap();
+            std::fs::write(&program, &good).unwrap();
+            p.guard(&m).await.unwrap();
+        }
+        std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        assert_eq!(p.wake(&m).await.unwrap_err().code(), "unwalled", "a wake fails closed on one bad read");
     }
 
     #[tokio::test]
@@ -1133,7 +1214,7 @@ mod tests {
         let body = format!("case \"$1\" in ps) echo c2-x;; inspect) cat <<'J'\n{}\nJ\n;; esac", inspected("running", "running", "T1"));
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
         p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, None).await.unwrap();
-        assert!(calls(&dir).contains("stop -t 5 c2-x") && !calls(&dir).contains("stop -t 0"), "{}", calls(&dir));
+        assert!(calls(&dir).contains("stop -t 0 c2-x"), "stale secrets, under the seats' lock: {}", calls(&dir));
     }
 
     #[tokio::test]

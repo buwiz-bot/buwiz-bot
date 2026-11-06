@@ -250,7 +250,11 @@ async fn act(run: &Run, live: &Live, name: &str, input: &Value) -> Out {
             let Some(command) = text(input, "command") else { return Out::err("computer_run needs command".to_owned()) };
             // on a shared computer a command could reach the other Bots' screens, and nothing the
             // box says of itself changes that: its services can be impersonated from inside
-            if Computers::seats(&run.ctx, &live.computer).len() > 1 {
+            let seats = match Computers::seats(&run.ctx, &live.computer) {
+                Ok(seats) => seats,
+                Err(p) => return no(&p),
+            };
+            if seats.len() > 1 {
                 return Out::err("computer_run is off on a computer several Bots share: a command could reach their screens. Use the screen, or ask for a computer of your own.".to_owned());
             }
             let timeout = input.get("timeout_s").and_then(Value::as_u64).unwrap_or(30).clamp(1, 600);
