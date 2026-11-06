@@ -511,13 +511,34 @@ else real=$(cd -P -- "${p%/*}" && pwd)/${p##*/}$tail; fi
 printf '%s\n%s\n' "$root" "$real""#;
 
 /// Writes stdin to `$HOME/$1`, all `$2` bytes of it or not at all: a link that drops part way
-/// leaves the old file as it was. The new one starts as a copy, so it keeps the old one's mode.
-const WRITE: &str = r#"f=$HOME/$1; mkdir -p -- "${f%/*}" || exit 1
-t=$f.buwiz-$$; (set -C; : > "$t") || exit 1
-if [ -f "$f" ]; then cp -p -- "$f" "$t" || { rm -f -- "$t"; exit 1; }; fi
+/// leaves the old file as it was. A folder there is refused: `mv` would put the file inside it. Over
+/// an old file the new one is private until it has the old one's mode, and stays private if that
+/// can't be read, since a wider mode could show what the old one hid.
+const WRITE: &str = r#"f=$HOME/$1; [ ! -d "$f" ] || exit 6
+mkdir -p -- "${f%/*}" || exit 1
+t=$f.buwiz-$$
+if [ -f "$f" ]; then
+  (umask 077; set -C; : > "$t") || exit 1
+  m=$(stat -c %a -- "$f" 2>/dev/null || stat -f %Lp -- "$f" 2>/dev/null) && chmod "$m" "$t"
+else (set -C; : > "$t") || exit 1; fi
 cat > "$t"; got=$(wc -c < "$t")
-if [ "$got" -eq "$2" ] && mv -f -- "$t" "$f"; then exit 0; fi
+if [ "$got" -eq "$2" ] && [ ! -d "$f" ] && mv -f -- "$t" "$f"; then exit 0; fi
 rm -f -- "$t"; exit 7"#;
+
+/// What a read over plain SSH comes to: all of the file, or why not. A cut read as whole is what
+/// gets written back over it.
+fn read_answer(ran: ssh::Ran, path: &str) -> Result<Vec<u8>> {
+    if ran.timed_out {
+        return Err(Problem::Guest { status: 504, message: format!("{path} took too long to read, so none of it was read. The connection may be slow.") });
+    }
+    if ran.code != Some(0) {
+        return Err(Problem::Guest { status: 404, message: format!("{path} can't be read") });
+    }
+    if ran.truncated {
+        return Err(Problem::Guest { status: 413, message: format!("{path} {TOO_BIG}") });
+    }
+    Ok(ran.stdout)
+}
 
 #[async_trait]
 impl Provider for RemoteProvider {
@@ -660,14 +681,7 @@ impl Provider for RemoteProvider {
         }
         let file = format!("{SHELL_ROOT}/{}", relative(path));
         let ran = open.master()?.run(r#"[ -f "$HOME/$1" ] && cat -- "$HOME/$1""#, &[&file], None, FILE_PATIENCE, MAX_FILE).await?;
-        if ran.code != Some(0) {
-            return Err(Problem::Guest { status: 404, message: format!("{} can't be read", relative(path)) });
-        }
-        // a cut read as whole is what gets written back over the file
-        if ran.truncated || ran.timed_out {
-            return Err(Problem::Guest { status: 413, message: format!("{} {TOO_BIG}", relative(path)) });
-        }
-        Ok(ran.stdout)
+        read_answer(ran, relative(path))
     }
 
     async fn write_file(&self, machine: &Machine, path: &str, content: &[u8]) -> Result<()> {
@@ -677,8 +691,10 @@ impl Provider for RemoteProvider {
         }
         let file = format!("{SHELL_ROOT}/{}", relative(path));
         let ran = open.master()?.run(WRITE, &[&file, &content.len().to_string()], Some(content), FILE_PATIENCE, 1024).await?;
-        if ran.code != Some(0) {
-            return Err(Problem::Guest { status: 500, message: format!("{} can't be written", relative(path)) });
+        match ran.code {
+            Some(0) => {}
+            Some(6) => return Err(Problem::Guest { status: 409, message: format!("{} is a folder, so nothing was written", relative(path)) }),
+            _ => return Err(Problem::Guest { status: 500, message: format!("{} can't be written", relative(path)) }),
         }
         Ok(())
     }

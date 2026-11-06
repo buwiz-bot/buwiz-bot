@@ -88,6 +88,7 @@ const SIGHT_TTL: Duration = Duration::from_secs(60);
 
 /// What a person says yes to when they add a remote computer. The form shows it, word for word.
 pub const CONSENT: &str = "The AI will act on this machine with every right this login has. It can run commands, read and change files and use the screen there, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine. A copy of the SSH key is kept on this Mac until you remove the computer.";
+const UNREAD: &str = "This computer's record couldn't be read. Try again in a moment.";
 const LOST_REMOTE: &str = "This remote computer's saved connection is lost. Nothing happened to the machine: remove it and add it again.";
 
 /// A Bot's place at a computer.
@@ -1142,7 +1143,7 @@ impl Computers {
         let record = self.machine(ctx, &id);
         match &record {
             Ok(m) if m.link.is_some() => out["remote"] = json!({"screen": m.has_screen(), "where": where_of(&m.reach)}),
-            Err(_) if Self::is_remote(ctx, &id).unwrap_or(true) => out["remote"] = json!({"screen": false, "where": "", "lost": true}),
+            Err(_) if matches!(Self::is_remote(ctx, &id), Ok(true)) => out["remote"] = json!({"screen": false, "where": "", "lost": true}),
             _ => {}
         }
         if let Some(gate) = self.open_gate() {
@@ -1185,9 +1186,13 @@ impl Computers {
                     }
                 }
                 Err(p) => {
-                    let lost = out.get("remote").is_some();
                     out["code"] = json!(p.code());
-                    out["message"] = json!(if lost { LOST_REMOTE.to_owned() } else { p.sentence() });
+                    out["message"] = json!(match Self::is_remote(ctx, &id) {
+                        Ok(true) => LOST_REMOTE.to_owned(),
+                        Ok(false) => p.sentence(),
+                        // neither the record nor its row: what kind it is isn't known, so it isn't said
+                        Err(_) => UNREAD.to_owned(),
+                    });
                     "error".to_owned()
                 }
             }

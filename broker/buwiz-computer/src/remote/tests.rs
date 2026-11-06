@@ -254,6 +254,56 @@ fn a_write_that_breaks_off_leaves_the_old_file_whole() {
     assert_eq!(std::fs::read(home.join("f/new/b.txt")).unwrap(), b"");
 }
 
+#[test]
+fn a_folder_isnt_written_into() {
+    let home = dir("write-folder");
+    std::fs::create_dir_all(home.join("f/d")).unwrap();
+    assert_eq!(write_here(&home, "f/d", 2, b"hi"), Some(6));
+    assert_eq!(std::fs::read_dir(home.join("f/d")).unwrap().count(), 0, "it went inside");
+    assert_eq!(std::fs::read_dir(home.join("f")).unwrap().count(), 1, "nothing left beside it");
+}
+
+/// `WRITE` as [`write_here`], with `programs` ahead of the system's, each failing and leaving a mark.
+fn write_without(home: &Path, programs: &[&str], claimed: usize, sent: &[u8]) -> Option<i32> {
+    use std::io::Write;
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in programs {
+        fake(&bin, name, &format!("touch {}/ran-{name}; exit 1", home.display()));
+    }
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let mut child = std::process::Command::new("/bin/sh").args(["-c", WRITE, "sh", "a.txt", &claimed.to_string()]).env("HOME", home).env("PATH", path).stdin(std::process::Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(sent).unwrap();
+    child.wait().unwrap().code()
+}
+
+#[test]
+fn only_the_mode_is_taken_from_the_old_file_and_a_mode_that_cant_be_read_stays_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = dir("write-mode");
+    let file = home.join("a.txt");
+    std::fs::write(&file, "secret old contents").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert_eq!(write_without(&home, &["cp"], 3, b"new"), Some(0));
+    assert!(!home.join("ran-cp").exists(), "the old file's contents were copied");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640);
+
+    assert_eq!(write_without(&home, &["stat"], 3, b"two"), Some(0));
+    assert!(home.join("ran-stat").exists());
+    assert_eq!(std::fs::read(&file).unwrap(), b"two");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn a_read_says_what_went_wrong_with_it() {
+    let said = |ran: ssh::Ran| read_answer(ran, "a.txt").unwrap_err().sentence();
+    assert!(said(ssh::Ran { timed_out: true, ..ssh::Ran::default() }).contains("took too long"));
+    assert!(said(ssh::Ran { timed_out: true, truncated: true, ..ssh::Ran::default() }).contains("took too long"), "a stopped read isn't a big file");
+    assert!(said(ssh::Ran { code: Some(0), truncated: true, ..ssh::Ran::default() }).contains("too big"));
+    assert!(said(ssh::Ran { code: Some(1), ..ssh::Ran::default() }).contains("can't be read"));
+    assert_eq!(read_answer(ssh::Ran { code: Some(0), stdout: b"x".to_vec(), ..ssh::Ran::default() }, "a.txt").unwrap(), b"x");
+}
+
 /// An open link to a guest at `addr`, with no real connection under it.
 fn held(addr: &str) -> Arc<Open> {
     let at = format!("http://{addr}");

@@ -116,7 +116,9 @@ async fn not_being_able_to_read_a_record_counts_as_remote() {
     assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), None, "a local row says so, record or not");
     b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME COLUMN provider TO provider_gone", [])).unwrap();
     assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), Some(true), "no row to read: not known to be local");
-    assert!(b.computers.status(&b.ctx, "b_bea").await.get("remote").is_some());
+    let status = b.computers.status(&b.ctx, "b_bea").await;
+    assert!(status.get("remote").is_none(), "a local computer isn't called remote: {status}");
+    assert!(status["message"].as_str().unwrap().contains("couldn't be read"), "{status}");
     b.ctx.db.with(|c| c.execute("ALTER TABLE computer_seats RENAME TO seats_gone", [])).unwrap();
     assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), Some(true), "no seat to read");
 }

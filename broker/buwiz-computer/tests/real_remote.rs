@@ -202,29 +202,60 @@ async fn a_connection_that_drops_is_seen_and_a_click_brings_it_back() {
 async fn a_certificate_the_public_roots_take_still_gets_no_token_before_a_yes() {
     use tokio::net::TcpListener;
     let dir = temp("vouched");
-    let name = "exec.box.c3t.test".to_owned();
-    let (root, cert, key) = loopback::vouched_certificate(&dir, std::slice::from_ref(&name));
-    // what stands behind the proxy: it hears everything that gets past the handshake
+    let (exec, host) = ("exec.box.c3t.test".to_owned(), "host.box.c3t.test".to_owned());
+    let (root, cert, key) = loopback::vouched_certificate(&dir, &[exec.clone(), host.clone()]);
+    // what stands behind the proxy: each connection's bytes, sent here when it ends. It turns any
+    // request away, so a call doesn't wait on it
     let behind = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let to = behind.local_addr().unwrap().to_string();
-    let at = loopback::terminator(cert.clone(), key, HashMap::from([(name, to)])).await;
+    let (ended, mut heard) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = behind.accept().await {
+            let ended = ended.clone();
+            tokio::spawn(async move {
+                let mut got = Vec::new();
+                let mut buf = [0u8; 2048];
+                while let Ok(n) = s.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    let _ = s.write_all(b"HTTP/1.1 401 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                    break;
+                }
+                let _ = ended.send(String::from_utf8_lossy(&got).into_owned());
+            });
+        }
+    });
+    let at = loopback::terminator(cert.clone(), key, HashMap::from([(exec, to.clone()), (host, to)])).await;
     let provider = RemoteProvider::new().with_dial(at).with_root(root);
     let computer = dir.join("computer");
     std::fs::create_dir_all(&computer).unwrap();
-    let asked = Asked { url: "https://box.c3t.test".into(), token: Some(Secret::new("the-token")), viewer_password: Some(Secret::new("the-password")), ..Asked::default() };
+    let mut asked = Asked { url: "https://box.c3t.test".into(), token: Some(Secret::new("the-token")), viewer_password: Some(Secret::new("the-password")), ..Asked::default() };
     let m = asked.machine(&computer).unwrap();
     let said = provider.probe(&m).await.unwrap();
     assert_eq!(said, Probed::Trust { fingerprint: fingerprint(&cert), pin: fingerprint(&cert), vouched: true });
     assert!(provider.wake(&m).await.is_err());
-    let heard = tokio::time::timeout(Duration::from_millis(400), async {
-        let (mut s, _) = behind.accept().await.unwrap();
-        let mut buf = [0u8; 512];
-        let n = s.read(&mut buf).await.unwrap();
-        String::from_utf8_lossy(&buf[..n]).into_owned()
-    });
-    if let Ok(text) = heard.await {
-        assert!(text.is_empty(), "something went before a yes: {text}");
+    // the handshake that found the roots take it got this far, and hung up with nothing said
+    let first = tokio::time::timeout(Duration::from_secs(5), heard.recv()).await.expect("the proxy never reached what's behind it").unwrap();
+    assert_eq!(first, "", "something went before a yes");
+    while let Ok(more) = heard.try_recv() {
+        assert_eq!(more, "", "something went before a yes");
     }
+
+    // and the same way in does carry it, after a yes: so that silence was the code's
+    asked.pin = Some(fingerprint(&cert));
+    let m = asked.machine(&computer).unwrap();
+    assert_eq!(provider.wake(&m).await.unwrap_err().sentence(), "The box refused this token.");
+    let sent = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let text = heard.recv().await.unwrap();
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    });
+    assert!(sent.await.expect("nothing arrived after a yes").contains("Bearer the-token"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
