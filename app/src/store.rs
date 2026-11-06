@@ -760,6 +760,37 @@ pub struct AvatarDraft {
     pub h: f64,
 }
 
+/// Where "Your designs" is kept.
+const DESIGNS: &str = "/state/buwiz-avatar-designs";
+/// The longest wait between two tries at a save of "Your designs", in ms.
+const SAVE_WAIT_MAX: u64 = 30_000;
+
+/// The entries in a `/state` answer: none for a list never written (`null`
+/// from the broker), and `None` for anything else that isn't a list of
+/// designs, which mustn't pass for an empty list.
+fn saved_entries(v: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    match v.get("state") {
+        None | Some(serde_json::Value::Null) => Some(Vec::new()),
+        Some(serde_json::Value::Object(m)) if m.is_empty() => Some(Vec::new()),
+        Some(state) => state.get("designs")?.as_array().cloned(),
+    }
+}
+
+/// A saved entry as a design to show, holding the entry itself.
+fn saved_design(e: &serde_json::Value) -> AvatarCand {
+    AvatarCand { name: s(e, "name"), shape: shape_of(e), color: s(e, "color"), why: s(e, "why"), raw: Some(e.clone()) }
+}
+
+/// What came of adding designs: how many went in, how many the list had, how
+/// many the pack held twice, and how many this build can't draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DesignsAdded {
+    pub added: usize,
+    pub there: usize,
+    pub repeated: usize,
+    pub unusable: usize,
+}
+
 /// One avatar `POST /avatar/design` offers: a short label, the body in
 /// the app's shape form (a picker name or `outline:<path>`), its colour
 /// and one line on why it fits.
@@ -769,6 +800,9 @@ pub struct AvatarCand {
     pub shape: String,
     pub color: String,
     pub why: String,
+    /// The saved entry this came from, written back as it was: a field this
+    /// build doesn't know survives a save.
+    pub raw: Option<serde_json::Value>,
 }
 
 /// A bot's avatar before Design changed it, for Revert.
@@ -2940,12 +2974,22 @@ pub struct Store {
     /// "Your designs": every Design pick, newest first, kept in
     /// `/state/buwiz-avatar-designs` so any bot can use one again.
     pub design_saved: Signal<Vec<AvatarCand>>,
+    /// Whether the saved list has been read. Until it has, nothing is saved:
+    /// a save writes the whole list, and this one isn't the whole list yet.
+    pub design_loaded: Signal<bool>,
+    /// Saved entries this build can't draw: not shown, and written back on
+    /// every save, because a newer build may draw them.
+    pub design_hidden: std::cell::RefCell<Vec<serde_json::Value>>,
+    /// A read of the list has started: there's only ever the one.
+    pub design_reading: std::cell::Cell<bool>,
+    /// A save is on its way, and whether the list changed since it left.
+    pub design_saving: std::cell::Cell<bool>,
+    pub design_unsaved: std::cell::Cell<bool>,
     /// The saved design waiting on "Remove it?" (its index), and whether
     /// Reset is waiting on "Reset the avatar?": nothing is removed or
     /// reset before the confirm row's button.
     pub design_removing: Signal<Option<usize>>,
-    /// Design's mode: "mark" (3 mark avatars) or "picture" (a "Bot"-style
-    /// picture from the image model, set as a photo avatar).
+    /// Design's mode: "mark" (3 mark avatars) or "rich" (3 multi-colour ones).
     pub design_mode: Signal<&'static str>,
     pub avatar_reset_ask: Signal<bool>,
 
@@ -3250,6 +3294,11 @@ impl Store {
             design_err: signal(String::new()),
             design_was: signal(None),
             design_saved: signal(Vec::new()),
+            design_loaded: signal(false),
+            design_hidden: Default::default(),
+            design_reading: Default::default(),
+            design_saving: Default::default(),
+            design_unsaved: Default::default(),
             design_removing: signal(None),
             design_mode: signal("mark"),
             avatar_reset_ask: signal(false),
@@ -3362,24 +3411,7 @@ impl Store {
         // The installed plugins' logos sit in the sidebar footer.
         self.fetch_plugins();
         self.fetch_app_meta();
-        spawn(async move {
-            if let Some(v) = client::get("/state/buwiz-avatar-designs").await {
-                let saved: Vec<AvatarCand> = v
-                    .get("state")
-                    .map(|st| list(st, "designs"))
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|c| AvatarCand {
-                        name: s(c, "name"),
-                        shape: shape_of(c),
-                        color: s(c, "color"),
-                        why: s(c, "why"),
-                    })
-                    .filter(|c| crate::avatar::drawable(&c.shape))
-                    .collect();
-                self.design_saved.set(saved);
-            }
-        });
+        self.load_designs();
         spawn(async move {
             if let Some(v) = client::get("/state/rox-main-bot").await {
                 let id = v.get("state").map(|st| s(st, "id")).unwrap_or_default();
@@ -5938,14 +5970,7 @@ impl Store {
         if self.design_busy.get_untracked() || (prompt.is_empty() && image.is_none()) {
             return;
         }
-        if self.design_mode.get_untracked() == "picture" && !self.bot_modal.get_untracked() {
-            return self.design_picture(prompt, image);
-        }
-        let name = if self.bot_modal.get_untracked() {
-            self.bot_name.get_untracked()
-        } else {
-            self.active_bot_untracked().map(|b| b.name).unwrap_or_default()
-        };
+        let name = self.bot_name.get_untracked();
         let (model, effort, fast) = self.design_choice();
         let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model, "effort": effort, "fast": fast});
         if self.design_mode.get_untracked() == "rich" {
@@ -5966,6 +5991,7 @@ impl Store {
                             shape: shape_of(c),
                             color: s(c, "color"),
                             why: s(c, "why"),
+                            raw: None,
                         })
                         .filter(|c| crate::avatar::drawable(&c.shape))
                         .collect();
@@ -6022,46 +6048,12 @@ impl Store {
     /// no photo.
     pub fn reset_avatar(&'static self) {
         self.avatar_reset_ask.set(false);
+        self.design_was.set(None);
         let Some(b) = self.active_bot_untracked() else { return };
         self.update_bot(
             &b.id,
             serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
         );
-    }
-
-    /// Picture mode: `POST /avatar/picture` (the style prompt, the
-    /// reference picture, what the user typed on top, and the picked
-    /// model, which draws it) → the crop editor's draft, which Set avatar
-    /// puts on the bot as a photo.
-    fn design_picture(&'static self, prompt: String, image: Option<AvatarDraft>) {
-        let (model, effort, fast) = self.design_choice();
-        let mut body = serde_json::json!({"prompt": prompt, "model": model, "effort": effort, "fast": fast});
-        if let Some(d) = &image {
-            body["image"] = d.uri.clone().into();
-        }
-        self.design_err.set(String::new());
-        self.design_busy.set(true);
-        self.avatar_draft.set(None);
-        spawn(async move {
-            match client::post_any("/avatar/picture", body).await {
-                Some(v) if self::b(&v, "ok") => {
-                    self.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
-                    self.avatar_draft.set(Some(AvatarDraft {
-                        uri: s(&v, "uri"),
-                        name: s(&v, "name"),
-                        w: f64of(&v, "w"),
-                        h: f64of(&v, "h"),
-                    }));
-                }
-                Some(v) => self.design_err.set(if s(&v, "error").is_empty() {
-                    "Couldn't draw a picture".into()
-                } else {
-                    s(&v, "error")
-                }),
-                None => self.design_err.set("Couldn't draw a picture".into()),
-            }
-            self.design_busy.set(false);
-        });
     }
 
     /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
@@ -6104,16 +6096,17 @@ impl Store {
         then(self, format!("/avatar/image/{kind}"), serde_json::json!({}));
     }
 
-    /// Uses choice `i` and keeps its shape in "Your designs". A plain choice
-    /// in the primary ink keeps the bot's colour; one the prompt coloured
+    /// Uses choice `i` on the sheet's draft and keeps its shape in "Your
+    /// designs". A plain choice in the primary ink keeps the draft's colour;
+    /// one the prompt coloured
     /// brings its colour, and a rich one always does: that field is its
     /// shell (`shape_of`), which only draws the avatar.
-    pub fn design_pick(&'static self, i: usize, for_new: bool) {
+    pub fn design_pick(&'static self, i: usize) {
         let Some(c) = self.design_cands.get_untracked().get(i).cloned() else { return };
         self.design_picked.set(Some(i));
         self.design_keep(&c);
         let own = !is_primary_ink(&c.color);
-        self.design_use(c, for_new, own);
+        self.design_use(c, true, own);
     }
 
     /// Puts a body on the Create New Bot draft, with its colour if it brings
@@ -6161,12 +6154,13 @@ impl Store {
         self.update_bot(&b.id, patch);
     }
 
-    /// Adds `c` to the front of "Your designs" (once; at most 48).
-    fn design_keep(&'static self, c: &AvatarCand) {
+    /// Puts `c` at the front of "Your designs": the one already there if the
+    /// list has its shape, as that one may hold more than `c` does.
+    pub(crate) fn design_keep(&'static self, c: &AvatarCand) {
         self.design_saved.update(|v| {
-            v.retain(|d| d.shape != c.shape);
-            v.insert(0, c.clone());
-            v.truncate(48);
+            let there = v.iter().position(|d| d.shape == c.shape);
+            let first = there.map_or_else(|| c.clone(), |i| v.remove(i));
+            v.insert(0, first);
         });
         self.save_designs();
     }
@@ -6182,23 +6176,123 @@ impl Store {
         self.save_designs();
     }
 
-    fn save_designs(&'static self) {
-        let designs: Vec<serde_json::Value> = self
+    /// Reads "Your designs", and keeps trying until an answer comes: a list
+    /// that failed to load looks like an empty one, and saving that would
+    /// wipe the real one.
+    pub(crate) fn load_designs(&'static self) {
+        if self.design_reading.replace(true) {
+            return;
+        }
+        spawn(async move {
+            let mut wait = 1;
+            loop {
+                let got = client::get(DESIGNS).await;
+                if let Some(entries) = got.as_ref().and_then(saved_entries) {
+                    return self.designs_loaded(entries);
+                }
+                timer(std::time::Duration::from_secs(wait)).await;
+                wait = (wait * 2).min(30);
+            }
+        });
+    }
+
+    /// The list came: it goes behind anything kept while it was on its way,
+    /// and what this build can't draw is set aside, not dropped.
+    fn designs_loaded(&'static self, entries: Vec<serde_json::Value>) {
+        let mut list = self.design_saved.get_untracked();
+        let kept = !list.is_empty();
+        let mut hidden = Vec::new();
+        for e in entries {
+            let c = saved_design(&e);
+            if crate::avatar::drawable(&c.shape) {
+                list.push(c);
+            } else {
+                hidden.push(e);
+            }
+        }
+        *self.design_hidden.borrow_mut() = hidden;
+        self.design_saved.set(list);
+        self.design_loaded.set(true);
+        if kept {
+            self.save_designs();
+        }
+    }
+
+    /// Adds what a pack holds to the front of "Your designs", in its order:
+    /// never over what's there, so a shape the list has stays as it is, and
+    /// only what this build can draw. One save for all of it.
+    pub(crate) fn designs_add(&'static self, entries: &[serde_json::Value]) -> DesignsAdded {
+        let list = self.design_saved.get_untracked();
+        let mut added = DesignsAdded::default();
+        let mut fresh: Vec<AvatarCand> = Vec::new();
+        for e in entries {
+            let c = saved_design(e);
+            if !crate::avatar::drawable(&c.shape) {
+                added.unusable += 1;
+            } else if list.iter().any(|d| d.shape == c.shape) {
+                added.there += 1;
+            } else if fresh.iter().any(|d| d.shape == c.shape) {
+                added.repeated += 1;
+            } else {
+                fresh.push(c);
+            }
+        }
+        added.added = fresh.len();
+        if !fresh.is_empty() {
+            fresh.extend(list);
+            self.design_saved.set(fresh);
+            self.save_designs();
+        }
+        added
+    }
+
+    /// The whole list as `/state/buwiz-avatar-designs` holds it.
+    fn designs_body(&'static self) -> serde_json::Value {
+        let mut designs: Vec<serde_json::Value> = self
             .design_saved
             .get_untracked()
             .iter()
             .map(|d| {
-                let mut j = body_fields(&d.shape);
-                j["name"] = d.name.clone().into();
-                j["color"] = d.color.clone().into();
-                j["why"] = d.why.clone().into();
-                j
+                d.raw.clone().unwrap_or_else(|| {
+                    let mut j = body_fields(&d.shape);
+                    j["name"] = d.name.clone().into();
+                    j["color"] = d.color.clone().into();
+                    j["why"] = d.why.clone().into();
+                    j
+                })
             })
             .collect();
-        client::post_bg(
-            "/state/buwiz-avatar-designs".to_owned(),
-            serde_json::json!({ "designs": designs }),
-        );
+        designs.extend(self.design_hidden.borrow().iter().cloned());
+        serde_json::json!({ "designs": designs })
+    }
+
+    /// Saves the list, one save at a time: each writes the whole list, so
+    /// two on the wire could land in either order. A change during a save
+    /// goes out after it, as the newest list. A save that fails tries again
+    /// until one works, each wait longer, up to [`SAVE_WAIT_MAX`].
+    fn save_designs(&'static self) {
+        if !self.design_loaded.get_untracked() {
+            return;
+        }
+        self.design_unsaved.set(true);
+        if self.design_saving.replace(true) {
+            return;
+        }
+        Owner::detached().run(|| {
+            spawn(async move {
+                let mut wait = 100;
+                while self.design_unsaved.replace(false) {
+                    if client::post_ok(DESIGNS, self.designs_body()).await {
+                        wait = 100;
+                        continue;
+                    }
+                    self.design_unsaved.set(true);
+                    timer(std::time::Duration::from_millis(wait)).await;
+                    wait = (wait * 2).min(SAVE_WAIT_MAX);
+                }
+                self.design_saving.set(false);
+            });
+        });
     }
 
     /// Revert: the avatar the bot had before its first Design pick.

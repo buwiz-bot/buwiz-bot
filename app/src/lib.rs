@@ -20,6 +20,7 @@ pub mod agent_hub;
 mod agents;
 mod appdetails;
 mod avatar;
+mod avatars;
 mod botdetails;
 mod botmodal;
 pub mod broker;
@@ -219,6 +220,8 @@ pub fn App() -> impl IntoElement {
 
 #[cfg(test)]
 mod computer_ui_tests;
+#[cfg(test)]
+mod editor_ui_tests;
 #[cfg(test)]
 mod sidebar_ui_tests;
 
