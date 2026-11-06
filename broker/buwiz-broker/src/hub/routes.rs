@@ -250,6 +250,7 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/data/timeclock/out"), Rust),
     e(Get, X("/skills"), Rust),
     e(Get, P("/file/raw/"), Rust),
+    e(Get, P("/file/preview/"), Rust),
     e(Get, X("/file/versions"), Rust),
     e(Get, P("/files/attachments/"), Rust),
     e(Get, P("/files/avatars/"), Rust),
@@ -362,6 +363,6 @@ mod tests {
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
         assert_eq!(count(&|o| matches!(o, Hub(_))), 126);
-        assert_eq!(count(&|o| o == Rust), 32);
+        assert_eq!(count(&|o| o == Rust), 33);
     }
 }

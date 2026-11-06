@@ -1528,6 +1528,10 @@ enum WebPage {
     Html(String),
 }
 
+/// What a local HTML document's script runs as: no origin. Never the broker's, which its routes
+/// trust (`guard.rs`), and WebKit shows nothing under a `file://` base.
+const LOCAL_PAGE_BASE: Option<&str> = None;
+
 /// What the open file shows as a web page, if it does.
 fn web_page() -> Option<WebPage> {
     let st = store();
@@ -1543,12 +1547,11 @@ fn web_page() -> Option<WebPage> {
     match f.kind.as_str() {
         "pdf" => Some(WebPage::Url(Store::file_raw_url(&f.path), false)),
         "html" if st.html_mode.get() != "source" => Some(if f.path.starts_with('/') {
-            // a file on this Mac (`buwiz://view`): its text, read here;
-            // WebKit shows nothing for a string under a `file://` base, so
-            // it gets the server's (a print preview inlines its images)
+            // a file on this Mac (`buwiz://view`): its text, read here, under
+            // `LOCAL_PAGE_BASE` (a print preview inlines its images)
             WebPage::Html(r.and_then(|r| r.text).unwrap_or_default())
         } else {
-            WebPage::Url(Store::file_raw_url(&f.path), false)
+            WebPage::Url(Store::file_preview_url(&f.path), false)
         }),
         _ => None,
     }
@@ -1613,7 +1616,7 @@ fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
                         _ => String::new(),
                     })
                 },
-                Some(crate::client::backend()),
+                LOCAL_PAGE_BASE,
             ))
             .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
             .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Html(_))))))
@@ -2737,6 +2740,27 @@ mod tests {
         ] {
             assert!(svg_page(uri, "contain").is_none(), "accepted {uri:?}");
         }
+    }
+
+    #[test]
+    fn an_html_preview_has_a_path_of_its_own() {
+        assert!(Store::file_preview_url("m1/a b.html").ends_with("/file/preview/m1/a%20b.html"));
+        assert!(Store::file_raw_url("m1/a b.html").ends_with("/file/raw/m1/a%20b.html"));
+    }
+
+    #[test]
+    fn a_file_on_this_mac_is_its_own_url_on_either_route() {
+        assert_eq!(Store::file_preview_url("/Users/a/b c.html"), "file:///Users/a/b%20c.html");
+        assert_eq!(Store::file_raw_url("/Users/a/b c.html"), "file:///Users/a/b%20c.html");
+    }
+
+    #[test]
+    fn a_local_page_never_runs_at_the_brokers_origin() {
+        assert_eq!(super::LOCAL_PAGE_BASE, None);
+        // and nothing in this file hands a page the broker for a base
+        let source = include_str!("files.rs");
+        let call = ["Some(crate::client", "::backend())"].concat();
+        assert!(!source.contains(&call), "a web page's base is the broker's origin");
     }
 
     #[test]
