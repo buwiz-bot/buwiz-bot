@@ -362,6 +362,6 @@ mod tests {
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
         assert_eq!(count(&|o| matches!(o, Hub(_))), 125);
-        assert_eq!(count(&|o| o == Rust), 32);
+        assert_eq!(count(&|o| o == Rust), 33);
     }
 }
