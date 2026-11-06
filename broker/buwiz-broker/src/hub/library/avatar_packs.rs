@@ -14,7 +14,7 @@
 
 use std::future::Future;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -42,18 +42,20 @@ const TOO_MANY: &str = "those packs hold too many designs";
 
 /// What one read may still take in bytes. Counted as they arrive, so a file cut off just short
 /// of its cap costs as much as one that got there.
-pub struct Budget(AtomicUsize);
+pub struct Budget(Mutex<usize>);
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget(AtomicUsize::new(READ_BYTES))
+        Budget(Mutex::new(READ_BYTES))
     }
 }
 
 impl Budget {
     /// Takes `n` bytes, or says the read is over.
     pub fn spend(&self, n: usize) -> Result<(), String> {
-        self.0.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(n)).map(|_| ()).map_err(|_| TOO_BIG.to_owned())
+        let mut left = self.0.lock().map_err(|_| TOO_BIG.to_owned())?;
+        *left = left.checked_sub(n).ok_or(TOO_BIG)?;
+        Ok(())
     }
 }
 
