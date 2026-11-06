@@ -25,7 +25,7 @@ export const GWS = "app.buwiz.google-workspace";
 export const GWS_DIR = join(ROOT, "src", "v1", "plugins", "google-workspace");
 export const FAKE_UPSTREAM = join(ROOT, "test", "fixtures", "fake-gws-upstream.mjs");
 /** The gws plugin under test: `GWS_CMD` names a buwiz-gws binary
- *  (buwiz-app/google-workspace; `scripts/gws-build` prints the pinned one),
+ *  (`cargo build -p buwiz-gws` in buwiz-app/google-workspace),
  *  run as `buwiz-gws mcp` with the manifest `buwiz-gws manifest` prints,
  *  else server.mjs. */
 export const GWS_CMD = (process.env.GWS_CMD || "").trim();

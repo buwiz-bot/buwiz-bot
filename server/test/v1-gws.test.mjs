@@ -207,7 +207,7 @@ async function wire(spec, messages) {
   return lines;
 }
 
-test("GWS-06 buwiz-gws answers as server.mjs does, byte for byte", { skip: !GWS_CMD && "set GWS_CMD to a buwiz-gws binary (scripts/gws-build prints one)" }, async () => {
+test("GWS-06 buwiz-gws answers as server.mjs does, byte for byte", { skip: !GWS_CMD && "set GWS_CMD to a buwiz-gws binary (cargo build -p buwiz-gws in buwiz-app/google-workspace)" }, async () => {
   const k = generate();
   const other = generate();
   let id = 0;

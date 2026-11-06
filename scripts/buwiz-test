@@ -112,13 +112,17 @@ done
 # workspace: stop this instance (its own pid) rather than leave it there
 if [ -z "$W" ]; then
   kill "$P" 2>/dev/null || true
-  [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
   echo "pid $P: AeroSpace never listed its window; stopped" >&2
   exit 1
 fi
-# give focus back only if this window took it: the owner may have moved on
-# since $F was read, and refocusing $F then would take it from them
-G=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
+# give focus back only if this window took it, which can come a moment after
+# it appears: the owner may have moved on since $F was read, and refocusing
+# $F then would take it from them
+TOOK=
+for _ in 1 2 3 4 5; do
+  [ "$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)" = "$W" ] && { TOOK=1; break; }
+  sleep 0.1
+done
 aerospace move-node-to-workspace 3 --window-id "$W"
-[ "$G" = "$W" ] && [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
+[ -n "$TOOK" ] && [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
 echo "pid $P window $W"
