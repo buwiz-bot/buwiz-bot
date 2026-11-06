@@ -29,6 +29,8 @@ pub struct MockProvider {
     pub create_ms: std::sync::atomic::AtomicU64,
     /// `create` fails with this, part way
     pub create_problem: Mutex<Option<Problem>>,
+    /// `sleep` never returns while set
+    pub hang_sleep: AtomicBool,
     /// `destroy` never returns while set: a hung Docker
     pub hang_destroy: AtomicBool,
     /// what `recover` finds
@@ -47,7 +49,7 @@ pub struct MockProvider {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
     }
 }
 
@@ -145,6 +147,9 @@ impl Provider for MockProvider {
     }
 
     async fn sleep(&self, _: &Machine, depth: Sleep) -> Result<()> {
+        while self.hang_sleep.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         self.note(format!("sleep {depth:?}"));
         self.paused.store(depth == Sleep::Light, Ordering::SeqCst);
         self.set_power(Power::Asleep);

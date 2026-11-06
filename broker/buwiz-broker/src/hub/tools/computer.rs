@@ -113,13 +113,13 @@ const BLIND: &str = "This model can't see images, so it can't use the computer. 
 /// Whether this turn is offered the tools: its Bot sits at a computer, it isn't a routine nobody
 /// let in, and its model can see the screen. A computer nobody made has nothing to offer.
 pub async fn offered(run: &Run) -> bool {
-    let seated = bot(run).is_some_and(|b| Computers::seat(&run.ctx, &b).is_some() && routine_allowed(run, &b));
+    let seated = bot(run).is_some_and(|b| matches!(Computers::seat(&run.ctx, &b), Ok(Some(_))) && routine_allowed(run, &b));
     seated && sees(run).await
 }
 
 /// What the system prompt says of the computer: how to use it, or why this model can't.
 pub async fn prompt(run: &Run) -> String {
-    let seated = bot(run).is_some_and(|b| Computers::seat(&run.ctx, &b).is_some() && routine_allowed(run, &b));
+    let seated = bot(run).is_some_and(|b| matches!(Computers::seat(&run.ctx, &b), Ok(Some(_))) && routine_allowed(run, &b));
     if !seated {
         String::new()
     } else if sees(run).await {
@@ -192,7 +192,7 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     run.set_job("connecting", "Working on its computer");
     let mut live = computers.live(ctx, &bot).await;
     if run.turn.routine.is_some() && matches!(live, Err(Problem::Asleep)) {
-        if let Some(seat) = Computers::seat(ctx, &bot) {
+        if let Ok(Some(seat)) = Computers::seat(ctx, &bot) {
             if let Err(p) = computers.wake_and_wait(ctx, &seat.computer).await {
                 return no(&p);
             }

@@ -130,11 +130,10 @@ impl Computers {
 
     // ---- the records ----
 
-    pub fn seat(ctx: &HubCtx, bot: &str) -> Option<Seat> {
-        ctx.db
-            .with(|c| c.query_row("SELECT bot_id, computer_id, role, screen FROM computer_seats WHERE bot_id=?", [bot], seat_row).optional())
-            .ok()
-            .flatten()
+    /// Where `bot` sits. A failed read is an error: "not seated" is what lets a Bot go with its
+    /// seat left behind, or join a second computer.
+    pub fn seat(ctx: &HubCtx, bot: &str) -> Result<Option<Seat>, Problem> {
+        ctx.db.with(|c| c.query_row("SELECT bot_id, computer_id, role, screen FROM computer_seats WHERE bot_id=?", [bot], seat_row).optional()).map_err(db_problem)
     }
 
     /// Who sits at `computer`. A failed read is an error, never an empty list: "nobody else is
@@ -267,9 +266,9 @@ impl Computers {
         Ok(text.flatten().and_then(|t| serde_json::from_str(&t).ok()))
     }
 
-    /// Whether `id` is marked for removal: nothing may bring it up again. A failed read says yes.
-    fn retired(ctx: &HubCtx, id: &str) -> bool {
-        Self::try_ids_where(ctx, "gone_at IS NOT NULL").map_or(true, |ids| ids.iter().any(|i| i == id))
+    /// Whether `id` is marked for removal: nothing may bring it up again.
+    fn retired(ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+        Self::try_ids_where(ctx, "gone_at IS NOT NULL").map(|ids| ids.iter().any(|i| i == id)).map_err(db_problem)
     }
 
     /// A person clicked: makes the computer if `bot` has none, or if its record is lost (the Bots
@@ -277,8 +276,8 @@ impl Computers {
     /// it goes.
     pub async fn click(self: &Arc<Self>, ctx: &Arc<HubCtx>, bot: &str) -> Result<(), Problem> {
         self.now().problems.remove(bot);
-        let id = match self.computer_for_click(ctx, bot).await {
-            Ok(id) => id,
+        let (id, recovered) = match self.computer_for_click(ctx, bot).await {
+            Ok(found) => found,
             Err(e) => {
                 self.now().problems.insert(bot.to_owned(), e.clone());
                 return Err(e);
@@ -289,14 +288,22 @@ impl Computers {
         }
         let (me, ctx) = (self.clone(), ctx.clone());
         tokio::spawn(async move {
+            // what's running still has the old secrets. A real stop, so it can finish its writes,
+            // and here, with the seats' lock long released
+            if recovered {
+                if let Ok(machine) = me.machine(&ctx, &id) {
+                    let _ = me.provider_of(&machine).sleep(&machine, Sleep::Deep).await;
+                }
+            }
             let _ = me.finish_wake(&ctx, &id).await;
         });
         Ok(())
     }
 
-    async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
+    /// The computer to wake, and whether it was recovered with new secrets.
+    async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<(String, bool), Problem> {
         let seating = self.seating.lock().await;
-        let Some(seat) = Self::seat(ctx, bot) else {
+        let Some(seat) = Self::seat(ctx, bot)? else {
             let id = self.make(ctx, bot).await?;
             if let Err(e) = Self::add_seat(ctx, bot, &id, "member") {
                 // just made: nothing is on it. The provider isn't waited on under the lock
@@ -305,11 +312,11 @@ impl Computers {
                 self.finish_retire(ctx, &id).await;
                 return Err(e);
             }
-            return Ok(id);
+            return Ok((id, false));
         };
         // a record that reads is all it takes: the wake rebuilds whatever went, on the same files
         if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
-            return Ok(seat.computer);
+            return Ok((seat.computer, false));
         }
         // its record is lost: what's left of the computer gets a new one, files and all
         let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
@@ -318,7 +325,7 @@ impl Computers {
             Self::save_machine(ctx, &seat.computer, &machine)?;
             self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(seat.computer.clone(), machine);
             self.now().problems.remove(&seat.computer);
-            return Ok(seat.computer);
+            return Ok((seat.computer, true));
         }
         // nothing of it is left to find
         let id = self.make(ctx, bot).await?;
@@ -329,7 +336,7 @@ impl Computers {
             return Err(db_problem(e));
         }
         self.mark_retired(ctx, &seat.computer);
-        Ok(id)
+        Ok((id, false))
     }
 
     /// Up, with every Bot's screen. `id` is in `waking`.
@@ -375,8 +382,11 @@ impl Computers {
     async fn wake_all(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
         // `id` is in `waking` by now, and the sweep leaves a waking computer alone: whichever of
         // this check and a retire comes first, nothing is brought up after it's removed
-        if Self::retired(ctx, id) {
-            return Err(Problem::Gone);
+        match Self::retired(ctx, id) {
+            Ok(false) => {}
+            Ok(true) => return Err(Problem::Gone),
+            // refused all the same, and not called gone: it may be perfectly well
+            Err(_) => return Err(Problem::Failed("whether it can wake couldn't be checked. Try again in a moment".to_owned())),
         }
         let machine = self.machine(ctx, id)?;
         let provider = self.provider_of(&machine);
@@ -406,9 +416,7 @@ impl Computers {
     pub async fn sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep) -> Result<(), Problem> {
         let machine = self.machine(ctx, id)?;
         if let Some(gate) = self.gate().await {
-            for seat in Self::seats(ctx, id).unwrap_or_default() {
-                gate.close(&seat.bot);
-            }
+            gate.close_computer(&machine.viewer_password);
         }
         self.provider_of(&machine).sleep(&machine, depth).await?;
         let at = if depth == Sleep::Light { Some(policy::now(ctx)) } else { None };
@@ -455,7 +463,7 @@ impl Computers {
     /// A person put `bot` at `computer`, which already serves other Bots.
     pub async fn attach(&self, ctx: &HubCtx, bot: &str, computer: &str) -> Result<(), Problem> {
         let _seating = self.seating.lock().await;
-        if Self::seat(ctx, bot).is_some() {
+        if Self::seat(ctx, bot)?.is_some() {
             return Err(Problem::Failed("this Bot already has a computer".to_owned()));
         }
         if !Self::known(ctx, computer) {
@@ -502,7 +510,7 @@ impl Computers {
     async fn take_off(&self, ctx: &HubCtx, bot: &str, may_be_last: bool) -> Result<(), Problem> {
         let seat = {
             let _seating = self.seating.lock().await;
-            let Some(seat) = Self::seat(ctx, bot) else { return Ok(()) };
+            let Some(seat) = Self::seat(ctx, bot)? else { return Ok(()) };
             let last = Self::seats(ctx, &seat.computer)?.len() <= 1;
             if last && !may_be_last {
                 return Err(Problem::Failed("the last Bot at a computer can't leave it: its files would go".to_owned()));
@@ -561,7 +569,7 @@ impl Computers {
     /// provider's guard fails; that guard is how a box from before this broker's start gets its
     /// wall before anyone uses it.
     pub async fn live(&self, ctx: &HubCtx, bot: &str) -> Result<Live, Problem> {
-        let seat = Self::seat(ctx, bot).ok_or(Problem::Asleep)?;
+        let seat = Self::seat(ctx, bot)?.ok_or(Problem::Asleep)?;
         {
             let now = self.now();
             if now.waking.contains(&seat.computer) {
@@ -610,7 +618,11 @@ impl Computers {
     /// The Computer tab's status for `bot`. No secret, no address.
     pub async fn status(&self, ctx: &HubCtx, bot: &str) -> Value {
         let sleep_after = self.idle.as_secs();
-        let Some(seat) = Self::seat(ctx, bot) else {
+        let seat = match Self::seat(ctx, bot) {
+            Ok(seat) => seat,
+            Err(p) => return json!({"state": "error", "code": p.code(), "message": p.sentence(), "sleepAfterS": sleep_after}),
+        };
+        let Some(seat) = seat else {
             let problem = self.now().problems.get(bot).cloned();
             return match problem {
                 Some(p) => json!({"state": "error", "code": p.code(), "message": p.sentence(), "sleepAfterS": sleep_after}),
@@ -764,7 +776,11 @@ async fn wake(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 
 async fn sleep(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
-    let Some(seat) = Computers::seat(&ctx, &bot) else { return types::json(StatusCode::OK, &computers.status(&ctx, &bot).await) };
+    let seat = match Computers::seat(&ctx, &bot) {
+        Ok(seat) => seat,
+        Err(p) => return refused(&p),
+    };
+    let Some(seat) = seat else { return types::json(StatusCode::OK, &computers.status(&ctx, &bot).await) };
     match computers.sleep(&ctx, &seat.computer, Sleep::Light).await {
         Ok(()) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),
         Err(p) => refused(&p),
