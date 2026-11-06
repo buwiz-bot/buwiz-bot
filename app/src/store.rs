@@ -3016,8 +3016,8 @@ pub struct Store {
     frame_started: std::cell::Cell<bool>,
     /// A canvas read the clock since the last tick: keep ticking.
     frame_want: std::cell::Cell<bool>,
-    /// The chat and Bot the last `/status` left playing.
-    mock_run: std::cell::RefCell<Option<(String, Option<String>)>>,
+    /// The chat and run the last `/status` left playing.
+    pub(crate) mock_run: std::cell::RefCell<Option<(String, AgentRun)>>,
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -6239,8 +6239,23 @@ impl Store {
 
     /// `mockStatus(arg)` — the `/status` slash command (App.tsx:143):
     /// `/status` or `/status:demo` cycles every state, `/status:<name>` sets one,
-    /// `/status:off|idle|clear` stops. Local only — never hits `/chat`.
+    /// `/status:off|idle|clear` stops. Local only — never hits `/chat`. A new
+    /// one clears what the last left playing in another chat, if it's still
+    /// what's there: a real run that has started since is left alone.
     pub fn mock_status(&'static self, arg: &str) {
+        // `names = STATES.filter(n => n !== "idle")`, 1.7s each.
+        let names = crate::mark::STATES.iter().map(|(n, _)| *n).filter(|n| *n != "idle").collect();
+        self.mock_status_stepping(arg, names, std::time::Duration::from_millis(1700));
+    }
+
+    /// `state` set by `/status`, remembered so the next one can clear it.
+    fn mock_set(&'static self, thread: &str, bot: &Option<String>, state: String, label: String) {
+        self.agent_set(thread.to_owned(), bot.clone(), Some((state.clone(), label.clone())));
+        *self.mock_run.borrow_mut() = Some((thread.to_owned(), AgentRun { state, label, bot: bot.clone() }));
+    }
+
+    /// [`Self::mock_status`] with its demo's states and pace.
+    pub(crate) fn mock_status_stepping(&'static self, arg: &str, names: Vec<&'static str>, step: std::time::Duration) {
         // Any new `/status…` stops a running demo (`clearInterval(mockTimer)`).
         static DEMO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let run = DEMO.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -6249,48 +6264,34 @@ impl Store {
         let bot = self.active_bot_untracked().map(|b| b.id);
         self.settled.set(None);
         // the last `/status` may have left another chat's Bot playing
-        if let Some((last, last_bot)) = self.mock_run.replace(None)
+        if let Some((last, run)) = self.mock_run.take()
             && last != thread
+            && self.agent_runs.with_untracked(|m| m.get(&last) == Some(&run))
         {
-            self.agent_set(last, last_bot, None);
+            self.agent_set(last, run.bot, None);
         }
         if arg.is_empty() || arg == "off" || arg == "idle" || arg == "clear" {
             self.agent_set(thread, bot, None);
             return;
         }
-        self.mock_run.replace(Some((thread.clone(), bot.clone())));
         if arg == "demo" {
-            // `names = STATES.filter(n => n !== "idle")`, 1.7s each.
-            let names: Vec<&'static str> = crate::mark::STATES
-                .iter()
-                .map(|(n, _)| *n)
-                .filter(|n| *n != "idle")
-                .collect();
             if let Some(first) = names.first() {
                 let label = crate::statusfx::status_label(first);
-                self.agent_set(
-                    thread.clone(),
-                    bot.clone(),
-                    Some((first.to_string(), format!("{first} — {label}"))),
-                );
+                self.mock_set(&thread, &bot, first.to_string(), format!("{first} — {label}"));
             }
             spawn(async move {
                 for name in names.iter().skip(1) {
-                    timer(std::time::Duration::from_millis(1700)).await;
+                    timer(step).await;
                     if !live() {
                         return;
                     }
                     let label = crate::statusfx::status_label(name);
-                    self.agent_set(
-                        thread.clone(),
-                        bot.clone(),
-                        Some((name.to_string(), format!("{name} — {label}"))),
-                    );
+                    self.mock_set(&thread, &bot, name.to_string(), format!("{name} — {label}"));
                 }
-                timer(std::time::Duration::from_millis(1700)).await;
+                timer(step).await;
                 if live() {
                     // finished, so nothing is left for the next one to clear
-                    self.mock_run.replace(None);
+                    self.mock_run.take();
                     self.agent_set(thread, bot, None);
                 }
             });
@@ -6298,7 +6299,7 @@ impl Store {
         }
         if crate::mark::STATES.iter().any(|(n, _)| *n == arg) {
             let label = crate::statusfx::status_label(arg);
-            self.agent_set(thread, bot, Some((arg.to_owned(), label)));
+            self.mock_set(&thread, &bot, arg.to_owned(), label.to_string());
         } else {
             self.agent_set(
                 thread,

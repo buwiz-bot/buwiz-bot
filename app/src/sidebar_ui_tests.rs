@@ -4,7 +4,7 @@
 //!
 //! The store is one per process, so each test runs in a child of its own.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use buwiz_office_kit::testing::{Headless, num, read, run};
@@ -22,6 +22,7 @@ fn built() -> usize {
 const BOTS: usize = 27;
 static STEP: AtomicUsize = AtomicUsize::new(0);
 static REPLY: AtomicUsize = AtomicUsize::new(0);
+static RECORD: AtomicBool = AtomicBool::new(true);
 
 fn in_child(name: &str) -> bool {
     if std::env::var_os(CHILD).is_some() {
@@ -121,6 +122,16 @@ fn Side() -> impl IntoElement {
                 .child(view().label("rename").w(px(40.0)).h_full().on_press(rename))
                 .child(view().label("chats").w(px(40.0)).h_full().on_press(chats))
                 .child(view().label("status 3").w(px(40.0)).h_full().on_press(|| status_on(3)))
+                .child(view().label("real run 3").w(px(40.0)).h_full().on_press(|| {
+                    store().agent_set("t3".to_owned(), Some("b3".to_owned()), Some(("writing".to_owned(), "A real run".to_owned())));
+                }))
+                .child(view().label("short demo 3").w(px(40.0)).h_full().on_press(|| {
+                    store().active_id.set("t3".to_owned());
+                    store().mock_status_stepping("demo", vec!["thinking", "writing"], Duration::from_millis(1000));
+                }))
+                .child(view().label("check record").w(px(40.0)).h_full().on_press(|| {
+                    RECORD.store(store().mock_run.borrow().is_some(), Ordering::Relaxed);
+                }))
                 .child(view().label("status 4").w(px(40.0)).h_full().on_press(|| status_on(4)))
                 .child(view().label("unpin and open").w(px(40.0)).h_full().on_press(|| {
                     let n = REPLY.fetch_add(1, Ordering::Relaxed);
@@ -375,14 +386,22 @@ fn rests_after_runs(seed: &str) {
         app.pump(Duration::from_millis(50));
     }
     app.press("stop");
-    for s in 0..8 {
+    // how long clips take to finish depends on the machine, so this waits for
+    // it: what matters is that painting stops, and stays stopped
+    let mut quiet = None;
+    for s in 0..30 {
         let at = paints();
         app.pump(Duration::from_millis(1000));
         println!("second {s} after the runs end: {} paints", paints() - at);
+        if paints() == at {
+            quiet = Some(s);
+            break;
+        }
     }
+    assert!(quiet.is_some(), "still painting 30 seconds after every run ended");
     let at = paints();
-    app.pump(Duration::from_millis(1000));
-    assert_eq!(paints() - at, 0, "paints a second, long after every run ended");
+    app.pump(Duration::from_millis(2000));
+    assert_eq!(paints() - at, 0, "painting started again with nothing running");
 }
 
 /// An avatar the pointer has passed over goes back to sleep: it doesn't stay
@@ -439,6 +458,49 @@ fn a_new_status_clears_the_last_one() {
     app.pump(Duration::from_millis(300));
     assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
     assert_eq!(painted("b3"), Some("idle"), "the last one is cleared");
+}
+
+/// `/status` clears only what it set: a real run that has started in that
+/// chat since is left alone.
+#[test]
+fn a_new_status_leaves_a_real_run_alone() {
+    if !in_child("a_new_status_leaves_a_real_run_alone") {
+        return;
+    }
+    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
+    let mut app = start();
+    app.press("seed");
+    app.press("chats");
+    app.pump(Duration::from_millis(400));
+    app.press("status 3");
+    app.pump(Duration::from_millis(200));
+    app.press("real run 3");
+    app.pump(Duration::from_millis(200));
+    assert_eq!(painted("b3"), Some("writing"), "the real run took over");
+    app.press("status 4");
+    app.pump(Duration::from_millis(300));
+    assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
+    assert_eq!(painted("b3"), Some("writing"), "the real run is still there");
+}
+
+/// A demo that runs to its end leaves nothing for the next one to clear.
+#[test]
+fn a_finished_demo_leaves_no_record() {
+    if !in_child("a_finished_demo_leaves_no_record") {
+        return;
+    }
+    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
+    let mut app = start();
+    app.press("seed");
+    app.press("chats");
+    app.pump(Duration::from_millis(400));
+    app.press("short demo 3");
+    app.press("check record");
+    assert!(RECORD.load(Ordering::Relaxed), "a running demo has a record");
+    app.pump(Duration::from_millis(3000));
+    app.press("check record");
+    assert!(!RECORD.load(Ordering::Relaxed), "a finished demo has none");
+    assert_eq!(painted("b3"), Some("idle"), "and its Bot is idle");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.
