@@ -42,8 +42,8 @@ const RAYS: usize = ATLAS_K;
 /// Atlas columns (yaw -180..170) and rows (pitch -90..90) of a custom body.
 const COLS: usize = (360.0 / ATLAS_STEP) as usize;
 const ROWS: usize = (180.0 / ATLAS_STEP) as usize + 1;
-/// The kit square's body size (`hn(1.0413, ..)`): a custom body's area
-/// is matched to it.
+/// The kit square's body size (`hn(1.0413, ..)`): a custom body's eyes are
+/// sized against it.
 const SQUARE_SIZE: f64 = 1.0413;
 /// How much of an avatar's frame a custom figure fills, in body units at size 1: its height, its
 /// width, and how far any point may reach from the middle. Every figure stands as tall as the
@@ -51,9 +51,12 @@ const SQUARE_SIZE: f64 = 1.0413;
 /// as it turns.
 const FIT_HEIGHT: f64 = 3.33;
 const FIT_WIDTH: f64 = 3.53;
+///
+/// The reach leaves room inside the canvas for what the states do: `nothing_leaves_the_canvas`
+/// holds it to that.
 const FIT_REACH: f64 = 2.1;
-/// The smallest and largest a custom figure draws.
-const SIZE_RANGE: (f64, f64) = (0.8, 2.4);
+/// The largest a custom figure draws.
+const MAX_SIZE: f64 = 2.4;
 /// The name prefix of every custom body.
 const PREFIX: &str = "custom:";
 /// The name prefix of every rich body.
@@ -1148,7 +1151,7 @@ fn fit_size(points: impl Iterator<Item = V3>) -> f64 {
         (x0, x1, y0, y1) = (x0.min(p[0]), x1.max(p[0]), y0.min(p[1]), y1.max(p[1]));
         far = far.max(p[0].hypot(p[1]).hypot(p[2]));
     }
-    (FIT_HEIGHT / (y1 - y0)).min(FIT_WIDTH / (x1 - x0)).min(FIT_REACH / far).clamp(SIZE_RANGE.0, SIZE_RANGE.1)
+    (FIT_HEIGHT / (y1 - y0)).min(FIT_WIDTH / (x1 - x0)).min(MAX_SIZE).min(FIT_REACH / far)
 }
 
 /// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops, sampled
@@ -1178,8 +1181,8 @@ fn chart_loops(path: &str) -> Result<Vec<Vec<V2>>, String> {
 
 /// A multi-part recipe's main geometry and extra parts: one frame from
 /// the bounding box of every outline (the `Hv` fit of the whole figure),
-/// one body size for all of them (the figure's area matched to the kit
-/// square's), each part its own loft at its place in the frame.
+/// one body size for all of them ([`fit_size`], solids included), each part
+/// its own loft at its place in the frame.
 fn multi_part(
     main: &str,
     spec: Option<&serde_json::Value>,
@@ -1824,7 +1827,7 @@ mod tests {
     /// Plain custom bodies draw and rest byte for byte as they did when
     /// figures began to fill the frame ([`fit_size`]).
     #[test]
-    fn plain_custom_bodies_unchanged() {
+    fn plain_custom_bodies_match_their_snapshot() {
         let mut got = Vec::new();
         for path in [CAT, RECEIPT] {
             let name = custom_body(path).unwrap();
@@ -2082,6 +2085,110 @@ mod tests {
         );
     }
 
+    /// `m` then `t`, as `[a, b, c, d, e, f]`.
+    fn then(m: [f64; 6], t: [f64; 6]) -> [f64; 6] {
+        [
+            m[0] * t[0] + m[2] * t[1],
+            m[1] * t[0] + m[3] * t[1],
+            m[0] * t[2] + m[2] * t[3],
+            m[1] * t[2] + m[3] * t[3],
+            m[0] * t[4] + m[2] * t[5] + m[4],
+            m[1] * t[4] + m[3] * t[5] + m[5],
+        ]
+    }
+
+    /// An SVG `transform` list on `m`.
+    fn transformed(mut m: [f64; 6], list: &str) -> [f64; 6] {
+        for part in list.split(')').filter(|p| !p.trim().is_empty()) {
+            let (name, args) = part.trim().split_once('(').expect("a transform");
+            let v: Vec<f64> = args.split([' ', ',']).filter_map(|n| n.parse().ok()).collect();
+            let t = match (name, v.as_slice()) {
+                ("matrix", [a, b, c, d, e, f]) => [*a, *b, *c, *d, *e, *f],
+                ("translate", [x]) => [1.0, 0.0, 0.0, 1.0, *x, 0.0],
+                ("translate", [x, y]) => [1.0, 0.0, 0.0, 1.0, *x, *y],
+                ("scale", [k]) => [*k, 0.0, 0.0, *k, 0.0, 0.0],
+                ("scale", [x, y]) => [*x, 0.0, 0.0, *y, 0.0, 0.0],
+                ("rotate", [a]) => {
+                    let (s, c) = a.to_radians().sin_cos();
+                    [c, s, -s, c, 0.0, 0.0]
+                }
+                ("rotate", [a, x, y]) => {
+                    let (s, c) = a.to_radians().sin_cos();
+                    let turn = then([1.0, 0.0, 0.0, 1.0, *x, *y], [c, s, -s, c, 0.0, 0.0]);
+                    then(turn, [1.0, 0.0, 0.0, 1.0, -x, -y])
+                }
+                _ => panic!("a transform this can't read: {part}"),
+            };
+            m = then(m, t);
+        }
+        m
+    }
+
+    /// The furthest any path of `tree` goes, in the root's units, past its middle.
+    fn furthest(tree: &MarkTree, mid: f64, outer: [f64; 6], most: &mut f64) {
+        // what's in `defs` draws only through a `use` or a clip
+        if tree.tag == "defs" {
+            return;
+        }
+        let m = tree.attr("transform").map_or(outer, |t| transformed(outer, t));
+        if let Some(d) = tree.attr("d") {
+            let v: Vec<f64> = d.replace(|c: char| c.is_ascii_alphabetic(), " ").split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            for p in v.as_chunks::<2>().0 {
+                let (x, y) = (m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]);
+                *most = most.max((x - mid).abs()).max((y - mid).abs());
+            }
+        }
+        for c in &tree.children {
+            furthest(c, mid, m, most);
+        }
+    }
+
+    fn spike(tip: [f64; 3]) -> String {
+        let s = serde_json::json!([{"kind": "tube", "color": "#112233", "path": [[50.0, 50.0, 0.0, 3.0], [tip[0], tip[1], tip[2], 1.0]]}]);
+        serde_json::json!({"o": "M50 20 C70 20 80 35 80 50 C80 65 70 80 50 80 C30 80 20 65 20 50 C20 35 30 20 50 20 Z", "c": "#FFFFFF",
+            "l": [["M47 61 L53 61 L50 64 Z", "#112233"]], "e": "#112233", "s": s}).to_string()
+    }
+
+    /// However a figure turns and whatever state it's in, nothing leaves the avatar's canvas. These
+    /// are the worst figures: a spike out to the top, the side, a corner, and toward the viewer,
+    /// each sized by [`fit_size`], one of them right at [`FIT_REACH`].
+    #[test]
+    fn nothing_leaves_the_canvas() {
+        let tab = shared_tables();
+        let display = 52.48;
+        let extent = (display * (0.92 / 0.6) * 100.0_f64).round() / 100.0;
+        // `bot_blob`: a canvas half as big again as its cell, the mark 0.82 of the cell
+        let half = display / 0.82 * 1.5 / 2.0;
+        let reach = |tree: &MarkTree| {
+            let mut most = 0.0;
+            furthest(tree, extent / 2.0, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], &mut most);
+            most
+        };
+        // `writing` turns any avatar into the kit's pencil, which is the same size on all of them
+        let writing = |what: &str| what.starts_with("writing");
+        let pencil = rich_run("blob", extent, display).iter().filter(|r| writing(&r.0)).map(|r| reach(&r.1)).fold(0.0, f64::max);
+        for tip in [[50.0, -60.0, 0.0], [120.0, -20.0, 0.0], [160.0, 50.0, 0.0], [50.0, 50.0, 95.0], [100.0, 0.0, 70.0]] {
+            let body = rich_body(&spike(tip)).unwrap();
+            for (what, tree, ..) in rich_run(body, extent, display) {
+                let most = if writing(&what) { pencil } else { half };
+                assert!(reach(&tree) <= most, "{tip:?} {what}: {} past {most}", reach(&tree));
+            }
+            let mark = Mark::new(&tab, Some(body), 1.0, false, false, 7);
+            let opts = PaintOpts { cutout: true, ink_paint: Some("#1884FC".to_owned()), ..Default::default() };
+            let size = UhSize { display_size: Some(display), extent };
+            for pitch in (-90..=90).step_by(15) {
+                for yaw in (0..360).step_by(15) {
+                    for roll in [-30.0, 0.0, 30.0] {
+                        let mut frame = mark.frame();
+                        frame.turn = [pitch as f64, yaw as f64, roll];
+                        let got = reach(&uh(&frame, &opts, extent, "m", &size, &tab));
+                        assert!(got <= half, "{tip:?} at {pitch} {yaw} {roll}: {got} past {half}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_figure_fills_the_frame_up_to_its_limits() {
         let figure = |w: f64, h: f64| [[-w / 2.0, -h / 2.0, 0.0], [w / 2.0, h / 2.0, 0.0]];
@@ -2097,7 +2204,9 @@ mod tests {
         let deep = [[0.0, -1.0, 0.0], [0.0, 1.0, 1.4]];
         near(fit_size(deep.into_iter()), FIT_REACH / 1.0f64.hypot(1.4));
         // and a speck stops at the largest size
-        near(fit_size(figure(0.1, 0.1).into_iter()), SIZE_RANGE.1);
+        near(fit_size(figure(0.1, 0.1).into_iter()), MAX_SIZE);
+        // the frame beats everything: no least size holds a figure past it
+        near(fit_size([[0.0, -1.0, 0.0], [0.0, 1.0, 6.0]].into_iter()), FIT_REACH / 1.0f64.hypot(6.0));
     }
 
     /// However the box of a recipe is filled, a figure stands as tall as the next.
@@ -2980,7 +3089,7 @@ mod tests {
     /// left the recipe's colours for the ink; the shade is also exact now,
     /// not read back from a rounded ink (0.7, it used to read 0.6984).
     /// It moved again when the brute and the hero were redrawn as original
-    /// avatars, palette and geometry both. The cat, unchanged, kept its value.
+    /// avatars, palette and geometry both, and the cat kept its value then.
     /// All three moved when figures began to fill the frame ([`fit_size`]).
     #[test]
     fn rich_string_eyes_match_their_snapshot() {
