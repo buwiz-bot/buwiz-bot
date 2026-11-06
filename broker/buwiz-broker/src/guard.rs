@@ -10,11 +10,16 @@
 use hyper::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN, TRANSFER_ENCODING};
 use hyper::{Method, StatusCode};
 
-/// The origins allowed to call: the front door's own, plus `extra`
-/// (`BUWIZ_ALLOWED_ORIGINS`, comma-separated).
+/// What `BUWIZ_ALLOWED_ORIGINS` (comma-separated) adds. `null` isn't an origin anyone can be
+/// allowed: naming it would let in every sandboxed frame there is, so it's dropped.
+pub fn extra_origins(extra: Option<&str>) -> Vec<String> {
+    extra.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty() && *s != "null").map(str::to_owned).collect()
+}
+
+/// The origins allowed to call: the front door's own, plus `extra`.
 pub fn allowed_origins(port: u16, extra: Option<&str>) -> Vec<String> {
     let mut out = vec![format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")];
-    out.extend(extra.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned));
+    out.extend(extra_origins(extra));
     out
 }
 
@@ -65,5 +70,12 @@ mod tests {
         assert_eq!(refusal(&Method::POST, &headers(&[("content-length", "2"), ("content-type", "text/plain")]), &allowed).unwrap().0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert_eq!(refusal(&Method::POST, &headers(&[("transfer-encoding", "chunked")]), &allowed).unwrap().0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert_eq!(refusal(&Method::GET, &headers(&[("content-length", "2")]), &allowed), None);
+    }
+
+    #[test]
+    fn null_stays_refused_when_the_environment_names_it() {
+        let allowed = allowed_origins(8787, Some("null, https://a.example, null "));
+        assert_eq!(allowed, ["http://127.0.0.1:8787", "http://localhost:8787", "https://a.example"]);
+        assert_eq!(refusal(&Method::GET, &headers(&[("origin", "null")]), &allowed).unwrap().0, StatusCode::FORBIDDEN);
     }
 }

@@ -1,6 +1,7 @@
 // Origin and Content-Type checks at dispatch (server/guard.mjs).
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { allowedOrigins, refusal } from "../src/guard.mjs";
 import { PORT, postJson, request, startServer, tempDir } from "./helpers.mjs";
 
 let server;
@@ -29,6 +30,13 @@ test("a Rox-style request works", async () => {
   });
 
   assert.equal(charset.status, 200);
+});
+
+test("null stays refused when BUWIZ_ALLOWED_ORIGINS names it", () => {
+  const allowed = allowedOrigins(8787, "null, https://a.example, null ");
+
+  assert.deepEqual([...allowed], ["http://127.0.0.1:8787", "http://localhost:8787", "https://a.example"]);
+  assert.equal(refusal({ method: "GET", headers: { origin: "null" } }, allowed).status, 403);
 });
 
 test("a bodyless POST needs no Content-Type", async () => {
