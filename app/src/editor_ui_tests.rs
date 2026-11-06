@@ -40,6 +40,9 @@ struct Stub {
     state: Arc<Mutex<Value>>,
     fails: Arc<AtomicUsize>,
     save_fails: Arc<AtomicUsize>,
+    /// What `POST /avatar/packs` answers, and what it was asked.
+    packs: Arc<Mutex<(u16, Value)>>,
+    pack_asks: Arc<Mutex<Vec<Value>>>,
     slow: Duration,
     gets: Arc<AtomicUsize>,
     posts: Arc<Mutex<Vec<Value>>>,
@@ -52,6 +55,8 @@ fn stub(state: Value, fails: usize, slow: Duration) -> Stub {
         state: Arc::new(Mutex::new(state)),
         fails: Arc::new(AtomicUsize::new(fails)),
         save_fails: Arc::default(),
+        packs: Arc::new(Mutex::new((200, json!({"ok": true, "designs": [], "refused": []})))),
+        pack_asks: Arc::default(),
         slow,
         gets: Arc::default(),
         posts: Arc::default(),
@@ -87,6 +92,12 @@ impl Stub {
     /// A refused save answers with JSON that looks fine and a saved one with none: it's the
     /// status that says which.
     fn answer(&self, request: &HttpRequest) -> (u16, String) {
+        if request.url.ends_with("/avatar/packs") {
+            let HttpBody::Bytes(body) = &request.body else { panic!("an ask with no body") };
+            self.pack_asks.lock().unwrap().push(serde_json::from_slice(body).unwrap());
+            let (status, reply) = self.packs.lock().unwrap().clone();
+            return (status, reply.to_string());
+        }
         if !request.url.ends_with("/state/buwiz-avatar-designs") {
             return (200, "{}".to_owned());
         }
@@ -165,6 +176,7 @@ fn Editor() -> impl IntoElement {
         .child(view().label("keep heart").w(px(40.0)).h(px(40.0)).on_press(|| keep("Heart", "heart")))
         .child(view().label("keep star").w(px(40.0)).h(px(40.0)).on_press(|| keep("Star", "star")))
         .child(view().label("forget first").w(px(40.0)).h(px(40.0)).on_press(|| store().design_forget(0)))
+        .child(view().label("install fox").w(px(40.0)).h(px(40.0)).on_press(|| crate::avatars::run(" install fox https://github.com/me/mine")))
         .child(view().label("read again").w(px(40.0)).h(px(40.0)).on_press(|| store().load_designs()))
         .child(view().label("set a photo").w(px(40.0)).h(px(40.0)).on_press(|| {
             store().avatar_draft.set(Some(crate::store::AvatarDraft { uri: "/tmp/p.png".to_owned(), ..Default::default() }));
@@ -456,4 +468,79 @@ fn a_photo_ends_revert() {
     app.wait_for("Use your Mine design");
     app.pump(Duration::from_millis(100));
     assert!(!app.has("Revert avatar"), "Revert would undo the photo");
+}
+
+fn pack_answer(designs: Value, refused: Value) -> (u16, Value) {
+    (200, json!({"ok": true, "designs": designs, "refused": refused}))
+}
+
+/// An install adds to the front, in the pack's order, each entry whole, with what the list
+/// had left as it was, and asks the broker for just what was typed.
+#[test]
+fn an_install_adds_and_replaces_nothing() {
+    if !in_child("an_install_adds_and_replaces_nothing") {
+        return;
+    }
+    let mine = json!({"name": "Mine", "shape": "cloud", "color": "#FFFFFF", "extra": "kept"});
+    let broker = stub(saved(json!([mine])), 0, Duration::ZERO);
+    let same = json!({"name": "Their cloud", "shape": "cloud", "color": "#000000"});
+    let a = json!({"name": "A", "shape": "heart", "color": "#FFFFFF", "why": "kept too"});
+    let b = json!({"name": "B", "shape": "star", "color": "#FFFFFF"});
+    *broker.packs.lock().unwrap() = pack_answer(json!([a, same, b]), json!([]));
+    let mut app = start_loaded(&broker);
+    app.press("install fox");
+    pump_until(&mut app, "the save", |_| broker.names() == ["A", "B", "Mine"]);
+    assert_eq!(broker.pack_asks.lock().unwrap()[0], json!({"link": "https://github.com/me/mine", "pick": "fox"}));
+    let list = broker.posts().pop().unwrap();
+    assert_eq!(list["designs"][0], a, "the pack's entry whole");
+    assert_eq!(list["designs"][2], mine, "the list's own entry as it was");
+    assert_eq!(broker.posts().len(), 1, "one save for all of it");
+}
+
+/// The Bot's own engine has the last word on what it can draw.
+#[test]
+fn an_install_skips_what_this_build_cant_draw() {
+    if !in_child("an_install_skips_what_this_build_cant_draw") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let good = json!({"name": "Good", "shape": "heart", "color": "#FFFFFF"});
+    let odd = json!({"name": "Odd", "shape": "hologram", "color": "#FFFFFF"});
+    *broker.packs.lock().unwrap() = pack_answer(json!([odd, good]), json!([]));
+    let mut app = start_loaded(&broker);
+    app.press("install fox");
+    pump_until(&mut app, "the save", |_| broker.names() == ["Good"]);
+}
+
+/// Until the list has been read there's no telling what's in it: nothing is asked or added.
+#[test]
+fn an_install_waits_for_the_list() {
+    if !in_child("an_install_waits_for_the_list") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 1000, Duration::ZERO);
+    *broker.packs.lock().unwrap() = pack_answer(json!([{"name": "A", "shape": "heart", "color": "#FFFFFF"}]), json!([]));
+    let mut app = start(&broker);
+    app.press("install fox");
+    app.pump(Duration::from_millis(300));
+    assert!(broker.pack_asks.lock().unwrap().is_empty(), "asked with the list unread");
+    until(&mut app, "nothing added", |p| p.get("shown").is_some_and(|n| n == "0"));
+}
+
+/// A link the broker refuses changes nothing.
+#[test]
+fn a_refused_link_changes_nothing() {
+    if !in_child("a_refused_link_changes_nothing") {
+        return;
+    }
+    let old = json!({"name": "Old", "shape": "cloud", "color": "#FFFFFF"});
+    let broker = stub(saved(json!([old])), 0, Duration::ZERO);
+    let design = json!({"name": "A", "shape": "heart", "color": "#FFFFFF"});
+    *broker.packs.lock().unwrap() = (400, json!({"ok": false, "error": "no packs at that link", "designs": [design]}));
+    let mut app = start_loaded(&broker);
+    app.press("install fox");
+    pump_until(&mut app, "the ask", |_| !broker.pack_asks.lock().unwrap().is_empty());
+    app.pump(Duration::from_millis(300));
+    assert!(broker.posts().is_empty(), "saved after a refusal");
+    assert_eq!(broker.names(), ["Old"]);
 }

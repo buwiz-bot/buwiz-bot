@@ -20,6 +20,7 @@ pub mod agent_hub;
 mod agents;
 mod appdetails;
 mod avatar;
+mod avatars;
 mod botdetails;
 mod botmodal;
 pub mod broker;
