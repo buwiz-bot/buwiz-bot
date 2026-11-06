@@ -1072,6 +1072,14 @@ impl Host {
 
         let lock = self.lock_of(&id);
         let _held = lock.lock().await;
+        // an uninstall, a disable or another update that got the lock first: what was checked
+        // above is out of date, and carrying on would undo it
+        if let Some(seen) = &row {
+            let same = self.row(&id).is_some_and(|now| now.manifest_sha256 == seen.manifest_sha256 && now.plugin_pub == seen.plugin_pub && now.enabled == seen.enabled);
+            if !same {
+                return V1Error::err("manifest_changed", "the installed plugin changed while this update waited; inspect it again");
+            }
+        }
         let g = if row.is_some() {
             // 9.4: stop the old version; its opens end with it
             self.clear_timer(&id);
@@ -1112,7 +1120,8 @@ impl Host {
                 return Err(e);
             }
         };
-        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, row.as_ref(), pkg.as_ref())?;
+        // read here, not at the top: a tool's switch takes no lock, and a restart takes seconds
+        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, self.row(&id).as_ref(), pkg.as_ref())?;
         self.with_rt(&id, |rt| rt.restarts.clear());
         self.adopt(&id, g);
         let (state, generation) = self.with_rt(&id, |rt| (rt.state, rt.generation));
@@ -1573,6 +1582,129 @@ mod tests {
             created_at: 0,
             package: None,
             skills: "[]".into(),
+        }
+    }
+
+    const FX: &str = "app.buwiz.updatefx";
+
+    /// A broker's plugin host with tests/fixture-plugin.mjs at 1.0.0 installed.
+    struct UpdateBed {
+        host: Arc<Host>,
+        root: PathBuf,
+    }
+
+    impl UpdateBed {
+        async fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("buwiz-plugin-update-{label}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let seed = buwiz_protocol::keys::b64(&[7; 32]);
+            let public = buwiz_protocol::keys::SessionKey::from_seed(&seed).unwrap().public();
+            let trust = json!({"v": 1, "publishers": {"updatefx-test-01": {"publisher": "app.buwiz", "alg": "ed25519", "public_key": public}},
+                "approved_plugins": [{"id": FX, "publisher_key_id": "updatefx-test-01"}]});
+            std::fs::write(root.join("trust.json"), trust.to_string()).unwrap();
+            let host = Host::new(Options {
+                db: root.join("app.db"),
+                keys: Keystore::from_spec(&format!("file:{}", root.join("keys").display())).unwrap(),
+                trust_file: root.join("trust.json"),
+                log_dir: None,
+                clock: Clock::system(),
+                timeouts: Timeouts::default(),
+                apps_dir: None,
+            })
+            .unwrap();
+            let bed = Self { host, root };
+            let first = bed.reviewed("1.0.0").await;
+            bed.host.install(&first).await.unwrap();
+            bed
+        }
+
+        /// The fixture at `version`, signed and inspected: an install's body.
+        async fn reviewed(&self, version: &str) -> Value {
+            let manifest = json!({"protocol": "1.0.0", "id": FX, "short": "updatefx", "version": version, "title": "Update Fixture", "description": "A plugin to update.",
+                "publisher": {"id": "app.buwiz", "key_id": "updatefx-test-01", "name": "Fixture"},
+                "apps": [{"id": "home", "title": "Home", "description": "An app to open.", "entry": "buwiz-app://home", "mime": "text/x-nsh-tsx", "sdk": "1",
+                    "fingerprint": format!("sha256:{}", "0".repeat(64)), "placement": ["full"], "permissions": {}}]});
+            let signed = crate::v1::signing::sign_manifest(&manifest, &buwiz_protocol::keys::b64(&[7; 32]), &[("home".to_owned(), b"x".to_vec())]).unwrap();
+            let file = self.root.join(format!("{version}.json"));
+            std::fs::write(&file, signed.to_string()).unwrap();
+            let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture-plugin.mjs");
+            let mut body = json!({"command": "node", "args": [plugin], "env": {"FX_MANIFEST": file, "FX_HOLD": self.root.join("hold")}});
+            body["manifest_sha256"] = self.host.inspect(&body).await.unwrap()["manifest_sha256"].clone();
+            body
+        }
+
+        /// An update to 1.0.1, left waiting on the plugin's lock that `lock` is, held by the caller.
+        async fn update_at_the_lock(&self, lock: &Arc<AsyncMutex<()>>) -> tokio::task::JoinHandle<Res> {
+            let (host, body) = (self.host.clone(), self.reviewed("1.0.1").await);
+            let waiters = Arc::strong_count(lock);
+            let update = tokio::spawn(async move { host.install(&body).await });
+            for _ in 0..2000 {
+                if Arc::strong_count(lock) > waiters {
+                    return update;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("the update never reached the lock");
+        }
+
+        fn run(&self, sql: &str) {
+            self.host.sql(|db| db.execute(sql, [FX])).unwrap();
+        }
+
+        async fn done(self) {
+            self.host.stop_all().await;
+            let _ = std::fs::remove_dir_all(self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_update_keeps_a_switch_set_while_it_waited_or_restarted() {
+        let b = UpdateBed::new("switch").await;
+        let lock = b.host.lock_of(FX);
+        let held = lock.lock().await;
+        let update = b.update_at_the_lock(&lock).await;
+        b.run(r#"UPDATE v1_plugins SET disabled_tools='["waited"]' WHERE id=?"#);
+        // the restart waits on this file
+        let hold = b.root.join("hold");
+        std::fs::write(&hold, "").unwrap();
+        drop(held);
+        let seen = b.root.join("hold.seen");
+        for _ in 0..2000 {
+            if seen.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(seen.exists(), "the update never restarted the plugin");
+        b.run(r#"UPDATE v1_plugins SET disabled_tools='["waited","restarted"]' WHERE id=?"#);
+        std::fs::remove_file(&hold).unwrap();
+        let answer = update.await.unwrap().unwrap();
+        assert_eq!(answer["updated"], true, "{answer}");
+        let row = b.host.row(FX).unwrap();
+        assert_eq!((row.version.as_str(), row.disabled_tools.as_str()), ("1.0.1", r#"["waited","restarted"]"#));
+        b.done().await;
+    }
+
+    #[tokio::test]
+    async fn an_update_doesnt_undo_what_got_the_lock_first() {
+        for (label, sql) in [
+            ("uninstalled", "DELETE FROM v1_plugins WHERE id=?"),
+            ("disabled", "UPDATE v1_plugins SET enabled=0 WHERE id=?"),
+            ("updated", "UPDATE v1_plugins SET manifest_sha256='another' WHERE id=?"),
+            ("rekeyed", "UPDATE v1_plugins SET plugin_pub='another' WHERE id=?"),
+        ] {
+            let b = UpdateBed::new(label).await;
+            let lock = b.host.lock_of(FX);
+            let held = lock.lock().await;
+            let update = b.update_at_the_lock(&lock).await;
+            b.run(sql);
+            let before = b.host.row(FX).map(|r| (r.version, r.enabled, r.manifest_sha256, r.plugin_pub));
+            drop(held);
+            let refused = update.await.unwrap().unwrap_err();
+            assert_eq!(refused.code, "manifest_changed", "{label}");
+            assert_eq!(b.host.row(FX).map(|r| (r.version, r.enabled, r.manifest_sha256, r.plugin_pub)), before, "{label}");
+            b.done().await;
         }
     }
 
