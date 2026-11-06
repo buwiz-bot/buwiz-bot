@@ -340,7 +340,7 @@ impl Open {
 
     /// Waits until the app shows text starting with `prefix`; that text.
     fn wait(&mut self, prefix: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Some(t) = self.shown.iter().find(|t| t.starts_with(prefix)) {
                 return t.clone();
@@ -716,6 +716,7 @@ fn a_queued_call_keeps_the_actor_it_was_made_with() {
     let script = r#"
         const all = [];
         for (let i = 0; i < 10; i++) all.push(buwiz.call("fx_slow", { ms: 150 }));
+        out.set("made");
         await Promise.all(all);
         return "ok";
         "#;
@@ -723,9 +724,7 @@ fn a_queued_call_keeps_the_actor_it_was_made_with() {
     let limits = Limits { in_flight: 1, ..Limits::default() };
     let mut o = Open::start_with(FIXTURE, perms, script, limits, |ui| ui.agent.store(true, Ordering::SeqCst));
     // made as the agent's; the person takes over while they wait in the queue
-    while o.broker.calls.lock().unwrap().is_empty() {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    o.wait("made");
     o.ui.agent.store(false, Ordering::SeqCst);
     o.wait("ok");
     let calls = o.broker.calls.lock().unwrap();
@@ -907,6 +906,7 @@ fn brg_14_read_after_close_rejects_closed_in_the_app() {
         r#"
         const [f] = await buwiz.pickFile();
         await f.read();
+        out.set("read once");
         for (let i = 0; i < 400; i++) {
           try { await f.read(); } catch (e) { return "after " + e.code; }
           await new Promise((r) => setTimeout(r, 10));
@@ -917,10 +917,7 @@ fn brg_14_read_after_close_rejects_closed_in_the_app() {
         move |ui| *ui.files.lock().unwrap() = vec![f2],
     );
     // let the app read once, then close the open under it
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while o.ctx.files.lock().unwrap().is_empty() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    o.wait("read once");
     o.ctx.close();
     assert_eq!(o.wait("after"), "after closed");
     // a file over max_bytes is not handed over

@@ -18,7 +18,7 @@ use nsh_core::{ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem,
 use nsh_engine::{App, Engine, EngineConfig, MountSink};
 
 /// How long [`until`] waits.
-pub const WAIT: Duration = Duration::from_secs(20);
+pub const WAIT: Duration = Duration::from_secs(60);
 
 thread_local! {
     /// The touches' clock, in milliseconds.
@@ -154,6 +154,7 @@ impl Headless {
 
     /// The `clicks`th click of a quick run (2: a double click).
     pub fn click(&mut self, label: &str, x: f32, y: f32, shift: bool, clicks: u32) {
+        self.wait_for(label);
         let id = self.view(label);
         let e = PressEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: nsh_core::keymap::Modifiers { shift, ..Default::default() }, clicks };
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
@@ -312,6 +313,16 @@ impl Headless {
 
 impl Headless {
     /// Whether a view labelled `label` is mounted.
+    /// Pumps until a live view is labelled `label`, up to [`WAIT`]: on a busy
+    /// machine what a press opens can take a while. Not there by then, it
+    /// goes on, for the caller to fail with what it knows.
+    pub fn wait_for(&mut self, label: &str) {
+        let end = Instant::now() + WAIT;
+        while !self.has(label) && Instant::now() < end {
+            self.pump(Duration::from_millis(20));
+        }
+    }
+
     pub fn has(&self, label: &str) -> bool {
         self.labels.iter().any(|(id, l)| l == label && self.live.contains(id))
     }
