@@ -22,7 +22,7 @@ version from the bundle's `Info.plist`, so they follow `build.sh`.
 
 | Script | Does |
 | --- | --- |
-| `build.sh` | Release builds of the app, the broker workspace (`buwiz-broker`), the Google Workspace plugin (`buwiz-gws`, from buwiz-app/google-workspace at the commit `plugins/google-workspace/rev` pins, through `scripts/gws-build`) and nsh (`nsh`, `nsh-macos-host`), through `scripts/wait-build`, with `RUSTC_WRAPPER` empty; assembles `dist/Buwiz Bot.app` (the layout of `app/bundle-dev.sh`, without its launcher, gpui-agent token or env exports, and without the gpui-agent server: it builds with `--no-default-features` and refuses a binary that has it). |
+| `build.sh` | Release builds of the app, the broker workspace (`buwiz-broker`) and nsh (`nsh`, `nsh-macos-host`), through `scripts/wait-build`, with `RUSTC_WRAPPER` empty; assembles `dist/Buwiz Bot.app` (the layout of `app/bundle-dev.sh`, without its launcher, gpui-agent token or env exports, and without the gpui-agent server: it builds with `--no-default-features` and refuses a binary that has it). |
 | `sign.sh [identity]` | Developer ID signing with the hardened runtime, inside out: every Mach-O, then nested bundles, then the app. `-` signs ad hoc (a dry run). |
 | `notarize.sh <app or dmg>` | `notarytool submit --wait`, then `stapler staple` and `stapler validate`. Skips, saying so, without the `NOTARY_*` env (`REQUIRE_NOTARIZATION=1` makes that an error). |
 | `dmg.sh [identity]` | A drag-to-Applications dmg (hdiutil, no new tools), signed, notarized and stapled; writes `<dmg>.sha256` and prints the sha256 and size. |
@@ -61,7 +61,7 @@ Put one of these in `app/resources/` (or point `APP_ICON` at it):
 ### Entitlements
 
 `scripts/release/app.entitlements` goes on the app's executable and on
-`buwiz-broker`; `nsh`, `nsh-macos-host` and `buwiz-gws` get none.
+`buwiz-broker`; `nsh` and `nsh-macos-host` get none.
 
 | Entitlement | Why |
 | --- | --- |
@@ -103,9 +103,9 @@ scripts/release/manifest.sh
 ```
 
 `build.sh` takes prebuilt binaries (`BUWIZ_BOT_BIN`, `BUWIZ_BROKER_BIN`,
-`BUWIZ_GWS_BIN`, `NSH_BIN` with `NSH_HOST_BIN`) and other input paths
-(`NODE_MODULES`, `OFFICE_DIST`, `OFFICE_FONTS`, `MATERIAL_SYMBOLS_TTF`,
-`BUWIZ_GWS_MANIFEST`); its header lists them. Output goes to `dist/`
+`NSH_BIN` with `NSH_HOST_BIN`) and other input paths
+(`NODE_MODULES`, `OFFICE_DIST`, `OFFICE_FONTS`, `MATERIAL_SYMBOLS_TTF`); its
+header lists them. Output goes to `dist/`
 (`RELEASE_OUT`), which git ignores.
 
 ## CI
@@ -146,7 +146,6 @@ Repository secrets (Settings › Secrets and variables › Actions):
 | `NOTARY_KEY_ID` | The App Store Connect API key's Key ID |
 | `NOTARY_ISSUER_ID` | The API keys page's Issuer ID |
 | `NOTARY_KEY_P8` | The key's `AuthKey_<KeyID>.p8`, base64-encoded: `base64 -i AuthKey_XXXX.p8` |
-| `GWS_MANIFEST_JSON` | Optional. The signed `buwiz-gws` manifest (`scripts/gws-install-wizard`'s `plugins/google-workspace/manifest.signed.json`); without it the release can't provision Google Workspace |
 
 Getting them:
 
@@ -161,11 +160,11 @@ Getting them:
 ## Spaces in plugin command paths
 
 The app installs as `/Applications/Buwiz Bot.app`, so its bundled tools
-(`Contents/Resources/broker/bin/buwiz-gws`, `nsh`, ...) have a space in
-their paths. Connect Apps splits a plugin's command line at spaces outside
-quotes (#66), so quote such a path: `"…/Buwiz Bot.app/…/buwiz-gws" mcp`.
-`scripts/gws-install-wizard` prints the full line. Check Google Workspace
-provisioning on an installed release before announcing it.
+(`Contents/Resources/broker/bin/nsh`, ...) have a space in their paths.
+Connect Apps splits a plugin's command line at spaces outside quotes (#66), so
+quote such a path. Google Workspace isn't bundled: it installs from its GitHub
+release, as any mini app does, and its native screens are compiled in
+(`gws-screens` in `app/Cargo.toml`).
 
 ## Checking a release
 

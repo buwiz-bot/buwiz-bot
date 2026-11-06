@@ -739,6 +739,15 @@ fn routine_pill(name: String) -> impl IntoElement {
         )
 }
 
+/// `link`, if it's a mini app's screen: this hook skips the person's gate, so
+/// it can't reach a new chat, a draft or anything else a link can do.
+#[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
+fn screen_link(link: &str) -> Option<&str> {
+    let link = link.trim();
+    let rest = link.strip_prefix("buwiz://app/")?;
+    (rest.split('/').count() >= 2 && !rest.starts_with('/')).then_some(link)
+}
+
 /// A left click at (`x`, `y`) from the top left of this app's window, sent to that window alone.
 #[cfg(all(target_os = "macos", feature = "dev-agent"))]
 fn mouse_click(x: f64, y: f64) {
@@ -803,6 +812,15 @@ fn agent_menu(line: &str) {
         store().mini_dev_type.set(format!("{n}|{rest}"));
         return;
     }
+    // `open <link>`: a mini app's screen, as a click on its link opens it, with
+    // no gesture, so a test never has to activate the app and take the keyboard
+    if let Some(link) = line.strip_prefix("open ") {
+        match screen_link(link) {
+            Some(link) => store().open_link(link),
+            None => log::warn!("dev hook: `open` takes a mini app's screen only"),
+        }
+        return;
+    }
     // `printpdf <path>`: the viewer's page printed to a PDF, as ⌘P would
     if let Some(path) = line.strip_prefix("printpdf ") {
         crate::keys::print(&format!("pdf:{}", path.trim()), String::new(), "dev print");
@@ -857,6 +875,20 @@ fn agent_menu(line: &str) {
         _ => return,
     };
     crate::ctx::open_at(x, y, items);
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::screen_link;
+
+    #[test]
+    fn the_open_hook_reaches_screens_and_nothing_else() {
+        let screen = "buwiz://app/app.buwiz.google-workspace/mail";
+        assert_eq!(screen_link(screen), Some(screen));
+        for no in ["buwiz://chat/new", "buwiz://chat/t1?draft=hi", "buwiz://view/x", "buwiz://plugin/x", "buwiz://app/", "https://a.example/"] {
+            assert_eq!(screen_link(no), None, "{no}");
+        }
+    }
 }
 
 #[cfg(test)]

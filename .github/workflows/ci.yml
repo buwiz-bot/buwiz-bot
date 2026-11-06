@@ -87,3 +87,10 @@ jobs:
       - name: Test
         working-directory: broker
         run: cargo test --locked
+      # the stub sign-in of a test-google broker, which only a harness that
+      # asks for that feature builds; a plain broker refuses BUWIZ_TEST_GOOGLE
+      - name: Test (test-google)
+        working-directory: broker
+        run: cargo test --locked -p buwiz-broker --features test-google --lib -- accounts
+      - name: Test (the test Bot launcher)
+        run: scripts/test-buwiz-test

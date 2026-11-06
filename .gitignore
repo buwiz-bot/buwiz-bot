@@ -3,7 +3,7 @@ target/
 *.log
 .DS_Store
 .env
-# the owner's signed buwiz-gws manifest (scripts/gws-install-wizard), a release artifact
+# a signed buwiz-gws manifest: a release artifact, never in this public repo
 plugins/google-workspace/manifest.signed.json
 
 # Private, managed by stow (hexuria/rox-stow)

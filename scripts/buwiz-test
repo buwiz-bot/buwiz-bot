@@ -1,9 +1,9 @@
 #!/bin/bash
 # A test Buwiz Bot: its own data dir, its own TMPDIR (so its dev hook file is its
 # own), its own gpui-agent port and token, its window on AeroSpace
-# workspace 3 (the owner's own Bot is on 4). The focus stays where it was
-# (the window that had it gets it back) and the visible workspace never
-# changes. Prints the pid; drive it
+# workspace 3 (the owner's own Bot is on 4). A watcher lives as long as it does:
+# if this Bot takes the front while the owner isn't on workspace 3, the app
+# that had it gets it back. Prints the pid; drive it
 # with scripts/test-agent. Exits 1, the instance stopped, when AeroSpace
 # never lists its window within 30 seconds.
 #   scripts/buwiz-test [--name <name>] <app binary> <instance dir> <agent port> [VAR=value ...]
@@ -87,7 +87,14 @@ umask 077
 # by the name the broker's sandbox keeps the Bot's shell from
 head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$R/buwiz-gpui-agent-token"
 echo "127.0.0.1:$PORT" > "$R/addr"
-F=$(aerospace list-windows --focused --format '%{window-id}' 2>/dev/null || true)
+# who the front belongs to, before this Bot could take it
+front_app() { lsappinfo info -only bundleid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*="\(.*\)"$/\1/p'; }
+# an app to give the front back to: a failed read or this Bot's last run is none
+other_app() { [ -n "$1" ] && [ "$1" != "dev.buwiz.bot.test-$NAME" ]; }
+focused_window() { aerospace list-windows --focused --format '%{window-id} %{app-pid}' 2>/dev/null; }
+A=$(front_app)
+other_app "$A" || A=""
+WIN=$(focused_window | awk '{print $1}')
 # VAR=value arguments by both names: ROX_<X> and BUWIZ_<X> alike
 VARS=()
 for a in "$@"; do
@@ -103,7 +110,43 @@ env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKG
   nohup "$APP/Contents/MacOS/$EXE" > "$R/rox.log" 2>&1 < /dev/null &
 P=$!
 echo "$P" > "$R/pid"
-for _ in $(seq 1 120); do
+# macOS can hand this Bot the front at any time, when the front app gives it up
+# and this is the next app with a window, so the watch lasts as long as the Bot.
+# Polling macOS costs little; AeroSpace is asked only when this Bot is in front.
+front_pid() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*=//p'; }
+give_back() {
+  # the exact window if it's still there, else its app, if it's still running
+  if [ -n "$1" ] && aerospace focus --window-id "$1" 2>/dev/null; then
+    return
+  fi
+  if [ -n "$2" ] && [ -n "$(lsappinfo find bundleid="$2" 2>/dev/null)" ]; then
+    open -b "$2" 2>/dev/null || true
+  fi
+}
+watch_front() {
+  local was="$A" win="$WIN" pid now seen
+  while kill -0 "$P" 2>/dev/null; do
+    pid="$(front_pid)"
+    if [ "$pid" = "$P" ]; then
+      # on its workspace the owner came to look at it, and it's theirs to leave
+      if [ "$(aerospace list-workspaces --focused 2>/dev/null)" != 3 ]; then
+        give_back "$win" "$was"
+      fi
+    elif [ "$pid" != "$last" ]; then
+      # the front can change between these reads: never this Bot's own name
+      now="$(front_app)"
+      other_app "$now" && was="$now"
+      seen="$(focused_window)"
+      [ "${seen#* }" = "$P" ] || win="${seen%% *}"
+    fi
+    last="$pid"
+    sleep "${BUWIZ_TEST_TICK:-0.1}"
+  done
+}
+last=""
+watch_front </dev/null >/dev/null 2>&1 &
+disown
+for _ in $(seq 1 "${BUWIZ_TEST_LIST_TRIES:-120}"); do
   W=$(aerospace list-windows --all --format '%{window-id} %{app-pid}' 2>/dev/null | awk -v p="$P" '$2==p {print $1; exit}')
   [ -n "$W" ] && break
   sleep 0.25
@@ -112,10 +155,8 @@ done
 # workspace: stop this instance (its own pid) rather than leave it there
 if [ -z "$W" ]; then
   kill "$P" 2>/dev/null || true
-  [ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
   echo "pid $P: AeroSpace never listed its window; stopped" >&2
   exit 1
 fi
 aerospace move-node-to-workspace 3 --window-id "$W"
-[ -n "$F" ] && { aerospace focus --window-id "$F" || true; }
 echo "pid $P window $W"

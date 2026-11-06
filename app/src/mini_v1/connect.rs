@@ -435,6 +435,9 @@ pub struct Account {
     /// A sign-in of it waits on its callback at the broker (gone after a
     /// broker restart, or once it finished).
     pub pending: bool,
+    /// It's connected, but an update asks for scopes this sign-in doesn't
+    /// have: signing in again grants them.
+    pub needs_access: bool,
 }
 
 impl Account {
@@ -452,6 +455,7 @@ impl Account {
             fix_setup: s(v, "fix") == "setup",
             active: v.get("active").and_then(Value::as_bool).unwrap_or(false),
             pending: v.get("pending").and_then(Value::as_bool).unwrap_or(false),
+            needs_access: v.get("needs_access").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 

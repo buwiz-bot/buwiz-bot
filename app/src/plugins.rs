@@ -4,9 +4,6 @@
 //! radius 14, `#1f1f1f` surface.
 //!
 //! Layout constants — `MK` (App.tsx:1367).
-/// What the person agrees to on a mini app's Uninstall. It names unsaved files
-/// because an app's working copies go too, and those can't be fetched again.
-const UNINSTALL_CONFIRM: &str = "Uninstall: remove its pins, attachments, data and unsaved files";
 const MK_BAND: f32 = 48.0;
 const MK_TITLE: f32 = 42.0;
 const MK_LEFT: f32 = 33.0;
@@ -3407,7 +3404,7 @@ fn v1_plugin_page() -> impl IntoElement {
                             view()
                                 .flex_row()
                                 .gap(px(8.0))
-                                .child(sm_btn(Btn::DangerSolid, || UNINSTALL_CONFIRM.to_owned(), move || {
+                                .child(sm_btn(Btn::DangerSolid, { let id = id.clone(); move || uninstall_confirm(&id) }, move || {
                                     confirm.set(false);
                                     store().v1_uninstall(&id);
                                 }))
@@ -3743,6 +3740,8 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     let signing = st.v1.signing.get().contains(&key);
     let (status, ink) = if signing {
         ("Signing in…", ink3())
+    } else if a.connected() && a.needs_access {
+        ("Needs more access", warn_ink())
     } else if a.connected() && a.active {
         // the one the plugin gets
         ("Active", ok_ink())
@@ -3757,6 +3756,9 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     let button = if signing {
         let k = key.clone();
         sm_btn(Btn::Ghost, || "Cancel".into(), move || store().v1_signin_cancel(&k)).label(format!("Stop signing in to {name}"))
+    } else if a.connected() && a.needs_access {
+        sm_btn(Btn::Secondary, || "Sign in again".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignIn))
+            .label(format!("Sign in to {name} again"))
     } else if a.connected() {
         sm_btn(Btn::Secondary, || "Sign out".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignOut))
             .label(format!("Sign out of {name}"))
@@ -4069,10 +4071,16 @@ fn v1_install_page() -> impl IntoElement {
         })))
 }
 
+/// What the person agrees to on a mini app's Uninstall.
+fn uninstall_confirm(plugin: &str) -> String {
+    format!("Uninstall: remove its {}", buwiz_protocol::ui::uninstall_removes(plugin))
+}
+
 #[cfg(test)]
 mod uninstall_tests {
     #[test]
-    fn the_confirmation_says_unsaved_files_go_too() {
-        assert!(super::UNINSTALL_CONFIRM.contains("unsaved files"));
+    fn the_confirmation_names_unsaved_files_only_where_they_exist() {
+        assert!(super::uninstall_confirm("app.buwiz.google-workspace").contains("unsaved files"));
+        assert!(!super::uninstall_confirm("app.buwiz.books").contains("unsaved files"));
     }
 }

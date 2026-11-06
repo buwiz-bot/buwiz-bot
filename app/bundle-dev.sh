@@ -19,19 +19,12 @@
 # serves, `server/` being its --assets and `node_modules/` beside it, and
 # in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
 # launched Rox has no nsh on PATH), release builds of this checkout's nsh
-# submodule (`cargo build --release -p nsh-cli -p nsh-macos-host` in nsh/);
-# and buwiz-gws, the Google Workspace plugin (buwiz-app/google-workspace at
-# the commit plugins/google-workspace/rev pins, built by scripts/gws-build),
-# with its signed manifest beside it as buwiz-gws.manifest.json when there
-# is one (plugins/google-workspace/manifest.signed.json;
-# scripts/gws-install-wizard makes it).
+# submodule (`cargo build --release -p nsh-cli -p nsh-macos-host` in nsh/).
 #   BUWIZ_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices, and Rox.app is
 #                           left registered (ROX_APP, its old name, still
 #                           works)
 #   BUWIZ_BROKER_BIN=<path>   the buwiz-broker to package
-#   BUWIZ_GWS_BIN=<path>    the buwiz-gws to package
-#   BUWIZ_GWS_MANIFEST=<path>  its signed manifest
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
 #                           package (both, or neither)
 #   OFFICE_DIST=<dir>       the built office editor bundle (default
@@ -175,8 +168,6 @@ if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
   (cd "$ROOT/broker" && RUSTC_WRAPPER= cargo build --release -p buwiz-broker)
 fi
 BUWIZ_BROKER_BIN="${BUWIZ_BROKER_BIN:-$BROKER_TARGET/buwiz-broker}"
-BUWIZ_GWS_BIN="${BUWIZ_GWS_BIN:-$("$ROOT/scripts/gws-build")}"
-GWS_MANIFEST="${BUWIZ_GWS_MANIFEST:-$ROOT/plugins/google-workspace/manifest.signed.json}"
 if [ -z "${NSH_BIN:-}${NSH_HOST_BIN:-}" ]; then
   (cd "$ROOT/nsh" && RUSTC_WRAPPER= cargo build --release -p nsh-cli -p nsh-macos-host)
   NSH_BIN="${CARGO_TARGET_DIR:-$ROOT/nsh/target}/release/nsh"
@@ -195,12 +186,6 @@ cp "$BUWIZ_BROKER_BIN" "$B/buwiz-broker"
 ln -s buwiz-broker "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
-cp "$BUWIZ_GWS_BIN" "$B/bin/buwiz-gws"
-if [ -f "$GWS_MANIFEST" ]; then
-  cp "$GWS_MANIFEST" "$B/bin/buwiz-gws.manifest.json"
-else
-  echo "warning: no signed buwiz-gws manifest at $GWS_MANIFEST (scripts/gws-install-wizard signs one, or set BUWIZ_GWS_MANIFEST); Google Workspace won't provision without GWS_MANIFEST" >&2
-fi
 cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
 cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
 cp -R "$SERVER/src/office/seeds" "$B/server/office/seeds"

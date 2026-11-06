@@ -8852,7 +8852,7 @@ mod tests {
         gone["notice"].as_object_mut().unwrap().remove("id");
         assert!(Turn::of(&gone).app_install.is_none(), "no id, no card");
 
-        let u = Turn::of(&serde_json::json!({"role": "notice", "text": "Uninstall Google Workspace? It removes its pins, attachments and data.",
+        let u = Turn::of(&serde_json::json!({"role": "notice", "text": format!("Uninstall Google Workspace? It removes its {}.", buwiz_protocol::ui::uninstall_removes("app.buwiz.google-workspace")),
             "notice": {"kind": "app_uninstall", "id": "app.buwiz.google-workspace", "title": "Google Workspace", "version": "1.1.0"}}));
         let u = u.app_uninstall.expect("an uninstall card");
         assert_eq!((u.state.as_str(), u.title.as_str()), ("pending", "Google Workspace"), "no state is pending");

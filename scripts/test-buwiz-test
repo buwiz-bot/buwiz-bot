@@ -1,0 +1,90 @@
+#!/bin/bash
+# scripts/buwiz-test's watcher, against fake aerospace and lsappinfo: no window
+# opens and nothing real moves. Each case says what happens around a launch,
+# and who must end up in front.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(mktemp -d)"
+trap 'pkill -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT
+mkdir -p "$T/bin"
+cat > "$T/bin/aerospace" <<FAKE
+#!/bin/bash
+S="\$STATE"
+case "\$1 \${2:-}" in
+  "list-workspaces --focused") cat "\$S/workspace" ;;
+  "list-windows --focused") [ -s "\$S/window" ] && echo "\$(cat "\$S/window") 1" ;;
+  "list-windows --all") [ -f "\$S/listed" ] && echo "900 \$(cat "\$S/app.pid")" ;;
+  "focus --window-id")
+    [ -f "\$S/closed" ] && exit 1
+    echo "window \$3" > "\$S/front"; echo "focus \$3" >> "\$S/log" ;;
+  move-node-to-workspace*) touch "\$S/moved" ;;
+esac
+exit 0
+FAKE
+# front holds a bundle id, or the Bot's pid while it's in front
+cat > "$T/bin/lsappinfo" <<FAKE
+#!/bin/bash
+case "\$1" in
+  front) echo ASN:0x1 ;;
+  find) [ -f "\$STATE/quit" ] || echo ASN:0x2 ;;
+  info)
+    f="\$(cat "\$STATE/front")"
+    case "\$3:\$f" in
+      pid:[0-9]*) echo "\"pid\"=\$f" ;;
+      pid:*) echo "\"pid\"=\${#f}" ;;
+      bundleid:[0-9]*) echo '"CFBundleIdentifier"="dev.buwiz.bot.test-t"' ;;
+      bundleid:*) [ -f "\$STATE/no-bundle" ] || echo "\"CFBundleIdentifier\"=\"\$f\"" ;;
+    esac ;;
+esac
+FAKE
+printf '#!/bin/bash\nexit 0\n' > "$T/bin/codesign"
+printf '#!/bin/bash\necho "$2" > "$STATE/front"; echo "open $2" >> "$STATE/log"\n' > "$T/bin/open"
+chmod +x "$T"/bin/*
+cat > "$T/bot" <<FAKE
+#!/bin/bash
+echo \$\$ > "\$STATE/app.pid"
+[ "\$LIST_AFTER" = never ] || { sleep "\$LIST_AFTER"; touch "\$STATE/listed"; } &
+sleep 30
+FAKE
+chmod +x "$T/bot"
+fails=0
+run() { # name, list after, what happens, want in front, want exit, what's set up first
+  local name="$1" list="$2" steps="$3" want="$4" code="$5" setup="${6:-:}" S="$T/s-$RANDOM"
+  mkdir -p "$S" "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"
+  ( cd "$S" && eval "$setup" )
+  STATE="$S" LIST_AFTER="$list" BUWIZ_TEST_LIST_TRIES=8 BUWIZ_TEST_TICK=0.02 \
+    PATH="$T/bin:$PATH" "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1
+  local got=$?
+  ( cd "$S" && P="$(cat app.pid)" && eval "$steps" )
+  sleep 1.5
+  local at; at="$(cat "$S/front")"
+  [ "$at" = "$(cat "$S/app.pid")" ] && at=bot
+  pkill -f "$S/" 2>/dev/null; kill "$(cat "$S/app.pid")" 2>/dev/null
+  if [ "$at" = "$want" ] && [ "$got" = "$code" ]; then echo "ok   $name"
+  else echo "FAIL $name: front $at, want $want; exit $got, want $code"; fails=1; fi
+}
+run "macOS hands it the front right after launch"      0.1 'echo $P > front' "window 100" 0
+run "macOS hands it the front long after the launch"   0.1 'sleep 7; echo $P > front' "window 100" 0
+run "the front goes back to the window that had it last" 0.1 'echo com.example.someone > front; echo 200 > window; sleep 0.2; echo $P > front' "window 200" 0
+run "that window closed, so its app gets the front"    0.1 'touch closed; echo $P > front' com.example.owner 0
+run "that app quit, so it isn't started again"         0.1 'touch closed quit; echo $P > front' bot 0
+run "a failed read doesn't lose who to give it back to" 0.1 'touch closed no-bundle; echo com.example.someone > front; sleep 0.2; rm no-bundle; echo $P > front' com.example.owner 0
+run "its own last run in front at launch is nobody"    0.1 'echo $P > front; sleep 0.5; grep -q "open dev.buwiz" log 2>/dev/null && echo looped > front' bot 0 'echo dev.buwiz.bot.test-t > front; : > window'
+run "the owner went to its workspace to look at it"    0.1 'echo 3 > workspace; echo $P > front' bot 0
+run "nothing happens"                                  0.1 ':' com.example.owner 0
+# no window: the launcher stops the Bot, and the watcher with it
+S="$T/s-gone"; mkdir -p "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"
+STATE="$S" LIST_AFTER=never BUWIZ_TEST_LIST_TRIES=2 BUWIZ_TEST_TICK=0.02 PATH="$T/bin:$PATH" \
+  "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1
+code=$?; sleep 0.3
+if [ "$code" = 1 ] && ! pgrep -f "$S/inst" >/dev/null; then echo "ok   no window: stopped, and no watcher left"
+else echo "FAIL no window: exit $code, watcher left: $(pgrep -f "$S/inst" | wc -l)"; fails=1; fi
+# the watcher ends with the Bot
+S="$T/s-end"; mkdir -p "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"
+STATE="$S" LIST_AFTER=0.1 BUWIZ_TEST_TICK=0.02 PATH="$T/bin:$PATH" \
+  "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 >/dev/null 2>&1
+pgrep -f "$S/inst" >/dev/null && alive=yes || alive=no
+kill "$(cat "$S/app.pid")" 2>/dev/null; sleep 0.3
+if [ "$alive" = yes ] && ! pgrep -f "$S/inst" >/dev/null; then echo "ok   the watcher ends with the Bot"
+else echo "FAIL watcher: alive with the Bot $alive, left after: $(pgrep -f "$S/inst" | wc -l)"; fails=1; fi
+exit "$fails"
