@@ -1,18 +1,22 @@
 //! Edit Avatar's tabs on a headless engine: what a person sees and what a press does. Nothing
 //! reaches a server: the backend is a port nothing listens on.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use buwiz_office_kit::testing::{Headless, read, run, until};
 use nsh_core::element::Root;
 use nsh_core::prelude::*;
-use nsh_engine::{App, EngineConfig};
+use nsh_engine::{App, EngineConfig, FetchEvent, FetchEvents, FetchTask, HttpBody, HttpHead, HttpRequest, Network};
+use serde_json::{Value, json};
 
 use crate::live::store;
 use crate::store::AvatarCand;
 
 const CHILD: &str = "BUWIZ_EDITOR_UI_TEST";
 const EMPTY: &str = "Avatars you design show up here.";
+const LOADING: &str = "Loading your avatars…";
 
 fn in_child(name: &str) -> bool {
     if std::env::var_os(CHILD).is_some() {
@@ -29,6 +33,107 @@ fn in_child(name: &str) -> bool {
     false
 }
 
+/// A broker's `/state/buwiz-avatar-designs`: answers GETs with what `state` holds after
+/// failing the first `fails`, takes `slow` over each POST, and keeps what's posted.
+#[derive(Clone)]
+struct Stub {
+    state: Arc<Mutex<Value>>,
+    fails: Arc<AtomicUsize>,
+    slow: Duration,
+    gets: Arc<AtomicUsize>,
+    posts: Arc<Mutex<Vec<Value>>>,
+    open: Arc<AtomicUsize>,
+    most_open: Arc<AtomicUsize>,
+}
+
+fn stub(state: Value, fails: usize, slow: Duration) -> Stub {
+    Stub {
+        state: Arc::new(Mutex::new(state)),
+        fails: Arc::new(AtomicUsize::new(fails)),
+        slow,
+        gets: Arc::default(),
+        posts: Arc::default(),
+        open: Arc::default(),
+        most_open: Arc::default(),
+    }
+}
+
+struct Done;
+
+impl FetchTask for Done {
+    fn send(&mut self, _: Vec<u8>) {}
+    fn finish(&mut self) {}
+    fn pause(&mut self, _: bool) {}
+    fn cancel(self: Box<Self>) {}
+}
+
+impl Network for Stub {
+    fn fetch(&self, request: HttpRequest, mut events: FetchEvents) -> Box<dyn FetchTask> {
+        let stub = self.clone();
+        std::thread::spawn(move || {
+            let (status, reply) = stub.answer(&request);
+            let head = HttpHead { status, url: request.url, ..HttpHead::default() };
+            events(FetchEvent::Head(head));
+            events(FetchEvent::Data(reply.to_string().into_bytes()));
+            events(FetchEvent::End);
+        });
+        Box::new(Done)
+    }
+}
+
+impl Stub {
+    fn answer(&self, request: &HttpRequest) -> (u16, Value) {
+        if !request.url.ends_with("/state/buwiz-avatar-designs") {
+            return (200, json!({}));
+        }
+        if request.method == "POST" {
+            let open = self.open.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_open.fetch_max(open, Ordering::SeqCst);
+            std::thread::sleep(self.slow);
+            let HttpBody::Bytes(body) = &request.body else { panic!("a save with no body") };
+            let list: Value = serde_json::from_slice(body).unwrap();
+            *self.state.lock().unwrap() = json!({"state": list.clone()});
+            self.posts.lock().unwrap().push(list);
+            self.open.fetch_sub(1, Ordering::SeqCst);
+            return (200, json!({"ok": true}));
+        }
+        self.gets.fetch_add(1, Ordering::SeqCst);
+        // one read at a time: the app waits for each answer
+        let fails = self.fails.load(Ordering::SeqCst);
+        if fails > 0 {
+            self.fails.store(fails - 1, Ordering::SeqCst);
+            return (500, json!({}));
+        }
+        (200, self.state.lock().unwrap().clone())
+    }
+
+    fn posts(&self) -> Vec<Value> {
+        self.posts.lock().unwrap().clone()
+    }
+
+    /// The names in the list the broker holds now.
+    fn names(&self) -> Vec<String> {
+        names(&self.state.lock().unwrap()["state"])
+    }
+}
+
+fn names(list: &Value) -> Vec<String> {
+    list["designs"].as_array().map(|d| d.iter().map(|e| e["name"].as_str().unwrap_or("").to_owned()).collect()).unwrap_or_default()
+}
+
+fn saved(designs: Value) -> Value {
+    json!({"state": {"designs": designs}})
+}
+
+fn keep(name: &'static str, shape: &'static str) {
+    store().design_keep(&AvatarCand {
+        name: name.to_owned(),
+        shape: shape.to_owned(),
+        color: "#FFFFFF".to_owned(),
+        ..Default::default()
+    });
+}
+
 #[component]
 fn Editor() -> impl IntoElement {
     let st = store();
@@ -39,33 +144,49 @@ fn Editor() -> impl IntoElement {
     st.active_id.set("t1".to_owned());
     st.right_open.set(true);
     st.open_avatar_editor();
+    Owner::detached().run(|| st.load_designs());
     view()
         .size_full()
         .child(text(|| {
             let shape = store().active_bot().map(|b| b.shape).unwrap_or_default();
-            format!("probe shape={shape}")
+            let n = store().design_saved.get().len();
+            format!("probe shape={shape} shown={n} loaded={}", store().design_loaded.get())
         }))
-        .child(view().label("add a design").w(px(40.0)).h(px(40.0)).on_press(|| {
-            store().design_saved.set(vec![AvatarCand {
-                name: "Mine".to_owned(),
-                shape: "cloud".to_owned(),
-                color: "#FFFFFF".to_owned(),
-                why: String::new(),
-            }]);
-        }))
+        .child(view().label("add a design").w(px(40.0)).h(px(40.0)).on_press(|| keep("Mine", "cloud")))
+        .child(view().label("keep heart").w(px(40.0)).h(px(40.0)).on_press(|| keep("Heart", "heart")))
+        .child(view().label("keep star").w(px(40.0)).h(px(40.0)).on_press(|| keep("Star", "star")))
+        .child(view().label("forget first").w(px(40.0)).h(px(40.0)).on_press(|| store().design_forget(0)))
         .child(crate::pane::editor_overlay())
 }
 
-fn start() -> Headless {
+fn start(broker: &Stub) -> Headless {
     let mut config = EngineConfig::new(App::Rust(Root::new::<Editor>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1200.0), px(900.0));
+    config.network = Some(Arc::new(broker.clone()));
     let mut app = run(config);
     app.wait_for("Own tab");
     app
 }
 
+/// [`start`], with the list read.
+fn start_loaded(broker: &Stub) -> Headless {
+    let mut app = start(broker);
+    until(&mut app, "the list read", |p| p.get("loaded").is_some_and(|l| l == "true"));
+    app
+}
+
 fn shows(app: &Headless, line: &str) -> bool {
     app.texts().contains(&line)
+}
+
+fn pump_until(app: &mut Headless, what: &str, done: impl Fn(&Headless) -> bool) {
+    for _ in 0..1200 {
+        if done(app) {
+            return;
+        }
+        app.pump(Duration::from_millis(50));
+    }
+    panic!("{what}: not within a minute: {:?}", app.texts());
 }
 
 /// Your avatars are on Own, not on Bot, and there's no Design tab to find.
@@ -74,7 +195,8 @@ fn own_lists_your_avatars_and_bot_doesnt() {
     if !in_child("own_lists_your_avatars_and_bot_doesnt") {
         return;
     }
-    let mut app = start();
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
     assert!(!app.has("Design tab"), "a Design tab");
     assert!(app.has("Upload tab") && app.has("Bot tab"), "the other tabs");
     app.press("add a design");
@@ -87,24 +209,21 @@ fn own_lists_your_avatars_and_bot_doesnt() {
     assert!(!app.has("Use your Mine design"), "back on the Bot tab");
 }
 
-/// With nothing of your own, Own says so instead of being blank.
+/// With nothing of your own, Own says so instead of being blank, and a first
+/// design on a fresh app is saved.
 #[test]
 fn own_with_nothing_says_so() {
     if !in_child("own_with_nothing_says_so") {
         return;
     }
-    let mut app = start();
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
     app.press("Own tab");
-    for _ in 0..1200 {
-        if shows(&app, EMPTY) {
-            break;
-        }
-        app.pump(Duration::from_millis(50));
-    }
-    assert!(shows(&app, EMPTY), "no line: {:?}", app.texts());
+    pump_until(&mut app, "the empty line", |app| shows(app, EMPTY));
     app.press("add a design");
     app.wait_for("Use your Mine design");
     assert!(!shows(&app, EMPTY), "the line stays with a design there");
+    pump_until(&mut app, "the save", |_| broker.names() == ["Mine"]);
 }
 
 /// A tap on Own puts the avatar on the Bot, and Revert brings the old one back.
@@ -113,7 +232,8 @@ fn a_tap_on_own_uses_it_and_revert_undoes_it() {
     if !in_child("a_tap_on_own_uses_it_and_revert_undoes_it") {
         return;
     }
-    let mut app = start();
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
     assert_eq!(read(&app).get("shape").map(String::as_str), Some("blob"));
     app.press("add a design");
     app.press("Own tab");
@@ -124,4 +244,115 @@ fn a_tap_on_own_uses_it_and_revert_undoes_it() {
     app.wait_for("Revert avatar");
     app.press("Revert avatar");
     until(&mut app, "the old avatar back", |p| p.get("shape").is_some_and(|s| s == "blob"));
+}
+
+/// A Bot-tab pick after an Own pick is the avatar now: Revert has nothing to undo.
+#[test]
+fn a_bot_tab_pick_ends_revert() {
+    if !in_child("a_bot_tab_pick_ends_revert") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("add a design");
+    app.press("Own tab");
+    app.wait_for("Use your Mine design");
+    app.press("Use your Mine design");
+    app.wait_for("Revert avatar");
+    app.press("Bot tab");
+    app.wait_for("star character shape");
+    app.press("star character shape");
+    until(&mut app, "the pick on the Bot", |p| p.get("shape").is_some_and(|s| s == "star"));
+    app.press("Own tab");
+    app.wait_for("Use your Mine design");
+    app.pump(Duration::from_millis(100));
+    assert!(!app.has("Revert avatar"), "Revert would undo the Bot tab's pick");
+}
+
+/// An entry this build can't draw isn't shown, and comes through a save whole.
+#[test]
+fn a_design_it_cant_draw_survives_a_save() {
+    if !in_child("a_design_it_cant_draw_survives_a_save") {
+        return;
+    }
+    let future = json!({"name": "Future", "shape": "hologram", "color": "#FFFFFF", "beam": 3});
+    let known = json!({"name": "Old", "shape": "cloud", "color": "#FFFFFF", "extra": "kept"});
+    let broker = stub(saved(json!([known, future])), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    until(&mut app, "one shown", |p| p.get("shown").is_some_and(|n| n == "1"));
+    app.press("keep heart");
+    pump_until(&mut app, "the save", |_| broker.names() == ["Heart", "Old", "Future"]);
+    let list = broker.posts().pop().unwrap();
+    assert_eq!(list["designs"][2], future, "the hidden entry as it was");
+    assert_eq!(list["designs"][1], known, "a known entry keeps a field this build doesn't use");
+    app.press("forget first");
+    pump_until(&mut app, "the second save", |_| broker.names() == ["Old", "Future"]);
+}
+
+/// A list that failed to load is no empty list: nothing is saved, Own doesn't say there's
+/// nothing, the load tries again, and what was kept meanwhile joins the real list.
+#[test]
+fn a_failed_load_saves_nothing_and_loses_nothing() {
+    if !in_child("a_failed_load_saves_nothing_and_loses_nothing") {
+        return;
+    }
+    let old = json!({"name": "Old", "shape": "cloud", "color": "#FFFFFF"});
+    let broker = stub(saved(json!([old])), 2, Duration::ZERO);
+    let mut app = start(&broker);
+    app.press("Own tab");
+    pump_until(&mut app, "the loading line", |app| shows(app, LOADING));
+    assert!(!shows(&app, EMPTY), "says there's nothing, with the list unread");
+    app.press("keep heart");
+    until(&mut app, "the pick shown", |p| p.get("shown").is_some_and(|n| n == "1"));
+    assert!(broker.posts().is_empty(), "saved before the list was read");
+    until(&mut app, "the list read", |p| p.get("loaded").is_some_and(|l| l == "true"));
+    pump_until(&mut app, "the merged save", |_| broker.names() == ["Heart", "Old"]);
+    assert!(broker.gets.load(Ordering::SeqCst) >= 3, "the load tried again");
+}
+
+/// An answer that isn't a list of designs isn't an empty list either.
+#[test]
+fn a_strange_answer_is_no_empty_list() {
+    if !in_child("a_strange_answer_is_no_empty_list") {
+        return;
+    }
+    let broker = stub(json!({"state": {"designs": "many"}}), 0, Duration::ZERO);
+    let mut app = start(&broker);
+    pump_until(&mut app, "a second look", |_| broker.gets.load(Ordering::SeqCst) >= 2);
+    app.press("keep heart");
+    app.pump(Duration::from_millis(300));
+    assert!(broker.posts().is_empty(), "saved over a list it couldn't read");
+    assert_eq!(read(&app).get("loaded").map(String::as_str), Some("false"));
+}
+
+/// However long the list is, a new design adds to it and takes nothing away.
+#[test]
+fn a_long_list_keeps_all_of_it() {
+    if !in_child("a_long_list_keeps_all_of_it") {
+        return;
+    }
+    let list: Vec<Value> = (0..60).map(|i| json!({"name": format!("D{i}"), "shape": "cloud", "color": "#FFFFFF"})).collect();
+    let broker = stub(saved(json!(list)), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("keep heart");
+    pump_until(&mut app, "the save", |_| broker.names().len() == 61);
+    assert_eq!(broker.names().last().map(String::as_str), Some("D59"), "the oldest is still there");
+}
+
+/// Saves go one at a time and the last holds the newest list, whatever the wire does.
+#[test]
+fn quick_changes_save_in_order() {
+    if !in_child("quick_changes_save_in_order") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::from_millis(150));
+    let mut app = start_loaded(&broker);
+    app.press("keep heart");
+    app.press("keep star");
+    app.press("forget first");
+    app.press("add a design");
+    pump_until(&mut app, "the last list", |_| broker.names() == ["Mine", "Heart"]);
+    app.pump(Duration::from_millis(400));
+    assert_eq!(broker.names(), ["Mine", "Heart"], "a late save changed it");
+    assert_eq!(broker.most_open.load(Ordering::SeqCst), 1, "two saves on the wire at once");
 }

@@ -1910,6 +1910,8 @@ fn bot_tab() -> impl IntoElement {
                         .label(format!("{sh} character shape"))
                         .on_press(move || {
                             let Some(b) = st.active_bot_untracked() else { return };
+                            // this is the avatar now: Revert mustn't undo it
+                            st.design_was.set(None);
                             st.update_bot(
                                 &b.id,
                                 serde_json::json!({"shape": sh, "image": "", "crop": serde_json::Value::Null})
@@ -1988,6 +1990,7 @@ fn bot_tab() -> impl IntoElement {
                             if !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH) {
                                 return;
                             }
+                            store().design_was.set(None);
                             store().update_bot(
                                 &b.id,
                                 serde_json::json!({"color": c, "image": "", "crop": serde_json::Value::Null}),
@@ -2028,10 +2031,16 @@ fn own_tab() -> impl IntoElement {
         .child(when(
             || store().design_saved.get().is_empty(),
             || {
-                text("Avatars you design show up here.")
-                    .text_size(px(13.0))
-                    .text_color(theme::MUTED)
-                    .into_element()
+                text(|| {
+                    if store().design_loaded.get() {
+                        "Avatars you design show up here."
+                    } else {
+                        "Loading your avatars…"
+                    }
+                })
+                .text_size(px(13.0))
+                .text_color(theme::MUTED)
+                .into_element()
             },
         ))
         .child(crate::design::saved(false))
