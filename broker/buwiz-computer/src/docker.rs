@@ -150,8 +150,8 @@ except FileNotFoundError:
 /// so a forking loop doesn't get away.
 ///
 /// Nothing a process controls can hide it or stop the scan: its name is bytes, its uid comes from
-/// `status` (a non-dumpable process's `/proc/<pid>` says root), and one whose file can't be read is
-/// a stray. Needs `--privileged`: reading another uid's `exe` takes `CAP_SYS_PTRACE`, which root in
+/// `status` (a non-dumpable process's files under `/proc/<pid>` say root, though that directory
+/// itself doesn't), and one whose file can't be read is a stray. Needs `--privileged`: reading another uid's `exe` takes `CAP_SYS_PTRACE`, which root in
 /// a container hasn't got, and `docker exec` can't add just that.
 ///
 /// It's no wall: a command can start an allowed program with a library of its own, a page in the
