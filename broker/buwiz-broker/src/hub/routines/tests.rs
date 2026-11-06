@@ -651,7 +651,7 @@ fn ins_routines() -> Value {
 async fn ins_v1_instances_in_order() {
     let reads = json!([{"plugin": GWS, "tools": ["gws_search_mail", "gws_read_mail"]}]);
     let old_run = START - 1000.0;
-    let w = World::new("ins", ins_routines(), &[("chat-1", "uid-chat-1", "Piccolo"), ("chat-2", "uid-chat-2", "Vegeta")], |ctx, host| {
+    let w = World::new("ins", ins_routines(), &[("chat-1", "uid-chat-1", "Piccolo"), ("chat-2", "uid-chat-2", "Second chat")], |ctx, host| {
         // the thread of a routine from before instances
         let mut s = host.lock();
         s.list.push(super::host::MemThread {

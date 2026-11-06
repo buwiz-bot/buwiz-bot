@@ -857,36 +857,36 @@ export function richRequest({ prompt, name, image }) {
 /** MOCK rich candidates: valid, hand-written. */
 export const MOCK_RICH = [
   {
-    name: "Green Giant", shape: "custom", color: "#3E8E2F",
+    name: "Violet Ogre", shape: "custom", color: "#7A4FB5",
     outline: "M20 44 L24 18 L36 26 L42 12 L52 22 L62 10 L66 24 L78 18 L82 44 C88 64 76 88 50 90 C24 88 12 64 20 44 Z",
     layers: [
-      { path: "M22 40 Q50 16 80 40 L76 46 Q50 30 26 46 Z", fill: "#1E2A16" },
+      { path: "M22 40 Q50 16 80 40 L76 46 Q50 30 26 46 Z", fill: "#3A2A5C" },
       { path: "M26 50 C26 36 74 36 76 50 C78 70 66 86 50 86 C34 86 24 70 26 50 Z", fill: "#F5EBD6" },
       { path: "M30 66 C30 62 38 62 38 66 C38 70 30 70 30 66 Z", fill: "#F2C3B5", opacity: 0.6 },
       { path: "M62 66 C62 62 70 62 70 66 C70 70 62 70 62 66 Z", fill: "#F2C3B5", opacity: 0.6 },
     ],
-    eyes: "#58D63A", why: "A green shell with a dark fringe and a cream face.",
+    eyes: "#FFC83D", why: "A violet shell with a dark fringe and a cream face.",
   },
   {
-    name: "Mask Hero", shape: "custom", color: "#D9232E",
+    name: "Band Hero", shape: "custom", color: "#1E8E8A",
     outline: "M50 10 C74 10 86 26 86 46 C86 66 72 84 58 90 Q50 93 42 90 C28 84 14 66 14 46 C14 26 26 10 50 10 Z",
-    layers: [{ path: "M18 38 C30 32 70 32 82 38 L80 54 C66 50 34 50 20 54 Z", fill: "#111111" }],
-    eyes: { c: "#FFFFFF", at: [50, 45], gap: 24, s: 1.1, rim: "#111111", rw: 0.5 },
-    why: "A red mask with a black band; the eyes ringed in black.",
+    layers: [{ path: "M18 38 C30 32 70 32 82 38 L80 54 C66 50 34 50 20 54 Z", fill: "#F2C14E" }],
+    eyes: { c: "#FFF6D8", at: [50, 45], gap: 24, s: 1.1, rim: "#16323A", rw: 0.5 },
+    why: "A teal head with a gold band; the eyes ringed in dark blue.",
   },
   {
-    name: "Straw Hat", shape: "custom", color: "#1E1E1E",
+    name: "Bucket Hat", shape: "custom", color: "#6B3A1E",
     outline: "M20 52 C18 36 32 28 50 28 C68 28 82 36 80 52 C82 70 72 86 50 88 C28 86 18 70 20 52 Z",
     layers: [{ path: "M28 54 C28 42 72 42 72 54 C74 70 64 84 50 84 C36 84 26 70 28 54 Z", fill: "#F5D7B5" }],
     eyes: { c: "#1E1E1E", at: [50, 58], gap: 18 },
     parts: [
       {
         outline: "M14 36 C14 30 30 28 34 28 C34 16 42 10 50 10 C58 10 66 16 66 28 C70 28 86 30 86 36 C86 42 70 42 50 42 C30 42 14 42 14 36 Z",
-        color: "#E8C85A",
-        layers: [{ path: "M34 22 L66 22 L66 28 L34 28 Z", fill: "#C8302C" }],
+        color: "#4C8CC9",
+        layers: [{ path: "M34 22 L66 22 L66 28 L34 28 Z", fill: "#F4F4F4" }],
         z: 1,
       },
     ],
-    why: "A black-haired head under a straw hat with a red band.",
+    why: "An auburn-haired head under a blue bucket hat with a white band.",
   },
 ];

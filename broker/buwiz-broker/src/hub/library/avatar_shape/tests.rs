@@ -201,7 +201,7 @@ fn avatar_parse_candidates_and_mocks_match_nodes() {
     let mocks = node("console.log(JSON.stringify([m.mockCandidates({}), m.mockCandidates({ image: true })]));", &json!(null));
     let ours = json!([mock_candidates(false).iter().map(Candidate::json).collect::<Vec<_>>(), mock_candidates(true).iter().map(Candidate::json).collect::<Vec<_>>()]);
     assert_eq!(ours, mocks);
-    for (prompt, name, image, rich) in [("files my BIR forms", "Tax Fox", false, false), ("keep the ears", "", true, false), ("", "", true, false), ("", "Giant", true, true), ("a green giant", "", false, true)] {
+    for (prompt, name, image, rich) in [("files my BIR forms", "Tax Fox", false, false), ("keep the ears", "", true, false), ("", "", true, false), ("", "Giant", true, true), ("a violet ogre", "", false, true)] {
         let theirs = node(&format!("console.log(JSON.stringify(m.designRequest({{ prompt: {}, name: {}, image: {image}, rich: {rich} }})));", json!(prompt), json!(name)), &json!(null));
         assert_eq!(json!(design_request(prompt, name, image, rich)), theirs, "{prompt:?} {image} {rich}");
     }
@@ -240,11 +240,11 @@ fn avatar_design_candidates_match_nodes() {
         {"prompt": "z", "image": img, "replies": ["nothing", "still nothing"]},
         {"prompt": "", "image": img, "replies": [wrap(json!([kit("A", "blob", "#1084FE"), cust("B", MOCK_PEBBLE), cust("C", MOCK_CAT)])), wrap(json!([cust("Subject", MOCK_CAT), kit("A", "blob", "#1084FE"), cust("C", MOCK_PEBBLE)]))]},
         // rich: no kit rule; a candidate without layers is retried, then dropped; none left is an error
-        {"prompt": "a green giant", "rich": true, "replies": [wrap(json!(mock_rich()))]},
-        {"prompt": "a green giant", "rich": true, "replies": [wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE), mock_rich()[2]])), wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE)]))]},
+        {"prompt": "a violet ogre", "rich": true, "replies": [wrap(json!(mock_rich()))]},
+        {"prompt": "a violet ogre", "rich": true, "replies": [wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE), mock_rich()[2]])), wrap(json!([mock_rich()[0], cust("Plain", MOCK_PEBBLE)]))]},
         {"prompt": "x", "rich": true, "image": img, "replies": ["nothing", wrap(json!([cust("Plain", MOCK_PEBBLE)]))]},
         // the rich self-check: the previews as SVG text, or as image blocks; a passing fix replaces, a failing one keeps
-        {"prompt": "a green giant", "rich": true, "check": true, "replies": [wrap(json!(mock_rich())), wrap(json!([
+        {"prompt": "a violet ogre", "rich": true, "check": true, "replies": [wrap(json!(mock_rich())), wrap(json!([
             {"name": "Fixed", "shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5]], "eyes": {"c": "#58d63a", "at": [50, 50], "gap": 20, "s": 1.3, "rim": "#111111", "rw": 0.4}},
             {"name": "Broken", "shape": "custom", "color": "#3E8E2F", "outline": MOCK_CAT, "layers": [], "eyes": "#FFFFFF"},
         ]))]},
@@ -309,7 +309,7 @@ fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
 
 #[test]
 fn avatar_picture_prompts_match_nodes() {
-    let cases = json!([["", true], ["  make it blue  ", true], ["a green giant", false], ["", false]]);
+    let cases = json!([["", true], ["  make it blue  ", true], ["a violet ogre", false], ["", false]]);
     let theirs = node(
         r#"const d = await import("./src/avatar-design.mjs");
         console.log(JSON.stringify(input.map(([prompt, image]) => d.pictureRequest({ prompt, image })).concat([d.PICTURE_STYLE])));"#,
