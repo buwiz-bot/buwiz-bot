@@ -129,6 +129,12 @@ const BUILTINS: &[Builtin] = &[
         },
     },
     Builtin {
+        name: "avatars",
+        args: "list [link] | install [all | <pack> | <name>] [link]",
+        description: "List avatar packs, or add avatars from one to Your designs",
+        run: crate::avatars::run,
+    },
+    Builtin {
         name: "tools",
         args: "",
         description: "This Bot's (or these chats') tools and this Mac's command rules",
@@ -1006,6 +1012,12 @@ mod tests {
     /// choices, never a generated app or file.
     fn data_only(rows: &[PopRow]) -> bool {
         rows.iter().all(|r| matches!(r.pick, Pick::Server(_) | Pick::Scope(..) | Pick::Value(..) | Pick::Choice(..) | Pick::V1Choice(..)))
+    }
+
+    #[test]
+    fn avatars_is_a_builtin_the_slash_menu_lists() {
+        let rows = super::builtin_rows("av");
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["/avatars"]);
     }
 
     #[test]

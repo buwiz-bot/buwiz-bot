@@ -776,6 +776,21 @@ fn saved_entries(v: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
     }
 }
 
+/// A saved entry as a design to show, holding the entry itself.
+fn saved_design(e: &serde_json::Value) -> AvatarCand {
+    AvatarCand { name: s(e, "name"), shape: shape_of(e), color: s(e, "color"), why: s(e, "why"), raw: Some(e.clone()) }
+}
+
+/// What came of adding designs: how many went in, how many the list had, how
+/// many the pack held twice, and how many this build can't draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DesignsAdded {
+    pub added: usize,
+    pub there: usize,
+    pub repeated: usize,
+    pub unusable: usize,
+}
+
 /// One avatar `POST /avatar/design` offers: a short label, the body in
 /// the app's shape form (a picker name or `outline:<path>`), its colour
 /// and one line on why it fits.
@@ -6188,15 +6203,9 @@ impl Store {
         let kept = !list.is_empty();
         let mut hidden = Vec::new();
         for e in entries {
-            let c = AvatarCand {
-                name: s(&e, "name"),
-                shape: shape_of(&e),
-                color: s(&e, "color"),
-                why: s(&e, "why"),
-                raw: None,
-            };
+            let c = saved_design(&e);
             if crate::avatar::drawable(&c.shape) {
-                list.push(AvatarCand { raw: Some(e), ..c });
+                list.push(c);
             } else {
                 hidden.push(e);
             }
@@ -6207,6 +6216,34 @@ impl Store {
         if kept {
             self.save_designs();
         }
+    }
+
+    /// Adds what a pack holds to the front of "Your designs", in its order:
+    /// never over what's there, so a shape the list has stays as it is, and
+    /// only what this build can draw. One save for all of it.
+    pub(crate) fn designs_add(&'static self, entries: &[serde_json::Value]) -> DesignsAdded {
+        let list = self.design_saved.get_untracked();
+        let mut added = DesignsAdded::default();
+        let mut fresh: Vec<AvatarCand> = Vec::new();
+        for e in entries {
+            let c = saved_design(e);
+            if !crate::avatar::drawable(&c.shape) {
+                added.unusable += 1;
+            } else if list.iter().any(|d| d.shape == c.shape) {
+                added.there += 1;
+            } else if fresh.iter().any(|d| d.shape == c.shape) {
+                added.repeated += 1;
+            } else {
+                fresh.push(c);
+            }
+        }
+        added.added = fresh.len();
+        if !fresh.is_empty() {
+            fresh.extend(list);
+            self.design_saved.set(fresh);
+            self.save_designs();
+        }
+        added
     }
 
     /// The whole list as `/state/buwiz-avatar-designs` holds it.
