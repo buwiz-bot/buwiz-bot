@@ -12,7 +12,8 @@
 //!
 //! Secrets stay in `computers/<id>/machine.json`, a 0600 file in the data dir, which the shell's
 //! sandbox closes. They aren't in app.db, and no route answers with them: the app gets a one-time
-//! ticket ([`buwiz_computer::Gate`]).
+//! ticket ([`buwiz_computer::Gate`]). A person's own SSH key isn't one of them: it's in the keystore,
+//! the Keychain for the owner's data dir, and goes with the computer.
 //!
 //! Files outlive everything but a person's delete: a box or holder gone missing is rebuilt on the
 //! same volumes when it next wakes, and a lost record is rebuilt from what's left. A computer is
@@ -31,7 +32,8 @@
 //!
 //! A remote computer ([`buwiz_computer::RemoteProvider`]) is the same record with a connection in
 //! it, and only a person adds one, with a yes to [`CONSENT`]: the wall that makes a computer safe to
-//! leave on isn't there, so that's theirs to say. Waking is connecting and sleeping is hanging up.
+//! leave on isn't there, so that's theirs to say, and a Bot at one starts at Ask until a person says
+//! otherwise ([`ask_first`]). Waking is connecting and sleeping is hanging up.
 //! Removing or retiring one drops the connection and this record: nothing at the far end is told
 //! anything. Its record lost, it's never swapped for a local one: a person removes it and adds it
 //! again.
@@ -45,6 +47,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::helper::keystore::Keystore;
 use buwiz_computer::remote::{Asked, Probed};
 use buwiz_computer::{provider_for, Gate, Machine, Mode, Power, Problem, Provider, ProviderKind, Reach, RemoteProvider, Screen, Secret, Sleep, Spec, Woke};
 use bytes::Bytes;
@@ -55,6 +58,7 @@ use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use super::ctx::HubCtx;
+use super::tools::computer::KEY as COMPUTER_KEY;
 use super::policy;
 use super::routes::host;
 use super::types::{self, HubRequest, HubResponse, Pattern::Exact as X, Pattern::Segments as S, Verb};
@@ -87,7 +91,9 @@ const SLEEP_POLL: Duration = Duration::from_millis(20);
 const SIGHT_TTL: Duration = Duration::from_secs(60);
 
 /// What a person says yes to when they add a remote computer. The form shows it, word for word.
-pub const CONSENT: &str = "The AI will act on this machine with every right this login has. It can run commands, read and change files and use the screen there, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine. A copy of the SSH key is kept on this Mac until you remove the computer.";
+pub const CONSENT: &str = "The AI will act on this machine with every right this login has. It can run commands, read and change files and use the screen there, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine. A copy of the SSH key is kept in this Mac's Keychain until you remove the computer.";
+/// Who a switch's Ask is from, when it came with a remote computer and no person chose it.
+const REMOTE_ACTOR: &str = "remote-computer";
 const UNREAD: &str = "This computer's record couldn't be read. Try again in a moment.";
 const LOST_REMOTE: &str = "This remote computer's saved connection is lost. Nothing happened to the machine: remove it and add it again.";
 
@@ -396,7 +402,18 @@ impl Computers {
             return Ok(m.clone());
         }
         let text = std::fs::read(Self::dir(ctx, id).join("machine.json")).map_err(|_| Problem::Gone)?;
-        let m: Machine = serde_json::from_slice(&text).map_err(|_| Problem::Gone)?;
+        let mut m: Machine = serde_json::from_slice(&text).map_err(|_| Problem::Gone)?;
+        // a key that can't be read now may be readable later: it isn't remembered as lost
+        if matches!(m.reach, Reach::Ssh { .. }) {
+            let key = keys(ctx).ok().and_then(|k| k.get_computer_key(id).ok().flatten()).map(Secret::new);
+            let found = key.is_some();
+            if let Some(link) = m.link.as_mut() {
+                link.key = key;
+            }
+            if !found {
+                return Ok(m);
+            }
+        }
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), m.clone());
         Ok(m)
     }
@@ -740,7 +757,12 @@ impl Computers {
         let provider = self.provider_of(&machine);
         let (power, machine) = provider.look(&machine).await?;
         let screen = if power == Power::Awake { Some(provider.screen_up(&machine, bot).await?) } else { None };
+        // before the seat: there's no moment it's at a remote computer with the switch at On
+        if machine.link.is_some() {
+            ask_first(ctx, bot)?;
+        }
         if let Err(e) = Self::add_seat(ctx, bot, computer, "member") {
+            drop_ask(ctx, bot);
             if screen.is_some() {
                 let _ = provider.screen_down(&machine, bot).await;
             }
@@ -779,6 +801,7 @@ impl Computers {
                 return Err(Problem::Failed("the last Bot at a computer can't leave it: its files would go".to_owned()));
             }
             ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot])).map_err(db_problem)?;
+            drop_ask(ctx, bot);
             if last {
                 self.mark_retired(ctx, &seat.computer);
             }
@@ -811,6 +834,8 @@ impl Computers {
     }
 
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
+        // read while the row is there. Not knowing is a try next time: the row is what finds the key
+        let Ok(remote) = Self::is_remote(ctx, id) else { return };
         let removed = match self.machine(ctx, id) {
             Ok(m) => self.provider_of(&m).destroy(&m).await,
             Err(_) => match (Self::is_remote(ctx, id), Self::reach_of(ctx, id)) {
@@ -822,6 +847,10 @@ impl Computers {
             },
         };
         if matches!(removed, Ok(()) | Err(Problem::NotBuilt(_) | Problem::Gone)) {
+            // the key first: with its row gone nothing would ever find it again
+            if remote && !keys(ctx).is_ok_and(|k| k.remove_computer_key(id).is_ok()) {
+                return;
+            }
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
             self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
             self.now().problems.remove(id);
@@ -864,9 +893,15 @@ impl Computers {
         if Self::seat(ctx, bot)?.is_some() {
             return Err(Problem::Remote(HAS_ONE.to_owned()));
         }
-        Self::record(ctx, id, &machine, bot)?;
-        if let Err(e) = Self::add_seat(ctx, bot, id, "member") {
+        let store = keys(ctx)?;
+        if let Some(key) = machine.link.as_ref().and_then(|l| l.key.as_ref()) {
+            store.put_computer_key(id, key.expose()).map_err(Problem::Remote)?;
+        }
+        let seated = Self::record(ctx, id, &machine, bot).and_then(|()| ask_first(ctx, bot)).and_then(|()| Self::add_seat(ctx, bot, id, "member"));
+        if let Err(e) = seated {
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
+            drop_ask(ctx, bot);
+            let _ = store.remove_computer_key(id);
             return Err(e);
         }
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), machine);
@@ -889,6 +924,7 @@ impl Computers {
         // what the model recorded stops, and a hand-over ends. A lost record has neither
         let _ = self.sleep(ctx, &id, Sleep::Deep).await;
         for bot in &bots {
+            drop_ask(ctx, bot);
             let mut now = self.now();
             now.end_handover(bot, Ended::Gone);
             now.recordings.remove(bot);
@@ -1217,6 +1253,28 @@ impl Computers {
 }
 
 const HAS_ONE: &str = "This Bot already has a computer.";
+
+/// The keystore of this broker's data dir: the Keychain for the owner's, a file store for any other.
+fn keys(ctx: &HubCtx) -> Result<Keystore, Problem> {
+    let spec = std::env::var("BUWIZ_KEYSTORE").unwrap_or_default();
+    let no_keychain = std::env::var("BUWIZ_NO_KEYCHAIN").as_deref() == Ok("1");
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    Keystore::for_data(&spec, no_keychain, &ctx.data, &home).map_err(Problem::Failed)
+}
+
+/// Puts `bot`'s computer switch at Ask, as a Bot at a remote computer starts. Off stays off.
+fn ask_first(ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
+    if policy::tool_state(ctx, bot, COMPUTER_KEY) == policy::Pos::Off {
+        return Ok(());
+    }
+    let at = policy::now(ctx);
+    ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO bot_tools(bot_id, key, enabled, state, actor, at) VALUES(?,?,1,'ask',?,?)", rusqlite::params![bot, COMPUTER_KEY, REMOTE_ACTOR, at])).map(|_| ()).map_err(db_problem)
+}
+
+/// `bot` left a remote computer: that Ask goes with it. One a person set stays theirs.
+fn drop_ask(ctx: &HubCtx, bot: &str) {
+    let _ = ctx.db.with(|c| c.execute("DELETE FROM bot_tools WHERE bot_id=? AND key=? AND actor=?", rusqlite::params![bot, COMPUTER_KEY, REMOTE_ACTOR]));
+}
 
 /// Where a remote computer is, as a person wrote it. Theirs to read: no route but the app's says it.
 fn where_of(reach: &Reach) -> String {

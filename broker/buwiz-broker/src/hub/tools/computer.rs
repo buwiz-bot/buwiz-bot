@@ -43,8 +43,8 @@
 //! such for the switches that ask after outside content.
 //!
 //! A remote computer isn't any of that wall. The tools are the same, and everything the model does
-//! there it does with whatever access a person gave, so the model is told that ([`prompt`]) and a
-//! person said yes to it when they added it. Nothing can check from outside that its users are
+//! there it does with whatever access a person gave, so the model is told that ([`prompt`]), a
+//! person said yes to it when they added it, and its switch starts at Ask. Nothing can check from outside that its users are
 //! apart: a shared one has no `computer_run`, and no screen on it is handed over, because the hand-
 //! over's card promises what can't be read there. A plain SSH host has no screen: those tools say
 //! so, and a model that can't see can still use it.

@@ -20,6 +20,13 @@ fn route_body(bot: &str, tail: &str, body: Value) -> HubRequest {
     req
 }
 
+/// A key file with no passphrase, as far as `Asked` can tell.
+fn key_at(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("id");
+    std::fs::write(&path, "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+    path
+}
+
 fn far_dir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("c3h-{name}-{}-{}", std::process::id(), buwiz_computer::random_hex(3).unwrap()));
     std::fs::create_dir_all(&d).unwrap();
@@ -94,6 +101,22 @@ async fn a_lost_record_is_never_swapped_for_a_local_computer() {
 }
 
 #[tokio::test]
+async fn a_key_lost_from_the_keystore_says_so_and_nothing_else_stands_in() {
+    let b = bed("remote-nokey");
+    let (id, dir) = ("cmp_00ff".to_owned(), far_dir("nokey"));
+    let m = Asked { url: "ssh://me@h.example".into(), key_file: Some(key_at(&dir)), pin: Some(KEYLESS_PIN.into()), ..Asked::default() }.machine(&Computers::dir(&b.ctx, &id)).unwrap();
+    std::fs::create_dir_all(Computers::dir(&b.ctx, &id)).unwrap();
+    Computers::record(&b.ctx, &id, &m, "b_ann").unwrap();
+    Computers::add_seat(&b.ctx, "b_ann", &id, "member").unwrap();
+    assert_eq!(b.computers.machine(&b.ctx, &id).unwrap().link.unwrap().key, None);
+    assert!(b.computers.machines.lock().unwrap().is_empty(), "a key not found now may be found later");
+    // once it's there, the same record has it
+    keys(&b.ctx).unwrap().put_computer_key(&id, "the key").unwrap();
+    assert_eq!(b.computers.machine(&b.ctx, &id).unwrap().link.unwrap().key.unwrap().expose(), "the key");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn a_failed_read_of_the_row_keeps_the_local_provider_off_it() {
     let b = bed("remote-noread");
     let id = lost_remote(&b, "b_ann");
@@ -123,9 +146,34 @@ async fn not_being_able_to_read_a_record_counts_as_remote() {
     assert_eq!(b.computers.remote_at(&b.ctx, "b_bea"), Some(true), "no seat to read");
 }
 
+#[tokio::test]
+async fn ask_comes_with_a_remote_computer_and_a_persons_choice_stands() {
+    let b = bed("remote-ask-default");
+    assert_eq!(policy::tool_state(&b.ctx, "b_ann", tools::KEY), Pos::On, "a Bot with no computer");
+    super::ask_first(&b.ctx, "b_ann").unwrap();
+    assert_eq!(policy::tool_state(&b.ctx, "b_ann", tools::KEY), Pos::Ask);
+    super::drop_ask(&b.ctx, "b_ann");
+    assert_eq!(policy::tool_state(&b.ctx, "b_ann", tools::KEY), Pos::On, "it goes with the computer");
+
+    set(&b, "b_ann", tools::KEY, "on");
+    super::ask_first(&b.ctx, "b_ann").unwrap();
+    assert_eq!(policy::tool_state(&b.ctx, "b_ann", tools::KEY), Pos::Ask, "an On from before says nothing of this machine");
+
+    set(&b, "b_ann", tools::KEY, "on");
+    super::drop_ask(&b.ctx, "b_ann");
+    assert_eq!(policy::tool_state(&b.ctx, "b_ann", tools::KEY), Pos::On, "what a person set after isn't taken back");
+    set(&b, "b_ann", tools::KEY, "ask");
+    super::drop_ask(&b.ctx, "b_ann");
+    assert_eq!(b.ctx.db.with(|c| c.query_row("SELECT actor FROM bot_tools WHERE bot_id='b_ann'", [], |r| r.get::<_, String>(0))).unwrap(), "human", "nor a person's Ask");
+
+    set(&b, "b_bea", tools::KEY, "off");
+    super::ask_first(&b.ctx, "b_bea").unwrap();
+    assert_eq!(policy::tool_state(&b.ctx, "b_bea", tools::KEY), Pos::Off, "off isn't widened to Ask");
+}
+
 #[test]
 fn the_yes_says_a_copy_of_the_key_stays_here() {
-    assert!(CONSENT.contains("copy of the SSH key is kept on this Mac"));
+    assert!(CONSENT.contains("copy of the SSH key is kept in this Mac's Keychain until you remove the computer"));
 }
 
 #[tokio::test]
@@ -169,7 +217,15 @@ async fn added(b: &Bed, body: Value) -> String {
     let (status, said) = answer_of(super::add_remote(b.ctx.clone(), route_body("b_ann", "/remote", body)).await).await;
     assert_eq!(status, StatusCode::OK, "{said}");
     assert_eq!(said["state"], "asleep", "added is not connected: {said}");
+    assert_eq!(policy::tool_state(&b.ctx, "b_ann", tools::KEY), Pos::Ask, "a remote computer starts at Ask");
+    // a person widens it, for the tests that aren't about the card
+    set(b, "b_ann", tools::KEY, "on");
     awake(b, "b_ann").await
+}
+
+/// The file store of a test broker: never the Keychain.
+fn kept_key(b: &Bed, id: &str) -> std::path::PathBuf {
+    b.ctx.data.join("keys/computer-keys").join(format!("{id}.key"))
 }
 
 fn tree(dir: &std::path::Path) -> String {
@@ -201,7 +257,8 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&saved).unwrap().permissions().mode() & 0o777, 0o600);
     }
-    assert!(std::fs::read_to_string(&saved).unwrap().contains("OPENSSH PRIVATE KEY"), "the record holds what it needs");
+    assert!(!std::fs::read_to_string(&saved).unwrap().contains("PRIVATE KEY"), "the record holds no key");
+    assert_eq!(std::fs::read_to_string(kept_key(&b, &id)).unwrap(), key, "the keystore has it");
     let in_db: Option<String> = b.ctx.db.with(|c| c.query_row("SELECT reach FROM computers WHERE id=?", [&id], |r| r.get(0))).unwrap();
     assert!(!in_db.unwrap().contains("PRIVATE KEY"), "app.db holds no secret");
     let status = b.computers.status(&b.ctx, "b_ann").await;
@@ -268,8 +325,10 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
     let r2 = run(&b, &b.ann.1, Some("routine-1"));
     assert!(words(&call(&r2, "computer_run", json!({"command": "true"})).await).contains("only when a person turns that on"));
     b.computers.attach(&b.ctx, "b_bea", &id).await.unwrap();
+    assert_eq!(policy::tool_state(&b.ctx, "b_bea", tools::KEY), Pos::Ask, "a Bot that joins starts at Ask too");
     assert!(words(&call(&r, "computer_run", json!({"command": "true"})).await).contains("several Bots share"));
     b.computers.leave(&b.ctx, "b_bea").await.unwrap();
+    assert_eq!(policy::tool_state(&b.ctx, "b_bea", tools::KEY), Pos::On, "and leaves it behind");
 
     // what the model gets back has no secret in it, even if the far end says it
     std::fs::write(sshd.home.join("buwiz-computer/agents/b_ann/leak"), &key).unwrap();
@@ -281,6 +340,8 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
     b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
     assert_eq!(b.computers.status(&b.ctx, "b_ann").await["state"], "asleep");
     assert!(words(&call(&r, "computer_run", json!({"command": "true"})).await).contains("asleep"));
+    // a new broker has only the record and the keystore
+    b.computers.machines.lock().unwrap().clear();
     awake(&b, "b_ann").await;
     assert!(words(&call(&r, "computer_run", json!({"command": "echo back"})).await).contains("back"));
 
@@ -288,7 +349,8 @@ async fn a_plain_host_through_the_tools_and_the_routes() {
     let (status, said) = answer_of(super::remove_remote(b.ctx.clone(), route_body("b_ann", "/remote/remove", json!({}))).await).await;
     assert_eq!(status, StatusCode::OK, "{said}");
     assert_eq!(said["state"], "absent", "{said}");
-    assert!(!Computers::dir(&b.ctx, &id).exists(), "the key's record went with it");
+    assert!(!Computers::dir(&b.ctx, &id).exists(), "its record went");
+    assert!(!kept_key(&b, &id).exists(), "the key went with it");
     assert!(Computers::ids(&b.ctx).is_empty());
     assert_eq!(tree(&sshd.home), far, "removing touched the machine");
     assert_eq!(b.mock.calls(), Vec::<String>::new(), "the local provider had no part in it");
@@ -309,6 +371,7 @@ async fn deleting_the_last_bot_leaves_the_machine_alone() {
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(Computers::ids_where(&b.ctx, "1=1").is_empty(), "the record is gone");
     assert!(!Computers::dir(&b.ctx, &id).exists());
+    assert!(!kept_key(&b, &id).exists(), "deleting the last Bot took the key too");
     assert_eq!(tree(&sshd.home), far);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -151,7 +151,9 @@ pub struct Link {
     /// of a TLS certificate in hex. A person saw it and said yes. `None` until they have, and
     /// nothing is sent before then
     pub pin: Option<String>,
-    /// the SSH private key
+    /// the SSH private key. Never in the saved record: the broker keeps it in its keystore and
+    /// puts it here when it reads the record
+    #[serde(skip)]
     pub key: Option<Secret>,
 }
 
@@ -649,6 +651,14 @@ mod tests {
         let m = Machine { link: Some(Link { boxed: false, pin: None, key: Some(Secret::new("key-789")) }), ..machine() };
         assert_eq!(m.scrub("a key-789 c"), "a [hidden] c");
         assert!(!format!("{m:?}").contains("key-789"));
+    }
+
+    #[test]
+    fn a_saved_record_doesnt_hold_the_ssh_key() {
+        let m = Machine { link: Some(Link { boxed: false, pin: Some("p".into()), key: Some(Secret::new("key-789")) }), ..machine() };
+        let saved = serde_json::to_string(&m).unwrap();
+        assert!(!saved.contains("key-789"), "{saved}");
+        assert_eq!(serde_json::from_str::<Machine>(&saved).unwrap().link.unwrap().key, None);
     }
 
     #[test]
