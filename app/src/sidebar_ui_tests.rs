@@ -116,6 +116,12 @@ fn Side() -> impl IntoElement {
                 .h(px(24.0))
                 .child(view().label("seed").w(px(40.0)).h_full().on_press(seed))
                 .child(view().label("step").w(px(40.0)).h_full().on_press(step))
+                .child(view().label("seed later").w(px(40.0)).h_full().on_press(|| {
+                    spawn(async {
+                        timer(Duration::from_millis(1500)).await;
+                        seed();
+                    });
+                }))
                 .child(view().label("rail").w(px(40.0)).h_full().on_press(|| store().side_mode.set("rail".to_owned())))
                 .child(view().label("reply").w(px(40.0)).h_full().on_press(reply))
                 .child(view().label("paint").w(px(40.0)).h_full().on_press(paint))
@@ -404,6 +410,9 @@ fn rests_after_runs(seed: &str) {
         println!("second {s} after the runs end: {} paints", paints() - at);
         calm = if paints() == at { calm + 1 } else { 0 };
         if calm == CALM_SECONDS {
+            let at = paints();
+            app.pump(Duration::from_millis(2000));
+            assert_eq!(paints() - at, 0, "painting started again with nothing running");
             return;
         }
     }
@@ -421,17 +430,36 @@ fn pump_until(app: &mut Headless, what: &str, mut done: impl FnMut(&mut Headless
     panic!("{what}: not within {} seconds", WAIT_STEPS / 20);
 }
 
-/// Pumps until no avatar has been built for a while: the list is up, so what
-/// a test builds after this is its own.
+/// Whether `name` has its row: a rail tile by its label, a sidebar row by its text.
+fn row_live(app: &mut Headless, name: &str) -> bool {
+    app.has(name) || app.texts().iter().any(|t| t.to_string() == name)
+}
+
+/// Pumps until every Bot's row is live and no avatar has been built for a
+/// while: the list is up, so what a test builds after this is its own.
 fn pump_until_built(app: &mut Headless) {
     let mut last = built();
     let mut still = 0;
-    pump_until(app, "avatars still being built", |_| {
+    pump_until(app, "the list still being built", |app| {
+        let rows = (0..BOTS).all(|i| row_live(app, &format!("Bot {i}")));
         let now = built();
-        still = if now == last { still + 1 } else { 0 };
+        still = if rows && now == last { still + 1 } else { 0 };
         last = now;
         still == STILL_STEPS
     });
+}
+
+/// The wait for the list holds out for its rows: quiet before they arrive
+/// isn't the list being up.
+#[test]
+fn the_wait_for_the_list_waits_for_its_rows() {
+    if !in_child("the_wait_for_the_list_waits_for_its_rows") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed later");
+    pump_until_built(&mut app);
+    assert!(row_live(&mut app, &format!("Bot {}", BOTS - 1)), "the last row is there");
 }
 
 /// An avatar the pointer has passed over goes back to sleep: it doesn't stay
