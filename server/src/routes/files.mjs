@@ -10,6 +10,9 @@ import { osa } from "../avatars.mjs";
 import { highlight, renderFile } from "../files.mjs";
 import { officeCaps, officePkgRoot } from "../office.mjs";
 
+const RAW_TYPES = { pdf: "application/pdf", html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4", mov: "video/quicktime", m4v: "video/mp4", m4a: "audio/mp4", mp3: "audio/mpeg", wav: "audio/wav", aac: "audio/aac" };
+const PAGE_TYPES = { js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json" };
+
 export default async function handle(req, res) {
   // Image avatars (Grok's Generate / Upload tabs): files land in
   // generated/avatars and the app shows them by file:// URI.
@@ -103,8 +106,19 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (p.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = { pdf: "application/pdf", html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4", mov: "video/quicktime", m4v: "video/mp4", m4a: "audio/mp4", mp3: "audio/mpeg", wav: "audio/wav", aac: "audio/aac" }[ext] || "application/octet-stream";
+    const type = RAW_TYPES[ext] || "application/octet-stream";
     return sendRanged(req, res, p, type);
+  }
+  // The viewer's HTML preview: the same files, script on, at no origin.
+  if (req.method === "GET" && req.url.startsWith("/file/preview/")) {
+    const p = outFile(decodeURIComponent(req.url.slice("/file/preview/".length).split("?")[0]));
+    if (!p || !existsSync(p)) {
+      res.statusCode = 404;
+      return res.end();
+    }
+    const ext = (p.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
+    const type = PAGE_TYPES[ext] || RAW_TYPES[ext] || "application/octet-stream";
+    return sendRanged(req, res, p, type, "sandbox allow-scripts");
   }
   // Download: the native save panel, then a copy
   // The BetterOffice editor saves edits in place — same outFile containment

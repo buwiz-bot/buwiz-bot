@@ -3,6 +3,13 @@
 //! avatars and generated assets. Every path is resolved as Node's
 //! `path.join` resolves it, and a reply's file must stay inside the files
 //! folder.
+//!
+//! What's served here is content, not the broker's own page, and the broker's origin is what its
+//! routes trust (`guard.rs`): anything that reaches the URL of a file that can run script, a page on
+//! this Mac included, would get every chat. So nothing here is sniffed, and HTML and SVG come with
+//! `sandbox`: an origin of no one's and, on these routes, no script. The viewer's HTML preview has
+//! `/file/preview/`, the same files with `allow-scripts` added: script runs, at that empty origin,
+//! where `guard.rs` turns it away.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
@@ -31,6 +38,13 @@ const RAW_TYPES: &[(&str, &str)] = &[
     ("wav", "audio/wav"),
     ("aac", "audio/aac"),
 ];
+/// Beside [`RAW_TYPES`] on `/file/preview/`: what a page's own relative links load, which `nosniff`
+/// would refuse as a download.
+const PAGE_TYPES: &[(&str, &str)] = &[("js", "text/javascript; charset=utf-8"), ("mjs", "text/javascript; charset=utf-8"), ("css", "text/css; charset=utf-8"), ("json", "application/json")];
+/// Takes a file's document out of the broker's origin, and stops its script.
+const NO_SCRIPT: &str = "sandbox";
+/// The same, for a page a person opened to see it work.
+const OWN_SCRIPT: &str = "sandbox allow-scripts";
 const MEDIA_TYPES: &[(&str, &str)] = &[
     ("png", "image/png"),
     ("jpg", "image/jpeg"),
@@ -138,10 +152,28 @@ fn byte_range(header: &str) -> Option<(&str, &str)> {
 }
 
 /// `sendRanged`: the whole file, or the asked-for bytes (206), or 416.
+/// Whether a browser shown `content_type` as a document runs what's in it.
+fn runs_script(content_type: &str) -> bool {
+    content_type.starts_with("text/html") || content_type.starts_with("image/svg")
+}
+
 fn send_ranged(path: &str, content_type: &str, range: Option<&str>, extra: Option<(&'static str, &str)>) -> Answer {
-    let with_extra = |a: Answer| match extra {
-        Some((k, v)) => a.header(k, v),
-        None => a,
+    send_as(path, content_type, range, extra, NO_SCRIPT)
+}
+
+/// `policy` goes on what [`runs_script`], whatever else differs: a part of a page is that page.
+fn send_as(path: &str, content_type: &str, range: Option<&str>, extra: Option<(&'static str, &str)>, policy: &str) -> Answer {
+    let with_extra = |a: Answer| {
+        let a = match extra {
+            Some((k, v)) => a.header(k, v),
+            None => a,
+        };
+        let a = a.header("x-content-type-options", "nosniff");
+        if runs_script(content_type) {
+            a.header("content-security-policy", policy)
+        } else {
+            a
+        }
     };
     let meta = match std::fs::metadata(path) {
         Ok(m) if m.is_dir() => return with_extra(thrown("EISDIR: illegal operation on a directory, read")),
@@ -181,6 +213,20 @@ pub fn raw(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
     let Ok(rel) = js::decode_uri_component(rest) else { return thrown("URI malformed") };
     match leaf.out_file(&rel) {
         Some(p) if Path::new(&p).exists() => send_ranged(&p, type_of(RAW_TYPES, &ext_of(&p)), range, None),
+        _ => not_found(),
+    }
+}
+
+/// `GET /file/preview/<rel>`: a reply's file for the viewer's own page, its script on, at no origin.
+pub fn preview(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
+    let rest = url["/file/preview/".len()..].split('?').next().unwrap_or("");
+    let Ok(rel) = js::decode_uri_component(rest) else { return thrown("URI malformed") };
+    match leaf.out_file(&rel) {
+        Some(p) if Path::new(&p).exists() => {
+            let ext = ext_of(&p);
+            let content_type = PAGE_TYPES.iter().find(|(e, _)| *e == ext).map_or_else(|| type_of(RAW_TYPES, &ext), |(_, t)| *t);
+            send_as(&p, content_type, range, None, OWN_SCRIPT)
+        }
         _ => not_found(),
     }
 }
@@ -282,6 +328,73 @@ pub fn asset(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A broker's folders, with one file of each kind under each route.
+    fn leaf_with(names: &[&str]) -> (Leaf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("buwiz-leaf-files-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+        for folder in ["files/m1", "attachments", "avatars", "assets"] {
+            std::fs::create_dir_all(dir.join("generated").join(folder)).unwrap();
+            for name in names {
+                std::fs::write(dir.join("generated").join(folder).join(name), "<script>x</script>").unwrap();
+            }
+        }
+        (Leaf::new(dir.clone(), Vec::new()), dir)
+    }
+
+    fn header<'a>(a: &'a Answer, name: &str) -> Option<&'a str> {
+        a.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn no_file_route_runs_script_at_the_brokers_origin() {
+        let (leaf, dir) = leaf_with(&["a.html", "a.htm", "a.svg", "A.HTML"]);
+        for name in ["a.html", "a.htm", "a.svg", "A.HTML"] {
+            let a = raw(&leaf, &format!("/file/raw/m1/{name}"), None);
+            assert_eq!(a.status, 200);
+            assert_eq!(header(&a, "content-security-policy"), Some("sandbox"), "{name}");
+            assert_eq!(header(&a, "x-content-type-options"), Some("nosniff"), "{name}");
+            let part = raw(&leaf, &format!("/file/raw/m1/{name}"), Some("bytes=0-3"));
+            assert_eq!(part.status, 206);
+            assert_eq!(header(&part, "content-security-policy"), Some("sandbox"), "a range of it: {name}");
+        }
+        let a = asset(&leaf, "/asset/generated/assets/a.svg", None);
+        assert_eq!((header(&a, "content-security-policy"), header(&a, "x-content-type-options")), (Some("sandbox"), Some("nosniff")));
+        // no type that runs here at all, and nothing to sniff one from
+        for url in ["/files/attachments/a.html", "/files/avatars/a.svg"] {
+            let a = files_dir(&leaf, url, None);
+            assert_eq!((header(&a, "content-type"), header(&a, "x-content-type-options")), (Some("application/octet-stream"), Some("nosniff")), "{url}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_named_as_something_else_isnt_sniffed() {
+        let (leaf, dir) = leaf_with(&["a.png", "a.bin", "a.pdf"]);
+        for url in ["/file/raw/m1/a.png", "/file/raw/m1/a.bin", "/file/raw/m1/a.pdf"] {
+            let a = raw(&leaf, url, None);
+            assert_eq!(header(&a, "x-content-type-options"), Some("nosniff"), "{url}");
+            assert_eq!(header(&a, "content-security-policy"), None, "a sandbox stops a PDF's viewer: {url}");
+        }
+        for a in [files_dir(&leaf, "/files/attachments/a.png", None), files_dir(&leaf, "/files/avatars/a.png", None), asset(&leaf, "/asset/generated/assets/a.png", None)] {
+            assert_eq!(header(&a, "x-content-type-options"), Some("nosniff"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_preview_has_script_at_no_origin_and_what_a_page_links_to() {
+        let (leaf, dir) = leaf_with(&["a.html", "a.svg", "a.js", "a.css", "a.png"]);
+        for name in ["a.html", "a.svg"] {
+            let a = preview(&leaf, &format!("/file/preview/m1/{name}"), None);
+            assert_eq!(header(&a, "content-security-policy"), Some("sandbox allow-scripts"), "{name}");
+            assert!(!header(&a, "content-security-policy").unwrap().contains("same-origin"));
+        }
+        assert_eq!(header(&preview(&leaf, "/file/preview/m1/a.js", None), "content-type"), Some("text/javascript; charset=utf-8"));
+        assert_eq!(header(&preview(&leaf, "/file/preview/m1/a.css", None), "content-type"), Some("text/css; charset=utf-8"));
+        assert_eq!(header(&preview(&leaf, "/file/preview/m1/a.png", None), "content-type"), Some("image/png"));
+        assert_eq!(preview(&leaf, "/file/preview/m1/../../../etc", None).status, 404);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn paths_join_as_node_joins_them() {

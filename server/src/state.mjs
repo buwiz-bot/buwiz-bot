@@ -376,9 +376,12 @@ if (store.list.length === 0 && existsSync(LEGACY_STATE)) {
 
 // Files with HTTP byte ranges: AVPlayer (nsh's Video) refuses media from a
 // server without them ("Operation Stopped").
-export function sendRanged(req, res, path, type) {
+export function sendRanged(req, res, path, type, policy = "sandbox") {
   const buf = readFileSync(path);
   res.setHeader("content-type", type);
+  // a file's page is never the broker's origin (leaf/files.rs)
+  res.setHeader("x-content-type-options", "nosniff");
+  if (type.startsWith("text/html") || type.startsWith("image/svg")) res.setHeader("content-security-policy", policy);
   res.setHeader("accept-ranges", "bytes");
   const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || "");
   if (!m) {
