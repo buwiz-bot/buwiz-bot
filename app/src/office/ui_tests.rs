@@ -285,7 +285,7 @@ impl Pick for Headless {
 /// read and its first page's view up.
 fn word_shows(app: &mut Headless, what: &str) -> HashMap<String, String> {
     let p = until(app, what, |p| num(p, "pages") > 0.0 && num(p, "drawn") > 0.0 && num(p, "size") > 0.0);
-    app.pump(Duration::from_millis(50));
+    app.wait_for("Page 1");
     assert!(app.has("Page 1"), "{what}: no first page");
     p
 }
@@ -522,6 +522,7 @@ fn page_setup_validates_and_lays_the_pages_out_at_its_size_and_margins() {
     assert!(is(&read(&app), "pw", "816") && is(&read(&app), "mtop", "1440"));
     app.press("File");
     app.press("Page setup");
+    app.wait_for("Page Setup dialog");
     assert!(app.has("Page Setup dialog"));
     for t in ["PAGE SIZE", "MARGINS", "Letter (8.5\" \u{d7} 11\")", "Portrait"] {
         assert!(app.texts().contains(&t), "{t} in {:?}", app.texts());
