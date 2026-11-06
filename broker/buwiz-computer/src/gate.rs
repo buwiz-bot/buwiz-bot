@@ -342,11 +342,9 @@ impl Filter {
                         pass
                     }
                     Mode::Drive => {
-                        if !watching {
-                            if !(text && word(&frame.start) == RELEASE.as_bytes()) {
-                                let mut s = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-                                s.drivers.entry(self.bot.clone()).or_default().last_seen = Some(Instant::now());
-                            }
+                        if !watching && !(text && word(&frame.start) == RELEASE.as_bytes()) {
+                            let mut s = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                            s.drivers.entry(self.bot.clone()).or_default().last_seen = Some(Instant::now());
                         }
                         true
                     }
@@ -798,9 +796,11 @@ mod tests {
         let (bea, bea_heard, _) = listening_viewer().await;
         let mut ws = socket(&gate, "ann", &ann, Mode::Drive).await;
         let _other = socket(&gate, "bea", &bea, Mode::Drive).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
         ws.write_all(&text("k,65,1")).await.unwrap();
         assert!(hears(&ann_heard, &text("k,65,1")).await);
-        assert!(gate.driving("ann", QUIET) && !gate.driving("bea", QUIET));
+        let short = Duration::from_millis(50);
+        assert!(gate.driving("ann", short) && !gate.driving("bea", short), "Ann's input counted for Bea");
         assert!(bea_heard.lock().unwrap().is_empty());
     }
 

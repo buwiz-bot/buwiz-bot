@@ -512,7 +512,8 @@ async fn a_computer_that_cant_be_cleared_isnt_handed_over() {
         tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
     };
     answer(&b, &b.ann.1, &card(&b, &b.ann.1).await, "once");
-    assert_eq!(asking.await.unwrap().is_error, Some(true));
+    let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it was handed over all the same").unwrap();
+    assert_eq!(out.is_error, Some(true));
     assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
 }
 
@@ -523,7 +524,8 @@ async fn mock_computer_reaches_only_a_computer_tool_this_turn_is_offered() {
     b.mock.calls.lock().unwrap().clear();
     let r = run(&b, &b.ann.1, None);
     for words in ["shell_run {\"command\": \"ls\"}", "memory_add {\"text\": \"x\"}", "tools_set {\"key\": \"computer\", \"state\": \"on\"}"] {
-        assert!(crate::hub::agent::slash_mock::mock_computer(&r, words).await.is_err(), "{words}");
+        let tried = tokio::time::timeout(Duration::from_secs(5), crate::hub::agent::slash_mock::mock_computer(&r, words)).await;
+        assert!(tried.expect("it got as far as a card").is_err(), "{words}");
     }
     assert!(b.mock.calls().is_empty(), "{:?}", b.mock.calls());
     crate::hub::agent::slash_mock::mock_computer(&r, "computer_screenshot {}").await.unwrap();
