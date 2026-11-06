@@ -158,10 +158,14 @@ fn Stage() -> impl IntoElement {
         )
 }
 
-fn start() -> Headless {
+fn boot() -> Headless {
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1000.0), px(800.0));
-    let mut app = run(config);
+    run(config)
+}
+
+fn start() -> Headless {
+    let mut app = boot();
     app.press("seed");
     app
 }
@@ -324,8 +328,11 @@ fn a_failed_card_shows_the_listed_reason() {
     if !in_child("a_failed_card_shows_the_listed_reason") {
         return;
     }
-    let mut app = start();
+    // failed before the card shows: it never mounts, so no open's error
+    // comes in over what the broker lists
+    let mut app = boot();
     app.press("key changed");
+    app.press("seed");
     assert!(says(&app, "Another key is held."), "{:?}", app.texts());
     app.press("code only");
     assert!(says(&app, "plugin_key_invalid"), "{:?}", app.texts());
