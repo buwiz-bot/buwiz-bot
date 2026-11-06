@@ -128,7 +128,7 @@ mod tests {
     fn routine_threads_a_routines_thread_its_item_turns_and_the_chats_notice() {
         let host = MemoryHost::new(0);
         host.add_chat("t1", "uid-chat", "first chat");
-        host.lock().bots.push(MemBot { name: "Piccolo".into(), thread: "t1".into() });
+        host.lock().bots.push(MemBot { name: "Scout".into(), thread: "t1".into() });
         let h = ensure(&host, "dev.example.bir", "payments", None, "BIR payments", "t1");
         let again = ensure(&host, "dev.example.bir", "payments", None, "BIR payments", "t1");
         assert_eq!(again.id, h.id, "ensure reuses the thread");

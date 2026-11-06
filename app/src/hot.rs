@@ -410,6 +410,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
         .child(crate::mini::full_layer())
         // Tools: the full view over the apps, the `/tools` sheet over it
         .child(crate::tools::full_layer())
+        .child(crate::computer::delete_layer())
         .child(crate::mini_v1::ui::preview_layer())
         .child(files::layer())
         .child(crate::tools::sheet_layer())
@@ -670,7 +671,7 @@ fn top_bar() -> impl IntoElement {
 }
 
 /// The header pill of an agents' conversation: the first two
-/// participants' avatars and "Piccolo ↔ Boss" ("+N" past two); pressing
+/// participants' avatars and "Scout ↔ Boss" ("+N" past two); pressing
 /// it toggles its Details pane.
 fn agents_pill(a: crate::agents::AgentsOf, shadow_a: f32) -> impl IntoElement {
     let hov = signal(false);
@@ -747,6 +748,29 @@ fn screen_link(link: &str) -> Option<&str> {
     (rest.split('/').count() >= 2 && !rest.starts_with('/')).then_some(link)
 }
 
+/// A left click at (`x`, `y`) from the top left of this app's window, sent to that window alone.
+#[cfg(all(target_os = "macos", feature = "dev-agent"))]
+fn mouse_click(x: f64, y: f64) {
+    use nsh_platform_macos::objc2::MainThreadMarker;
+    use nsh_platform_macos::objc2_foundation::NSPoint;
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(window) = app.keyWindow().or_else(|| app.windows().iter().find(|w| w.isVisible())) else { return };
+    let Some(content) = window.contentView() else { return };
+    let at = NSPoint::new(x, content.frame().size.height - y);
+    // to the view under the point: a window in the background would take a click as first mouse
+    let Some(hit) = content.hitTest(at) else { return };
+    for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(kind, at, NSEventModifierFlags::empty(), 0.0, window.windowNumber(), None, 0, 1, 1.0);
+        match event {
+            Some(e) if kind == NSEventType::LeftMouseDown => hit.mouseDown(&e),
+            Some(e) => hit.mouseUp(&e),
+            None => {}
+        }
+    }
+}
+
 /// Opens the right-click menu a `rox-agent-menu` line names (see the
 /// watcher in `hot_area`).
 #[cfg_attr(not(feature = "dev-agent"), allow(dead_code))]
@@ -802,6 +826,25 @@ fn agent_menu(line: &str) {
         crate::keys::print(&format!("pdf:{}", path.trim()), String::new(), "dev print");
         return;
     }
+    // `mouse <x> <y>`: a left click at that point of this window, as real mouse events through
+    // AppKit: the way into a web view, which the tree can't reach, on a window parked off screen
+    #[cfg(all(target_os = "macos", feature = "dev-agent"))]
+    if let Some((x, y)) = line.strip_prefix("mouse ").and_then(|r| r.trim().split_once(' ')) {
+        if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
+            crate::mini_v1::native::on_main(move || mouse_click(x, y));
+        }
+        return;
+    }
+    // `computer <bot>`: that Bot's computer, full screen, as its tab's Open does
+    if let Some(bot) = line.strip_prefix("computer ") {
+        store().open_mini_token(&crate::computer::key_of(bot.trim()), "Computer", "");
+        return;
+    }
+    // `botdel <id>`: what a Bot's Delete in its menu does
+    if let Some(id) = line.strip_prefix("botdel ") {
+        crate::computer::ask_delete(id.trim().to_owned());
+        return;
+    }
     // `cmd <id>`: runs a keymap command as its keystroke would (⌘[ is `history.back`)
     if let Some(id) = line.strip_prefix("cmd ") {
         if let Some(c) = crate::keys::COMMANDS.iter().find(|c| c.id == id.trim()) {
@@ -844,6 +887,20 @@ mod hook_tests {
         assert_eq!(screen_link(screen), Some(screen));
         for no in ["buwiz://chat/new", "buwiz://chat/t1?draft=hi", "buwiz://view/x", "buwiz://plugin/x", "buwiz://app/", "https://a.example/"] {
             assert_eq!(screen_link(no), None, "{no}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod dev_only {
+    /// What drives the app from a file stays out of a build without the dev agent.
+    #[test]
+    fn the_mouse_hook_is_dev_only() {
+        let source = include_str!("hot.rs");
+        for gated in ["fn mouse_click(", "if let Some((x, y)) = line.strip_prefix(\"mouse \")"] {
+            let at = source.find(gated).unwrap();
+            let before = source[..at].trim_end().lines().last().unwrap();
+            assert_eq!(before.trim(), "#[cfg(all(target_os = \"macos\", feature = \"dev-agent\"))]", "{gated}");
         }
     }
 }

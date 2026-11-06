@@ -141,7 +141,7 @@ impl AgentMessage {
         })
     }
 
-    /// The line over its bubble: "Piccolo → Boss", "Piccolo → 3 agents".
+    /// The line over its bubble: "Scout → Boss", "Scout → 3 agents".
     pub fn header(&self) -> String {
         match self.to.as_slice() {
             [] => self.from.name.clone(),
@@ -212,7 +212,7 @@ impl AgentsNotice {
         match (self.kind, what) {
             (NoticeKind::Agents, Some(subject)) => format!("Open {subject}"),
             (NoticeKind::Created | NoticeKind::HelperFinished, _) => {
-                // "Piccolo made a new agent: Watcher", "Helper Sorter finished"
+                // "Scout made a new agent: Watcher", "Helper Sorter finished"
                 let name = self
                     .text
                     .split(": ")
@@ -261,7 +261,7 @@ impl ReplyFrom {
         })
     }
 
-    /// "Reply from Boss", or "For Piccolo's request" on an answer.
+    /// "Reply from Boss", or "For Scout's request" on an answer.
     pub fn caption(&self) -> String {
         if self.request { format!("For {}'s request", self.name) } else { format!("Reply from {}", self.name) }
     }
@@ -337,7 +337,7 @@ pub fn initials(name: &str) -> String {
     }
 }
 
-/// The header pill's words: "Piccolo ↔ Boss", "+N" past two.
+/// The header pill's words: "Scout ↔ Boss", "+N" past two.
 pub fn pill_text(names: &[String]) -> String {
     match names {
         [] => "Agents".to_owned(),
@@ -358,7 +358,7 @@ pub fn read_only_target(a: &AgentsOf) -> String {
     if a.created_by.is_empty() { a.participants.first().cloned().unwrap_or_default() } else { a.created_by.clone() }
 }
 
-/// "Made by Piccolo" for an agent another one made; None otherwise.
+/// "Made by Scout" for an agent another one made; None otherwise.
 pub fn made_by_line(b: &RoxBot, bots: &[RoxBot]) -> Option<String> {
     let parent = b.helper.as_ref().map(|h| h.parent.as_str()).filter(|p| !p.is_empty()).unwrap_or(&b.made_by);
     (!parent.is_empty()).then(|| format!("Made by {}", name_of(parent, bots)))
@@ -395,7 +395,7 @@ pub struct ConversationRow {
     pub thread: String,
     pub conversation: String,
     pub subject: String,
-    /// "Piccolo, Boss".
+    /// "Scout, Boss".
     pub participants: String,
     pub archived: bool,
     pub paused: bool,
@@ -477,20 +477,20 @@ mod tests {
     #[test]
     fn agents_threads_and_helpers_are_never_sidebar_rows() {
         let chat = ThreadMeta { id: "t1".into(), ..Default::default() };
-        let own = ThreadMeta { id: "t2".into(), bot: Some(ThreadBot { id: "piccolo".into(), ..Default::default() }), ..Default::default() };
-        let c = conv("t5", &["piccolo", "boss"], "Q3", 1.0);
+        let own = ThreadMeta { id: "t2".into(), bot: Some(ThreadBot { id: "scout".into(), ..Default::default() }), ..Default::default() };
+        let c = conv("t5", &["scout", "boss"], "Q3", 1.0);
         assert!(listed_chat(&chat));
         assert!(!listed_chat(&own), "a bot's chat is its bot's row");
         assert!(!listed_chat(&c), "a conversation is no chat row");
-        let row = json!({"conversation": "conv_1", "participants": ["piccolo", "boss"], "subject": "Q3", "created_by": "piccolo", "created_at": 5, "paused": 9});
+        let row = json!({"conversation": "conv_1", "participants": ["scout", "boss"], "subject": "Q3", "created_by": "scout", "created_at": 5, "paused": 9});
         let a = AgentsOf::of(&row).expect("agents");
         assert_eq!((a.participants.len(), a.paused, a.archived), (2, 9.0, false));
         assert_eq!(AgentsOf::of(&json!({"subject": "x"})), None, "no conversation, no mark");
         let mut sorter = bot("sorter", "Sorter", "t8");
-        sorter.helper = HelperOf::of(&json!({"parent": "piccolo", "task": "Sort", "created_at": 3}));
+        sorter.helper = HelperOf::of(&json!({"parent": "scout", "task": "Sort", "created_at": 3}));
         assert!(!listed_bot(&sorter));
         let mut watcher = bot("watcher", "Watcher", "t7");
-        watcher.made_by = "piccolo".into();
+        watcher.made_by = "scout".into();
         assert!(listed_bot(&watcher), "a permanent agent is listed");
         assert_eq!(HelperOf::of(&json!({"task": "x"})), None);
         assert_eq!(accepts_of(&json!({})), "all");
@@ -500,8 +500,8 @@ mod tests {
 
     #[test]
     fn an_agents_thread_is_never_restored_as_the_open_chat() {
-        let bots = vec![bot("piccolo", "Piccolo", "t2"), bot("boss", "Boss", "t3")];
-        let rows = vec![ThreadMeta { id: "t1".into(), ..Default::default() }, conv("t5", &["boss", "piccolo"], "Q3", 1.0)];
+        let bots = vec![bot("scout", "Scout", "t2"), bot("boss", "Boss", "t3")];
+        let rows = vec![ThreadMeta { id: "t1".into(), ..Default::default() }, conv("t5", &["boss", "scout"], "Q3", 1.0)];
         assert_eq!(restore_target("t1", &rows, &bots), "t1");
         assert_eq!(restore_target("t5", &rows, &bots), "t3", "its starter's chat");
         assert_eq!(restore_target("t5", &rows, &[]), "t1", "the first other row when its agents are gone");
@@ -511,24 +511,24 @@ mod tests {
     #[test]
     fn agent_message_turns_and_notices_parse() {
         let m = Turn::of(&json!({"i": 0, "id": "u1", "role": "agent_message", "text": "Please check",
-            "message": {"v": 1, "id": "msg_1", "conversation": "conv_1", "from": {"kind": "agent", "id": "piccolo", "name": "Piccolo"},
+            "message": {"v": 1, "id": "msg_1", "conversation": "conv_1", "from": {"kind": "agent", "id": "scout", "name": "Scout"},
                 "to": [{"kind": "agent", "id": "boss", "name": "Boss"}], "subject": "Q3", "text": "Please check",
                 "data": {"form": "2551Q"}, "attachments": ["@bir:taxprofile:tkt_01JC9Q4R8M2ZKX7T3N5V6W8Y0A"], "expects_reply": true, "hop": 0}}));
         let e = m.message.expect("an envelope");
-        assert_eq!((e.id.as_str(), e.from.name.as_str(), e.header().as_str()), ("msg_1", "Piccolo", "Piccolo → Boss"));
+        assert_eq!((e.id.as_str(), e.from.name.as_str(), e.header().as_str()), ("msg_1", "Scout", "Scout → Boss"));
         assert!(e.data.contains("\"form\": \"2551Q\""));
         assert_eq!(e.attachments.len(), 1);
-        let broadcast = AgentMessage::of(&json!({"id": "m", "from": {"id": "piccolo"}, "to": [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]})).unwrap();
-        assert_eq!(broadcast.header(), "piccolo → 2 agents", "a nameless sender reads as its id");
+        let broadcast = AgentMessage::of(&json!({"id": "m", "from": {"id": "scout"}, "to": [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]})).unwrap();
+        assert_eq!(broadcast.header(), "scout → 2 agents", "a nameless sender reads as its id");
         assert_eq!(broadcast.data, "", "no data, no Details");
         assert!(Turn::of(&json!({"role": "ai", "text": "x"})).message.is_none());
 
-        let n = Turn::of(&json!({"role": "notice", "text": "Boss → Piccolo · Q3 payments for a client · 2 messages",
+        let n = Turn::of(&json!({"role": "notice", "text": "Boss → Scout · Q3 payments for a client · 2 messages",
             "notice": {"kind": "agents", "conversation": "conv_1", "thread": "t5", "thread_uid": "uid-5", "last_id": "msg_2", "count": 2}}));
         let n = n.agents_notice.expect("an agents notice");
         assert_eq!((n.kind, n.thread.as_str(), n.message.as_str()), (NoticeKind::Agents, "uid-5", "msg_2"));
         assert_eq!(n.open_label(), "Open Q3 payments for a client");
-        let made = AgentsNotice::of(&json!({"kind": "agent_created", "thread": "t8", "temporary": true}), "Piccolo started a helper: Sorter · Sort receipts".into()).unwrap();
+        let made = AgentsNotice::of(&json!({"kind": "agent_created", "thread": "t8", "temporary": true}), "Scout started a helper: Sorter · Sort receipts".into()).unwrap();
         assert_eq!((made.kind, made.thread.as_str(), made.open_label().as_str()), (NoticeKind::Created, "t8", "Open Sorter's chat"));
         let done = AgentsNotice::of(&json!({"kind": "helper_finished", "thread": "t8"}), "Helper Sorter finished".into()).unwrap();
         assert_eq!(done.open_label(), "Open Sorter's chat");
@@ -552,22 +552,22 @@ mod tests {
         assert_eq!(r.body("Both are recorded"), "Both are recorded");
         assert!(Turn::of(&json!({"role": "user", "text": "hi"})).reply_from.is_none());
         // an answer with cards, done for another agent's request
-        let a = Turn::of(&json!({"role": "ai", "text": "For Piccolo's request · Q3", "links": [],
-            "agent": {"conversation": "conv_1", "message": "msg_1", "from": {"kind": "agent", "id": "piccolo", "name": "Piccolo"}, "thread": "t5"}}));
+        let a = Turn::of(&json!({"role": "ai", "text": "For Scout's request · Q3", "links": [],
+            "agent": {"conversation": "conv_1", "message": "msg_1", "from": {"kind": "agent", "id": "scout", "name": "Scout"}, "thread": "t5"}}));
         let r = a.reply_from.expect("a request mark");
-        assert_eq!((r.caption().as_str(), r.thread.as_str()), ("For Piccolo's request", "t5"));
+        assert_eq!((r.caption().as_str(), r.thread.as_str()), ("For Scout's request", "t5"));
         assert!(Turn::of(&json!({"role": "notice", "agent": {"thread": "t5"}})).reply_from.is_none(), "only a user turn or an answer");
     }
 
     #[test]
     fn outside_endpoints_read_by_the_names_their_messages_carry() {
-        let bots = vec![bot("piccolo", "Piccolo", "t2")];
-        let m = AgentMessage::of(&json!({"id": "m1", "from": {"kind": "external", "id": "ext:ah_1", "name": "CI"}, "to": [{"id": "piccolo", "name": "Piccolo"}]})).unwrap();
+        let bots = vec![bot("scout", "Scout", "t2")];
+        let m = AgentMessage::of(&json!({"id": "m1", "from": {"kind": "external", "id": "ext:ah_1", "name": "CI"}, "to": [{"id": "scout", "name": "Scout"}]})).unwrap();
         let seen = peers_in(vec![m]);
         assert_eq!(participant_name("ext:ah_1", &bots, &seen), "CI");
         assert_eq!(participant_name("ext:ah_2", &bots, &seen), "External", "one that hasn't written yet");
-        assert_eq!(participant_name("piccolo", &bots, &[]), "Piccolo");
-        assert!(is_external("ext:ah_1") && !is_external("piccolo"));
+        assert_eq!(participant_name("scout", &bots, &[]), "Scout");
+        assert!(is_external("ext:ah_1") && !is_external("scout"));
         assert_eq!(initials("CI"), "CI");
         assert_eq!(initials("Claude Code · rox"), "CC");
         assert_eq!(initials("watcher"), "W");
@@ -577,45 +577,45 @@ mod tests {
     #[test]
     fn the_pill_names_two_participants_then_counts_the_rest() {
         let names = |n: &[&str]| n.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        assert_eq!(pill_text(&names(&["Piccolo", "Boss"])), "Piccolo ↔ Boss");
-        assert_eq!(pill_text(&names(&["Piccolo", "Boss", "Ada", "Kai"])), "Piccolo ↔ Boss +2");
-        assert_eq!(pill_text(&names(&["Piccolo"])), "Piccolo");
-        assert_eq!(read_only_line("Piccolo"), "Agents only · read-only · Message Piccolo in its chat");
-        let c = conv("t5", &["piccolo", "boss"], "Q3", 1.0);
-        assert_eq!(read_only_target(c.agents.as_ref().unwrap()), "piccolo");
+        assert_eq!(pill_text(&names(&["Scout", "Boss"])), "Scout ↔ Boss");
+        assert_eq!(pill_text(&names(&["Scout", "Boss", "Ada", "Kai"])), "Scout ↔ Boss +2");
+        assert_eq!(pill_text(&names(&["Scout"])), "Scout");
+        assert_eq!(read_only_line("Scout"), "Agents only · read-only · Message Scout in its chat");
+        let c = conv("t5", &["scout", "boss"], "Q3", 1.0);
+        assert_eq!(read_only_target(c.agents.as_ref().unwrap()), "scout");
     }
 
     #[test]
     fn made_by_marks_agents_another_one_made() {
-        let piccolo = bot("piccolo", "Piccolo", "t2");
+        let scout = bot("scout", "Scout", "t2");
         let mut watcher = bot("watcher", "Watcher", "t7");
-        watcher.made_by = "piccolo".into();
-        let bots = vec![piccolo.clone(), watcher.clone()];
-        assert_eq!(made_by_line(&watcher, &bots).as_deref(), Some("Made by Piccolo"));
-        assert_eq!(made_by_line(&piccolo, &bots), None);
-        assert_eq!(subtitle(&watcher, &bots), "Made by Piccolo");
+        watcher.made_by = "scout".into();
+        let bots = vec![scout.clone(), watcher.clone()];
+        assert_eq!(made_by_line(&watcher, &bots).as_deref(), Some("Made by Scout"));
+        assert_eq!(made_by_line(&scout, &bots), None);
+        assert_eq!(subtitle(&watcher, &bots), "Made by Scout");
         watcher.desc = "Checked the inbox".into();
-        assert_eq!(subtitle(&watcher, &bots), "Made by Piccolo · Checked the inbox");
-        assert_eq!(subtitle(&piccolo, &bots), "No messages yet");
+        assert_eq!(subtitle(&watcher, &bots), "Made by Scout · Checked the inbox");
+        assert_eq!(subtitle(&scout, &bots), "No messages yet");
     }
 
     #[test]
     fn a_bot_lists_its_conversations_and_helpers() {
-        let mut bots = vec![bot("piccolo", "Piccolo", "t2"), bot("boss", "Boss", "t3"), bot("ada", "Ada", "t4")];
-        let mut old = conv("t9", &["piccolo", "ada"], "Old", 9.0);
+        let mut bots = vec![bot("scout", "Scout", "t2"), bot("boss", "Boss", "t3"), bot("ada", "Ada", "t4")];
+        let mut old = conv("t9", &["scout", "ada"], "Old", 9.0);
         old.agents.as_mut().unwrap().archived = true;
-        let threads = vec![conv("t5", &["piccolo", "boss"], "Q3", 1.0), conv("t6", &["boss", "ada"], "Not his", 2.0), old, conv("t7", &["ada", "piccolo", "boss"], "Friday", 3.0)];
-        let rows = conversations_of("piccolo", &threads, &bots);
+        let threads = vec![conv("t5", &["scout", "boss"], "Q3", 1.0), conv("t6", &["boss", "ada"], "Not his", 2.0), old, conv("t7", &["ada", "scout", "boss"], "Friday", 3.0)];
+        let rows = conversations_of("scout", &threads, &bots);
         let got: Vec<(&str, &str, bool)> = rows.iter().map(|r| (r.subject.as_str(), r.participants.as_str(), r.archived)).collect();
-        assert_eq!(got, vec![("Friday", "Ada, Piccolo, Boss", false), ("Q3", "Piccolo, Boss", false), ("Old", "Piccolo, Ada", true)]);
+        assert_eq!(got, vec![("Friday", "Ada, Scout, Boss", false), ("Q3", "Scout, Boss", false), ("Old", "Scout, Ada", true)]);
         let mut live = bot("sorter", "Sorter", "t8");
-        live.helper = Some(HelperOf { parent: "piccolo".into(), task: "Sort".into(), created_at: 5.0, ended_at: 0.0 });
+        live.helper = Some(HelperOf { parent: "scout".into(), task: "Sort".into(), created_at: 5.0, ended_at: 0.0 });
         let mut past = bot("filer", "Filer", "t11");
-        past.helper = Some(HelperOf { parent: "piccolo".into(), task: "File".into(), created_at: 1.0, ended_at: 4.0 });
+        past.helper = Some(HelperOf { parent: "scout".into(), task: "File".into(), created_at: 1.0, ended_at: 4.0 });
         let mut other = bot("x", "X", "t12");
         other.helper = Some(HelperOf { parent: "boss".into(), ..Default::default() });
         bots.extend([live, past, other]);
-        let (now, before) = helpers_of("piccolo", &bots);
+        let (now, before) = helpers_of("scout", &bots);
         assert_eq!(now.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), vec!["Sorter"]);
         assert_eq!(before.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), vec!["Filer"]);
     }
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn a_conversations_last_message_reads_with_its_sender() {
         let turns = json!({"turns": [
-            {"role": "agent_message", "text": "Please check", "message": {"from": {"id": "piccolo", "name": "Piccolo"}}},
+            {"role": "agent_message", "text": "Please check", "message": {"from": {"id": "scout", "name": "Scout"}}},
             {"role": "agent_message", "text": "Both are\nrecorded.", "message": {"from": {"id": "boss", "name": "Boss"}}},
             {"role": "notice", "text": "Paused"},
         ]});

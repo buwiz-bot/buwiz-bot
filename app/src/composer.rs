@@ -186,7 +186,7 @@ pub(crate) fn composer() -> impl IntoElement {
         )
 }
 
-/// "Agents only · read-only · Message Piccolo in its chat" in place of
+/// "Agents only · read-only · Message Scout in its chat" in place of
 /// the composer in an agents' conversation; the name opens that chat.
 fn read_only_line() -> AnyElement {
     let hov = signal(false);

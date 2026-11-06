@@ -121,6 +121,13 @@ pub async fn get_any(path: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&res.text()).ok()
 }
 
+/// GET `path` as bytes, with the status and the header `name`; `None` when nothing answered.
+pub async fn get_bytes(path: &str, name: &str) -> Option<(u16, Option<String>, Vec<u8>)> {
+    let res = fetch(req("GET", path)).await.ok()?;
+    let found = res.head.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.to_owned());
+    Some((res.status(), found, res.body))
+}
+
 /// POST `path` with a JSON body; returns the reply parsed as JSON.
 pub async fn post(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
     let mut r = req("POST", path);

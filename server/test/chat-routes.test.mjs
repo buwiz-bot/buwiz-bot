@@ -20,7 +20,7 @@ before(async () => {
   agentsThread = nodeIn(dir, `
     const { store, nextThreadSeq, uuidv7, writeIndex } = await import("./src/state.mjs");
     const id = "t" + nextThreadSeq();
-    store.list.push({ id, uid: uuidv7(), title: "Q3 payments", turns: [], agents: { subject: "Q3 payments", participants: ["piccolo", "boss"] } });
+    store.list.push({ id, uid: uuidv7(), title: "Q3 payments", turns: [], agents: { subject: "Q3 payments", participants: ["scout", "boss"] } });
     writeIndex();
     console.log(id);
   `);

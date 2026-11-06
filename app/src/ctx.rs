@@ -53,7 +53,7 @@ fn run(it: &CtxItem) {
             st.main_pick.set(Some(arg.to_owned()));
         }
         "bot-hide" => st.update_bot(arg, serde_json::json!({"hidden": it.flag})),
-        "bot-del" => st.delete_bot(arg.to_owned()),
+        "bot-del" => crate::computer::ask_delete(arg.to_owned()),
         // Groups' verbs carry their fields joined by U+001F (a file path
         // may hold anything else): `<group>␟<kind>␟<id>␟<origin chat>`.
         "group-item" => {

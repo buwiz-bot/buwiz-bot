@@ -15,6 +15,7 @@
 pub mod activity;
 pub mod artifact;
 pub mod builtin;
+pub mod computer;
 pub mod controls;
 pub mod defs;
 pub mod drive;
@@ -214,6 +215,9 @@ async fn offered(run: &Run) -> Vec<Value> {
         out.push(ui::def());
         out.push(ui::act_def());
     }
+    if computer::offered(run).await {
+        out.extend(computer::defs());
+    }
     out.extend(routine.iter().cloned());
     out.extend(own.iter().cloned());
     out.extend(agent.iter().cloned());
@@ -268,6 +272,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
         ui::NAME if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::look(run).await),
         ui::ACT if run.turn.routine.is_none() && run.turn.surface.is_none() => return Ok(ui::act(run, input).await),
         "shell_run" => return Ok(controls::shell_run(run, input).await),
+        _ if computer::NAMES.contains(&name) && run.turn.surface.is_none() => return Ok(computer::tool(run, name, input).await),
         _ if controls::NAMES.contains(&name) && run.turn.surface.is_none() => return controls::tool(run, name, input).await,
         // F3: switching a skill, a user's server or a mini app on proposes it
         "skill_enable" if run.turn.surface.is_none() => {

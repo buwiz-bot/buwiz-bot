@@ -334,7 +334,7 @@ test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its la
   for (const c of MOCK_RICH) assert.deepEqual(validateAvatar(c), [], c.name);
   await server.stop();
   server = await startServer(dir, { env: env() });
-  const d = await postJson("/avatar/design", { prompt: "a green giant", style: "rich" });
+  const d = await postJson("/avatar/design", { prompt: "a violet ogre", style: "rich" });
   assert.equal(d.status, 200, d.text);
   assert.equal(d.json.candidates.length, 3);
   assert.ok(d.json.candidates.every((c) => c.shape === "custom" && c.layers.length && /^#[0-9A-F]{6}$/i.test(typeof c.eyes === "string" ? c.eyes : c.eyes.c)));
@@ -347,7 +347,7 @@ test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its la
   assert.match(validateAvatar({ shape: "heart", color: "#FF0000", layers: MOCK_RICH[0].layers, eyes: "#FFFFFF" }).join(";"), /only a custom outline can have layers/);
   // stored on a bot
   const r = MOCK_RICH[0];
-  const made = await postJson("/bot/new", { name: "Giant", shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes: r.eyes });
+  const made = await postJson("/bot/new", { name: "Ogre", shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes: r.eyes });
   assert.equal(made.status, 200, made.text);
   const id = made.json.bot.id;
   let b = await botOf(id);
@@ -371,7 +371,7 @@ test("AVD-15 rich avatars: MOCK rich designs pass the checks; a bot keeps its la
 
 test("AVD-16 /avatar/picture under MOCK: the reference (or a fixed square) as the draft, in the avatar folder; the same image rules", async () => {
   const keys = ["ok", "via", "uri", "name", "w", "h"];
-  const plain = await postJson("/avatar/picture", { prompt: "a green giant" });
+  const plain = await postJson("/avatar/picture", { prompt: "a violet ogre" });
   assert.equal(plain.status, 200, plain.text);
   assert.deepEqual(Object.keys(plain.json), keys);
   assert.deepEqual({ ...plain.json, uri: "" }, { ok: true, via: "mock", uri: "", name: "Bot picture", w: 64, h: 64 });
@@ -414,14 +414,14 @@ test("AVD-17 /avatar/picture over the wire: the picked model draws SVG; a refuse
 test("AVD-18 rich self-check: the designs drawn flat go back to the model once; a fix that passes replaces its candidate, one that fails keeps the first; GEN_AVATAR_SELFCHECK=0 skips it", async () => {
   const { MOCK_RICH } = await import("../src/avatar-shape.mjs");
   const say2 = (cands) => say(JSON.stringify({ candidates: cands }));
-  const fixedEyes = { c: "#58D63A", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
+  const fixedEyes = { c: "#FFC83D", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
   const fix = [{ ...MOCK_RICH[0], eyes: fixedEyes }, { ...MOCK_RICH[1], layers: [] }, { ...MOCK_RICH[2], name: "Cat Two" }];
   // the server from AVD-17 runs with MOCK off
   fake.reset();
   fake.script("rich-check", [say2(MOCK_RICH), say2(fix)]);
-  const r = await postJson("/avatar/design", { prompt: "[[script:rich-check]] a green giant", style: "rich" });
+  const r = await postJson("/avatar/design", { prompt: "[[script:rich-check]] a violet ogre", style: "rich" });
   assert.equal(r.status, 200, r.text);
-  assert.deepEqual(r.json.candidates.map((c) => c.name), ["Green Giant", "Mask Hero", "Cat Two"]);
+  assert.deepEqual(r.json.candidates.map((c) => c.name), ["Violet Ogre", "Band Hero", "Cat Two"]);
   assert.deepEqual(r.json.candidates[0].eyes, fixedEyes, "a fix that passes replaces its candidate");
   assert.deepEqual(r.json.candidates[1], MOCK_RICH[1], "a fix without layers keeps the first");
   const calls = fake.calls();
@@ -431,9 +431,9 @@ test("AVD-18 rich self-check: the designs drawn flat go back to the model once; 
   assert.deepEqual(first, calls[0].body.messages[0]);
   assert.deepEqual(JSON.parse(said.content), { candidates: MOCK_RICH });
   assert.deepEqual(look.content.map((b) => b.type), ["text", "image", "text", "image", "text", "image", "text"]);
-  assert.equal(look.content[0].text, "Design 1 (Green Giant):");
+  assert.equal(look.content[0].text, "Design 1 (Violet Ogre):");
   assert.equal(look.content[1].source.media_type, "image/png");
-  assert.equal(look.content[6].text, 'Here are your three designs drawn flat. For each, does it read as the request "[[script:rich-check]] a green giant"? Fix the outline, layers and eyes where it doesn\'t (missing hair volume, eyes off the lenses or band, features covering the eyes). Reply with all 3, JSON only.');
+  assert.equal(look.content[6].text, 'Here are your three designs drawn flat. For each, does it read as the request "[[script:rich-check]] a violet ogre"? Fix the outline, layers and eyes where it doesn\'t (missing hair volume, eyes off the lenses or band, features covering the eyes). Reply with all 3, JSON only.');
   assert.deepEqual(readdirSync(avatars).filter((f) => f.startsWith("check-")), [], "the previews are cleaned up");
   // switched off: one call
   await server.stop();
@@ -447,7 +447,7 @@ test("AVD-18 rich self-check: the designs drawn flat go back to the model once; 
 test("AVD-19 rich eyes as a placement: checked, stored, carried by /threads and a restart; compact layers parse; the preview draws them", async () => {
   const { eyeErrors, parseCandidates, previewSvg, MOCK_RICH, validateAvatar } = await import("../src/avatar-shape.mjs");
   const r = MOCK_RICH[0];
-  const eyes = { c: "#58D63A", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
+  const eyes = { c: "#FFC83D", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
   assert.deepEqual(validateAvatar({ ...r, eyes }), []);
   assert.deepEqual(eyeErrors({ c: "red", at: [500, 5], gap: 0, s: 3, rim: 1, rw: 2 }, r.outline), [
     "eyes.c must be #RRGGBB", "eyes.at must sit inside the outline's box", "eyes.gap must be a number 0..100", "eyes.s must be 0.6..2.2", "eyes.rim must be #RRGGBB", "eyes.rw must be 0..1.2",
@@ -455,19 +455,19 @@ test("AVD-19 rich eyes as a placement: checked, stored, carried by /threads and 
   assert.deepEqual(eyeErrors([1], r.outline), ["eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"]);
   assert.deepEqual(eyeErrors({ c: "#FFFFFF", at: [1] }, r.outline), ["eyes.at must be [x, y]"]);
   // the compact layer form, and the placement's colours tidied
-  const [c] = parseCandidates(JSON.stringify([{ shape: "custom", outline: r.outline, color: "#3e8e2f", layers: [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5], ["M1 1 L9 1 L9 9 Z", "#000000"]], eyes: { c: "#58d63a", at: [50, 58], rim: " #111111 ", junk: 1 } }]));
+  const [c] = parseCandidates(JSON.stringify([{ shape: "custom", outline: r.outline, color: "#3e8e2f", layers: [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5], ["M1 1 L9 1 L9 9 Z", "#000000"]], eyes: { c: "#ffc83d", at: [50, 58], rim: " #111111 ", junk: 1 } }]));
   assert.deepEqual(c.layers, [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6", opacity: 0.5 }, { path: "M1 1 L9 1 L9 9 Z", fill: "#000000" }]);
-  assert.deepEqual(c.eyes, { c: "#58D63A", at: [50, 58], rim: "#111111" });
+  assert.deepEqual(c.eyes, { c: "#FFC83D", at: [50, 58], rim: "#111111" });
   const svg = previewSvg({ ...r, eyes });
   assert.match(svg, /^<svg [^>]*viewBox="0 0 100 100"/);
   assert.equal((svg.match(/<rect x=/g) || []).length, 4, "two rims and two eyes");
-  assert.ok(svg.includes('fill="#111111"') && svg.includes('fill="#58D63A"'));
+  assert.ok(svg.includes('fill="#111111"') && svg.includes('fill="#FFC83D"'));
   // a bot keeps them
   const made = await postJson("/bot/new", { name: "Placed", shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes });
   assert.equal(made.status, 200, made.text);
   const id = made.json.bot.id;
   assert.deepEqual(made.json.bot.eyes, eyes);
-  bad(await postJson("/bot/update", { id, eyes: { c: "#58D63A", s: 9 } }), "eyes.s must be 0.6..2.2");
+  bad(await postJson("/bot/update", { id, eyes: { c: "#FFC83D", s: 9 } }), "eyes.s must be 0.6..2.2");
   // eyes alone update a rich bot
   const moved = { ...eyes, at: [50, 60] };
   assert.equal((await postJson("/bot/update", { id, eyes: moved })).status, 200);
@@ -575,7 +575,7 @@ test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, drawn in z order
   const at = (s) => svg.indexOf(s);
   assert.ok(at(antler.outline) < at(hat.outline) && at(hat.outline) < at("<rect x=") && at("<rect x=") < at(hat.parts[0].outline), svg);
   // a bot keeps them
-  const made = await postJson("/bot/new", { name: "Hat Kid", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: hat.parts });
+  const made = await postJson("/bot/new", { name: "Bucket Hat", shape: "custom", color: hat.color, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: hat.parts });
   assert.equal(made.status, 200, made.text);
   const id = made.json.bot.id;
   assert.deepEqual(made.json.bot.parts, hat.parts);
@@ -681,23 +681,23 @@ test("AVD-23 a shut eye and over-layers: checked, parsed (the compact \"over\"),
   assert.deepEqual(eyeErrors({ c: "#FFFFFF", shut: "l" }, r.outline), []);
   assert.deepEqual(eyeErrors({ c: "#FFFFFF", shut: "left" }, r.outline), ["eyes.shut must be l or r"]);
   assert.deepEqual(layerErrors([{ path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: "yes" }], "#FFFFFF", r.outline), ["layer 1's over must be true or false"]);
-  const [c] = parseCandidates(JSON.stringify([{ ...r, eyes: { c: "#58d63a", shut: " L " }, layers: [["M30 40 L50 40 L40 56 Z", "#1e1e1e", 1, "over"], ["M30 60 L70 60 L50 80 Z", "#f5ebd6"], { path: "M60 40 L70 40 L65 50 Z", fill: "#000000", over: false }] }]));
-  assert.deepEqual(c.eyes, { c: "#58D63A", shut: "l" });
+  const [c] = parseCandidates(JSON.stringify([{ ...r, eyes: { c: "#ffc83d", shut: " L " }, layers: [["M30 40 L50 40 L40 56 Z", "#1e1e1e", 1, "over"], ["M30 60 L70 60 L50 80 Z", "#f5ebd6"], { path: "M60 40 L70 40 L65 50 Z", fill: "#000000", over: false }] }]));
+  assert.deepEqual(c.eyes, { c: "#FFC83D", shut: "l" });
   assert.deepEqual(c.layers, [{ path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", opacity: 1, over: true }, { path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M60 40 L70 40 L65 50 Z", fill: "#000000" }]);
   const svg = previewSvg(c);
   assert.equal((svg.match(/<rect x=/g) || []).length, 1, "one open eye");
-  assert.match(svg, /<path d="M[\d.]+ [\d.]+ Q[^"]+" fill="none" stroke="#58D63A"/, "the shut one, a lid line");
+  assert.match(svg, /<path d="M[\d.]+ [\d.]+ Q[^"]+" fill="none" stroke="#FFC83D"/, "the shut one, a lid line");
   assert.ok(svg.indexOf('fill="#1E1E1E" opacity="1"') > svg.indexOf("<rect x="), "the over-layer after the eyes");
   // stored only when true
   const layers = [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6", over: false }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }];
-  const made = await postJson("/bot/new", { name: "Winky", shape: "custom", color: r.color, outline: r.outline, layers, eyes: { c: "#58D63A", shut: "r" } });
+  const made = await postJson("/bot/new", { name: "Winky", shape: "custom", color: r.color, outline: r.outline, layers, eyes: { c: "#FFC83D", shut: "r" } });
   assert.equal(made.status, 200, made.text);
   const id = made.json.bot.id;
   const want = [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }];
   assert.deepEqual(made.json.bot.layers, want);
-  bad(await postJson("/bot/update", { id, eyes: { c: "#58D63A", shut: "x" } }), "eyes.shut must be l or r");
+  bad(await postJson("/bot/update", { id, eyes: { c: "#FFC83D", shut: "x" } }), "eyes.shut must be l or r");
   await server.stop();
   server = await startServer(dir, { env: env() });
   const b = await botOf(id);
-  assert.deepEqual([b.layers, b.eyes], [want, { c: "#58D63A", shut: "r" }]);
+  assert.deepEqual([b.layers, b.eyes], [want, { c: "#FFC83D", shut: "r" }]);
 });

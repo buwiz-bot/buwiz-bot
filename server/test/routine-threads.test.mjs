@@ -29,7 +29,7 @@ test("a routine's thread, its item turns and the chat's notice persist", NODE_ON
     import { store, nextThreadSeq, uuidv7, writeIndex } from "./src/state.mjs";
     import { createRoutineThreads } from "./src/v1/routine-threads.mjs";
     const chat = store.list[0];
-    store.bots.push({ id: "b1", name: "Piccolo", shape: "blob", color: "#FFFFFF", threadId: chat.id });
+    store.bots.push({ id: "b1", name: "Scout", shape: "blob", color: "#FFFFFF", threadId: chat.id });
     const threads = createRoutineThreads({ store, nextId: () => "t" + nextThreadSeq(), uid: uuidv7, save: writeIndex });
     const h = threads.ensure({ plugin: "dev.example.bir", routine: "payments", name: "BIR payments", chat: chat.id });
     h.turns.push({ id: uuidv7(), role: "user", text: "New item", routine: { plugin: "dev.example.bir", id: "payments", name: "BIR payments", run: "run_1" } });

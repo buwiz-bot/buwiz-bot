@@ -2146,7 +2146,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                                 .number_of_lines(1),
                         )
                         .child(
-                            // "Made by Piccolo" first for an agent another made
+                            // "Made by Scout" first for an agent another made
                             text(move || crate::agents::subtitle(&b.get(), &store().bots.get()))
                                 .text_size(px(11.0))
                                 .text_color(theme::GHOST)
