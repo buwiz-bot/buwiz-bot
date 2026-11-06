@@ -430,9 +430,15 @@ fn pump_until(app: &mut Headless, what: &str, mut done: impl FnMut(&mut Headless
     panic!("{what}: not within {} seconds", WAIT_STEPS / 20);
 }
 
+/// Pumps until `bot`'s avatar has painted `state`.
+fn pump_until_painted(app: &mut Headless, bot: &str, state: &str) {
+    let painted = || crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
+    pump_until(app, &format!("{bot} painting {state}"), |_| painted() == Some(state));
+}
+
 /// Whether `name` has its row: a rail tile by its label, a sidebar row by its text.
 fn row_live(app: &mut Headless, name: &str) -> bool {
-    app.has(name) || app.texts().iter().any(|t| t.to_string() == name)
+    app.has(name) || app.texts().iter().any(|t| *t == name)
 }
 
 /// Pumps until every Bot's row is live and no avatar has been built for a
@@ -504,18 +510,15 @@ fn a_new_status_clears_the_last_one() {
     if !in_child("a_new_status_clears_the_last_one") {
         return;
     }
-    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
     let mut app = start();
     app.press("seed");
     app.press("chats");
     app.pump(Duration::from_millis(400));
     app.press("status 3");
-    app.pump(Duration::from_millis(300));
-    assert_eq!(painted("b3"), Some("thinking"));
+    pump_until_painted(&mut app, "b3", "thinking");
     app.press("status 4");
-    app.pump(Duration::from_millis(300));
-    assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
-    assert_eq!(painted("b3"), Some("idle"), "the last one is cleared");
+    pump_until_painted(&mut app, "b4", "thinking");
+    pump_until_painted(&mut app, "b3", "idle");
 }
 
 /// `/status` clears only what it set: a real run that has started in that
@@ -531,13 +534,12 @@ fn a_new_status_leaves_a_real_run_alone() {
     app.press("chats");
     app.pump(Duration::from_millis(400));
     app.press("status 3");
-    app.pump(Duration::from_millis(200));
+    pump_until_painted(&mut app, "b3", "thinking");
     app.press("real run 3");
-    app.pump(Duration::from_millis(200));
-    assert_eq!(painted("b3"), Some("writing"), "the real run took over");
+    pump_until_painted(&mut app, "b3", "writing");
     app.press("status 4");
+    pump_until_painted(&mut app, "b4", "thinking");
     app.pump(Duration::from_millis(300));
-    assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
     assert_eq!(painted("b3"), Some("writing"), "the real run is still there");
 }
 
@@ -547,7 +549,6 @@ fn a_finished_demo_leaves_no_record() {
     if !in_child("a_finished_demo_leaves_no_record") {
         return;
     }
-    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
     let mut app = start();
     app.press("seed");
     app.press("chats");
@@ -555,10 +556,11 @@ fn a_finished_demo_leaves_no_record() {
     app.press("short demo 3");
     app.press("check record");
     assert!(RECORD.load(Ordering::Relaxed), "a running demo has a record");
-    app.pump(Duration::from_millis(3000));
-    app.press("check record");
-    assert!(!RECORD.load(Ordering::Relaxed), "a finished demo has none");
-    assert_eq!(painted("b3"), Some("idle"), "and its Bot is idle");
+    pump_until(&mut app, "a finished demo still has a record", |app| {
+        app.press("check record");
+        !RECORD.load(Ordering::Relaxed)
+    });
+    pump_until_painted(&mut app, "b3", "idle");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.
