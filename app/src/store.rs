@@ -3472,7 +3472,7 @@ impl Store {
         }
     }
 
-    fn set_threads(&'static self, v: serde_json::Value) {
+    pub(crate) fn set_threads(&'static self, v: serde_json::Value) {
         // `threadsJ`/`botsJ` compares (App.tsx:384): a poll that changed
         // nothing must not re-render — and must not reseed drafts riding
         // on `bots`/`threads`.

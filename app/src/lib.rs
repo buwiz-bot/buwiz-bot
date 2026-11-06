@@ -205,6 +205,9 @@ pub fn App() -> impl IntoElement {
 }
 
 #[cfg(test)]
+mod sidebar_ui_tests;
+
+#[cfg(test)]
 mod app_name_tests {
     use super::pick_app_name;
 
