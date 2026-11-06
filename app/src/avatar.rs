@@ -492,7 +492,11 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
+    // Untracked: `new` reads the run state to start in, and a caller builds
+    // this inside a `dynamic`. Tracked, every status write of any Bot would
+    // rebuild every avatar, starting its animation over. The paint below
+    // follows the state itself.
+    let st = Rc::new(RefCell::new(untracked(|| Inner::new(&props, mark::shared_tables()))));
     let props = Rc::new(props);
     view()
         .size(px(size))
