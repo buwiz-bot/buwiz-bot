@@ -17,6 +17,11 @@
 # /v1/host/tools gives a 405.
 # Its clicks count as the person's. GPUI_AGENT_ACTOR=agent among the VAR=value
 # arguments drives it as the AI instead.
+# It reaches no real model unless asked: MOCK=1, every model URL on a dead port,
+# and none of the caller's model keys. Left alone a broker goes to the owner's
+# opencodex on :8080, which bills the owner's key. The VAR=value arguments win,
+# so a real model is named there: MOCK= OPENCODEX_URL=http://localhost:8080
+# A broker started apart, as above, needs the same from whoever starts it.
 # (scripts/test-rox is its old name.) Every variable it sets, and every
 # ROX_<X>=value given, goes in by its Buwiz name and its old ROX_ one, so a
 # binary built before the rename is a test instance too.
@@ -115,7 +120,13 @@ case " ${VARS[*]-} " in
   *" BUWIZ_BACKEND="*) ;;
   *) VARS+=("BUWIZ_BACKEND=http://127.0.0.1:1" "ROX_BACKEND=http://127.0.0.1:1") ;;
 esac
-env TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKGROUND=1 ROX_BACKGROUND=1 \
+NO_MODEL=http://127.0.0.1:1
+NO_KEYS=()
+for k in OPENROUTER_API_KEY OPENAI_API_KEY XAI_API_KEY $(compgen -e | grep '^ANTHROPIC_' || true); do
+  NO_KEYS+=(-u "$k")
+done
+env "${NO_KEYS[@]}" TMPDIR="$R/tmp/" BUWIZ_DATA_DIR="$R/data" ROX_DATA_DIR="$R/data" BUWIZ_BACKGROUND=1 ROX_BACKGROUND=1 \
+  MOCK=1 OPENCODEX_URL="$NO_MODEL" ANTHROPIC_BASE_URL="$NO_MODEL" GEN_BASE_URL="$NO_MODEL" \
   GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 \
   GPUI_AGENT_ADDR="127.0.0.1:$PORT" GPUI_AGENT_TOKEN_FILE="$R/buwiz-gpui-agent-token" ${VARS[@]+"${VARS[@]}"} \
   nohup "$APP/Contents/MacOS/$EXE" > "$R/rox.log" 2>&1 < /dev/null &
