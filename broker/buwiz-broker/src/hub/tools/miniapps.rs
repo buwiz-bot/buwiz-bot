@@ -1212,6 +1212,176 @@ mod tests {
         let _ = std::fs::remove_dir_all(&b.dir);
     }
 
+    /// What the fixture was pushed, in order.
+    async fn account_pushes(b: &Bed) -> Vec<Value> {
+        let r = b.host.call_tool(FX, "fx_stats", &json!({}), None, None).await.unwrap();
+        r["structuredContent"]["account_pushes"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// A bed with a package installed and a Google client saved.
+    async fn accounts_bed(label: &str, clock: HostClock) -> Bed {
+        let b = bed_in(label, clock).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        b
+    }
+
+    /// The fixture stops being an approved plugin, so it stops being first-party.
+    fn revoke(b: &Bed) {
+        let file = b.dir.join("trust.json");
+        let mut t: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        t["approved_plugins"] = json!([]);
+        std::fs::write(&file, t.to_string()).unwrap();
+    }
+
+    /// B7: every push carries the whole list, by label; a switch's clear and
+    /// set both show the switch done, so nothing looks signed out.
+    #[tokio::test]
+    async fn a_first_party_plugin_learns_every_signed_in_label_and_no_token_or_address() {
+        let b = accounts_bed("acctlist", HostClock::manual()).await;
+        let entry = |label: &str, active: bool| json!({"account": "google", "label": label, "active": active});
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        let both = json!([entry("default", false), entry("work", true)]);
+        assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "set", "label": "work", "accounts": both}));
+
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        let after = json!([entry("default", true), entry("work", false)]);
+        let pushes = account_pushes(&b).await;
+        assert_eq!(pushes[pushes.len() - 2..], [json!({"push": "clear", "label": "work", "accounts": after}), json!({"push": "set", "label": "default", "accounts": after})]);
+        assert_eq!(pushed_labels(&b).await, ["google/default"], "the one token out is still the active one's");
+
+        // a new process learns the list from its first push
+        b.host.disable(FX).await.unwrap();
+        b.host.enable(FX).await.unwrap();
+        assert_eq!(account_pushes(&b).await, [json!({"push": "set", "label": "default", "accounts": after})]);
+
+        // a label typed as an address stays out of the list, active or not
+        connect_as(&b, "me@example.com", "at-m", "m@example.com").await;
+        assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "set", "label": "me@example.com", "accounts": [entry("default", false), entry("work", false)]}));
+
+        // a label signed out leaves it; the last one out leaves it empty
+        b.host.account_signout(FX, "google", &json!({"label": "me@example.com"})).await.unwrap();
+        b.host.account_signout(FX, "google", &json!({"label": "work"})).await.unwrap();
+        assert_eq!(account_pushes(&b).await.last().unwrap()["accounts"], json!([entry("default", true)]));
+        b.host.account_remove(FX, "google", &json!({"label": "default"})).await.unwrap();
+        assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "clear", "label": "default", "accounts": []}));
+
+        let said = json!(account_pushes(&b).await.iter().map(|p| p["accounts"].clone()).collect::<Vec<_>>()).to_string();
+        for leak in ["at-", "example.com", "subject", "token", "scopes"] {
+            assert!(!said.contains(leak), "{leak}: {said}");
+        }
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    #[tokio::test]
+    async fn a_plugin_that_isnt_first_party_learns_no_list() {
+        let b = accounts_bed("acctthird", HostClock::manual()).await;
+        revoke(&b);
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        let pushes = account_pushes(&b).await;
+        assert!(pushes.len() >= 4, "{pushes:?}");
+        assert!(pushes.iter().all(|p| p.get("accounts").is_none()), "{pushes:?}");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A label no token of which was out still leaves the list when it expires.
+    #[tokio::test]
+    async fn a_label_that_isnt_active_leaves_the_list_when_its_refresh_fails() {
+        let b = accounts_bed("acctexpire", HostClock::manual()).await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        token_answer(&b.files, 400, json!({"error": "invalid_grant"}));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "default's refresh, the first due");
+        until("the clear", async || account_pushes(&b).await.last().unwrap()["push"] == "clear").await;
+        let work = json!([{"account": "google", "label": "work", "active": true}]);
+        assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "clear", "label": "default", "accounts": work}));
+        assert_eq!(pushed_labels(&b).await, ["google/work"]);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A switch to a label whose tokens are gone, and the one before it gone too:
+    /// nothing is left to push, so only a clear can tell the plugin.
+    #[tokio::test]
+    async fn labels_that_cant_be_pushed_leave_the_list_with_nothing_left_to_push() {
+        let b = accounts_bed("acctgone", HostClock::manual()).await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        for label in ["default", "work"] {
+            keys.remove_token(&format!("{FX}/google/{label}")).unwrap();
+        }
+        assert_eq!(b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap_err().code, "needs_signin");
+        assert_eq!(account_pushes(&b).await.last().unwrap()["accounts"], json!([]));
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// An open of the fixture's board with a session key of the test's, and
+    /// its signed calls: what Sessions decides, for real.
+    struct Board {
+        sessions: Arc<crate::helper::sessions::Sessions>,
+        key: buwiz_protocol::keys::SessionKey,
+        open_id: String,
+    }
+
+    impl Board {
+        async fn open(b: &Bed) -> Board {
+            let sessions = crate::helper::sessions::Sessions::new(b.host.clone());
+            let key = buwiz_protocol::keys::SessionKey::generate();
+            let open_id = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<16>());
+            let m = b.host.row(FX).unwrap().manifest();
+            let board = m["apps"].as_array().unwrap().iter().find(|a| a["id"] == "board").unwrap();
+            let digest = crate::v1::manifest::perms_digest(board.get("permissions")).unwrap();
+            let ask = json!({"plugin": FX, "app": "board", "open_id": open_id, "ks_pub": key.public(), "perms_sha256": digest, "not_after": crate::hub::store::now_ms() + 3_600_000});
+            sessions.open(&ask).await.unwrap();
+            Board { sessions, key, open_id }
+        }
+
+        async fn call(&self, actor: Value, tool: &str, field: Option<Value>) -> Result<Value, crate::v1::V1Error> {
+            let args = field.map_or(json!({}), |f| json!({"result_meta": {"buwiz/account_use": f}}));
+            let envelope = json!({
+                "v": 1, "typ": "buwiz-call", "plugin": FX, "app": "board", "open_id": self.open_id, "tool": tool, "args": args, "actor": actor,
+                "ts": crate::hub::store::now_ms(), "nonce": buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<16>()),
+            });
+            let sig = self.key.sign(&envelope).unwrap();
+            self.sessions.call(&json!({"envelope": envelope, "sig": sig})).await
+        }
+    }
+
+    /// B7: only the person's signed call carries a switch to the Bot. The AI's
+    /// press or a routine is refused even on a tool it may reach, and `fx_search`
+    /// is a read, so everyone reaches it.
+    #[tokio::test]
+    async fn a_switch_stands_only_on_the_persons_signed_call_to_a_first_party_plugin() {
+        let b = accounts_bed("acctuse", HostClock::system()).await;
+        let board = Board::open(&b).await;
+        let field = json!({"account": "google", "label": "work"});
+        let out = board.call(json!("person"), "fx_echo", Some(field.clone())).await.unwrap();
+        assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use": field}));
+        let out = board.call(json!("person"), "fx_search", Some(field.clone())).await.unwrap();
+        assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use": field}));
+        for actor in [json!("agent"), json!("routine"), json!("app"), json!("Person"), json!(true), Value::Null] {
+            let e = board.call(actor.clone(), "fx_search", Some(field.clone())).await.unwrap_err();
+            assert_eq!(e.code, "permission_denied", "{actor}");
+            assert_eq!(e.message, "only a person's own press in a first-party plugin switches accounts", "{actor}");
+            assert!(board.call(actor, "fx_search", None).await.unwrap()["result"].get("_meta").is_none(), "a plain read still goes");
+        }
+        assert_eq!(board.call(json!("agent"), "fx_echo", Some(field.clone())).await.unwrap_err().message, "fx_echo is a person's to run");
+        revoke(&b);
+        assert_eq!(board.call(json!("person"), "fx_echo", Some(field)).await.unwrap_err().code, "permission_denied");
+        assert!(board.call(json!("person"), "fx_echo", None).await.is_ok());
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
     /// A swapped Client ID and Secret are refused and nothing is saved; a
     /// wrong-shaped one is said under its field; a client stored in the
     /// wrong shape (before the checks) never reaches Google and brings the

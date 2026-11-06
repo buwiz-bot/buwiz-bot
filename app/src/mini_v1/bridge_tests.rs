@@ -88,6 +88,8 @@ struct FakeBroker {
     cards: AtomicUsize,
     /// The entry changes after the card goes up.
     moved: AtomicBool,
+    /// The account routes asked: (route, body).
+    switched: Mutex<Vec<(String, Value)>>,
 }
 
 impl host_api::Broker for FakeBroker {
@@ -136,6 +138,15 @@ impl host_api::Broker for FakeBroker {
                         }
                         r
                     }
+                    "fx_account_use" | "fx_account_fail" | "fx_account_read" => {
+                        std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0)));
+                        let mut r = match env["tool"].as_str().unwrap() {
+                            "fx_account_fail" => json!({"isError": true, "content": [{"type": "text", "text": "no"}]}),
+                            _ => json!({"content": [{"type": "text", "text": "switched"}], "structuredContent": {"switched": true}}),
+                        };
+                        r["_meta"] = json!({"buwiz/account_use": args["field"]});
+                        r
+                    }
                     "fx_slow" | "fx_count" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(150)));
                         json!({"structuredContent": {"ok": true}})
@@ -147,7 +158,7 @@ impl host_api::Broker for FakeBroker {
             }
             "/v1/host/ui/press" => Ok(match body["tool"].as_str() {
                 Some("fx_echo" | "fx_slow" | "fx_document") => json!({"allow": true, "effect": "draft"}),
-                Some("fx_read") => json!({"allow": true, "effect": "read"}),
+                Some("fx_read" | "fx_account_read") => json!({"allow": true, "effect": "read"}),
                 Some("fx_post") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_card"}),
                 Some("fx_long") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_long_card"}),
                 Some("fx_refused_draft") => json!({"allow": false, "hold": true, "effect": "draft", "describe": "fx_no_card"}),
@@ -159,6 +170,14 @@ impl host_api::Broker for FakeBroker {
             "/v1/host/resolve" => Ok(json!({"result": "token", "ticket": TICKET, "title": "Item One"})),
             "/v1/host/sessions/close" => {
                 self.closed.lock().unwrap().push(body["open_id"].as_str().unwrap_or_default().to_owned());
+                Ok(json!({"ok": true}))
+            }
+            r if r.contains("/accounts/") => {
+                let gone = body["label"] == "gone";
+                self.switched.lock().unwrap().push((route.to_owned(), body));
+                if gone {
+                    return Err(RoxError::new("needs_signin", "gone needs a sign-in again; work@example.com is active"));
+                }
                 Ok(json!({"ok": true}))
             }
             _ => Err(RoxError::new("not_found", route)),
@@ -1423,6 +1442,9 @@ fn a_sealed_page_carries_the_no_load_policy_after_its_doctype() {
     assert_eq!(seal("\u{feff}\n <!DOCTYPE html><p>"), format!("\u{feff}\n <!DOCTYPE html>{head}<p>"));
     assert_eq!(seal("<html><p>x</p>"), format!("{head}<html><p>x</p>"));
 }
+
+#[path = "bridge_account_tests.rs"]
+mod account;
 
 #[path = "bridge_document_tests.rs"]
 mod document;
