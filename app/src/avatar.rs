@@ -254,6 +254,9 @@ pub(crate) struct BotBlobProps {
     pub morph_shape: bool,
     pub seed: Option<String>,
     pub gaze_at: Option<V2>,
+    /// Whether it can be seen, when that can change: one that can't paints
+    /// nothing, so the cost of avatars is what's on screen, not how many exist.
+    pub shown: Option<Rc<dyn Fn() -> bool>>,
 }
 
 impl Default for BotBlobProps {
@@ -273,6 +276,7 @@ impl Default for BotBlobProps {
             morph_shape: false,
             seed: None,
             gaze_at: None,
+            shown: None,
         }
     }
 }
@@ -453,6 +457,10 @@ impl Inner {
     fn paint(&mut self, p: Painter, props: &BotBlobProps, resting: bool) -> Painter {
         #[cfg(test)]
         PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        if let Some(seed) = &props.seed {
+            *PAINTED_BY.lock().unwrap().entry(seed.clone()).or_default() += 1;
+        }
         let size = props.size as f64;
         let canvas_size = size * 1.5;
         let box_ = size * 0.82;
@@ -502,6 +510,11 @@ impl Inner {
 #[cfg(test)]
 pub(crate) static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// How many times each seeded avatar has painted.
+#[cfg(test)]
+pub(crate) static PAINTED_BY: std::sync::Mutex<std::collections::BTreeMap<String, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// How many times an avatar has painted.
 #[cfg(test)]
 pub(crate) static PAINTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -527,6 +540,11 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
                 st.sync(props);
                 let now = Instant::now();
                 let resting = props.paused || (st.last_state == "idle" && now >= st.grace_until);
+                // out of sight it draws nothing at all, a state change included:
+                // this runs again when it comes back
+                if !props.shown.as_ref().is_none_or(|f| f()) {
+                    return Painter::new();
+                }
                 let live = !resting
                     || !st.mark.is_settled()
                     || (props.edit.as_ref().map_or(0.0, |e| e.target.get()) - st.ek).abs() > 0.002
@@ -600,6 +618,9 @@ pub(crate) struct BotAvatarProps {
     pub morph_shape: bool,
     pub seed: Option<String>,
     pub gaze_at: Option<V2>,
+    /// Whether it can be seen, when that can change: one that can't paints
+    /// nothing, so the cost of avatars is what's on screen, not how many exist.
+    pub shown: Option<Rc<dyn Fn() -> bool>>,
 }
 
 impl BotAvatarProps {
@@ -644,6 +665,7 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
                 morph_shape: p.morph_shape,
                 seed: p.seed,
                 gaze_at: p.gaze_at,
+                shown: p.shown,
             }))
         })
 }
