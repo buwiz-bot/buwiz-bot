@@ -480,7 +480,7 @@ async fn the_card_says_what_a_hand_over_doesnt_keep_from_the_ai() {
     };
     let c = card(&b, &b.ann.1).await;
     let words = c["lines"].to_string();
-    for said in ["programs it already started can keep running", "could see what you type", "Don't type a real password unless you trust this Bot's work so far"] {
+    for said in ["Commands it ran can keep running, but they can't see this screen or what you type", "pages it opened, and anything it set going by clicking on this screen, could", "Don't type a real password unless you trust this Bot's work so far"] {
         assert!(words.contains(said), "{words}");
     }
     assert!(!words.contains("shown nothing"), "{words}");
@@ -515,6 +515,44 @@ async fn a_computer_that_cant_be_cleared_isnt_handed_over() {
     let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it was handed over all the same").unwrap();
     assert_eq!(out.is_error, Some(true));
     assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
+}
+
+#[tokio::test]
+async fn a_hand_over_that_fails_after_the_recording_stopped_still_says_where_it_is() {
+    let b = timed("record-lost");
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let r = Arc::new(run(&b, &b.ann.1, None));
+    call(&r, "computer_record", json!({"action": "start"})).await;
+    *b.mock.stray_problem.lock().unwrap() = Some(Problem::Failed("no".into()));
+    let asking = {
+        let r = r.clone();
+        tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
+    };
+    answer(&b, &b.ann.1, &card(&b, &b.ann.1).await, "once");
+    let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it was handed over all the same").unwrap();
+    assert_eq!(out.is_error, Some(true));
+    assert!(words(&out).contains("7.mp4"), "{}", words(&out));
+}
+
+#[tokio::test]
+async fn a_computer_not_confirmed_walled_off_isnt_handed_over() {
+    for answer_given in [Ok(false), Err(Problem::Failed("docker said no".into()))] {
+        let b = bed("notapart");
+        awake(&b, &b.ann.0).await;
+        *b.mock.apart.lock().unwrap() = Some(answer_given);
+        let r = Arc::new(run(&b, &b.ann.1, None));
+        let asking = {
+            let r = r.clone();
+            tokio::spawn(async move { call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await })
+        };
+        let out = tokio::time::timeout(Duration::from_secs(5), asking).await.expect("it asked anyway").unwrap();
+        assert_eq!(out.is_error, Some(true));
+        assert!(words(&out).contains("nothing was handed over"), "{}", words(&out));
+        assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
+        assert!(!b.mock.calls().iter().any(|c| c == "clear_strays"), "{:?}", b.mock.calls());
+        assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("recording").is_none());
+    }
 }
 
 #[tokio::test]
@@ -928,11 +966,24 @@ async fn real_flow(b: &Bed) {
     let started = box_run(&format!("setsid nohup python3 -c '{quoted}' >/dev/null 2>&1 &")).await;
     assert_eq!(started.exit_code, Some(0), "{}", started.stderr);
     let log = async || box_run("cat /tmp/c2b-signin.log 2>/dev/null").await.stdout;
-    // left running by a command: it goes before the person starts
-    assert_eq!(box_run("setsid nohup python3 -c 'import time; time.sleep(300)' >/dev/null 2>&1 &").await.exit_code, Some(0));
+    // left running on the desktop, as something a click started is: it goes before the person starts
+    let buwiz_computer::Reach::Container { name } = &live.machine.reach else { panic!("a container") };
+    let in_box = |args: &[&str]| {
+        let out = std::process::Command::new("docker").args(["exec", "--user", "0", name]).args(args).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let bot = live.screen.bot().unwrap().to_owned();
+    let desktop = 20001 + 2 * in_box(&["cat", &format!("/home/box/.box/bots/{bot}")]).parse::<u32>().unwrap();
+    in_box(&["sh", "-c", &format!("setpriv --reuid={desktop} --regid={desktop} --clear-groups setsid nohup python3 -c 'import time; time.sleep(300)' >/dev/null 2>&1 &")]);
+    let pointer = || in_box(&["sh", "-c", &format!("DISPLAY={} XAUTHORITY=/run/box/x/svc.auth setpriv --reuid=990 --regid=990 --clear-groups xdotool getmouselocation --shell | head -2 | tr '\\n' ' '", live.screen.display)]);
+
+    // two Bots, one computer: the check from outside lets a real command through
+    let r = Arc::new(run(b, &b.ann.1, None));
+    let shared = call(&r, "computer_run", json!({"command": "id -u"})).await;
+    assert_eq!(shared.is_error, None, "{}", words(&shared));
+    assert!(words(&shared).contains(&(desktop - 1).to_string()), "{}", words(&shared));
 
     // a person drives: what the agent does waits, then lands after they stop
-    let r = Arc::new(run(b, &b.ann.1, None));
     let opened = call(&r, "computer_open_url", json!({"url": "http://127.0.0.1:8123/login"})).await;
     assert_eq!(opened.is_error, None, "{}", words(&opened));
     let mut ws = connect(b, &b.ann.0, "drive").await;
@@ -947,10 +998,10 @@ async fn real_flow(b: &Bed) {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(!scrolling.is_finished(), "it went on under a person");
-    let where_now = box_run("xdotool getmouselocation --shell | head -2 | tr '\\n' ' '").await.stdout;
+    let where_now = pointer();
     assert!(where_now.contains("X=21"), "the agent moved the pointer under a person: {where_now}");
     assert_eq!(scrolling.await.unwrap().is_error, None, "it goes on once they stop");
-    let where_now = box_run("xdotool getmouselocation --shell | head -2 | tr '\\n' ' '").await.stdout;
+    let where_now = pointer();
     assert!(where_now.contains("X=700"), "{where_now}");
     drop(ws);
 
@@ -962,8 +1013,6 @@ async fn real_flow(b: &Bed) {
     let c = card(b, &b.ann.1).await;
     answer(b, &b.ann.1, &c, "once");
     real_until("no hand-over", async || b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_some()).await;
-    // the clearing took the test's own server with the rest: the site is meant to be out there
-    assert_eq!(box_run(&format!("setsid nohup python3 -c '{quoted}' >/dev/null 2>&1 &")).await.exit_code, Some(0));
     let mut ws = connect(b, &b.ann.0, "drive").await;
     assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["viewer"], "drive");
     for step in ["m,640,420", "b,1,1", "b,1,0"] {
@@ -997,6 +1046,6 @@ async fn real_flow(b: &Bed) {
     println!("what the browsers sent:\n{l}");
     assert!(l.contains("/who-ann cookie=session=abc"), "{l}");
     assert!(l.contains("/who-bea cookie=None"), "{l}");
-    let own = box_run("pgrep -af -- --user-data-dir=.*/bots/b_ann | head -1").await.stdout;
-    assert!(own.contains("/bots/b_ann"), "{own}");
+    let own = box_run(&format!("pgrep -u {desktop} -af -- --user-data-dir= | head -1")).await.stdout;
+    assert!(own.contains(&format!("/desktops/{bot}/")), "{own}");
 }

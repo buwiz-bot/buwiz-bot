@@ -168,6 +168,9 @@ pub struct Seen {
     pub net_missing: bool,
     /// when the computer itself last started
     pub box_started: String,
+    /// both its containers come from an image that runs commands as users of their own, read from
+    /// Docker's records of them and not from anything inside
+    pub users_apart: bool,
     /// guest port → `127.0.0.1:port`
     pub ports: std::collections::HashMap<u16, String>,
 }
@@ -246,6 +249,13 @@ pub struct Screen {
     pub folder: String,
     /// its browser's profile, inside the computer
     pub profile: Option<String>,
+}
+
+impl Screen {
+    /// The Bot whose screen this is.
+    pub fn bot(&self) -> Option<&str> {
+        self.folder.strip_prefix("agents/").filter(|b| !b.is_empty())
+    }
 }
 
 /// What a viewer needs: where the page is on this Mac, and the word it wants. The gate keeps it;
@@ -466,11 +476,18 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
-    /// Before a person is given a screen: ends every program on the computer that isn't its
-    /// desktop, browser or services, and names what it ended. Ended, because a stopped program that
-    /// holds an X connection reads the keys it missed once it's resumed.
-    async fn clear_strays(&self, _machine: &Machine) -> Result<Vec<String>> {
+    /// Before a person is given `screen`: ends every program of that screen's desktop user that
+    /// isn't the desktop or browser, and names what it ended. Ended, because a stopped program that
+    /// holds an X connection reads the keys it missed once it's resumed. Commands are another user
+    /// with no way to that screen, so they carry on, and so does every other Bot.
+    async fn clear_strays(&self, _machine: &Machine, _screen: &Screen) -> Result<Vec<String>> {
         unsupported("hand a screen to a person")
+    }
+
+    /// Whether these Bots are kept apart on this computer, by a check made from outside it. Nothing
+    /// the computer says of itself counts, and not being able to tell is a no.
+    async fn users_apart(&self, _machine: &Machine, _bots: &[String]) -> Result<bool> {
+        Ok(false)
     }
 
     /// Starts `bot`'s screen, or finds it running. Awake only; a bot keeps its screen's number

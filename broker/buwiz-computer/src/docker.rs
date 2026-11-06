@@ -20,6 +20,13 @@
 //!   answers, or the start is abandoned ([`Staged`]). The image would unlink them as it reads them
 //!   and says it couldn't: a mount the box can write is a place to plant things in a Mac folder,
 //!   so this side does the removing.
+//! - **Users.** A box starts as root, with only the capabilities it takes to set itself up and
+//!   start each part as its own user ([`BOX_CAPS`]). `box-keeper` alone stays root. Commands run as
+//!   a user with no way to a screen, a browser profile or a service. A box from an older image
+//!   hasn't got that, and is made again on the same volumes at its next wake, with its home set
+//!   aside: commands could write there. What says which is a box Docker's label for the image
+//!   ([`USERS_LABEL`]), and whether Bots on one computer are really apart is read from outside
+//!   ([`Provider::users_apart`]).
 //! - **Sleep** is `docker pause`: it comes back at once with everything open. Deep sleep is
 //!   `docker stop`: the memory is free, and the files stay on the volumes. The holder stays up
 //!   through both, a `sleep` and little else.
@@ -59,6 +66,15 @@ const VIEWER_FILE: &str = "viewer";
 const DOCKER_PATIENCE: Duration = Duration::from_secs(60);
 /// How long a start gets to answer.
 const WAKE_PATIENCE: Duration = Duration::from_secs(120);
+/// On the image, and so on each container made from it: this image runs commands as users of their
+/// own. A new value is for an image whose containers need making again.
+const USERS_LABEL: &str = "app.buwiz.box.users";
+const USERS_VERSION: &str = "1";
+/// What the box's root needs, and nothing else. A box doesn't start with fewer.
+const BOX_CAPS: [&str; 8] = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETGID", "SETUID"];
+/// Below this a port takes a capability, in the network the holder owns, so no command can listen
+/// on a service's port, free or not, or send from one. It's the first above the viewers.
+const FIRST_OPEN_PORT: u16 = 6906;
 const STOP_SECONDS: &str = "5";
 const AT_ONCE: &str = "0";
 const IFCONFIG: &str = "/sbin/ifconfig";
@@ -137,72 +153,217 @@ except FileNotFoundError:
     pass
 "#;
 
-/// Ends the programs a hand-over mustn't run beside, as root from outside, with nothing but python3
-/// in the image. A process in the box can't hide from this or ignore it. Prints what it ended, as a
-/// JSON list. Safe to repeat.
+/// Ends what's left on one Bot's desktop before a person takes it over, as root from outside, with
+/// nothing but python3 in the image. Prints what it ended, as a JSON list. Safe to repeat.
 ///
-/// What's spared is decided by what can't be forged from a command: the real `box-keeper`, its
-/// children, and theirs, except what `box-exec` is running; and programs of the desktop and
-/// browser, by the path of the file they run, which a command can't write to. The real keeper is
-/// the oldest by the kernel's start time: tini's first child, so nothing a command starts can be
-/// older, whatever pid it lands on. Being able to run a program isn't enough: `voxl`, `box-exec`
-/// and an interpreter are spared only as the keeper's own. Passes repeat until one finds nothing,
-/// so a forking loop doesn't get away.
+/// A command can't reach a desktop, so this isn't for commands. It's for what the model got running
+/// on the screen itself, by clicks: that's the desktop's user. So this looks at that user alone, and
+/// spares the desktop and browser, by the path of the file each runs, which that user can't write
+/// to. Starting an allowed program with a library of its own doesn't help: anything mapped to run
+/// from outside the system's folders makes it a stray. `voxl` runs as this user too, and counts only
+/// as the root keeper's child: one that user started is watching the screen. Passes repeat until one
+/// finds nothing, so a forking loop doesn't get away.
 ///
-/// Nothing a process controls can hide it or stop the scan: its name is bytes, its uid comes from
-/// `status` (a non-dumpable process's files under `/proc/<pid>` say root, though that directory
-/// itself doesn't), and one whose file can't be read is a stray. Needs `--privileged`: reading another uid's `exe` takes `CAP_SYS_PTRACE`, which root in
-/// a container hasn't got, and `docker exec` can't add just that.
+/// The name is bytes, and a user's process is one if any of its ids says so. A process goes on while
+/// any thread lives, and a leader that exited shows `Z` with its threads running, so a process only
+/// counts as gone when every thread has. `/proc/<pid>/exe` needs `CAP_SYS_PTRACE` for another user,
+/// so this needs `--privileged`: `docker exec` can't add just that. A file that can't be read makes
+/// a stray, and so does a process of that user that can't be read at all. The Bot's number comes
+/// from a file only root writes, and without it nothing is handed over.
 ///
-/// It's no wall: a command can start an allowed program with a library of its own, a page in the
-/// browser is a page, and the list of what the desktop runs is kept by hand. It ends what was left
-/// running, which is what's there to be left. The separate uid for commands is what closes these.
-const CLEAR: &str = r#"
-import fnmatch, json, os, signal, time
-ALLOWED = ['/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
-KEEPER, EXEC, BOX_UID = '/usr/local/bin/box-keeper', '/usr/local/bin/box-exec', 1000
+/// It's no wall: a page in the browser is a page, and the list of what the desktop runs is kept by
+/// hand. It ends what was left running on that screen, which is what's there to be left.
+#[doc(hidden)]
+pub const CLEAR: &str = r#"
+import fnmatch, json, os, signal, stat, sys, time
+ALLOWED = ['/usr/local/bin/voxl', '/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
+LIBRARIES = ('/usr/', '/lib/', '/opt/box/')
+VOXL, KEEPER = '/usr/local/bin/voxl', '/usr/local/bin/box-keeper'
+path = '/home/box/.box/bots/' + sys.argv[1]
+info = os.lstat(path)
+if info.st_uid != 0 or not stat.S_ISREG(info.st_mode):
+    raise SystemExit('this Bot has no user')
+USER = 20001 + 2 * int(open(path).read().strip())
+def alive(pid):
+    for task in os.listdir('/proc/%s/task' % pid):
+        stat_line = open('/proc/%s/task/%s/stat' % (pid, task), 'rb').read()
+        if stat_line[stat_line.rindex(b')') + 2:].split()[0] != b'Z':
+            return True
+    return False
+def foreign(pid):
+    for line in open('/proc/%s/maps' % pid, 'rb'):
+        fields = line.split(None, 5)
+        if len(fields) == 6 and b'x' in fields[1]:
+            name = fields[5].strip().decode('utf-8', 'replace')
+            if name.startswith('/') and not name.startswith(LIBRARIES):
+                return True
+    return False
+def keepers_own(pid, status):
+    parent = status[status.index(b'\nPPid:') + 6:].split()[0].decode()
+    return os.readlink('/proc/%s/exe' % parent) == KEEPER and os.stat('/proc/%s' % parent).st_uid == 0
 def table():
     out = {}
     for d in os.listdir('/proc'):
         if not d.isdigit():
             continue
         try:
-            stat = open('/proc/%s/stat' % d, 'rb').read()
+            stat_line = open('/proc/%s/stat' % d, 'rb').read()
             status = open('/proc/%s/status' % d, 'rb').read()
-            rest = stat[stat.rindex(b')') + 2:].split()
-            uid = int(status[status.index(b'\nUid:') + 5:].split()[0])
-            if rest[0] == b'Z' or uid != BOX_UID:
+            ids = [int(n) for n in status[status.index(b'\nUid:') + 5:].split(b'\n')[0].split()]
+            if USER not in ids or not alive(d):
                 continue
+            name = stat_line[stat_line.index(b'(') + 1:stat_line.rindex(b')')].decode('utf-8', 'replace')
             try:
                 exe = os.readlink('/proc/%s/exe' % d)
+                strange = foreign(d) or (exe == VOXL and not keepers_own(d, status))
             except OSError:
-                exe = ''
-            out[int(d)] = (int(rest[1]), exe, stat[stat.index(b'(') + 1:stat.rindex(b')')].decode('utf-8', 'replace'), int(rest[19]))
+                exe, strange = '', True
+            out[int(d)] = (exe, name, strange)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
         except (OSError, ValueError, IndexError):
-            pass
+            # alive, and not saying what it is: the folder's owner is the one thing left to go on
+            try:
+                if os.stat('/proc/%s' % d).st_uid == USER:
+                    out[int(d)] = ('', 'unreadable', True)
+            except OSError:
+                pass
     return out
 ended = []
 for _ in range(20):
     procs = table()
-    keepers = [p for p, (parent, exe, _, _) in procs.items() if parent == 1 and exe == KEEPER]
-    if not keepers:
-        raise SystemExit('no keeper')
-    keeper = min(keepers, key=lambda p: (procs[p][3], p))
-    children = {p for p, (parent, _, _, _) in procs.items() if parent == keeper}
-    grandchildren = {p for p, (parent, _, _, _) in procs.items() if parent in children and procs[parent][1] != EXEC}
-    kept = {1, keeper} | children | grandchildren
-    strays = [p for p, (_, exe, _, _) in procs.items() if p not in kept and not any(fnmatch.fnmatch(exe, a) for a in ALLOWED)]
+    strays = [p for p, (exe, _, strange) in procs.items() if strange or not any(fnmatch.fnmatch(exe, a) for a in ALLOWED)]
     if not strays:
         print(json.dumps(sorted(set(ended))))
         raise SystemExit(0)
     for p in strays:
         try:
             os.kill(p, signal.SIGKILL)
-            ended.append(procs[p][2])
+            ended.append(procs[p][1])
         except ProcessLookupError:
             pass
     time.sleep(0.05)
 raise SystemExit('programs kept coming')
+"#;
+
+/// Whether the Bots named are kept apart on this computer, read as root from outside: it prints
+/// `apart`, or why not. Everything it reads is the kernel's, or a file only root writes, and it runs
+/// the image's own python, which no command can write to, with nothing of the box's environment.
+/// A process in the box can't answer for it.
+///
+/// - The port floor is up, in this network.
+/// - Each Bot has its own two numbers, a folder only its users can open, and a desktop home only its
+///   desktop user can.
+/// - The services are `boxsvc`'s, and each voxl a desktop's.
+/// - Every X listener in the box, by the kernel's list and not by program: each is held by the real
+///   Xvfb as a desktop's user, with no `-ac` or `-shmem`, and turns away a client with no cookie,
+///   which is also what shows `xhost +` or an empty cookie file.
+/// - Each server's cookie and its folder are root's, for that desktop's group alone. The services'
+///   cookie is the same for theirs. A desktop can't pass a cookie on, by mode or by group.
+/// - No desktop has shared memory open.
+/// - No process of a Bot's user holds a capability, but voxl its port's.
+const APART: &str = r#"
+import os, re, socket, stat, struct, sys
+def no(why):
+    print(why)
+    raise SystemExit(0)
+PORT_FLOOR = 6906
+SVC = 990
+if int(open('/proc/sys/net/ipv4/ip_unprivileged_port_start').read()) < PORT_FLOOR:
+    no('the port floor is down')
+seen = set()
+desktop = lambda uid: uid == 1000 or (uid >= 20001 and uid % 2 == 1)
+for bot in sys.argv[1:]:
+    path = '/home/box/.box/bots/' + bot
+    info = os.lstat(path)
+    if info.st_uid != 0 or not stat.S_ISREG(info.st_mode):
+        no('a Bot has no user')
+    agent = 20000 + 2 * int(open(path).read().strip())
+    if agent in seen:
+        no('two Bots share a user')
+    seen.add(agent)
+    folder = os.lstat('/workspace/agents/' + bot)
+    if not stat.S_ISDIR(folder.st_mode) or folder.st_uid != agent or folder.st_mode & 0o007:
+        no('a Bot folder is open')
+    home = os.lstat('/home/box/desktops/' + bot)
+    if not stat.S_ISDIR(home.st_mode) or home.st_uid != agent + 1 or home.st_mode & 0o077:
+        no('a desktop home is open')
+def closed_folder(path):
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        no('an X folder is open')
+def cookie(path, group):
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_size == 0 or info.st_uid != 0 or info.st_gid != group or info.st_mode & 0o777 != 0o640:
+        no('an X cookie is open')
+closed_folder('/run/box/x')
+cookie('/run/box/x/svc.auth', SVC)
+listeners = {}
+for line in open('/proc/net/unix').read().splitlines()[1:]:
+    fields = line.split()
+    if len(fields) >= 8 and int(fields[3], 16) & 0x10000 and fields[7].lstrip('@').startswith('/tmp/.X11-unix/'):
+        listeners[fields[6]] = fields[7]
+held = {}
+for d in os.listdir('/proc'):
+    if not d.isdigit():
+        continue
+    try:
+        status = open('/proc/%s/status' % d, 'rb').read().decode('utf-8', 'replace')
+        exe = os.readlink('/proc/%s/exe' % d)
+        args = open('/proc/%s/cmdline' % d, 'rb').read().split(b'\0')
+        sockets = [os.readlink('/proc/%s/fd/%s' % (d, f)) for f in os.listdir('/proc/%s/fd' % d)]
+    except FileNotFoundError:
+        continue
+    except PermissionError:
+        no('a process cannot be read')
+    fields = dict(line.split(':', 1) for line in status.splitlines() if ':' in line)
+    ids = [int(n) for n in fields['Uid'].split()]
+    for inode in re.findall(r'socket:\[(\d+)\]', ' '.join(sockets)):
+        if inode in listeners:
+            held[inode] = True
+            if exe != '/usr/bin/Xvfb':
+                no('something else is listening as an X server')
+    if exe in ('/usr/local/bin/box-exec', '/usr/local/bin/box-host') and set(ids) != {SVC}:
+        no('a service runs as another user')
+    if exe == '/usr/local/bin/voxl' and not all(desktop(i) for i in ids):
+        no('a viewer runs as another user')
+    if exe == '/usr/bin/Xvfb':
+        if not all(desktop(i) for i in ids) or len(set(ids)) != 1 or b'-ac' in args or b'-shmem' in args or b'-listen' in args or b'-auth' not in args:
+            no('an X server is open')
+        number = args[1].decode('utf-8', 'replace').lstrip(':')
+        closed_folder('/run/box/x/' + number)
+        path = args[args.index(b'-auth') + 1].decode('utf-8', 'replace')
+        if path != '/run/box/x/%s/auth' % number:
+            no('an X cookie is open')
+        cookie(path, ids[0])
+        run = os.lstat('/run/box/x/%s/run' % number)
+        if run.st_uid != ids[0] or run.st_mode & 0o007:
+            no('an X folder is open')
+    allowed = 0x400 if exe == '/usr/local/bin/voxl' else 0
+    if any(i >= 20000 for i in ids) and any(int(fields[c], 16) & ~allowed for c in ('CapEff', 'CapPrm', 'CapAmb')):
+        no('a Bot user holds a capability')
+if not listeners:
+    no('no X server')
+if set(listeners) - set(held):
+    no('an X listener has no owner')
+for name in listeners.values():
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(2)
+    try:
+        s.connect('\0' + name[1:] if name.startswith('@') else name)
+        s.sendall(struct.pack('<BxHHHHxx', 0x6c, 11, 0, 0, 0))
+        answer = s.recv(1)
+    except OSError:
+        no('an X listener did not answer')
+    if answer != b'\0':
+        no('an X server lets anybody in')
+    s.close()
+lines = open('/proc/sysvipc/shm').read().splitlines()[1:]
+for line in lines:
+    fields = line.split()
+    if int(fields[2], 8) & 0o077 and desktop(int(fields[7])):
+        no('a desktop has shared memory open')
+print('apart')
 "#;
 
 /// The local Docker computers.
@@ -418,7 +579,11 @@ impl DockerProvider {
     /// Both containers made again, on the same named volumes: the box's files stay. A box can't
     /// rejoin a new holder, because Docker keeps the old one's id, so the box goes too, and it
     /// goes without `-v`.
+    ///
+    /// Always on this provider's image, the record's may be from before users. With no image to
+    /// make them from, nothing is taken down.
     async fn rebuild(&self, machine: &Machine, name: &str, found: Option<&Inspected>) -> Result<()> {
+        self.check().await?;
         if let Some(found) = found {
             self.halt(name, found, STOP_SECONDS).await;
         }
@@ -432,9 +597,8 @@ impl DockerProvider {
         self.ensure_network().await?;
         let start = secret_dir(&machine.dir);
         private_dir(&start)?;
-        let image = machine.image.as_deref().unwrap_or(&self.image);
         let id = machine.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.make_containers(image, name, &id, &start).await
+        self.make_containers(&self.image, name, &id, &start).await
     }
 
     /// Whether either of `name`'s volumes is there: each holds files.
@@ -523,9 +687,11 @@ fn holder_args(image: &str, name: &str, network: &str, id: &str) -> Vec<String> 
     args.push("--label".to_owned());
     args.push(format!("{LABEL}.id={id}"));
     // a `sleep` needs nothing, and the wall's exec brings its own privileges
-    for a in ["--cap-drop", "ALL", "--memory", "64m", "--pids-limit", "64", "--security-opt", "no-new-privileges", "--sysctl", "net.ipv6.conf.all.disable_ipv6=1"] {
+    for a in ["--user", "65534:65534", "--cap-drop", "ALL", "--memory", "64m", "--pids-limit", "64", "--security-opt", "no-new-privileges", "--sysctl", "net.ipv6.conf.all.disable_ipv6=1"] {
         args.push(a.to_owned());
     }
+    args.push("--sysctl".to_owned());
+    args.push(format!("net.ipv4.ip_unprivileged_port_start={FIRST_OPEN_PORT}"));
     for port in [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS) {
         args.push("-p".to_owned());
         args.push(format!("127.0.0.1:{PORT_FIRST}-{DOCKER_PORT_LAST}:{port}"));
@@ -551,9 +717,13 @@ fn create_args(image: &str, name: &str, id: &str, secrets: &Path) -> Vec<String>
     }
     args.push("--mount".to_owned());
     args.push(format!("type=bind,source={},target={SECRET_MOUNT},readonly", secrets.display()));
-    // Chromium needs more than Docker's 64 MiB; no setuid program may lift the box's user
-    for a in ["--cap-drop", "NET_RAW", "--shm-size", "1g", "--memory", "4g", "--pids-limit", "2048", "--security-opt", "no-new-privileges"] {
+    // Chromium needs more than Docker's 64 MiB; no setuid program may lift a user of the box
+    for a in ["--user", "0", "--cap-drop", "ALL", "--shm-size", "1g", "--memory", "4g", "--pids-limit", "2048", "--security-opt", "no-new-privileges"] {
         args.push(a.to_owned());
+    }
+    for cap in BOX_CAPS {
+        args.push("--cap-add".to_owned());
+        args.push(cap.to_owned());
     }
     for env in [
         format!("BOX_TOKEN_FILE={SECRET_MOUNT}/{TOKEN_FILE}"),
@@ -660,10 +830,17 @@ impl Provider for DockerProvider {
 
     async fn check(&self) -> Result<()> {
         self.docker(&["version", "--format", "{{.Server.Version}}"], None).await?;
-        self.docker(&["image", "inspect", "--format", "{{.Id}}", &self.image], None).await.map(|_| ()).map_err(|e| match e {
+        let label = format!("{{{{index .Config.Labels \"{USERS_LABEL}\"}}}}");
+        let found = self.docker(&["image", "inspect", "--format", &label, &self.image], None).await.map_err(|e| match e {
             Problem::Gone => Problem::ImageMissing(self.image.clone()),
             other => other,
-        })
+        })?;
+        // an image from before users is as good as none: a computer mustn't start on it
+        if found.trim() == USERS_VERSION {
+            Ok(())
+        } else {
+            Err(Problem::ImageMissing(self.image.clone()))
+        }
     }
 
     async fn create(&self, spec: &Spec) -> Result<Machine> {
@@ -707,7 +884,7 @@ impl Provider for DockerProvider {
     async fn wake(&self, machine: &Machine) -> Result<Woke> {
         let name = container(machine)?;
         let found = match self.inspect(name).await {
-            Ok(found) if !found.net_missing => found,
+            Ok(found) if !found.net_missing && found.users_apart => found,
             Ok(found) => {
                 self.rebuild(machine, name, Some(&found)).await?;
                 self.inspect(name).await?
@@ -804,13 +981,33 @@ impl Provider for DockerProvider {
             self.halt(name, &found, AT_ONCE).await;
             return Err(Problem::Unwalled("its network changed under it".to_owned()));
         }
+        // from before users, and nothing shipped ran one: a person's next click makes it again
+        if !found.users_apart {
+            self.halt(name, &found, STOP_SECONDS).await;
+            return Err(Problem::Asleep);
+        }
         self.net_up(name, &found, false).await
     }
 
-    async fn clear_strays(&self, machine: &Machine) -> Result<Vec<String>> {
+    async fn clear_strays(&self, machine: &Machine, screen: &Screen) -> Result<Vec<String>> {
         let name = container(machine)?;
-        let out = self.docker(&["exec", "--user", "0", "--privileged", name, "/usr/bin/python3", "-I", "-S", "-c", CLEAR], None).await?;
+        let bot = screen.bot().ok_or_else(|| Problem::Failed("this screen has no user of its own".to_owned()))?;
+        let out = self.docker(&["exec", "--user", "0", "--privileged", name, "/usr/bin/python3", "-I", "-S", "-c", CLEAR, bot], None).await?;
         serde_json::from_str(out.trim()).map_err(|_| Problem::Failed("the programs left on it couldn't be told apart".to_owned()))
+    }
+
+    async fn users_apart(&self, machine: &Machine, bots: &[String]) -> Result<bool> {
+        let name = container(machine)?;
+        if !self.seen(machine).await?.users_apart {
+            return Ok(false);
+        }
+        let mut args = vec!["exec", "--user", "0", "--privileged", name, "/usr/bin/python3", "-I", "-S", "-c", APART];
+        args.extend(bots.iter().map(String::as_str));
+        let out = self.docker(&args, None).await?;
+        if out.trim() != "apart" {
+            eprintln!("buwiz-computer: its Bots aren't apart: {}", out.trim());
+        }
+        Ok(out.trim() == "apart")
     }
 
     async fn screens(&self, machine: &Machine) -> Result<Vec<String>> {
@@ -913,7 +1110,9 @@ impl Inspected {
                 ports.insert(guest, format!("127.0.0.1:{port}"));
             }
         }
-        Ok(Self { status, started, net_running, net_missing, box_started, ports })
+        let users = |v: &Value| v.pointer("/Config/Labels").and_then(|l| l.get(USERS_LABEL)).and_then(Value::as_str) == Some(USERS_VERSION);
+        let users_apart = users(entry) && users(net);
+        Ok(Self { status, started, net_running, net_missing, box_started, users_apart, ports })
     }
 
     pub fn published(&self, guest_port: u16) -> Option<String> {
@@ -1031,7 +1230,14 @@ mod tests {
         assert!(net.contains("--name c2-x-wall") && net.contains("--entrypoint sleep img:1 infinity"), "{net}");
         assert!(net.contains("disable_ipv6=1") && !net.contains("BOX_"), "{net}");
         let args = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start")).join(" ");
-        assert!(args.contains("--cap-drop NET_RAW") && !args.contains("--cap-add") && !args.contains("NET_ADMIN"), "{args}");
+        assert!(args.contains("--cap-drop ALL"), "{args}");
+        for cap in BOX_CAPS {
+            assert!(args.contains(&format!("--cap-add {cap}")), "{args}");
+        }
+        for cap in ["NET_RAW", "NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE", "MKNOD", "SETPCAP", "SETFCAP"] {
+            assert!(!args.contains(cap), "{cap}: {args}");
+        }
+        assert!(net.contains("net.ipv4.ip_unprivileged_port_start=6906"), "the port floor is the holder's: {net}");
         assert!(args.contains("--network container:c2-x-wall"), "{args}");
         assert!(!args.contains("-p "), "a box in another's network publishes nothing: {args}");
         assert!(args.contains("BOX_TOKEN_FILE=/run/buwiz-computer/token"), "{args}");
@@ -1089,7 +1295,7 @@ mod tests {
 
     /// `docker inspect`'s answer: the box as `status`, its network up since `started`.
     fn inspected(status: &str, net: &str, started: &str) -> String {
-        format!(r#"[{{"Name":"/c2-x","State":{{"Status":"{status}","StartedAt":"U"}}}},{{"Name":"/c2-x-wall","State":{{"Status":"{net}","StartedAt":"{started}"}},"NetworkSettings":{{"Ports":{{"1337/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47001"}}],"1340/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47002"}}],"6902/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47003"}}]}}}}}}]"#)
+        format!(r#"[{{"Name":"/c2-x","Config":{{"Labels":{{"app.buwiz.box.users":"1"}}}},"State":{{"Status":"{status}","StartedAt":"U"}}}},{{"Name":"/c2-x-wall","Config":{{"Labels":{{"app.buwiz.box.users":"1"}}}},"State":{{"Status":"{net}","StartedAt":"{started}"}},"NetworkSettings":{{"Ports":{{"1337/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47001"}}],"1340/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47002"}}],"6902/tcp":[{{"HostIp":"127.0.0.1","HostPort":"47003"}}]}}}}}}]"#)
     }
 
     /// A provider whose `docker` answers `inspect` from the file `state`, and `exec` and `start`
@@ -1118,7 +1324,7 @@ mod tests {
         std::fs::write(dir.join("first"), first).unwrap();
         std::fs::write(dir.join("after"), inspected("exited", "running", "T1")).unwrap();
         let d = dir.display();
-        let body = format!("case \"$1\" in inspect) if [ -e \"{d}/made\" ]; then cat \"{d}/after\"; else cat \"{d}/first\"; echo 'Error response from daemon: No such container: c2-x-wall' >&2; exit 1; fi;; create) touch \"{d}/made\";; start) exit 1;; esac");
+        let body = format!("case \"$1\" in image) echo 1;; inspect) if [ -e \"{d}/made\" ]; then cat \"{d}/after\"; else cat \"{d}/first\"; echo 'Error response from daemon: No such container: c2-x-wall' >&2; exit 1; fi;; create) touch \"{d}/made\";; start) exit 1;; esac");
         DockerProvider::new("img:1", "c2").with_program(fake_docker(dir, &body)).with_ifconfig(PathBuf::from("/usr/bin/true"))
     }
 
@@ -1140,6 +1346,87 @@ mod tests {
             assert!(seen.contains("create --name c2-x-wall") && seen.contains("create --name c2-x "), "{label}: {seen}");
             assert!(seen.contains("source=c2-x-workspace") && seen.contains("source=c2-x-home"), "{label}: {seen}");
         }
+    }
+
+    /// A computer from before users, as Docker holds it: its containers have no label.
+    fn before_users(status: &str) -> String {
+        inspected(status, "running", "T1").replace(r#""Config":{"Labels":{"app.buwiz.box.users":"1"}},"#, "")
+    }
+
+    #[tokio::test]
+    async fn a_computer_from_before_users_is_made_again_on_the_same_volumes() {
+        for status in ["exited", "running", "paused"] {
+            let dir = tmp(&format!("old-{status}"));
+            let p = losing(&dir, &before_users(status));
+            let _ = p.wake(&Machine { image: Some("old:1".into()), ..machine(&dir) }).await;
+            let seen = calls(&dir);
+            assert!(!seen.contains("volume rm") && !seen.contains("rm -f -v"), "{status}: {seen}");
+            assert!(seen.contains("rm -f c2-x\n") && seen.contains("rm -f c2-x-wall\n"), "{status}: {seen}");
+            assert!(seen.contains("source=c2-x-workspace") && seen.contains("source=c2-x-home"), "{status}: {seen}");
+            assert!(seen.contains("img:1") && !seen.contains("old:1"), "on this provider's image, not the record's: {seen}");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_no_image_to_make_it_from_an_old_computer_is_left_alone() {
+        let dir = tmp("old-no-image");
+        let body = format!("case \"$1\" in inspect) cat \"{}/state\";; esac", dir.display());
+        std::fs::write(dir.join("state"), before_users("exited")).unwrap();
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body)).with_ifconfig(PathBuf::from("/usr/bin/true"));
+        assert_eq!(p.wake(&machine(&dir)).await.unwrap_err(), Problem::ImageMissing("img:1".into()));
+        assert!(!calls(&dir).contains("rm "), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn an_image_from_before_users_is_as_good_as_none() {
+        let dir = tmp("old-image");
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in image) echo;; esac"));
+        assert_eq!(p.check().await.unwrap_err(), Problem::ImageMissing("img:1".into()));
+    }
+
+    #[tokio::test]
+    async fn a_running_computer_from_before_users_is_stopped_not_used() {
+        let dir = tmp("old-guard");
+        let p = faked(&dir, &before_users("running"), "true", "true");
+        assert_eq!(p.guard(&machine(&dir)).await.unwrap_err(), Problem::Asleep);
+        assert!(calls(&dir).contains("stop -t 5 c2-x"), "{}", calls(&dir));
+        assert!(!calls(&dir).contains("volume"), "{}", calls(&dir));
+    }
+
+    #[test]
+    fn one_labelled_container_of_two_isnt_enough() {
+        let holder_only = inspected("running", "running", "T1").replacen(r#""Config":{"Labels":{"app.buwiz.box.users":"1"}},"#, "", 1);
+        assert!(!Inspected::parse(&holder_only, "c2-x").unwrap().users_apart);
+        assert!(Inspected::parse(&inspected("running", "running", "T1"), "c2-x").unwrap().users_apart);
+    }
+
+    #[tokio::test]
+    async fn only_the_word_from_outside_says_bots_are_apart() {
+        let bots = ["a".to_owned(), "b".to_owned()];
+        for (exec, apart) in [("echo apart", true), ("echo 'a Bot folder is open'", false), ("echo", false), ("echo apartment", false)] {
+            let dir = tmp("apart");
+            let p = faked(&dir, &inspected("running", "running", "T1"), exec, "true");
+            assert_eq!(p.users_apart(&machine(&dir), &bots).await.unwrap(), apart, "{exec}");
+            assert!(calls(&dir).contains("exec --user 0 --privileged c2-x /usr/bin/python3 -I -S -c"), "{}", calls(&dir));
+        }
+        let dir = tmp("apart-fails");
+        let p = faked(&dir, &inspected("running", "running", "T1"), "echo no >&2; exit 1", "true");
+        assert!(p.users_apart(&machine(&dir), &bots).await.is_err(), "a check that can't run says nothing");
+        let dir = tmp("apart-old");
+        let p = faked(&dir, &before_users("running"), "echo apart", "true");
+        assert!(!p.users_apart(&machine(&dir), &bots).await.unwrap(), "an unlabelled box isn't asked");
+        assert!(!calls(&dir).contains("exec"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn clearing_is_for_one_bots_desktop() {
+        let dir = tmp("clear");
+        let p = faked(&dir, &inspected("running", "running", "T1"), "echo '[\"python3\"]'", "true");
+        let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/amy".into(), profile: None };
+        assert_eq!(p.clear_strays(&machine(&dir), &screen).await.unwrap(), ["python3"]);
+        assert!(calls(&dir).trim_end().ends_with(" amy"), "{}", calls(&dir));
+        let shared = Screen { folder: "shared".into(), ..screen };
+        assert!(p.clear_strays(&machine(&dir), &shared).await.is_err(), "nothing to go on is no clearing");
     }
 
     #[tokio::test]
@@ -1486,7 +1773,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_second_create_leaves_no_holder() {
         let dir = tmp("create");
-        let body = "case \"$1 $2 $3\" in version*|image*|network*) ;; 'create --name c2-'*-wall) ;; create*) echo nope >&2; exit 1;; esac";
+        let body = "case \"$1 $2 $3\" in version*|network*) ;; image*) echo 1;; 'create --name c2-'*-wall) ;; create*) echo nope >&2; exit 1;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
         assert!(p.create(&Spec { id: "cmp_1".into(), dir: dir.clone() }).await.is_err());
         assert!(calls(&dir).contains("-wall") && calls(&dir).lines().any(|l| l.starts_with("rm -f -v") && l.ends_with("-wall")), "{}", calls(&dir));
