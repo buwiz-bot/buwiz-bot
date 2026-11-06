@@ -2,17 +2,28 @@
 //! plugin hands to the Bot's own Word or Spreadsheet viewer. No permission
 //! key grants this and the plugin's word proves nothing, so [`check`] decides
 //! from what the Bot knows and the disk says. Its checks go in the contract's
-//! order: first-party, the person's own press, a real file in that plugin's
-//! own folder, a kind the viewer takes. What passes opens by the path found
+//! order: first-party, the person's surface and not the AI's, a real file in
+//! that plugin's own folder, a kind the viewer takes. What passes opens by the path found
 //! on disk, under the name found there: the field's `name` and `mime` are
 //! never read, so they can't launder a kind.
 //!
 //! A refusal opens nothing and carries no part of the path: [`Refused`] has
 //! no data, so a log line can't hold one.
 //!
-//! **What this can't do.** The viewer opens by path, so a plugin that swaps a
-//! checked file before the viewer reads it wins that race. It would have to
-//! be first-party and racing a file in its own folder.
+//! **The second check is not proof of a press.** The actor says the AI hasn't
+//! acted on this surface, so a first-party screen's own code at mount or on a
+//! timer passes it too. Nothing here can tell those from a press: only the
+//! engine knows it's inside a press, and it doesn't say.
+//!
+//! **What this can't do.** [`check`] looks once. The viewer goes by the path
+//! for as long as it is open: it reads the file when it starts and at every
+//! reload, and it reloads by itself when the file changes, and every save
+//! finds the path again. So there is no moment when the checks hold for good.
+//! A plugin that swaps the file, then or any time after, gets the swapped file
+//! shown, and one that swaps a folder on the way for a link gets a save written
+//! where the link points, outside its folder. Nothing checks again, and that is
+//! accepted: it would have to be a first-party plugin, working against its own
+//! folder.
 
 use std::{
     ffi::OsStr,
@@ -129,7 +140,9 @@ fn file_in(folder: &Path, claimed: &Path) -> Result<PathBuf, Refused> {
     if !meta.file_type().is_file() {
         return Err(Refused::NotAFile);
     }
-    // a second name for a file elsewhere: ⌘S would write through it
+    // what shows may be a file elsewhere under a second name, as through a
+    // symlink. Reading is all it reaches: a save renames over this name, so
+    // the other name keeps the old file
     if std::os::unix::fs::MetadataExt::nlink(&meta) != 1 {
         return Err(Refused::Link);
     }
@@ -310,6 +323,18 @@ mod tests {
         let link = bed.folder.join("open/1/a.docx");
         fs::hard_link(bed.outside("a.docx"), &link).unwrap();
         assert_eq!(bed.ask(&link), Err(Refused::Link));
+    }
+
+    /// What the comment in [`file_in`] says of a save.
+    #[test]
+    fn a_save_replaces_a_hard_linked_name_and_leaves_the_other_alone() {
+        let bed = Bed::new();
+        let other = bed.outside("a.docx");
+        let link = bed.folder.join("open/1/a.docx");
+        fs::hard_link(&other, &link).unwrap();
+        crate::office::session::write_atomic(&link, b"saved").unwrap();
+        assert_eq!(fs::read(&link).unwrap(), b"saved");
+        assert_eq!(fs::read(&other).unwrap(), b"x");
     }
 
     #[test]
