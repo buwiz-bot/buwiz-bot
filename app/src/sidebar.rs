@@ -454,6 +454,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let node = element_ref();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
+    let face = AvatarFace::of(b);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
@@ -477,7 +478,8 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .child(dynamic(move || {
-                    let bv = b.get();
+                    face.track();
+                    let bv = b.get_untracked();
                     bot_avatar(crate::avatar::BotAvatarProps {
                         size: 44.0,
                         box_: Some(36.0),
@@ -550,6 +552,25 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
             crate::ctx::open(e, crate::ctx::bot_items(&b.get()))
         })
         .label(name)
+}
+
+/// What a Bot's avatar is drawn from. A rebuilt avatar starts its animation
+/// over, and the rest of a Bot changes all the time: `desc` with every word of
+/// a streaming reply. So an avatar is built again for these alone.
+struct AvatarFace(Memo<(String, String, String, Option<crate::store::Crop>)>);
+
+impl AvatarFace {
+    fn of(b: ReadSignal<RoxBot>) -> Self {
+        Self(computed(move || {
+            let b = b.get();
+            (b.shape, b.color, b.image, b.crop)
+        }))
+    }
+
+    /// Subscribes the caller to a change of face.
+    fn track(&self) {
+        self.0.with(|_| ());
+    }
 }
 
 /// A group member in the rail, by kind: a bot's plate, a chat's letter
@@ -2069,6 +2090,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
     let gaze3 = gaze.clone();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
+    let face = AvatarFace::of(b);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     let row = view()
@@ -2103,7 +2125,8 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                         .items_center()
                         .justify_center()
                         .child(dynamic(move || {
-                            let bv = b.get();
+                            face.track();
+                            let bv = b.get_untracked();
                             bot_avatar(crate::avatar::BotAvatarProps {
                                 size: 44.0,
                                 box_: Some(36.0),
@@ -2237,6 +2260,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let node = element_ref();
     let state_src: std::rc::Rc<dyn Fn() -> String> =
         std::rc::Rc::new(move || store().bot_st(&bid));
+    let face = AvatarFace::of(b);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
     view()
@@ -2264,7 +2288,8 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .child(dynamic(move || {
-                    let bv = b.get();
+                    face.track();
+                    let bv = b.get_untracked();
                     bot_avatar(crate::avatar::BotAvatarProps {
                         size: 72.0,
                         box_: Some(60.0),

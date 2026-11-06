@@ -299,6 +299,8 @@ struct Inner {
 
 impl Inner {
     fn new(props: &BotBlobProps, tab: Rc<mark::Tables>) -> Self {
+        #[cfg(test)]
+        BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let body = body_of(&props.shape);
         let seed = props
             .seed
@@ -310,10 +312,13 @@ impl Inner {
                 .unwrap_or(1)) | 1);
         let box_ = props.size as f64 * 0.82;
         let mut mark = mark::Mark::new(&tab, Some(body), 1.0, false, false, seed);
+        // Untracked: callers build an avatar inside a `dynamic`, and a tracked
+        // read here would rebuild every avatar on any Bot's status write,
+        // starting its animation over. `sync`, in the paint, follows the state.
         let state = props
             .state_src
             .as_ref()
-            .map(|f| mark::state_name(&f()))
+            .map(|f| mark::state_name(&untracked(|| f())))
             .unwrap_or_else(|| mark::state_name(props.state));
         let resting = props.paused || state == "idle";
         let dir = mark::Director::new(&mut mark, state, seed, box_ < 48.0, resting, None);
@@ -372,6 +377,10 @@ impl Inner {
             self.dir.set_state_pub(&mut self.mark, state);
             self.last_state = state;
             dirty = true;
+        }
+        #[cfg(test)]
+        if let Some(seed) = &props.seed {
+            PAINTED.lock().unwrap().insert(seed.clone(), state);
         }
         let compact = (props.size as f64 * 0.82) < 48.0;
         if compact != self.last_compact {
@@ -487,16 +496,21 @@ impl Inner {
     }
 }
 
+/// How many avatars were built: each one starts its animation from the top.
+#[cfg(test)]
+pub(crate) static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The state each seeded avatar last painted, for the tests to read.
+#[cfg(test)]
+pub(crate) static PAINTED: std::sync::Mutex<std::collections::BTreeMap<String, &'static str>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// `BotBlob` — a `size`-cell `View` with a `size*1.5` canvas overhanging it.
 pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    // Untracked: `new` reads the run state to start in, and a caller builds
-    // this inside a `dynamic`. Tracked, every status write of any Bot would
-    // rebuild every avatar, starting its animation over. The paint below
-    // follows the state itself.
-    let st = Rc::new(RefCell::new(untracked(|| Inner::new(&props, mark::shared_tables()))));
+    let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
     let props = Rc::new(props);
     view()
         .size(px(size))
