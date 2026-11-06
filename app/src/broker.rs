@@ -95,6 +95,7 @@ fn is_the_owners(path: &Path, home: &Path) -> bool {
         support.join(crate::identity::DIR_NAME),
         support.join(crate::identity::OLD_DIR_NAME),
         support.join(crate::identity::APP_ID),
+        support.join(crate::identity::OLD_APP_ID),
         new_dir(home),
         old_dir(home),
     ];
@@ -516,6 +517,7 @@ mod tests {
                 "/Users/u/Library/Application Support/Buwiz Bot/",
                 "/Users/u/Library/Application Support/Rox",
                 "/Users/u/Library/Application Support/com.buwiz.bot",
+                "/Users/u/Library/Application Support/dev.goldcoders.rox",
                 "/Users/u/Library/Application Support/Buwiz Broker",
                 "/Users/u/Library/Application Support/Grok Shell/x",
                 "/tmp/../Users/u/Library/Application Support/Buwiz Bot/sub",
