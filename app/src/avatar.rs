@@ -257,6 +257,9 @@ pub(crate) struct BotBlobProps {
     /// Whether it can be seen, when that can change: one that can't paints
     /// nothing, so the cost of avatars is what's on screen, not how many exist.
     pub shown: Option<Rc<dyn Fn() -> bool>>,
+    /// One of many, so it can paint less often in a crowd: a sidebar row, not
+    /// the status row in front of the person.
+    pub give_way: bool,
 }
 
 impl Default for BotBlobProps {
@@ -277,6 +280,7 @@ impl Default for BotBlobProps {
             seed: None,
             gaze_at: None,
             shown: None,
+            give_way: false,
         }
     }
 }
@@ -524,12 +528,18 @@ pub(crate) static PAINTS: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 pub(crate) static PAINTED: std::sync::Mutex<std::collections::BTreeMap<String, &'static str>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+thread_local! {
+    static NEXT_LANE: Cell<usize> = const { Cell::new(0) };
+}
+
 /// `BotBlob` — a `size`-cell `View` with a `size*1.5` canvas overhanging it.
 pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
     let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
+    // in turn, so the lanes hold the same number of avatars
+    let lane = NEXT_LANE.with(|n| n.replace(n.get().wrapping_add(1)));
     let props = Rc::new(props);
     view()
         .size(px(size))
@@ -553,7 +563,8 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
                 // sleep until gaze, edit or a poke wakes it (blob.tsx's
                 // not-live branch), so resting avatars cost no frames.
                 let t = if live {
-                    crate::live::store().tick()
+                    let st = crate::live::store();
+                    if props.give_way { st.tick_giving_way(lane) } else { st.tick() }
                 } else {
                     if let Some(g) = &props.gaze {
                         g.wake.arm();
@@ -621,6 +632,9 @@ pub(crate) struct BotAvatarProps {
     /// Whether it can be seen, when that can change: one that can't paints
     /// nothing, so the cost of avatars is what's on screen, not how many exist.
     pub shown: Option<Rc<dyn Fn() -> bool>>,
+    /// One of many, so it can paint less often in a crowd: a sidebar row, not
+    /// the status row in front of the person.
+    pub give_way: bool,
 }
 
 impl BotAvatarProps {
@@ -666,6 +680,7 @@ pub(crate) fn bot_avatar(p: BotAvatarProps) -> impl IntoElement {
                 seed: p.seed,
                 gaze_at: p.gaze_at,
                 shown: p.shown,
+                give_way: p.give_way,
             }))
         })
 }

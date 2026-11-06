@@ -29,6 +29,14 @@ pub(crate) struct ListWindow {
     pub height: f32,
 }
 
+/// Live avatars that make a crowd (more than this), and that end one.
+const CROWD_JOINED: u32 = 10;
+const CROWD_LEFT: u32 = 8;
+/// How many turns a crowd's avatars take. A crowd ticks twice as fast, so each
+/// avatar still paints every other full tick, and a frame carries a quarter of
+/// them: two lanes on full ticks left about 15 in a frame, and that went red.
+const FRAME_LANES: usize = 4;
+
 /// A row of `GET /threads` — the sidebar's chat list.
 #[derive(Clone, PartialEq, Default)]
 pub struct ThreadMeta {
@@ -3096,6 +3104,13 @@ pub struct Store {
     pub(crate) side_asked: [std::cell::Cell<u32>; 2],
     /// Passes in a row that couldn't see everything.
     pub(crate) side_retries: [std::cell::Cell<u32>; 2],
+    /// Clocks that take turns, for the avatars that give way in a crowd
+    /// ([`Self::tick_giving_way`]).
+    frame_lanes: [Signal<f64>; FRAME_LANES],
+    /// How many avatars asked for a tick since the last round of the lanes.
+    frame_asked: std::cell::Cell<u32>,
+    /// Many avatars are live, so those that can give way do.
+    frame_crowd: std::cell::Cell<bool>,
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3385,6 +3400,9 @@ impl Store {
             side_settled: [signal(false), signal(false)],
             side_asked: Default::default(),
             side_retries: Default::default(),
+            frame_lanes: std::array::from_fn(|_| signal(0.0)),
+            frame_asked: std::cell::Cell::new(0),
+            frame_crowd: std::cell::Cell::new(false),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
@@ -3519,13 +3537,47 @@ impl Store {
                     // and a restart never jumps.
                     let base = clock.get_untracked();
                     let epoch = std::time::Instant::now();
+                    let full = std::time::Duration::from_millis(33);
+                    let mut next = epoch;
+                    let mut turn = 0;
+                    let mut quiet = 0;
                     loop {
-                        timer(std::time::Duration::from_millis(33)).await;
-                        if !st.frame_want.replace(false) {
+                        let crowd = st.frame_crowd.get();
+                        // Paced to deadlines: a tick's work comes out of the
+                        // period, not on top of it, which held many avatars
+                        // to 22 fps. Behind, it waits rather than bursts.
+                        let now = std::time::Instant::now();
+                        next = (next + if crowd { full / 2 } else { full }).max(now);
+                        timer(next - now).await;
+                        quiet = if st.frame_want.replace(false) { 0 } else { quiet + 1 };
+                        // a lane can stand empty, so in a crowd only a whole
+                        // round of nothing means nothing's moving
+                        if quiet >= if crowd { FRAME_LANES } else { 1 } {
                             break;
                         }
-                        clock.set(base + epoch.elapsed().as_secs_f64());
+                        let t = base + epoch.elapsed().as_secs_f64();
+                        if crowd {
+                            turn = (turn + 1) % FRAME_LANES;
+                            st.frame_lanes[turn].set(t);
+                        }
+                        // what can't give way keeps its full rate
+                        if turn % 2 == 0 {
+                            clock.set(t);
+                        }
+                        // the end of a round, when each live avatar has asked
+                        if turn == 0 {
+                            let asked = st.frame_asked.replace(0);
+                            let crowded = asked > if crowd { CROWD_LEFT } else { CROWD_JOINED };
+                            if crowded != crowd {
+                                st.frame_crowd.set(crowded);
+                                // wakes those sitting out, and those joining
+                                // don't start from the last crowd's time
+                                st.frame_lanes.iter().for_each(|lane| lane.set(t));
+                            }
+                        }
                     }
+                    st.frame_crowd.set(false);
+                    st.frame_asked.set(0);
                     st.frame_started.set(false);
                 })
             });
@@ -3534,6 +3586,20 @@ impl Store {
             }
         }
         self.frame_clock.get()
+    }
+
+    /// [`Self::tick`] for an avatar that can give way. With many live, each
+    /// frame repainting all of them runs over its budget, so these take turns
+    /// by `lane`. Motion follows real time, so it isn't slower, only updated
+    /// about half as often.
+    pub(crate) fn tick_giving_way(&'static self, lane: usize) -> f64 {
+        self.frame_asked.set(self.frame_asked.get() + 1);
+        if !self.frame_crowd.get() {
+            return self.tick();
+        }
+        // keeps the clock running through the ticks this one sits out
+        let _ = untracked(|| self.tick());
+        self.frame_lanes[lane % FRAME_LANES].get()
     }
 
     /// `setTheme` (App.tsx:765) — the pref and the POST.

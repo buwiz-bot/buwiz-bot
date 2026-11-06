@@ -210,6 +210,8 @@ fn Side() -> impl IntoElement {
                 }))
                 .child(view().label("hide").w(px(40.0)).h_full().on_press(|| store().side_shown.set(false)))
                 .child(view().label("show").w(px(40.0)).h_full().on_press(|| store().side_shown.set(true)))
+                .child(view().label("run 6").w(px(40.0)).h_full().on_press(|| bots_running(6)))
+                .child(view().label("run all").w(px(40.0)).h_full().on_press(|| bots_running(BOTS)))
                 .child(view().label("unpin and open").w(px(40.0)).h_full().on_press(|| {
                     let n = REPLY.fetch_add(1, Ordering::Relaxed);
                     store().set_threads(threads("first words"));
@@ -299,6 +301,13 @@ fn chats() {
 fn status_on(i: usize) {
     store().active_id.set(format!("t{i}"));
     store().mock_status("thinking");
+}
+
+/// The first `n` Bots running a state that keeps them moving.
+fn bots_running(n: usize) {
+    for i in 0..n {
+        store().agent_set(format!("t{i}"), Some(format!("b{i}")), Some(("thinking".to_owned(), "Thinking".to_owned())));
+    }
 }
 
 /// The first `n` Bots in a group, as the broker gives groups.
@@ -988,6 +997,80 @@ fn many_bots_cost_what_fits_on_screen() {
     println!("rows painting: {few} with {BOTS} Bots, {many} with {MANY}");
     assert!(few > 0, "the Bots are running");
     assert!(many <= few + 2, "{MANY} Bots paint {many} rows against {few} for {BOTS}");
+}
+
+/// Each of `n` Bots running, then paints per avatar over two seconds.
+fn paints_each(app: &mut Headless, button: &str, n: usize) -> f64 {
+    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+    app.press(button);
+    app.pump(Duration::from_millis(1500));
+    let at = paints();
+    app.pump(Duration::from_millis(2000));
+    (paints() - at) as f64 / n as f64
+}
+
+/// In a crowd sidebar avatars take turns, so no frame repaints them all; a
+/// few keep the full rate.
+#[test]
+fn sidebar_avatars_take_turns_in_a_crowd() {
+    if !in_child("sidebar_avatars_take_turns_in_a_crowd") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    let few = paints_each(&mut app, "run 6", 6);
+    let crowd = paints_each(&mut app, "run all", BOTS);
+    println!("paints per avatar in 2 s: {few:.1} with 6 live, {crowd:.1} with {BOTS}");
+    assert!(few > 40.0, "a few keep the full rate: {few:.1}");
+    assert!(crowd < 0.7 * few, "a crowd takes turns: {crowd:.1} against {few:.1}");
+    assert!(crowd > 0.3 * few, "and doesn't stall: {crowd:.1} against {few:.1}");
+    let mut frames: Vec<usize> = Vec::new();
+    for _ in 0..300 {
+        let at = crate::avatar::PAINTS.load(Ordering::Relaxed);
+        app.pump(Duration::from_millis(4));
+        frames.push(crate::avatar::PAINTS.load(Ordering::Relaxed) - at);
+    }
+    frames.retain(|&n| n > 0);
+    frames.sort_unstable();
+    let usual = frames[frames.len() / 2];
+    println!("a frame usually paints {usual} of {BOTS}");
+    assert!(usual <= BOTS.div_ceil(4) + 2, "a frame carries a quarter of the crowd, not {usual}");
+}
+
+static LANE_PAINTS: AtomicUsize = AtomicUsize::new(0);
+
+/// More than a crowd of live avatars, every one in the first lane.
+#[allow(non_snake_case)]
+#[component]
+fn OneLane() -> impl IntoElement {
+    Owner::detached().run(|| {
+        let _ = store();
+    });
+    view().children((0..12).map(|_| {
+        canvas(|| {
+            store().tick_giving_way(0);
+            LANE_PAINTS.fetch_add(1, Ordering::Relaxed);
+            Painter::new()
+        })
+        .size(px(10.0))
+        .into_element()
+    }))
+}
+
+/// Which avatars are live is anyone's guess, so a crowd can leave lanes empty.
+/// The clock has to keep going through them, or everything stops where it is.
+#[test]
+fn a_crowd_in_one_lane_keeps_moving() {
+    if !in_child("a_crowd_in_one_lane_keeps_moving") {
+        return;
+    }
+    let mut app = run(EngineConfig::new(App::Rust(Root::new::<OneLane>(|| ()))));
+    app.pump(Duration::from_millis(1500));
+    let at = LANE_PAINTS.load(Ordering::Relaxed);
+    app.pump(Duration::from_millis(1000));
+    let painted = LANE_PAINTS.load(Ordering::Relaxed) - at;
+    assert!(painted > 12 * 5, "{painted} paints in a second from 12 avatars");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.
