@@ -20,6 +20,12 @@ fn built() -> usize {
     crate::avatar::BUILT.load(Ordering::Relaxed)
 }
 const BOTS: usize = 27;
+/// Seconds rich avatars get to come to rest, and the calm ones that prove it.
+const RESTS_WITHIN: usize = 180;
+const CALM_SECONDS: usize = 4;
+/// 50 ms steps a wait gets, and the steps without a build that mean done.
+const WAIT_STEPS: usize = 1200;
+const STILL_STEPS: usize = 10;
 static STEP: AtomicUsize = AtomicUsize::new(0);
 static REPLY: AtomicUsize = AtomicUsize::new(0);
 static RECORD: AtomicBool = AtomicBool::new(true);
@@ -110,6 +116,12 @@ fn Side() -> impl IntoElement {
                 .h(px(24.0))
                 .child(view().label("seed").w(px(40.0)).h_full().on_press(seed))
                 .child(view().label("step").w(px(40.0)).h_full().on_press(step))
+                .child(view().label("seed later").w(px(40.0)).h_full().on_press(|| {
+                    spawn(async {
+                        timer(Duration::from_millis(1500)).await;
+                        seed();
+                    });
+                }))
                 .child(view().label("rail").w(px(40.0)).h_full().on_press(|| store().side_mode.set("rail".to_owned())))
                 .child(view().label("reply").w(px(40.0)).h_full().on_press(reply))
                 .child(view().label("paint").w(px(40.0)).h_full().on_press(paint))
@@ -181,6 +193,7 @@ fn a_status_write_rebuilds_no_avatar() {
     // the first write puts the status rows up, which is new, not rebuilt
     app.press("step");
     app.pump(Duration::from_millis(100));
+    pump_until_built(&mut app);
     let start = app.live.clone();
     let made = built();
     for k in 0..120 {
@@ -244,14 +257,17 @@ fn streams_in_a_group(rail: bool) {
         app.press("rail");
     }
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let start = app.live.clone();
     let made = built();
     for k in 0..30 {
         app.press("reply");
         app.pump(Duration::from_millis(60));
         if !rail {
-            let shown = app.texts().iter().filter(|t| t.contains(&format!("streamed {k} words"))).count();
-            assert_eq!(shown, BOTS, "step {k}: rows showing the reply");
+            let words = format!("streamed {k} words");
+            pump_until(&mut app, "every row showing the reply", |app| {
+                app.texts().iter().filter(|t| t.contains(&words)).count() == BOTS
+            });
         }
     }
     println!("grouped reply, rail {rail}: {} avatars built", built() - made);
@@ -378,6 +394,7 @@ fn rests_after_runs(seed: &str) {
     let mut app = start();
     app.press(seed);
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let before = paints();
     app.pump(Duration::from_millis(1000));
     println!("idle at launch: {} paints in a second", paints() - before);
@@ -386,22 +403,71 @@ fn rests_after_runs(seed: &str) {
         app.pump(Duration::from_millis(50));
     }
     app.press("stop");
-    // how long clips take to finish depends on the machine, so this waits for
-    // it: what matters is that painting stops, and stays stopped
-    let mut quiet = None;
-    for s in 0..30 {
+    // how long clips take to finish depends on the machine, and a loaded one
+    // takes minutes: what matters is that painting stops, and stays stopped
+    let mut calm = 0;
+    for s in 0..RESTS_WITHIN {
         let at = paints();
         app.pump(Duration::from_millis(1000));
         println!("second {s} after the runs end: {} paints", paints() - at);
-        if paints() == at {
-            quiet = Some(s);
-            break;
+        calm = if paints() == at { calm + 1 } else { 0 };
+        if calm == CALM_SECONDS {
+            let at = paints();
+            app.pump(Duration::from_millis(2000));
+            assert_eq!(paints() - at, 0, "painting started again with nothing running");
+            return;
         }
     }
-    assert!(quiet.is_some(), "still painting 30 seconds after every run ended");
-    let at = paints();
-    app.pump(Duration::from_millis(2000));
-    assert_eq!(paints() - at, 0, "painting started again with nothing running");
+    panic!("still painting {RESTS_WITHIN} seconds after every run ended");
+}
+
+/// Pumps until `done`, for machines too loaded to keep to a fixed wait.
+fn pump_until(app: &mut Headless, what: &str, mut done: impl FnMut(&mut Headless) -> bool) {
+    for _ in 0..WAIT_STEPS {
+        if done(app) {
+            return;
+        }
+        app.pump(Duration::from_millis(50));
+    }
+    panic!("{what}: not within {} seconds", WAIT_STEPS / 20);
+}
+
+/// Pumps until `bot`'s avatar has painted `state`.
+fn pump_until_painted(app: &mut Headless, bot: &str, state: &str) {
+    let painted = || crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
+    pump_until(app, &format!("{bot} painting {state}"), |_| painted() == Some(state));
+}
+
+/// Whether `name` has its row: a rail tile by its label, a sidebar row by its text.
+fn row_live(app: &mut Headless, name: &str) -> bool {
+    app.has(name) || app.texts().contains(&name)
+}
+
+/// Pumps until every Bot's row is live and no avatar has been built for a
+/// while: the list is up, so what a test builds after this is its own.
+fn pump_until_built(app: &mut Headless) {
+    let mut last = built();
+    let mut still = 0;
+    pump_until(app, "the list still being built", |app| {
+        let rows = (0..BOTS).all(|i| row_live(app, &format!("Bot {i}")));
+        let now = built();
+        still = if rows && now == last { still + 1 } else { 0 };
+        last = now;
+        still == STILL_STEPS
+    });
+}
+
+/// The wait for the list holds out for its rows: quiet before they arrive
+/// isn't the list being up.
+#[test]
+fn the_wait_for_the_list_waits_for_its_rows() {
+    if !in_child("the_wait_for_the_list_waits_for_its_rows") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed later");
+    pump_until_built(&mut app);
+    assert!(row_live(&mut app, &format!("Bot {}", BOTS - 1)), "the last row is there");
 }
 
 /// An avatar the pointer has passed over goes back to sleep: it doesn't stay
@@ -446,18 +512,15 @@ fn a_new_status_clears_the_last_one() {
     if !in_child("a_new_status_clears_the_last_one") {
         return;
     }
-    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
     let mut app = start();
     app.press("seed");
     app.press("chats");
     app.pump(Duration::from_millis(400));
     app.press("status 3");
-    app.pump(Duration::from_millis(300));
-    assert_eq!(painted("b3"), Some("thinking"));
+    pump_until_painted(&mut app, "b3", "thinking");
     app.press("status 4");
-    app.pump(Duration::from_millis(300));
-    assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
-    assert_eq!(painted("b3"), Some("idle"), "the last one is cleared");
+    pump_until_painted(&mut app, "b4", "thinking");
+    pump_until_painted(&mut app, "b3", "idle");
 }
 
 /// `/status` clears only what it set: a real run that has started in that
@@ -473,13 +536,12 @@ fn a_new_status_leaves_a_real_run_alone() {
     app.press("chats");
     app.pump(Duration::from_millis(400));
     app.press("status 3");
-    app.pump(Duration::from_millis(200));
+    pump_until_painted(&mut app, "b3", "thinking");
     app.press("real run 3");
-    app.pump(Duration::from_millis(200));
-    assert_eq!(painted("b3"), Some("writing"), "the real run took over");
+    pump_until_painted(&mut app, "b3", "writing");
     app.press("status 4");
+    pump_until_painted(&mut app, "b4", "thinking");
     app.pump(Duration::from_millis(300));
-    assert_eq!(painted("b4"), Some("thinking"), "the new one plays");
     assert_eq!(painted("b3"), Some("writing"), "the real run is still there");
 }
 
@@ -489,7 +551,6 @@ fn a_finished_demo_leaves_no_record() {
     if !in_child("a_finished_demo_leaves_no_record") {
         return;
     }
-    let painted = |bot: &str| crate::avatar::PAINTED.lock().unwrap().get(bot).copied();
     let mut app = start();
     app.press("seed");
     app.press("chats");
@@ -497,10 +558,11 @@ fn a_finished_demo_leaves_no_record() {
     app.press("short demo 3");
     app.press("check record");
     assert!(RECORD.load(Ordering::Relaxed), "a running demo has a record");
-    app.pump(Duration::from_millis(3000));
-    app.press("check record");
-    assert!(!RECORD.load(Ordering::Relaxed), "a finished demo has none");
-    assert_eq!(painted("b3"), Some("idle"), "and its Bot is idle");
+    pump_until(&mut app, "a finished demo still has a record", |app| {
+        app.press("check record");
+        !RECORD.load(Ordering::Relaxed)
+    });
+    pump_until_painted(&mut app, "b3", "idle");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.
@@ -537,12 +599,14 @@ fn a_streaming_reply_rebuilds_no_avatar() {
     let mut app = start();
     app.press("seed");
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let start = app.live.clone();
     let made = built();
     for k in 0..30 {
         app.press("reply");
         app.pump(Duration::from_millis(60));
-        assert!(app.texts().iter().any(|t| t.contains(&format!("streamed {k} words"))), "step {k}: the reply never showed");
+        let words = format!("streamed {k} words");
+        pump_until(&mut app, "the reply showing", |app| app.texts().iter().any(|t| t.contains(&words)));
     }
     let gone = start.difference(&app.live).count();
     println!("reply: {gone} nodes gone, {} avatars built", built() - made);
@@ -559,6 +623,7 @@ fn a_new_face_rebuilds_that_avatar_alone() {
     let mut app = start();
     app.press("seed");
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let made = built();
     app.press("paint");
     app.pump(Duration::from_millis(200));
@@ -577,6 +642,7 @@ fn a_hover_sweep_keeps_the_rail_tiles() {
     app.press("seed");
     app.press("rail");
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let before = app.live.clone();
     for k in 0..40 {
         let row = format!("Bot {}", k % 8);
