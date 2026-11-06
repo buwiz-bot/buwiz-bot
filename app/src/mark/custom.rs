@@ -45,8 +45,15 @@ const ROWS: usize = (180.0 / ATLAS_STEP) as usize + 1;
 /// The kit square's body size (`hn(1.0413, ..)`): a custom body's area
 /// is matched to it.
 const SQUARE_SIZE: f64 = 1.0413;
-/// The largest custom body size (the kit tops out at 1.521, sparkle).
-const MAX_SIZE: f64 = 1.5;
+/// How much of an avatar's frame a custom figure fills, in body units at size 1: its height, its
+/// width, and how far any point may reach from the middle. Every figure stands as tall as the
+/// others, whatever it wears, unless it's so wide or so far-reaching that it would leave the frame
+/// as it turns.
+const FIT_HEIGHT: f64 = 3.33;
+const FIT_WIDTH: f64 = 3.53;
+const FIT_REACH: f64 = 2.1;
+/// The smallest and largest a custom figure draws.
+const SIZE_RANGE: (f64, f64) = (0.8, 2.4);
 /// The name prefix of every custom body.
 const PREFIX: &str = "custom:";
 /// The name prefix of every rich body.
@@ -792,11 +799,6 @@ fn fnv(s: &str) -> u64 {
     h
 }
 
-/// Polygon area in body units of the kit square's outline.
-fn square_area() -> f64 {
-    signed_area(&body_polygon(&bodies::zr_outline("square").path)).abs()
-}
-
 /// Build a body from a 100×100 (y down) outline.
 fn build(path: &str) -> Result<CustomBody, String> {
     let subs = subpaths(path)?;
@@ -855,7 +857,7 @@ fn build(path: &str) -> Result<CustomBody, String> {
     if poly.len() < 3 || poly_area < 1e-3 {
         return Err("the outline encloses no area".to_owned());
     }
-    let size = (SQUARE_SIZE * (square_area() / poly_area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE);
+    let size = fit_size(poly.iter().map(|p| [p[0], p[1], 0.0]));
     let circle = inscribed_circle(&poly);
     let (eyes, eye_x) = place_eyes(&poly, size, circle);
     let depth = loft_depth(circle.1);
@@ -1139,12 +1141,15 @@ fn overlaps(a: &[V2], b: &[V2]) -> bool {
 /// multi-part recipe.
 type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>, Option<solids::Solids>);
 
-/// How far from the frame's centre a figure with solids may reach, in units
-/// of its body size: the most that stays on the avatar's canvas at any
-/// angle.
-const SOLID_REACH: f64 = 1.8;
-/// The smallest a figure with solids draws (a wide brim shrinks the head).
-const SOLID_MIN_SIZE: f64 = 0.8;
+/// The size that fills the frame with a figure of these points, in body units around its centre.
+fn fit_size(points: impl Iterator<Item = V3>) -> f64 {
+    let (mut x0, mut x1, mut y0, mut y1, mut far) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for p in points {
+        (x0, x1, y0, y1) = (x0.min(p[0]), x1.max(p[0]), y0.min(p[1]), y1.max(p[1]));
+        far = far.max(p[0].hypot(p[1]).hypot(p[2]));
+    }
+    (FIT_HEIGHT / (y1 - y0)).min(FIT_WIDTH / (x1 - x0)).min(FIT_REACH / far).clamp(SIZE_RANGE.0, SIZE_RANGE.1)
+}
 
 /// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops, sampled
 /// every [`solids::MARK_STEP`]. Every coordinate is checked first: sampling
@@ -1239,26 +1244,13 @@ fn multi_part(
         center: [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
         renorm: [1.0, 0.0, 0.0],
     };
-    // the figure's area in body units, matched to the kit square's
     let unit = front.scale / X;
-    let area: f64 = std::iter::once(&main_pts)
-        .chain(&part_pts)
-        .map(|p| signed_area(p).abs() * unit * unit)
-        .sum();
-    let size = match &reach {
-        None => (SQUARE_SIZE * (square_area() / area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE),
-        // a figure with solids turns in 3D: it fits by its farthest point
-        Some(reach) => {
-            let c = front.center;
-            let far = reach
-                .iter()
-                .copied()
-                .chain(main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [p[0], p[1], 0.0]))
-                .map(|p| (p[0] - c[0]).hypot(p[1] - c[1]).hypot(p[2]))
-                .fold(0.0, f64::max);
-            (SOLID_REACH / (far * unit)).clamp(SOLID_MIN_SIZE, SOLID_REACH)
-        }
-    };
+    // the solids sit on the head, whose shape doesn't change with its size
+    let probe = part_body(&main_pts, &front, SQUARE_SIZE, true, None)?;
+    let scene = specs.map(|s| solids::Solids::build(&s, &solids::Head::new(&probe.loft_points, probe.depth), unit, front.center));
+    let c = front.center;
+    let flat = main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0]);
+    let size = fit_size(flat.chain(scene.iter().flat_map(|s| s.shown_points())));
     let base = Rc::new(part_body(&main_pts, &front, size, true, None)?);
     let mut parts = Vec::with_capacity(list.len());
     let mut layout = vec![Place {
@@ -1306,9 +1298,6 @@ fn multi_part(
             decals,
         });
     }
-    let scene = specs.map(|s| {
-        solids::Solids::build(&s, &solids::Head::new(&base.loft_points, base.depth), unit, front.center)
-    });
     Ok((base, parts, layout, scene))
 }
 
@@ -1832,8 +1821,8 @@ mod tests {
         h
     }
 
-    /// Plain custom bodies (round 2) draw and rest byte for byte as they
-    /// did before rich bodies existed.
+    /// Plain custom bodies draw and rest byte for byte as they did when
+    /// figures began to fill the frame ([`fit_size`]).
     #[test]
     fn plain_custom_bodies_unchanged() {
         let mut got = Vec::new();
@@ -1846,7 +1835,7 @@ mod tests {
             }
             got.push(h);
         }
-        let want: [u64; 2] = [0x9b46cb46d116b458, 0xd3a9bc4da368affd];
+        let want: [u64; 2] = [0x3674b535ad3db32b, 0xb4b2c0d29848d22d];
         assert_eq!(got, want.to_vec());
     }
 
@@ -2091,6 +2080,40 @@ mod tests {
             rest.len() / ((REST_N + 2 * REST_EN) * 2),
             t.elapsed()
         );
+    }
+
+    #[test]
+    fn a_figure_fills_the_frame_up_to_its_limits() {
+        let figure = |w: f64, h: f64| [[-w / 2.0, -h / 2.0, 0.0], [w / 2.0, h / 2.0, 0.0]];
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} against {b}");
+        // what decides it is how tall it stands
+        near(fit_size(figure(1.0, 2.0).into_iter()), FIT_HEIGHT / 2.0);
+        // too wide for that, it's its width
+        near(fit_size(figure(2.0, 1.0).into_iter()), FIT_WIDTH / 2.0);
+        // a point far out decides it, however small the rest
+        let far = [[1.5, 0.0, 0.0], [-0.5, -1.0, 0.0], [-0.5, 1.0, 0.0]];
+        near(fit_size(far.into_iter()), FIT_REACH / 1.5);
+        // one reaching toward the viewer counts too
+        let deep = [[0.0, -1.0, 0.0], [0.0, 1.0, 1.4]];
+        near(fit_size(deep.into_iter()), FIT_REACH / 1.0f64.hypot(1.4));
+        // and a speck stops at the largest size
+        near(fit_size(figure(0.1, 0.1).into_iter()), SIZE_RANGE.1);
+    }
+
+    /// However the box of a recipe is filled, a figure stands as tall as the next.
+    #[test]
+    fn plain_outlines_of_any_shape_stand_as_tall() {
+        let size = |o: &str| {
+            let name = custom_body(o).unwrap();
+            BODIES.with(|b| b.borrow()[name].size)
+        };
+        let tall = size("M30 10 L70 10 L70 90 L30 90 Z");
+        let diamond = size("M50 10 L90 50 L50 90 L10 50 Z");
+        assert!((tall - diamond).abs() < 0.02, "{tall} against {diamond}");
+        // a square's corners swing out as it turns: the frame holds it back
+        assert!(size("M10 10 L90 10 L90 90 L10 90 Z") < tall);
+        let wide = size("M5 35 L95 35 L95 65 L5 65 Z");
+        assert!(wide < tall + (FIT_WIDTH - FIT_HEIGHT), "a wide one stops at its width: {wide}");
     }
 
     #[test]
@@ -2958,6 +2981,7 @@ mod tests {
     /// not read back from a rounded ink (0.7, it used to read 0.6984).
     /// It moved again when the brute and the hero were redrawn as original
     /// avatars, palette and geometry both. The cat, unchanged, kept its value.
+    /// All three moved when figures began to fill the frame ([`fit_size`]).
     #[test]
     fn rich_string_eyes_match_their_snapshot() {
         for recipe in [BRUTE, HERO, ORANGE_CAT] {
@@ -2973,7 +2997,7 @@ mod tests {
             }
             got.push(h);
         }
-        assert_eq!(got, vec![0x126d7ae350a8bc2c, 0x624cef4d242ed756, 0x45e20b9cb4a47847]);
+        assert_eq!(got, vec![0x46dcdb07f206087c, 0x37fe198591baa045, 0x3c4a15bc7ced765b]);
     }
 
     /// The two eye centroids at the front pose in a 255px sprite.
