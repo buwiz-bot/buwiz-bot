@@ -36,6 +36,7 @@ fn bed_with(label: &str, make: impl FnOnce(Arc<dyn Provider>) -> Computers) -> B
     let mut ctx = HubCtx::new(dir, Clock::manual());
     ctx.store.load().unwrap();
     let mock = Arc::new(MockProvider::default());
+    *mock.apart.lock().unwrap() = Some(Ok(true));
     let computers = Arc::new(make(mock.clone()));
     // no catalog: nothing here asks a real opencodex
     computers.set_sight(std::collections::HashMap::new());
@@ -204,10 +205,40 @@ async fn commands_stay_off_on_a_shared_computer() {
     let r = run(&b, &b.ann.1, None);
     assert_eq!(call(&r, "computer_run", json!({"command": "ls"})).await.is_error, None, "alone, it runs");
     b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    // a provider with nothing to say about it: the trait's own answer is no
+    *b.mock.apart.lock().unwrap() = None;
     let o = call(&r, "computer_run", json!({"command": "ls"})).await;
     assert_eq!(o.is_error, Some(true));
     assert!(words(&o).contains("several Bots share"), "{}", words(&o));
     assert_eq!(b.mock.calls().iter().filter(|c| c.ends_with(" ls")).count(), 1, "the refused one never ran");
+}
+
+#[tokio::test]
+async fn commands_run_on_a_shared_computer_only_while_the_check_from_outside_says_so() {
+    let b = bed("shared-apart");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &id).await.unwrap();
+    let r = run(&b, &b.ann.1, None);
+    let ran = || b.mock.calls().iter().filter(|c| c.ends_with(" ls")).count();
+    *b.mock.apart.lock().unwrap() = Some(Ok(true));
+    assert_eq!(call(&r, "computer_run", json!({"command": "ls"})).await.is_error, None, "apart, it runs");
+    assert_eq!(ran(), 1);
+    for answer in [Ok(false), Err(Problem::Failed("docker said no".into()))] {
+        *b.mock.apart.lock().unwrap() = Some(answer);
+        let o = call(&r, "computer_run", json!({"command": "ls"})).await;
+        assert_eq!(o.is_error, Some(true), "a no, or no answer, is a refusal");
+        assert!(words(&o).contains("several Bots share"), "{}", words(&o));
+    }
+    assert_eq!(ran(), 1, "the refused ones never ran");
+}
+
+#[tokio::test]
+async fn a_bot_alone_at_its_computer_isnt_checked() {
+    let b = bed("alone-apart");
+    awake(&b, &b.ann.0).await;
+    let r = run(&b, &b.ann.1, None);
+    assert_eq!(call(&r, "computer_run", json!({"command": "ls"})).await.is_error, None);
+    assert!(!b.mock.calls().iter().any(|c| c == "users_apart"), "{:?}", b.mock.calls());
 }
 
 #[tokio::test]
