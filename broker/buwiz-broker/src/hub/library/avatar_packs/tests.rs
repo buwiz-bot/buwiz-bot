@@ -221,7 +221,10 @@ async fn one_bad_pack_leaves_the_others() {
     site.files.insert(format!("{ROOT}packs/pets.json"), b"{not json".to_vec());
     let v = read_site(&site, "").await.unwrap();
     assert_eq!(names(&v), ["Fox"]);
-    assert_eq!(v["refused"][0]["name"], "pets");
+    assert_eq!(v["failed"][0]["name"], "pets");
+    assert_eq!(v["refused"], json!([]), "a pack isn't an avatar");
+    let v = read_site(&site, "cat").await.unwrap();
+    assert_eq!(v["failed"][0]["name"], "pets", "it may be in the pack that failed");
 }
 
 #[tokio::test]

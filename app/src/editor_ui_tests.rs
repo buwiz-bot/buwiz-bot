@@ -530,6 +530,24 @@ fn an_install_waits_for_the_list() {
     assert_eq!(read(&app).get("shown").map(String::as_str), Some("0"), "added with the list unread");
 }
 
+/// A pack that couldn't be read is said as a pack, and the rest still come.
+#[test]
+fn a_failed_pack_is_said_as_one() {
+    if !in_child("a_failed_pack_is_said_as_one") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let design = json!({"name": "A", "shape": "heart", "color": "#FFFFFF"});
+    let mut answer = pack_answer(json!([design]), json!([]));
+    answer.1["failed"] = json!([{"name": "Pets", "why": "a pack isn't JSON"}]);
+    *broker.packs.lock().unwrap() = answer;
+    let mut app = start_loaded(&broker);
+    app.press("install fox");
+    let said = "Added 1 avatar to Your designs, 1 pack couldn't be read.";
+    pump_until(&mut app, "the outcome", |app| shows(app, said));
+    pump_until(&mut app, "the save", |_| broker.names() == ["A"]);
+}
+
 /// A link the broker refuses changes nothing.
 #[test]
 fn a_refused_link_changes_nothing() {

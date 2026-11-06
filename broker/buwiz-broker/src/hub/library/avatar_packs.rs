@@ -34,8 +34,9 @@ const NAME_MAX: usize = 80;
 const WHY_MAX: usize = 300;
 const HOPS: usize = 3;
 const WAIT: Duration = Duration::from_secs(20);
-/// All of one read: every file of it, however many packs.
-const READ_WAIT: Duration = Duration::from_secs(60);
+/// All of one read: every file of it, however many packs. Under the 60 seconds the app's HTTP
+/// client waits, so a slow read ends in this side's message and not a dropped connection.
+const READ_WAIT: Duration = Duration::from_secs(45);
 const READ_BYTES: usize = 16 * 1024 * 1024;
 const TOO_BIG: &str = "those packs are too big";
 const TOO_MANY: &str = "those packs hold too many designs";
@@ -281,11 +282,13 @@ pub fn clean_design(d: &Value) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
-/// What came of a read: the sound designs, and each refused one with why.
+/// What came of a read: the sound designs, each refused one with why, and each pack that
+/// couldn't be read at all.
 #[derive(Debug, Default, PartialEq)]
 pub struct Found {
     pub designs: Vec<Value>,
     pub refused: Vec<Value>,
+    pub failed: Vec<Value>,
 }
 
 /// A pack file's designs into `found`, up to [`DESIGNS_MAX`] in all.
@@ -331,7 +334,7 @@ where
 }
 
 /// The sound designs `pick` means at `link`, all within [`READ_WAIT`]. A pack that can't be read
-/// is reported with the refused, and the others still count; too much of anything ends the read.
+/// is listed as failed, and the others still count; too much of anything ends the read.
 pub async fn read<F, Fut>(link: &str, pick: &str, get: F) -> Result<Value, String>
 where
     F: Fn(Url, usize) -> Fut,
@@ -364,18 +367,19 @@ where
         };
         match got {
             Err(why) if why == TOO_BIG || why == TOO_MANY => return Err(why),
-            Err(why) => found.refused.push(json!({"name": p.title, "why": why})),
+            Err(why) => found.failed.push(json!({"name": p.title, "why": why})),
             Ok(()) => {}
         }
     }
     if let Some(name) = name {
         found.designs.retain(|d| d["name"].as_str().is_some_and(|n| n.to_lowercase() == name));
         found.refused.retain(|d| d["name"].as_str().is_some_and(|n| n.to_lowercase() == name));
-        if found.designs.is_empty() && found.refused.is_empty() {
+        // it may have been in a pack that couldn't be read
+        if found.designs.is_empty() && found.refused.is_empty() && found.failed.is_empty() {
             return Err(format!("nothing called “{}” at that link", pick.trim()));
         }
     }
-    Ok(json!({"ok": true, "designs": found.designs, "refused": found.refused}))
+    Ok(json!({"ok": true, "designs": found.designs, "refused": found.refused, "failed": found.failed}))
 }
 
 #[cfg(test)]
