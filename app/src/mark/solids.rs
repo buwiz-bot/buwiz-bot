@@ -278,6 +278,10 @@ impl Head {
         // the ring this direction meets: height over scale is the slope
         // of the direction, in the loft's own proportions
         let slope = d[2].abs() / b * rho / self.depth;
+        // past the last ring: on the head's axis, where the surface is its depth
+        if self.rings.last().is_some_and(|r| slope >= r.0) {
+            return self.depth;
+        }
         let i = self.rings.partition_point(|r| r.0 < slope).min(self.rings.len() - 1);
         let (lo, hi) = (self.rings[i.saturating_sub(1)], self.rings[i]);
         let t = if hi.0 > lo.0 { ((slope - lo.0) / (hi.0 - lo.0)).clamp(0.0, 1.0) } else { 0.0 };
@@ -1890,6 +1894,18 @@ mod tests {
             }
             assert!(on_surface >= 2, "{name}: {on_surface} corners on the surface");
         }
+    }
+
+    /// Straight out from the centre the surface is the head's depth, however
+    /// close to the axis: a point just off it isn't buried a head away.
+    #[test]
+    fn the_head_ends_at_its_depth_on_its_axis() {
+        let head = disc_head();
+        for lean in [0.0, 1e-6, 1e-3, 5e-3] {
+            let d = unit([lean, 0.0, 1.0]);
+            assert!(head.radius(d) < 0.8, "{lean}: {}", head.radius(d));
+        }
+        assert!(!head.contains([0.001, 0.0, 1.5]), "a point past the depth is outside");
     }
 
     /// A face wholly outside comes back as it was.
