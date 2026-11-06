@@ -202,7 +202,7 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (path.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mov: "video/quicktime", mp4: "video/mp4" }[ext] || "application/octet-stream";
+    const type = ownType({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mov: "video/quicktime", mp4: "video/mp4" }, ext) || "application/octet-stream";
     res.setHeader("cache-control", "max-age=86400");
     return sendRanged(req, res, path, type);
   }
@@ -217,7 +217,7 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (name.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4" }[ext] || "application/octet-stream";
+    const type = ownType({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4" }, ext) || "application/octet-stream";
     res.setHeader("cache-control", "max-age=86400");
     return sendRanged(req, res, path, type);
   }

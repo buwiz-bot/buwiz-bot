@@ -34,6 +34,10 @@ before(async () => {
   mkdirSync(join(GEN, "assets"), { recursive: true });
   writeFileSync(join(GEN, "assets", "img.webp"), "webp");
   writeFileSync(join(GEN, "assets", "noext"), "raw");
+  for (const dir of ["attachments", "avatars", "assets"]) {
+    writeFileSync(join(GEN, dir, "page.constructor"), "x");
+    writeFileSync(join(GEN, dir, "page.__proto__"), "x");
+  }
 });
 
 after(async () => {
@@ -119,9 +123,9 @@ test("FILE-04 attachments and avatars, by bare file name", async () => {
 });
 
 test("FILE-06 a file's type comes from the tables' own keys", async () => {
-  for (const route of ["raw", "preview"]) {
+  for (const route of ["/file/raw/t1", "/file/preview/t1", "/files/attachments", "/files/avatars", "/asset/generated/assets"]) {
     for (const name of ["page.constructor", "page.__proto__"]) {
-      const r = await request("GET", `/file/${route}/t1/${name}`);
+      const r = await request("GET", `${route}/${name}`);
       assert.equal(r.status, 200);
       assert.equal(r.headers["content-type"], "application/octet-stream", `${route} ${name}`);
     }
