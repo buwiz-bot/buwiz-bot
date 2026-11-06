@@ -30,7 +30,7 @@ NSH = ROOT / "nsh"
 UPSTREAM = "https://github.com/longbridge/nsh.git"
 UPSTREAM_REPO = "longbridge/nsh"
 FORK_OWNER = "hexuria"
-WORKTREE = Path("/tmp/buwiz-nsh-fork")
+WORKTREE = Path("/Volumes/goldcoders/scratch/buwiz-nsh-fork")
 ACTIVE = {"local", "open", "buwiz-only"}
 
 

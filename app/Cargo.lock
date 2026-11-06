@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "books-core"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/books?rev=31635df3d99d9ca333034692b61cd323676625b4#31635df3d99d9ca333034692b61cd323676625b4"
+source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
@@ -571,7 +571,7 @@ dependencies = [
 [[package]]
 name = "books-mini-app"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/books?rev=31635df3d99d9ca333034692b61cd323676625b4#31635df3d99d9ca333034692b61cd323676625b4"
+source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
 dependencies = [
  "books-core",
  "books-store",
@@ -587,7 +587,7 @@ dependencies = [
 [[package]]
 name = "books-screens"
 version = "0.3.0"
-source = "git+https://github.com/buwiz-app/books?rev=31635df3d99d9ca333034692b61cd323676625b4#31635df3d99d9ca333034692b61cd323676625b4"
+source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
 dependencies = [
  "buwiz-app",
  "nsh-core",
@@ -597,7 +597,7 @@ dependencies = [
 [[package]]
 name = "books-store"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/books?rev=31635df3d99d9ca333034692b61cd323676625b4#31635df3d99d9ca333034692b61cd323676625b4"
+source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
 dependencies = [
  "books-core",
  "getrandom 0.3.4",

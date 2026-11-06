@@ -44,7 +44,7 @@ buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "79883a82059
 # Books' native screens (`books.quiet`, `books.ledger`), by git rev. Books
 # pins buwiz-app too: bump both together, to the rev Books' is on, or
 # `ScreenDef` is two types.
-books-screens = { git = "https://github.com/buwiz-app/books", rev = "31635df3d99d9ca333034692b61cd323676625b4" }
+books-screens = { git = "https://github.com/buwiz-app/books", rev = "dbc5dce580bdc4c0a9f0373a7c08812d0c537318" }
 # Google Workspace's native screens (`gws.workspace`). It pins buwiz-app too:
 # the same rule as books-screens.
 gws-screens = { git = "https://github.com/buwiz-app/google-workspace", rev = "9bc21271b8f30d8903c975b4c86785575de8e634" }
@@ -52,7 +52,7 @@ gws-screens = { git = "https://github.com/buwiz-app/google-workspace", rev = "9b
 [dev-dependencies]
 # Books' manifest, at books-screens' rev: every native screen it names is
 # one compiled in (`screens::tests`).
-books-mini-app = { git = "https://github.com/buwiz-app/books", rev = "31635df3d99d9ca333034692b61cd323676625b4" }
+books-mini-app = { git = "https://github.com/buwiz-app/books", rev = "dbc5dce580bdc4c0a9f0373a7c08812d0c537318" }
 # pele::corpus: the port's test inputs, to check the drawing of every one.
 pele = { git = "https://github.com/hexuria/pele-rs", rev = "9af923e41c031b8c7644940685afc201df4f340f", features = ["corpus"] }
 # The office crates' headless driver and test documents, and the engines
