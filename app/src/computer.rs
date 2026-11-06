@@ -9,6 +9,11 @@
 //! The app holds no secret: the broker's `/open` answers with a one-time ticket on its viewer
 //! gate, spent by the time anything could read the URL. A picture in the tab is only the screen.
 //! `ui_look` never reads this: only mini app views register with the Hub.
+//!
+//! A ticket says watch or drive. A viewer watches until a person presses Take control: their input
+//! reaches the desktop and the agent waits while they use it. When a Bot asks a person to take over,
+//! the viewer drives for as long as that lasts, and Hand back ends it. The broker's status says
+//! what the viewer may be, so when a hand-over ends the ticket is swapped here, however it ended.
 
 use nsh_core::prelude::*;
 use serde_json::{json, Value};
@@ -30,6 +35,29 @@ pub(crate) struct Status {
     /// the Bots at this computer, this one included: (id, name)
     pub bots: Vec<(String, String)>,
     pub wake_ms: Option<u64>,
+    /// the open viewer's mode, `watch` or `drive`; "" when none is open
+    pub viewer: String,
+    /// a run has this screen
+    pub working: bool,
+    pub takeover: Option<Takeover>,
+}
+
+/// The screen is with a person, because its Bot asked.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Takeover {
+    pub reason: String,
+    pub seconds_left: u64,
+}
+
+impl Takeover {
+    fn parse(v: &Value) -> Option<Self> {
+        Some(Self { reason: v.get("reason")?.as_str()?.to_owned(), seconds_left: v.get("secondsLeft")?.as_u64()? })
+    }
+
+    /// `4:05`.
+    fn left(&self) -> String {
+        format!("{}:{:02}", self.seconds_left / 60, self.seconds_left % 60)
+    }
 }
 
 impl Status {
@@ -41,6 +69,9 @@ impl Status {
             message: text("message"),
             bots: bots.filter_map(|b| Some((b.get("id")?.as_str()?.to_owned(), b.get("name")?.as_str()?.to_owned()))).collect(),
             wake_ms: v.get("wakeMs").and_then(Value::as_u64),
+            viewer: text("viewer"),
+            working: v.get("working").and_then(Value::as_bool).unwrap_or(false),
+            takeover: v.get("takeover").and_then(Takeover::parse),
         }
     }
 
@@ -60,6 +91,38 @@ impl Status {
     pub fn shared_with(&self, bot: &str) -> String {
         let others: Vec<&str> = self.bots.iter().filter(|(id, _)| id != bot).map(|(_, n)| n.as_str()).collect();
         if others.is_empty() { String::new() } else { format!("Shared with {}. Each has its own screen, but a screen is no wall: use separate computers for work that must stay apart.", others.join(", ")) }
+    }
+}
+
+/// The mode a viewer should get a ticket for now, given the one it `holds` ("" for none) and
+/// whether a person `wants_to_drive`: `None` leaves it as it is. What the broker says wins, so a
+/// session it closed is never taken for one still open, and an ended hand-over leaves no way to go
+/// on driving.
+pub(crate) fn next_ticket(status: &Status, holds: &str, wants_to_drive: bool) -> Option<&'static str> {
+    if status.state != "awake" {
+        return None;
+    }
+    let want = if status.takeover.is_some() || wants_to_drive { "drive" } else { "watch" };
+    (holds != want || status.viewer != holds).then_some(want)
+}
+
+/// What the bar says of the open viewer.
+pub(crate) fn mode_words(status: &Status) -> String {
+    match (&status.takeover, status.viewer.as_str()) {
+        (Some(t), _) => format!("{} · {} left", t.reason, t.left()),
+        (None, "drive") => "You're driving. The agent waits while you do.".to_owned(),
+        (None, "watch") if status.working => "Watching the agent work.".to_owned(),
+        (None, "watch") => "Watching. Your clicks don't reach the screen.".to_owned(),
+        _ => String::new(),
+    }
+}
+
+/// What the bar's button says.
+pub(crate) fn button_words(status: &Status) -> &'static str {
+    match (&status.takeover, status.viewer.as_str()) {
+        (Some(_), _) => "Hand back",
+        (None, "drive") => "Stop driving",
+        _ => "Take control",
     }
 }
 
@@ -102,6 +165,10 @@ thread_local! {
     static RECORDING: Signal<Recordings> = Owner::detached().run(|| keep("computer.recording", Recordings::default));
     /// A Bot delete waiting for a person's answer.
     static DELETE_ASK: Signal<Option<DeleteAsk>> = Owner::detached().run(|| keep("computer.delete-ask", || None));
+    /// The Bots whose screen a person pressed Take control on.
+    static DRIVING: Signal<std::collections::HashSet<String>> = Owner::detached().run(|| keep("computer.driving", Default::default));
+    /// What the viewer open full screen last heard, with whose it is.
+    static SHOWN: Signal<(String, Status)> = Owner::detached().run(|| keep("computer.shown", Default::default));
 }
 
 /// The recording under way on each Bot's screen: its id, by Bot.
@@ -309,7 +376,46 @@ fn leave(bot: String) {
     });
 }
 
-fn open_full(bot: &str, name: &str) {
+/// Puts what `bot`'s viewer last heard on its bar.
+pub(crate) fn show_status(bot: &str, status: Status) {
+    SHOWN.with(|s| s.set((bot.to_owned(), status)));
+}
+
+/// Whether a person pressed Take control on `bot`'s screen.
+#[cfg(test)]
+pub(crate) fn wants_to_drive(bot: &str) -> bool {
+    DRIVING.with(|s| s.with(|d| d.contains(bot)))
+}
+
+/// The person is done with the screen their Bot gave them.
+fn hand_back(bot: String) {
+    spawn_detached(async move {
+        let reply = client::post_any(&route(&bot, "/handback"), json!({})).await;
+        let why = refusal(reply.as_ref());
+        update(&bot, |p| p.note = why.clone().unwrap_or_default());
+        refresh(bot).await;
+    });
+}
+
+/// The bar's button: Take control and Stop driving ask for the other ticket, and Hand back ends the
+/// hand-over.
+fn press_drive(bot: &str, status: &Status) {
+    if status.takeover.is_some() {
+        return hand_back(bot.to_owned());
+    }
+    let on = status.viewer != "drive";
+    DRIVING.with(|s| {
+        s.update(|d| {
+            if on {
+                d.insert(bot.to_owned());
+            } else {
+                d.remove(bot);
+            }
+        })
+    });
+}
+
+pub(crate) fn open_full(bot: &str, name: &str) {
     store().open_mini_token(&key_of(bot), &format!("{name}'s computer"), "");
 }
 
@@ -384,6 +490,19 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     if let Some(ms) = p.status.wake_ms.filter(|_| awake) {
         out = out.child(note(format!("Woke in {:.1} s", ms as f64 / 1000.0)));
     }
+    if let Some(t) = &p.status.takeover {
+        let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
+        out = out.child(view().test_id("computer-takeover").child(note(format!("{name} asked you to take over: {} · {} left", t.reason, t.left())))).child(
+            view()
+                .flex_row()
+                .gap_2()
+                .pt(px(10.0))
+                .child(small_button("computer-takeover-open", "Take over", move || open_full(&b1, &n1)))
+                .child(small_button("computer-handback", "Hand back", move || hand_back(b2.clone()))),
+        );
+    } else if p.status.working {
+        out = out.child(note("Its agent is using this screen.".to_owned()));
+    }
     if awake {
         let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
         out = out.child(
@@ -420,8 +539,8 @@ fn sleeping_avatar(shape: &str) -> impl IntoElement {
 }
 
 /// The open viewer: a URL once the computer is awake and the broker gave a ticket.
-async fn ticket(bot: &str) -> Result<String, String> {
-    match client::post_any(&route(bot, "/open"), json!({})).await {
+async fn ticket(bot: &str, mode: &str) -> Result<String, String> {
+    match client::post_any(&route(bot, "/open"), json!({"mode": mode})).await {
         Some(v) => match v.get("url").and_then(Value::as_str) {
             Some(url) => Ok(url.to_owned()),
             None => Err(v.get("message").and_then(Value::as_str).unwrap_or("The computer can't show its screen.").to_owned()),
@@ -434,8 +553,11 @@ async fn ticket(bot: &str) -> Result<String, String> {
 /// so a sleeping computer is woken from here as well.
 pub(crate) fn live_view(bot: String) -> impl IntoElement {
     let url: Signal<String> = signal(String::new());
+    // the mode of `url`
+    let holds: Signal<String> = signal(String::new());
     let state: Signal<Status> = signal(Status::default());
     let asking = signal(false);
+    let driving = DRIVING.with(|s| *s);
     let look = {
         let bot = bot.clone();
         move || {
@@ -445,23 +567,43 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
                 let now = Status::parse(&v);
                 let awake = now.state == "awake";
                 state.set(now.clone());
+                show_status(&bot, now.clone());
+                // the hand-over's end decides: Take control from before it doesn't outlast it
+                if now.takeover.is_some() && driving.with_untracked(|d| d.contains(&bot)) {
+                    driving.update(|d| {
+                        d.remove(&bot);
+                    });
+                }
                 if !awake {
                     if !url.get_untracked().is_empty() {
                         url.set(String::new());
+                        holds.set(String::new());
                     }
-                } else if url.get_untracked().is_empty() && !asking.get_untracked() {
-                    asking.set(true);
-                    match ticket(&bot).await {
-                        Ok(u) => url.set(u),
-                        Err(message) => state.set(Status { state: "error".to_owned(), message, ..now }),
+                } else if !asking.get_untracked() {
+                    let wants = driving.with_untracked(|d| d.contains(&bot));
+                    if let Some(mode) = next_ticket(&now, &holds.get_untracked(), wants) {
+                        asking.set(true);
+                        match ticket(&bot, mode).await {
+                            Ok(u) => {
+                                holds.set(mode.to_owned());
+                                url.set(u);
+                                let viewer = mode.to_owned();
+                                SHOWN.with(|s| s.update(|(_, st)| st.viewer = viewer));
+                            }
+                            Err(message) => state.set(Status { state: "error".to_owned(), message, ..now }),
+                        }
+                        asking.set(false);
                     }
-                    asking.set(false);
                 }
             });
         }
     };
-    look();
-    set_interval(POLL, look);
+    set_interval(POLL, look.clone());
+    // at once, and again the moment a person presses Take control
+    effect(move || {
+        driving.with(|_| ());
+        look();
+    });
     let press = bot.clone();
     view()
         .test_id("computer-live")
@@ -502,6 +644,32 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
                     .into_element()
             },
         ))
+}
+
+/// Beside Record: what the viewer is, and the way to the other mode or to hand back.
+pub(crate) fn drive_button(key: &str) -> impl IntoElement {
+    let bot = bot_of_key(key).unwrap_or_default();
+    let shown = SHOWN.with(|s| *s);
+    let (b1, b2, b3) = (bot.clone(), bot.clone(), bot);
+    let status = move |bot: &str| shown.with(|(of, s)| if of == bot { s.clone() } else { Status::default() });
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(view().test_id("computer-mode").child(text(move || mode_words(&status(&b1))).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5a8"))))
+        .child(
+            view()
+                .test_id("computer-drive")
+                .label("Take control")
+                .h(px(32.0))
+                .px(px(12.0))
+                .rounded(px(16.0))
+                .items_center()
+                .justify_center()
+                .bg(tc("#f5f5f50f"))
+                .child(text(move || button_words(&status(&b2)).to_owned()).text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+                .on_press(move || press_drive(&b3, &status(&b3))),
+        )
 }
 
 /// Whether a Stop's answer says the recording ended.
@@ -577,6 +745,52 @@ mod tests {
         assert_eq!(bot_of_key(&key_of("b_1")).as_deref(), Some("b_1"));
         assert_eq!(bot_of_key("mcp:apps/hello"), None);
         assert_eq!(bot_of_key("computer:"), None);
+    }
+
+    fn seen(state: &str, viewer: &str, takeover: Option<u64>) -> Status {
+        Status { state: state.to_owned(), viewer: viewer.to_owned(), takeover: takeover.map(|s| Takeover { reason: "Sign in".to_owned(), seconds_left: s }), ..Status::default() }
+    }
+
+    #[test]
+    fn the_status_says_who_has_the_screen() {
+        let v = json!({"state": "awake", "viewer": "drive", "working": true, "takeover": {"reason": "Sign in", "secondsLeft": 245}});
+        let s = Status::parse(&v);
+        assert_eq!((s.viewer.as_str(), s.working), ("drive", true));
+        assert_eq!(s.takeover, Some(Takeover { reason: "Sign in".to_owned(), seconds_left: 245 }));
+        assert_eq!(s.takeover.unwrap().left(), "4:05");
+        let bare = Status::parse(&json!({"state": "awake"}));
+        assert_eq!((bare.viewer.as_str(), bare.working, bare.takeover), ("", false, None));
+    }
+
+    #[test]
+    fn a_viewer_watches_until_a_person_says_and_takes_what_the_broker_says() {
+        assert_eq!(next_ticket(&seen("awake", "", None), "", false), Some("watch"), "opening watches");
+        assert_eq!(next_ticket(&seen("awake", "watch", None), "watch", false), None, "nothing to change");
+        assert_eq!(next_ticket(&seen("awake", "watch", None), "watch", true), Some("drive"), "Take control");
+        assert_eq!(next_ticket(&seen("awake", "drive", None), "drive", true), None);
+        assert_eq!(next_ticket(&seen("awake", "drive", None), "drive", false), Some("watch"), "Stop driving");
+        assert_eq!(next_ticket(&seen("asleep", "", None), "watch", true), None, "a sleeping computer gets no ticket");
+    }
+
+    #[test]
+    fn a_hand_over_drives_and_its_end_goes_back_to_watching() {
+        assert_eq!(next_ticket(&seen("awake", "watch", Some(60)), "watch", false), Some("drive"), "it's theirs");
+        assert_eq!(next_ticket(&seen("awake", "drive", Some(60)), "drive", false), None);
+        // the broker closed the drive session: handed back, or the time ran out
+        assert_eq!(next_ticket(&seen("awake", "", None), "drive", false), Some("watch"));
+        // the same session, gone under a viewer that wanted it: a new one, not a dead page
+        assert_eq!(next_ticket(&seen("awake", "", None), "watch", false), Some("watch"));
+    }
+
+    #[test]
+    fn the_bar_says_what_the_viewer_is_and_what_its_button_does() {
+        assert_eq!(button_words(&seen("awake", "watch", None)), "Take control");
+        assert_eq!(button_words(&seen("awake", "drive", None)), "Stop driving");
+        assert_eq!(button_words(&seen("awake", "drive", Some(9))), "Hand back");
+        assert_eq!(mode_words(&seen("awake", "watch", None)), "Watching. Your clicks don't reach the screen.");
+        assert_eq!(mode_words(&Status { working: true, ..seen("awake", "watch", None) }), "Watching the agent work.");
+        assert_eq!(mode_words(&seen("awake", "drive", None)), "You're driving. The agent waits while you do.");
+        assert_eq!(mode_words(&seen("awake", "drive", Some(65))), "Sign in · 1:05 left");
     }
 
     #[test]

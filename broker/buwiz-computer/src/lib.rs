@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use docker::DockerProvider;
-pub use gate::Gate;
+pub use gate::{Gate, Mode};
 pub use guest::BoxGuest;
 pub use planned::Planned;
 
@@ -356,6 +356,10 @@ pub enum Problem {
     /// the computer's own services said no, or said nothing
     Guest { status: u16, message: String },
     Asleep,
+    /// another run of this Bot has the screen, until it ends
+    Held,
+    /// a person has been on the screen for longer than the agent waits
+    PersonOn,
     /// it's walled off from the Mac, or it doesn't start
     Unwalled(String),
     Failed(String),
@@ -373,6 +377,8 @@ impl Problem {
             Self::Unsupported(_) => "unsupported",
             Self::Guest { .. } => "guest",
             Self::Asleep => "asleep",
+            Self::Held => "held",
+            Self::PersonOn => "person_on",
             Self::Unwalled(_) => "unwalled",
             Self::Failed(_) => "failed",
         }
@@ -389,6 +395,8 @@ impl Problem {
             Self::Unsupported(what) => format!("This computer can't {what}."),
             Self::Guest { message, .. } => format!("The computer said: {message}"),
             Self::Asleep => "The computer is asleep. Only a person can wake it: ask them to click it in the Computer tab.".to_owned(),
+            Self::Held => "Another run of this Bot is using this screen, and it keeps it until it ends. Nothing was done here: try again once it has finished.".to_owned(),
+            Self::PersonOn => "A person is still using this screen, so nothing was done. Try again later, or ask them when they'll be finished.".to_owned(),
             Self::Unwalled(why) => format!("The computer didn't start, because it couldn't be walled off from this Mac: {why}"),
             Self::Failed(why) => format!("The computer failed: {why}"),
         }

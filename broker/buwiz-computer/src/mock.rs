@@ -45,11 +45,15 @@ pub struct MockProvider {
     pub links: Mutex<std::collections::HashMap<String, String>>,
     /// the Bots with a screen, in the order they first got one
     pub screens: Mutex<Vec<String>>,
+    /// where `viewer` says the screen is, instead of its port
+    pub viewer_addr: Mutex<Option<String>>,
+    /// `record_stop` fails with this
+    pub record_problem: Mutex<Option<Problem>>,
 }
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None) }
     }
 }
 
@@ -228,7 +232,8 @@ impl Provider for MockProvider {
 
     async fn viewer(&self, machine: &Machine, screen: &Screen) -> Result<Option<Viewer>> {
         self.awake()?;
-        Ok(Some(Viewer { addr: format!("127.0.0.1:{}", screen.viewer_port), password: machine.viewer_password.clone() }))
+        let addr = self.viewer_addr.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        Ok(Some(Viewer { addr: addr.unwrap_or_else(|| format!("127.0.0.1:{}", screen.viewer_port)), password: machine.viewer_password.clone() }))
     }
 
     async fn screenshot(&self, _: &Machine, screen: &Screen) -> Result<Screenshot> {
@@ -274,6 +279,10 @@ impl Provider for MockProvider {
 
     async fn record_stop(&self, _: &Machine, screen: &Screen, id: u64) -> Result<String> {
         self.awake()?;
+        if let Some(p) = self.record_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
+        }
+        self.note(format!("record_stop {id}"));
         Ok(format!("{}/recordings/{id}.mp4", screen.folder))
     }
 }

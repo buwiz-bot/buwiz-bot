@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use buwiz_computer::{DockerProvider, Input, Power, Provider, Sleep, Spec};
+use buwiz_computer::{DockerProvider, Gate, Input, Mode, Power, Provider, Screen, Sleep, Spec};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 const IMAGE_ENV: &str = "BUWIZ_COMPUTER_IMAGE";
 
@@ -244,4 +246,128 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     p.destroy(a).await.expect("a volume already gone stopped the removal");
     assert_eq!(docker(&["volume", "ls", "--quiet", "--filter", &format!("name={na}-home")]), "", "the other volume was left behind");
     println!("home alone: found, and a delete removed it");
+}
+
+/// What a page does to reach a ticket's screen: the ticket, then the socket, by the real gate.
+async fn real_socket(gate: &Gate, bot: &str, viewer: buwiz_computer::Viewer, mode: Mode) -> (TcpStream, u16, String, String) {
+    let url = gate.open(bot, viewer, mode).unwrap();
+    let (port, target) = url.strip_prefix("http://127.0.0.1:").unwrap().split_once('/').unwrap();
+    let (port, target) = (port.parse::<u16>().unwrap(), format!("/{target}"));
+    let reply = http(port, &target, "").await;
+    let cookie = reply.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap().to_owned();
+    let clean = target.split('?').next().unwrap().to_owned();
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(format!("GET {clean}ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nOrigin: http://127.0.0.1:{port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n").as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        ws.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    assert!(!head.to_lowercase().contains("sec-websocket-extensions"), "the gate couldn't read that: {head}");
+    (ws, port, clean, cookie)
+}
+
+async fn http(port: u16, target: &str, cookie: &str) -> String {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let extra = if cookie.is_empty() { String::new() } else { format!("Cookie: {cookie}\r\n") };
+    s.write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}\r\n").as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn command(text: &str) -> Vec<u8> {
+    let mask = [7u8, 8, 9, 10];
+    let mut out = vec![0x81, 0x80 | text.len() as u8];
+    out.extend(mask);
+    out.extend(text.bytes().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    out
+}
+
+async fn pointer(p: &DockerProvider, m: &buwiz_computer::Machine, screen: &Screen) -> String {
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let out = p.run(m, screen, "xdotool getmouselocation --shell | head -2 | tr '\\n' ' '", 5000).await.unwrap();
+    assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+    out.stdout.trim().to_owned()
+}
+
+/// The real viewer, through the real gate: only the gate stands between a watcher and the desktop.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_watcher_cant_touch_a_real_screen_and_a_driver_can() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2w-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image.clone(), "c2w");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2wtest".into(), dir: dir.clone() }).await.unwrap();
+    let outcome = tokio::spawn({
+        let m = m.clone();
+        async move { watch_and_drive(&DockerProvider::new(image, "c2w"), &m).await }
+    })
+    .await;
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2w-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn watch_and_drive(p: &DockerProvider, m: &buwiz_computer::Machine) {
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2w_a").await.unwrap();
+    let b = p.screen_up(m, "c2w_b").await.unwrap();
+    let gate = Gate::start().await.unwrap();
+    let quiet = std::time::Duration::from_secs(2);
+    let (a_viewer, b_viewer) = (p.viewer(m, &a).await.unwrap().unwrap(), p.viewer(m, &b).await.unwrap().unwrap());
+
+    p.input(m, &a, &Input::Move { x: 40, y: 40 }).await.unwrap();
+    p.input(m, &b, &Input::Move { x: 41, y: 41 }).await.unwrap();
+    let (at_start, b_at_start) = (pointer(p, m, &a).await, pointer(p, m, &b).await);
+    println!("before: {at_start} / {b_at_start}");
+    assert!(at_start.contains("X=40") && b_at_start.contains("X=41"), "{at_start} {b_at_start}");
+
+    let (mut ws, port, clean, cookie) = real_socket(&gate, "c2w_a", a_viewer.clone(), Mode::Watch).await;
+    for path in ["", "client.js", "worker.js", "audio.js", "mic.js", "inter.woff2", "favicon.ico"] {
+        let page = http(port, &format!("{clean}{path}"), &cookie).await;
+        assert!(page.starts_with("HTTP/1.1 200"), "{path}: {}", page.lines().next().unwrap_or_default());
+    }
+    for path in ["screenshot", "stats", "wait?idle=1", "files/list"] {
+        assert!(http(port, &format!("{clean}{path}"), &cookie).await.starts_with("HTTP/1.1 403"), "{path}");
+    }
+    ws.write_all(&command("m,300,200")).await.unwrap();
+    ws.write_all(&command("b,1,1")).await.unwrap();
+    ws.write_all(&command("b,1,0")).await.unwrap();
+    ws.write_all(&command("po,1")).await.unwrap();
+    assert_eq!(pointer(p, m, &a).await, at_start, "a watcher moved the real pointer");
+    assert!(!gate.driving("c2w_a", quiet));
+
+    let (mut ws, ..) = real_socket(&gate, "c2w_a", a_viewer, Mode::Drive).await;
+    assert!(!gate.driving("c2w_a", quiet), "connected and quiet");
+    ws.write_all(&command("m,300,200")).await.unwrap();
+    let driven = pointer(p, m, &a).await;
+    println!("driven: {driven}");
+    assert!(driven.contains("X=300") && driven.contains("Y=200"), "a driver's input didn't reach the desktop: {driven}");
+    assert_eq!(pointer(p, m, &b).await, b_at_start, "another Bot's screen moved");
+    assert!(gate.driving("c2w_a", std::time::Duration::from_secs(30)), "the gate didn't see them");
+    assert!(!gate.driving("c2w_b", std::time::Duration::from_secs(30)));
+
+    // another Bot's ticket is another Bot's: it reaches its own screen and no other
+    let (mut other, ..) = real_socket(&gate, "c2w_b", b_viewer, Mode::Drive).await;
+    other.write_all(&command("m,100,120")).await.unwrap();
+    assert!(pointer(p, m, &b).await.contains("X=100"));
+    assert!(pointer(p, m, &a).await.contains("X=300"));
+
+    // gone from the gate, gone from the viewer
+    gate.close("c2w_a");
+    drop(ws);
+    for _ in 0..200 {
+        if !gate.driving("c2w_a", std::time::Duration::from_secs(30)) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a closed session still counts as driving");
 }

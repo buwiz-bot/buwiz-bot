@@ -205,6 +205,8 @@ pub fn App() -> impl IntoElement {
 }
 
 #[cfg(test)]
+mod computer_ui_tests;
+#[cfg(test)]
 mod sidebar_ui_tests;
 
 #[cfg(test)]

@@ -18,6 +18,17 @@
 //! same volumes when it next wakes, and a lost record is rebuilt from what's left. A computer is
 //! only ever removed for a person who deleted its last Bot, or just made and empty.
 //!
+//! A person and an agent share a screen by these rules, all held in [`Now`] and changed only under
+//! its lock, so a click, a sweep and a run see the same thing:
+//!
+//! - The first run to touch a screen keeps it until it ends ([`Computers::hold`]). A second is
+//!   refused, not queued.
+//! - A person outranks every run. While they drive, the agent's calls wait ([`Computers::person_on`]);
+//!   a person is never made to wait for the agent.
+//! - A run can hand the screen to a person until a time limit ([`Computers::hand_over`]). Sleeping
+//!   the computer or deleting the Bot ends that too.
+//! - Nothing but a person's click sleeps a computer a run or a hand-over has.
+//!
 //! What C6 hangs here: a seat's `role` (`member` today; a Bot lent another's computer would be
 //! a `guest`, with what it may do decided by that side's switches) and a screen's `folder`, the
 //! per-agent place artifacts are collected from.
@@ -27,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use buwiz_computer::{provider_for, Gate, Machine, Power, Problem, Provider, ProviderKind, Reach, Screen, Sleep, Spec, Woke};
+use buwiz_computer::{provider_for, Gate, Machine, Mode, Power, Problem, Provider, ProviderKind, Reach, Screen, Sleep, Spec, Woke};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::header::{HeaderValue, CONTENT_TYPE};
@@ -45,9 +56,21 @@ use super::Registry;
 pub const MAX_SEATS: i64 = 4;
 const IDLE_ENV: &str = "BUWIZ_COMPUTER_IDLE_SECS";
 const DEEP_ENV: &str = "BUWIZ_COMPUTER_DEEP_SECS";
+const QUIET_ENV: &str = "BUWIZ_COMPUTER_QUIET_SECS";
 /// Idle this long, it sleeps. Asleep this long, it lets go of its memory.
 const IDLE: Duration = Duration::from_secs(15 * 60);
 const DEEP: Duration = Duration::from_secs(2 * 60 * 60);
+/// A person who sent no input for this long has stopped driving.
+const QUIET: Duration = Duration::from_secs(5);
+/// How long an agent's call waits for a person before it gives up, undone.
+const PATIENCE: Duration = Duration::from_secs(600);
+/// The longest a recording runs: voxl's `--max-record-seconds`, which the image leaves as it is.
+/// Past this it ended by itself, and there's nothing to stop.
+const RECORDING_LIFE: Duration = Duration::from_secs(300);
+/// How often a waiting call looks again.
+const PERSON_POLL: Duration = Duration::from_millis(100);
+/// How often a wake looks for a sleep under way to finish.
+const SLEEP_POLL: Duration = Duration::from_millis(20);
 /// How long opencodex's word on which models see images holds: every model call asks.
 const SIGHT_TTL: Duration = Duration::from_secs(60);
 
@@ -68,6 +91,124 @@ struct Now {
     /// by computer id, or by Bot before it has one
     problems: HashMap<String, Problem>,
     wake_ms: HashMap<String, u64>,
+    /// the computers going to sleep right now. A wake waits for it, and nothing new starts on one
+    sleeping: HashSet<String>,
+    /// by Bot: the run that has its screen, as (its [`Hold`]'s number, the computer)
+    holds: HashMap<String, (u64, String)>,
+    /// by Bot: the person who has its screen
+    handovers: HashMap<String, Handover>,
+    /// by Bot: the recording its model started and hasn't stopped, and when
+    recordings: HashMap<String, (u64, Instant)>,
+    numbers: u64,
+}
+
+impl Now {
+    fn number(&mut self) -> u64 {
+        self.numbers += 1;
+        self.numbers
+    }
+
+    /// Ends `bot`'s hand-over for `why`, if it has one.
+    fn end_handover(&mut self, bot: &str, why: Ended) -> bool {
+        let found = self.handovers.remove(bot);
+        let ended = found.is_some();
+        if let Some(h) = found {
+            let _ = h.done.send(why);
+        }
+        ended
+    }
+
+    /// Whether a run or a person has a screen on `computer`. From what's here, not the seats: this
+    /// has no read to fail.
+    fn in_use(&self, computer: &str) -> bool {
+        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer)
+    }
+}
+
+/// A screen a person has been given.
+struct Handover {
+    number: u64,
+    computer: String,
+    reason: String,
+    until: Instant,
+    done: tokio::sync::oneshot::Sender<Ended>,
+}
+
+/// How a hand-over ended, short of its time running out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// a person pressed Hand back
+    HandedBack,
+    /// a person slept the computer
+    Asleep,
+    /// a person took the Bot off it or deleted it
+    Gone,
+}
+
+/// A run's claim on its Bot's screen, kept in the run: it ends with the run, however that ends.
+pub struct Hold {
+    computers: Arc<Computers>,
+    bot: String,
+    number: u64,
+}
+
+impl Hold {
+    pub fn is_for(&self, bot: &str) -> bool {
+        self.bot == bot
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut now = self.computers.now();
+        if now.holds.get(&self.bot).is_some_and(|(n, _)| *n == self.number) {
+            now.holds.remove(&self.bot);
+        }
+    }
+}
+
+/// A hand-over under way. Dropped with the call that waits on it, so a run that ends leaves no
+/// person holding a screen that nobody will take back.
+pub struct Handing {
+    computers: Arc<Computers>,
+    bot: String,
+    number: u64,
+    limit: Duration,
+    ended: tokio::sync::oneshot::Receiver<Ended>,
+}
+
+impl Handing {
+    /// Waits for it to end: `None` when the time ran out first. A Hand back that lands on the limit
+    /// is decided by whichever takes the record out first.
+    pub async fn ended(&mut self) -> Option<Ended> {
+        match tokio::time::timeout(self.limit, &mut self.ended).await {
+            Ok(ended) => ended.ok(),
+            Err(_) if self.take_back() => None,
+            Err(_) => (&mut self.ended).await.ok(),
+        }
+    }
+
+    /// Whether this call was the one to end it; its drive session goes with it.
+    fn take_back(&self) -> bool {
+        let mine = {
+            let mut now = self.computers.now();
+            let mine = now.handovers.get(&self.bot).is_some_and(|h| h.number == self.number);
+            if mine {
+                now.handovers.remove(&self.bot);
+            }
+            mine
+        };
+        if mine {
+            self.computers.close_viewer(&self.bot);
+        }
+        mine
+    }
+}
+
+impl Drop for Handing {
+    fn drop(&mut self) {
+        self.take_back();
+    }
 }
 
 /// The hub's computers, in `ctx.ext`.
@@ -78,6 +219,8 @@ pub struct Computers {
     machines: Mutex<HashMap<String, Machine>>,
     idle: Duration,
     deep: Duration,
+    quiet: Duration,
+    patience: Duration,
     /// one at a time: making a computer and changing who sits where. Two first clicks mustn't
     /// make two computers. Global rather than per Bot, because a join changes two Bots' view of
     /// one computer; it is held for a `docker create` at most, and a wake runs outside it.
@@ -91,6 +234,7 @@ pub struct Live {
     pub provider: Arc<dyn Provider>,
     pub machine: Machine,
     pub computer: String,
+    pub bot: String,
     pub screen: Screen,
 }
 
@@ -104,7 +248,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), sight: Mutex::default() }
+        Self { provider, gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default() }
     }
 
     pub fn of(ctx: &HubCtx) -> Option<Arc<Self>> {
@@ -126,6 +270,17 @@ impl Computers {
 
     async fn gate(&self) -> Option<&Gate> {
         self.gate.get_or_init(|| async { Gate::start().await.ok() }).await.as_ref()
+    }
+
+    /// The gate, if a viewer was ever opened: with none, nobody can be on a screen.
+    fn open_gate(&self) -> Option<&Gate> {
+        self.gate.get().and_then(Option::as_ref)
+    }
+
+    fn close_viewer(&self, bot: &str) {
+        if let Some(gate) = self.open_gate() {
+            gate.close(bot);
+        }
     }
 
     // ---- the records ----
@@ -380,6 +535,11 @@ impl Computers {
     }
 
     async fn wake_all(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+        // `id` is in `waking`, so no sleep starts now: a pause that lands after this wake's check
+        // would leave it asleep under a person who just woke it
+        while self.now().sleeping.contains(id) {
+            tokio::time::sleep(SLEEP_POLL).await;
+        }
         // `id` is in `waking` by now, and the sweep leaves a waking computer alone: whichever of
         // this check and a retire comes first, nothing is brought up after it's removed
         match Self::retired(ctx, id) {
@@ -393,6 +553,13 @@ impl Computers {
         let woke = provider.wake(&machine).await?;
         // resumed, the screens it had are as they were: only a Bot that joined meanwhile needs one
         let seats = Self::seats(ctx, id)?;
+        if woke == Woke::Started {
+            // what recorded went with the viewers: a stop now would fail, and keep a person out
+            let mut now = self.now();
+            for seat in &seats {
+                now.recordings.remove(&seat.bot);
+            }
+        }
         let waiting: Vec<_> = seats.into_iter().filter(|s| woke == Woke::Started || s.screen.is_none()).collect();
         if waiting.is_empty() {
             return Ok(());
@@ -413,7 +580,35 @@ impl Computers {
         self.finish_wake(ctx, id).await
     }
 
+    /// A person put it to sleep: whatever a run or a person was doing on it ends.
     pub async fn sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep) -> Result<(), Problem> {
+        let marked = {
+            let mut now = self.now();
+            let handed: Vec<String> = now.handovers.iter().filter(|(_, h)| h.computer == id).map(|(bot, _)| bot.clone()).collect();
+            for bot in handed {
+                now.end_handover(&bot, Ended::Asleep);
+            }
+            now.sleeping.insert(id.to_owned());
+            Sleeping(self, id.to_owned())
+        };
+        self.put_to_sleep(ctx, id, depth, marked).await
+    }
+
+    /// The sweep's sleep: no, if anything needs it. That check and the mark that stops a run, a
+    /// hand-over or a wake starting are one step. `Ok(false)` is a no.
+    async fn sleep_if_unused(&self, ctx: &HubCtx, id: &str, depth: Sleep) -> Result<bool, Problem> {
+        let marked = {
+            let mut now = self.now();
+            if now.in_use(id) || now.waking.contains(id) {
+                return Ok(false);
+            }
+            now.sleeping.insert(id.to_owned());
+            Sleeping(self, id.to_owned())
+        };
+        self.put_to_sleep(ctx, id, depth, marked).await.map(|()| true)
+    }
+
+    async fn put_to_sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep, _marked: Sleeping<'_>) -> Result<(), Problem> {
         let machine = self.machine(ctx, id)?;
         if let Some(gate) = self.gate().await {
             gate.close_computer(&machine.viewer_password);
@@ -442,10 +637,10 @@ impl Computers {
             let provider = self.provider_of(&machine);
             match provider.power(&machine).await {
                 Ok(Power::Awake) if at - used >= millis(self.idle) && !self.watched(ctx, &id).await => {
-                    let _ = self.sleep(ctx, &id, Sleep::Light).await;
+                    let _ = self.sleep_if_unused(ctx, &id, Sleep::Light).await;
                 }
                 Ok(Power::Asleep) if slept.is_some_and(|s| at - s >= millis(self.deep)) => {
-                    let _ = self.sleep(ctx, &id, Sleep::Deep).await;
+                    let _ = self.sleep_if_unused(ctx, &id, Sleep::Deep).await;
                 }
                 _ => {}
             }
@@ -519,6 +714,10 @@ impl Computers {
             if last {
                 self.mark_retired(ctx, &seat.computer);
             }
+            let mut now = self.now();
+            now.end_handover(bot, Ended::Gone);
+            now.recordings.remove(bot);
+            drop(now);
             (!last).then_some(seat)
         };
         if let Some(gate) = self.gate().await {
@@ -572,7 +771,7 @@ impl Computers {
         let seat = Self::seat(ctx, bot)?.ok_or(Problem::Asleep)?;
         {
             let now = self.now();
-            if now.waking.contains(&seat.computer) {
+            if now.waking.contains(&seat.computer) || now.sleeping.contains(&seat.computer) {
                 return Err(Problem::Asleep);
             }
             if let Some(p) = now.problems.get(&seat.computer) {
@@ -589,11 +788,101 @@ impl Computers {
                     self.now().problems.insert(seat.computer.clone(), p.clone());
                     return Err(p);
                 }
-                Ok(Live { provider, machine, computer: seat.computer, screen })
+                Ok(Live { provider, machine, computer: seat.computer, bot: bot.to_owned(), screen })
             }
             (Power::Absent, _) => Err(Problem::Gone),
             _ => Err(Problem::Asleep),
         }
+    }
+
+    // ---- a person and an agent ----
+
+    /// The run with this call has `bot`'s screen until the [`Hold`] goes, or `Err`: another run
+    /// has it, or the computer is on its way to sleep. The one step that decides who is first.
+    pub fn hold(self: &Arc<Self>, bot: &str, computer: &str) -> Result<Hold, Problem> {
+        let mut now = self.now();
+        if now.sleeping.contains(computer) {
+            return Err(Problem::Asleep);
+        }
+        if now.holds.contains_key(bot) {
+            return Err(Problem::Held);
+        }
+        let number = now.number();
+        now.holds.insert(bot.to_owned(), (number, computer.to_owned()));
+        Ok(Hold { computers: self.clone(), bot: bot.to_owned(), number })
+    }
+
+    /// Whether a person has `bot`'s screen right now: it was handed to them, or they're driving it.
+    pub fn person_on(&self, bot: &str) -> bool {
+        self.now().handovers.contains_key(bot) || self.open_gate().is_some_and(|g| g.driving(bot, self.quiet))
+    }
+
+    /// Waits for the person to leave `bot`'s screen, and says whether it had to.
+    /// [`Problem::PersonOn`] when they're still there after [`PATIENCE`].
+    pub async fn person_gone(&self, bot: &str) -> Result<bool, Problem> {
+        let began = Instant::now();
+        let mut waited = false;
+        while self.person_on(bot) {
+            if began.elapsed() >= self.patience {
+                return Err(Problem::PersonOn);
+            }
+            waited = true;
+            tokio::time::sleep(PERSON_POLL).await;
+        }
+        Ok(waited)
+    }
+
+    /// What the model recorded stops before a person is on the screen, so that what they type
+    /// isn't in a file the model can read. A stop that fails keeps them off it, for no longer than
+    /// the recording can last.
+    pub async fn end_recording(&self, live: &Live) -> Result<Option<String>, Problem> {
+        let Some((id, began)) = self.now().recordings.get(&live.bot).copied() else { return Ok(None) };
+        if began.elapsed() >= RECORDING_LIFE {
+            self.now().recordings.remove(&live.bot);
+            return Ok(None);
+        }
+        let path = live.provider.record_stop(&live.machine, &live.screen, id).await?;
+        self.now().recordings.remove(&live.bot);
+        Ok(Some(path))
+    }
+
+    /// Note what the model's `computer_record` started or stopped.
+    pub fn note_recording(&self, bot: &str, id: Option<u64>) {
+        let mut now = self.now();
+        match id {
+            Some(id) => now.recordings.insert(bot.to_owned(), (id, Instant::now())),
+            None => now.recordings.remove(bot),
+        };
+    }
+
+    /// Whether a person's viewer of `bot`'s screen can drive it, input or not.
+    pub fn drive_open(&self, bot: &str) -> bool {
+        self.open_gate().and_then(|g| g.mode(bot)) == Some(Mode::Drive)
+    }
+
+    /// Gives `live`'s screen to a person, for `limit` from now. One at a time, and not on a computer
+    /// going to sleep. Their viewer is theirs to open: the Computer tab's status says to.
+    pub fn hand_over(self: &Arc<Self>, live: &Live, reason: &str, limit: Duration) -> Result<Handing, Problem> {
+        let mut now = self.now();
+        if now.sleeping.contains(&live.computer) {
+            return Err(Problem::Asleep);
+        }
+        if now.handovers.contains_key(&live.bot) {
+            return Err(Problem::Failed("this screen is with a person already".to_owned()));
+        }
+        let number = now.number();
+        let (done, ended) = tokio::sync::oneshot::channel();
+        now.handovers.insert(live.bot.clone(), Handover { number, computer: live.computer.clone(), reason: reason.to_owned(), until: Instant::now() + limit, done });
+        Ok(Handing { computers: self.clone(), bot: live.bot.clone(), number, limit, ended })
+    }
+
+    /// A person handed `bot`'s screen back. `false` when nothing was theirs to hand back.
+    pub fn hand_back(&self, bot: &str) -> bool {
+        let ended = self.now().end_handover(bot, Ended::HandedBack);
+        if ended {
+            self.close_viewer(bot);
+        }
+        ended
     }
 
     /// Whether `model` sees images, as opencodex's catalog says. `None` when it doesn't say: a
@@ -636,6 +925,17 @@ impl Computers {
             (now.waking.contains(&id), now.problems.get(&id).cloned(), now.wake_ms.get(&id).copied())
         };
         let mut out = json!({"computer": id, "bots": bots, "sleepAfterS": sleep_after, "display": seat.screen.as_ref().map(|s| s.display.clone())});
+        if let Some(gate) = self.open_gate() {
+            out["viewer"] = json!(gate.mode(bot).map(Mode::as_str));
+            out["driving"] = json!(gate.driving(bot, self.quiet));
+        }
+        {
+            let now = self.now();
+            out["working"] = json!(now.holds.contains_key(bot));
+            if let Some(h) = now.handovers.get(bot).filter(|h| h.computer == id) {
+                out["takeover"] = json!({"reason": h.reason, "secondsLeft": h.until.saturating_duration_since(Instant::now()).as_secs()});
+            }
+        }
         if let Some(ms) = wake_ms {
             out["wakeMs"] = json!(ms);
         }
@@ -686,6 +986,15 @@ impl Computers {
             })
             .collect();
         json!({"computers": rows})
+    }
+}
+
+/// Marks a computer as going to sleep for as long as it's held, however that ends.
+struct Sleeping<'a>(&'a Computers, String);
+
+impl Drop for Sleeping<'_> {
+    fn drop(&mut self) {
+        self.0.now().sleeping.remove(&self.1);
     }
 }
 
@@ -787,9 +1096,18 @@ async fn sleep(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// A one-time URL for this Bot's screen.
+/// A one-time URL for this Bot's screen, in the mode `{mode}` asks for: `watch` when it says
+/// nothing, and a word that's neither gets nothing.
 async fn open(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let mode = match body.get("mode") {
+        None | Some(Value::Null) => Mode::Watch,
+        Some(word) => match word.as_str().and_then(Mode::parse) {
+            Some(mode) => mode,
+            None => return refused(&Problem::Failed("a viewer is for watch or drive".to_owned())),
+        },
+    };
     let live = match computers.live(&ctx, &bot).await {
         Ok(l) => l,
         Err(p) => return refused(&p),
@@ -800,8 +1118,13 @@ async fn open(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Err(p) => return refused(&p),
     };
     let Some(gate) = computers.gate().await else { return refused(&Problem::Failed("no port for the viewer".to_owned())) };
+    if mode == Mode::Drive {
+        if let Err(p) = computers.end_recording(&live).await {
+            return refused(&p);
+        }
+    }
     Computers::touch(&ctx, &live.computer);
-    match gate.open(&bot, viewer) {
+    match gate.open(&bot, viewer, mode) {
         Ok(url) => types::json(StatusCode::OK, &json!({"ok": true, "url": url})),
         Err(p) => refused(&p),
     }
@@ -863,6 +1186,15 @@ async fn record(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
+/// The person is done with a screen their Bot gave them.
+async fn hand_back(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    if !computers.hand_back(&bot) {
+        return refused(&Problem::Failed("this screen isn't with you".to_owned()));
+    }
+    types::json(StatusCode::OK, &computers.status(&ctx, &bot).await)
+}
+
 async fn attach(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
@@ -898,6 +1230,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/wake"), wake);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/sleep"), sleep);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/open"), open);
+    routes.route(Verb::Post, S("/v1/host/computer/bot/*/handback"), hand_back);
     routes.route(Verb::Get, S("/v1/host/computer/bot/*/screen"), screen);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/record"), record);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/attach"), attach);

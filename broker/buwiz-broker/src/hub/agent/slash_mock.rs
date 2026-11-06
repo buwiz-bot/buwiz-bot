@@ -183,9 +183,26 @@ fn names(files: &[Value]) -> String {
 }
 
 /// `/mock …`.
+/// `/mock computer <tool> <input as JSON>`, in a broker started with `MOCK=1` alone: the call a
+/// model would make, so a test Bot can reach a `computer_*` tool with no model behind it. The
+/// answer is left out, as the picture in it would be no use in a chat.
+async fn mock_computer(run: &Run, words: &str) -> Result<(), String> {
+    let (name, input) = words.split_once(' ').unwrap_or((words, "{}"));
+    let input: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    run.ctx.store.append_turn(&run.turn.thread, Turn::user(&format!("/mock computer {name}")))?;
+    let out = crate::hub::tools::exec_tool(run, &json!({"name": name, "input": input})).await;
+    let said = if out.is_error == Some(true) { format!("{name} failed") } else { format!("{name} done") };
+    run.ctx.store.append_turn(&run.turn.thread, Turn::ai(&said, "mock"))?;
+    run.ctx.store.write_index();
+    Ok(())
+}
+
 pub async fn mock(run: &Run, prompt: &str, extra: &Value) -> Result<(), String> {
     let ctx = &run.ctx;
     let p = prompt.trim_matches(js::is_space);
+    if let Some(words) = p.strip_prefix("/mock computer ").filter(|_| crate::hub::routes::chat::mock()) {
+        return mock_computer(run, words).await;
+    }
     let rel = format!("m{}", crate::hub::library::groups::now36());
     let files_dir = ctx.store.gen_dir().join("files");
     let dir = files_dir.join(&rel);
