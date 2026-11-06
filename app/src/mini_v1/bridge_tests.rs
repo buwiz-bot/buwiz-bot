@@ -124,6 +124,18 @@ impl host_api::Broker for FakeBroker {
                         json!({"structuredContent": {"title": "Post this entry?", "lines": [format!("Rent, {amount}")]}})
                     }
                     "fx_nodoc" => json!({"content": [{"type": "text", "text": "<p>no resource</p>"}]}),
+                    "fx_document" | "fx_document_fail" | "fx_document_big" => {
+                        std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0)));
+                        let mut r = match env["tool"].as_str().unwrap() {
+                            "fx_document_fail" => json!({"isError": true, "content": [{"type": "text", "text": "no"}]}),
+                            "fx_document_big" => json!({"content": [{"type": "text", "text": "x".repeat(2 << 20)}]}),
+                            _ => json!({"content": [{"type": "text", "text": "opened"}], "structuredContent": {"opened": true}}),
+                        };
+                        if !args["field"].is_null() {
+                            r["_meta"] = json!({"buwiz/document": args["field"]});
+                        }
+                        r
+                    }
                     "fx_slow" | "fx_count" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(150)));
                         json!({"structuredContent": {"ok": true}})
@@ -134,7 +146,7 @@ impl host_api::Broker for FakeBroker {
                 Ok(json!({"ok": true, "result": result}))
             }
             "/v1/host/ui/press" => Ok(match body["tool"].as_str() {
-                Some("fx_echo" | "fx_slow") => json!({"allow": true, "effect": "draft"}),
+                Some("fx_echo" | "fx_slow" | "fx_document") => json!({"allow": true, "effect": "draft"}),
                 Some("fx_read") => json!({"allow": true, "effect": "read"}),
                 Some("fx_post") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_card"}),
                 Some("fx_long") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_long_card"}),
@@ -191,9 +203,24 @@ struct TestUi {
     writes: AtomicUsize,
     cards: Mutex<Vec<Card>>,
     cards_down: AtomicUsize,
+    /// The plugin's listing says first-party.
+    first_party: AtomicBool,
+    /// The plugin's data folder, as the host knows it.
+    folder: Mutex<Option<PathBuf>>,
+    /// The documents that reached the viewer.
+    documents: Mutex<Vec<Document>>,
+    /// What each was handed to ask, when its job runs, if its open lives.
+    lives: Mutex<Vec<Box<dyn FnOnce() -> bool + Send>>>,
 }
 
 impl HostUi for TestUi {
+    fn plugin_folder(&self, _: &str) -> Option<PathBuf> {
+        self.folder.lock().unwrap().clone()
+    }
+    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+        self.documents.lock().unwrap().push(doc);
+        self.lives.lock().unwrap().push(live);
+    }
     fn hold(&self, _: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
         self.cards.lock().unwrap().push(card);
         match *self.card.lock().unwrap() {
@@ -312,9 +339,13 @@ impl Open {
 
     fn start_placed(placement: &str, plugin_id: &str, perms: Value, source: &str, limits: Limits, ui_setup: impl FnOnce(&TestUi)) -> Open {
         let source = source.to_owned();
+        let ui = Arc::new(TestUi::default());
+        ui_setup(&ui);
+        let mut entry = plugin(plugin_id, &perms);
+        entry.first_party = ui.first_party.load(Ordering::SeqCst);
         let prepared = Arc::new(Prepared {
             key: V1Key { plugin: plugin_id.to_owned(), app: "board".to_owned(), ticket: None, props: Default::default() },
-            plugin: plugin(plugin_id, &perms),
+            plugin: entry,
             title: "Fixture Board".to_owned(),
             fingerprint: load::fingerprint(&source),
             permissions: Permissions::parse(Some(&perms)).unwrap(),
@@ -324,8 +355,6 @@ impl Open {
         });
         let session = Session::open(&CertBroker::honest(), plugin_id, "board", Some(&perms), Some(1)).unwrap();
         let broker = Arc::new(FakeBroker::default());
-        let ui = Arc::new(TestUi::default());
-        ui_setup(&ui);
         let root = crate::mini_v1::storage::scratch_root("bridge");
         let ctx = OpenContext::new(prepared.clone(), session, broker.clone(), ui.clone(), &root, limits);
         let channel = HostChannel::new();
@@ -752,6 +781,7 @@ fn a_host_that_cant_tell_says_the_agent() {
         fn session_ended(&self, _: &V1Key, _: Ended) {}
     }
     assert_eq!(Silent.actor(), Actor::Agent);
+    assert_eq!(Silent.plugin_folder(FIXTURE), None, "and opens no document");
 }
 
 #[test]
@@ -1393,6 +1423,9 @@ fn a_sealed_page_carries_the_no_load_policy_after_its_doctype() {
     assert_eq!(seal("\u{feff}\n <!DOCTYPE html><p>"), format!("\u{feff}\n <!DOCTYPE html>{head}<p>"));
     assert_eq!(seal("<html><p>x</p>"), format!("{head}<html><p>x</p>"));
 }
+
+#[path = "bridge_document_tests.rs"]
+mod document;
 
 #[path = "bridge_native_tests.rs"]
 mod native;

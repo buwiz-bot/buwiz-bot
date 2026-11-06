@@ -101,7 +101,13 @@ fn png(ink: &str, size: u32) -> Vec<u8> {
 fn out_dir() -> PathBuf {
     std::env::var_os("BLOB_EXPORT_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/brand"))
+        .unwrap_or_else(brand_dir)
+}
+
+/// `assets/brand/`, from the app or from `tools/mark-sheet`, which compiles this in place.
+fn brand_dir() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest.ancestors().map(|d| d.join("assets/brand")).find(|d| d.is_dir()).expect("assets/brand above the crate")
 }
 
 #[test]
@@ -119,7 +125,7 @@ fn export() {
 
 #[test]
 fn svgs_are_current() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/brand");
+    let dir = brand_dir();
     for (name, ink) in variants() {
         let path = dir.join(format!("mascot-{name}.svg"));
         let committed = std::fs::read_to_string(&path).unwrap_or_default();
