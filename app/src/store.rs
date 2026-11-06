@@ -746,18 +746,17 @@ pub struct AvatarDraft {
 
 /// Where "Your designs" is kept.
 const DESIGNS: &str = "/state/buwiz-avatar-designs";
-/// How many times in a row a save of "Your designs" may fail before it waits
-/// for the next change.
-const SAVE_TRIES: u64 = 5;
+/// The longest wait between two tries at a save of "Your designs", in ms.
+const SAVE_WAIT_MAX: u64 = 30_000;
 
-/// The entries in a `/state` answer: none for a list never written, and
-/// `None` for anything else that isn't a list of designs, which mustn't pass
-/// for an empty list.
+/// The entries in a `/state` answer: none for a list never written (`null`
+/// from the broker), and `None` for anything else that isn't a list of
+/// designs, which mustn't pass for an empty list.
 fn saved_entries(v: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
-    match v.get("state")? {
-        serde_json::Value::Null => Some(Vec::new()),
-        serde_json::Value::Object(m) if m.is_empty() => Some(Vec::new()),
-        state => state.get("designs")?.as_array().cloned(),
+    match v.get("state") {
+        None | Some(serde_json::Value::Null) => Some(Vec::new()),
+        Some(serde_json::Value::Object(m)) if m.is_empty() => Some(Vec::new()),
+        Some(state) => state.get("designs")?.as_array().cloned(),
     }
 }
 
@@ -2950,6 +2949,8 @@ pub struct Store {
     /// Saved entries this build can't draw: not shown, and written back on
     /// every save, because a newer build may draw them.
     pub design_hidden: std::cell::RefCell<Vec<serde_json::Value>>,
+    /// A read of the list has started: there's only ever the one.
+    pub design_reading: std::cell::Cell<bool>,
     /// A save is on its way, and whether the list changed since it left.
     pub design_saving: std::cell::Cell<bool>,
     pub design_unsaved: std::cell::Cell<bool>,
@@ -3246,6 +3247,7 @@ impl Store {
             design_saved: signal(Vec::new()),
             design_loaded: signal(false),
             design_hidden: Default::default(),
+            design_reading: Default::default(),
             design_saving: Default::default(),
             design_unsaved: Default::default(),
             design_removing: signal(None),
@@ -6093,11 +6095,13 @@ impl Store {
         self.update_bot(&b.id, patch);
     }
 
-    /// Adds `c` to the front of "Your designs" (once).
+    /// Puts `c` at the front of "Your designs": the one already there if the
+    /// list has its shape, as that one may hold more than `c` does.
     pub(crate) fn design_keep(&'static self, c: &AvatarCand) {
         self.design_saved.update(|v| {
-            v.retain(|d| d.shape != c.shape);
-            v.insert(0, c.clone());
+            let there = v.iter().position(|d| d.shape == c.shape);
+            let first = there.map_or_else(|| c.clone(), |i| v.remove(i));
+            v.insert(0, first);
         });
         self.save_designs();
     }
@@ -6117,6 +6121,9 @@ impl Store {
     /// that failed to load looks like an empty one, and saving that would
     /// wipe the real one.
     pub(crate) fn load_designs(&'static self) {
+        if self.design_reading.replace(true) {
+            return;
+        }
         spawn(async move {
             let mut wait = 1;
             loop {
@@ -6144,10 +6151,10 @@ impl Store {
                 why: s(&e, "why"),
                 raw: None,
             };
-            if !crate::avatar::drawable(&c.shape) {
-                hidden.push(e);
-            } else if !list.iter().any(|d| d.raw.is_none() && d.shape == c.shape) {
+            if crate::avatar::drawable(&c.shape) {
                 list.push(AvatarCand { raw: Some(e), ..c });
+            } else {
+                hidden.push(e);
             }
         }
         *self.design_hidden.borrow_mut() = hidden;
@@ -6180,8 +6187,8 @@ impl Store {
 
     /// Saves the list, one save at a time: each writes the whole list, so
     /// two on the wire could land in either order. A change during a save
-    /// goes out after it, as the newest list. After [`SAVE_TRIES`] failures
-    /// it stops, and the next change sends everything.
+    /// goes out after it, as the newest list. A save that fails tries again
+    /// until one works, each wait longer, up to [`SAVE_WAIT_MAX`].
     fn save_designs(&'static self) {
         if !self.design_loaded.get_untracked() {
             return;
@@ -6192,18 +6199,15 @@ impl Store {
         }
         Owner::detached().run(|| {
             spawn(async move {
-                let mut tries = 0;
+                let mut wait = 100;
                 while self.design_unsaved.replace(false) {
-                    if client::post(DESIGNS, self.designs_body()).await.is_some() {
-                        tries = 0;
+                    if client::post_ok(DESIGNS, self.designs_body()).await {
+                        wait = 100;
                         continue;
                     }
                     self.design_unsaved.set(true);
-                    tries += 1;
-                    if tries == SAVE_TRIES {
-                        break;
-                    }
-                    timer(std::time::Duration::from_secs(tries)).await;
+                    timer(std::time::Duration::from_millis(wait)).await;
+                    wait = (wait * 2).min(SAVE_WAIT_MAX);
                 }
                 self.design_saving.set(false);
             });

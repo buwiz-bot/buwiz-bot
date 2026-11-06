@@ -39,6 +39,7 @@ fn in_child(name: &str) -> bool {
 struct Stub {
     state: Arc<Mutex<Value>>,
     fails: Arc<AtomicUsize>,
+    save_fails: Arc<AtomicUsize>,
     slow: Duration,
     gets: Arc<AtomicUsize>,
     posts: Arc<Mutex<Vec<Value>>>,
@@ -50,6 +51,7 @@ fn stub(state: Value, fails: usize, slow: Duration) -> Stub {
     Stub {
         state: Arc::new(Mutex::new(state)),
         fails: Arc::new(AtomicUsize::new(fails)),
+        save_fails: Arc::default(),
         slow,
         gets: Arc::default(),
         posts: Arc::default(),
@@ -74,7 +76,7 @@ impl Network for Stub {
             let (status, reply) = stub.answer(&request);
             let head = HttpHead { status, url: request.url, ..HttpHead::default() };
             events(FetchEvent::Head(head));
-            events(FetchEvent::Data(reply.to_string().into_bytes()));
+            events(FetchEvent::Data(reply.into_bytes()));
             events(FetchEvent::End);
         });
         Box::new(Done)
@@ -82,11 +84,18 @@ impl Network for Stub {
 }
 
 impl Stub {
-    fn answer(&self, request: &HttpRequest) -> (u16, Value) {
+    /// A refused save answers with JSON that looks fine and a saved one with none: it's the
+    /// status that says which.
+    fn answer(&self, request: &HttpRequest) -> (u16, String) {
         if !request.url.ends_with("/state/buwiz-avatar-designs") {
-            return (200, json!({}));
+            return (200, "{}".to_owned());
         }
         if request.method == "POST" {
+            let fails = self.save_fails.load(Ordering::SeqCst);
+            if fails > 0 {
+                self.save_fails.store(fails - 1, Ordering::SeqCst);
+                return (500, r#"{"ok":true}"#.to_owned());
+            }
             let open = self.open.fetch_add(1, Ordering::SeqCst) + 1;
             self.most_open.fetch_max(open, Ordering::SeqCst);
             std::thread::sleep(self.slow);
@@ -95,16 +104,16 @@ impl Stub {
             *self.state.lock().unwrap() = json!({"state": list.clone()});
             self.posts.lock().unwrap().push(list);
             self.open.fetch_sub(1, Ordering::SeqCst);
-            return (200, json!({"ok": true}));
+            return (200, "saved".to_owned());
         }
         self.gets.fetch_add(1, Ordering::SeqCst);
         // one read at a time: the app waits for each answer
         let fails = self.fails.load(Ordering::SeqCst);
         if fails > 0 {
             self.fails.store(fails - 1, Ordering::SeqCst);
-            return (500, json!({}));
+            return (500, "{}".to_owned());
         }
-        (200, self.state.lock().unwrap().clone())
+        (200, self.state.lock().unwrap().to_string())
     }
 
     fn posts(&self) -> Vec<Value> {
@@ -156,6 +165,12 @@ fn Editor() -> impl IntoElement {
         .child(view().label("keep heart").w(px(40.0)).h(px(40.0)).on_press(|| keep("Heart", "heart")))
         .child(view().label("keep star").w(px(40.0)).h(px(40.0)).on_press(|| keep("Star", "star")))
         .child(view().label("forget first").w(px(40.0)).h(px(40.0)).on_press(|| store().design_forget(0)))
+        .child(view().label("read again").w(px(40.0)).h(px(40.0)).on_press(|| store().load_designs()))
+        .child(view().label("set a photo").w(px(40.0)).h(px(40.0)).on_press(|| {
+            store().avatar_draft.set(Some(crate::store::AvatarDraft { uri: "/tmp/p.png".to_owned(), ..Default::default() }));
+            store().set_avatar();
+            store().open_avatar_editor();
+        }))
         .child(crate::pane::editor_overlay())
 }
 
@@ -355,4 +370,90 @@ fn quick_changes_save_in_order() {
     app.pump(Duration::from_millis(400));
     assert_eq!(broker.names(), ["Mine", "Heart"], "a late save changed it");
     assert_eq!(broker.most_open.load(Ordering::SeqCst), 1, "two saves on the wire at once");
+}
+
+/// An answer with no `state` is a list never written, and a first design saves.
+#[test]
+fn no_state_at_all_is_an_empty_list() {
+    if !in_child("no_state_at_all_is_an_empty_list") {
+        return;
+    }
+    let broker = stub(json!({}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("keep heart");
+    pump_until(&mut app, "the save", |_| broker.names() == ["Heart"]);
+}
+
+/// A save goes on trying for as long as it takes, and the status says when it worked: the
+/// refusals here carry `{"ok":true}`, and the one that lands carries no JSON at all.
+#[test]
+fn a_save_keeps_trying_and_trusts_the_status() {
+    if !in_child("a_save_keeps_trying_and_trusts_the_status") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    broker.save_fails.store(7, Ordering::SeqCst);
+    let mut app = start_loaded(&broker);
+    app.press("keep heart");
+    pump_until(&mut app, "the save", |_| broker.names() == ["Heart"]);
+    app.pump(Duration::from_millis(500));
+    assert_eq!(broker.posts().len(), 1, "saved again after it worked");
+}
+
+/// The broker's entry and one kept before it came share a shape: both stay, and keeping that
+/// shape again moves it to the front whole.
+#[test]
+fn entries_with_one_shape_all_stay() {
+    if !in_child("entries_with_one_shape_all_stay") {
+        return;
+    }
+    let old = json!({"name": "Old heart", "shape": "heart", "color": "#FFFFFF", "extra": "kept"});
+    let broker = stub(saved(json!([old])), 1, Duration::ZERO);
+    let mut app = start(&broker);
+    app.press("keep heart");
+    pump_until(&mut app, "the merged save", |_| broker.names() == ["Heart", "Old heart"]);
+    app.press("forget first");
+    pump_until(&mut app, "the forget", |_| broker.names() == ["Old heart"]);
+    app.press("keep heart");
+    app.press("keep star");
+    pump_until(&mut app, "the star", |_| broker.names() == ["Star", "Old heart"]);
+    app.press("keep heart");
+    pump_until(&mut app, "the move", |_| broker.names() == ["Old heart", "Star"]);
+    assert_eq!(broker.posts().pop().unwrap()["designs"][0], old, "kept whole");
+}
+
+/// There's one read of the list, however often it's asked for.
+#[test]
+fn the_list_is_read_once() {
+    if !in_child("the_list_is_read_once") {
+        return;
+    }
+    let old = json!({"name": "Old", "shape": "cloud", "color": "#FFFFFF"});
+    let broker = stub(saved(json!([old])), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("keep heart");
+    pump_until(&mut app, "the save", |_| broker.names() == ["Heart", "Old"]);
+    app.press("read again");
+    app.pump(Duration::from_millis(300));
+    assert_eq!(broker.gets.load(Ordering::SeqCst), 1, "read again");
+    until(&mut app, "the list as it was", |p| p.get("shown").is_some_and(|n| n == "2"));
+}
+
+/// Setting a photo is the avatar now: Revert has nothing to undo.
+#[test]
+fn a_photo_ends_revert() {
+    if !in_child("a_photo_ends_revert") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("add a design");
+    app.press("Own tab");
+    app.wait_for("Use your Mine design");
+    app.press("Use your Mine design");
+    app.wait_for("Revert avatar");
+    app.press("set a photo");
+    app.wait_for("Use your Mine design");
+    app.pump(Duration::from_millis(100));
+    assert!(!app.has("Revert avatar"), "Revert would undo the photo");
 }
