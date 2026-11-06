@@ -49,6 +49,7 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Post, X("/avatar/gen"), avatar_gen);
     routes.route(Verb::Post, X("/avatar/design"), |ctx, req| keep_alive(avatar_design(ctx, req)));
     routes.route(Verb::Post, X("/avatar/picture"), |ctx, req| keep_alive(avatar_picture(ctx, req)));
+    routes.route(Verb::Post, X("/avatar/packs"), avatar_packs);
 }
 
 /// A bot's avatar fields: its shape, colour, a custom shape's outline, and
@@ -751,6 +752,26 @@ async fn avatar_gen(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     match pick_kit(&ctx, &desc).await {
         Ok(Some((shape, color))) => ok(&json!({"ok": true, "shape": shape, "color": color})),
         Ok(None) => not_ported(),
+        Err(e) => refused(&e, false),
+    }
+}
+
+/// `POST /avatar/packs {link?, pick?, list?}` → the packs at a link (`list`), or the sound
+/// designs `pick` means there. It reads and checks; the Bot adds what it wants to its list.
+async fn avatar_packs(_ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    use crate::hub::library::avatar_packs::{get_public, list, read};
+    let b = match parse(&req.body) {
+        Ok(b) => b,
+        Err(e) => return refused(&e, false),
+    };
+    let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default();
+    let got = if b.get("list").and_then(Value::as_bool) == Some(true) {
+        list(text("link"), get_public).await
+    } else {
+        read(text("link"), text("pick"), get_public).await
+    };
+    match got {
+        Ok(v) => ok(&v),
         Err(e) => refused(&e, false),
     }
 }
