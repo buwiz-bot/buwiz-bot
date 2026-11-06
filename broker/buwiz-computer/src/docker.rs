@@ -151,7 +151,7 @@ except FileNotFoundError:
 /// the browser is a page. It ends what was left running, which is what's there to be left.
 const CLEAR: &str = r#"
 import fnmatch, json, os, signal, time
-ALLOWED = ['/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*']
+ALLOWED = ['/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
 KEEPER, EXEC, BOX_UID = '/usr/local/bin/box-keeper', '/usr/local/bin/box-exec', 1000
 def table():
     out = {}

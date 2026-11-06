@@ -215,7 +215,7 @@ async fn an_open_drive_viewer_holds_the_agent_until_it_goes_quiet_or_closes() {
 
 #[test]
 fn a_person_with_a_drive_viewer_counts_for_a_minute_and_the_agent_gives_up_at_ten() {
-    assert_eq!((super::super::super::QUIET, PATIENCE), (Duration::from_secs(60), Duration::from_secs(600)));
+    assert_eq!((super::super::QUIET, PATIENCE), (Duration::from_secs(60), Duration::from_secs(600)));
 }
 
 #[tokio::test]

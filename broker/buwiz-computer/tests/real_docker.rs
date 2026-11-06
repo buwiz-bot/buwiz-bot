@@ -345,7 +345,7 @@ async fn watch_and_drive(p: &DockerProvider, m: &buwiz_computer::Machine) {
     assert!(!gate.driving("c2w_a", quiet));
 
     let (mut ws, ..) = real_socket(&gate, "c2w_a", a_viewer, Mode::Drive).await;
-    assert!(!gate.driving("c2w_a", quiet), "connected and quiet");
+    assert!(gate.driving("c2w_a", quiet), "an open drive viewer counts as a person from the start");
     ws.write_all(&command("m,300,200")).await.unwrap();
     let driven = pointer(p, m, &a).await;
     println!("driven: {driven}");
@@ -581,6 +581,7 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine) {
 
     let ended = p.clear_strays(m).await.unwrap();
     println!("ended: {ended:?}");
+    assert!(!ended.iter().any(|n| n == "box-active-tab"), "the browser's own helper went: {ended:?}");
     let after = p.run(m, &a, "ps -eo pid,ppid,comm,args --forest | cut -c1-100", 5000).await.unwrap().stdout;
     println!("after:\n{after}");
     for word in ["kl.py", "innocent", "--port=7000", "time.sleep(600)", "sleep 0.05"] {
