@@ -3,6 +3,9 @@
 //!
 //! A request whose `Origin` is not on the list comes from a web page and is
 //! refused (403); a body sent with a body method must be JSON (415).
+//!
+//! `Origin: null` is never on it, on any route. That's every sandboxed frame on every website, and
+//! a preview's own page (`leaf/files.rs`).
 
 use hyper::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN, TRANSFER_ENCODING};
 use hyper::{Method, StatusCode};

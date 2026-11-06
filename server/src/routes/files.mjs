@@ -11,7 +11,7 @@ import { highlight, renderFile } from "../files.mjs";
 import { officeCaps, officePkgRoot } from "../office.mjs";
 
 const RAW_TYPES = { pdf: "application/pdf", html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4", mov: "video/quicktime", m4v: "video/mp4", m4a: "audio/mp4", mp3: "audio/mpeg", wav: "audio/wav", aac: "audio/aac" };
-const PAGE_TYPES = { js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json" };
+const PAGE_TYPES = { js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json", wasm: "application/wasm", woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon", webm: "video/webm", ogv: "video/ogg", ogg: "audio/ogg", flac: "audio/flac" };
 
 export default async function handle(req, res) {
   // Image avatars (Grok's Generate / Upload tabs): files land in

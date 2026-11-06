@@ -7026,23 +7026,22 @@ impl Store {
 
     /// `raw(f)` — the server's bytes of a reply file.
     pub fn file_raw_url(path: &str) -> String {
-        // a file on this Mac outside the server's (`buwiz://view`'s)
-        if path.starts_with('/') {
-            let enc = path.split('/').map(crate::client::urlenc).collect::<Vec<_>>().join("/");
-            return format!("file://{enc}");
-        }
-        let enc = path
-            .split('/')
-            .map(crate::client::urlenc)
-            .collect::<Vec<_>>()
-            .join("/");
-        format!("{}/file/raw/{enc}", crate::client::backend())
+        Self::file_url("raw", path)
     }
 
     /// A reply's HTML for the viewer: its script runs, at no origin, where a plain raw URL has none.
     pub fn file_preview_url(path: &str) -> String {
+        Self::file_url("preview", path)
+    }
+
+    /// A reply's file on the broker's `route`. A file on this Mac outside the server's
+    /// (`buwiz://view`'s) is its own `file://` URL, whichever route was asked for.
+    fn file_url(route: &str, path: &str) -> String {
         let enc = path.split('/').map(crate::client::urlenc).collect::<Vec<_>>().join("/");
-        format!("{}/file/preview/{enc}", crate::client::backend())
+        if path.starts_with('/') {
+            return format!("file://{enc}");
+        }
+        format!("{}/file/{route}/{enc}", crate::client::backend())
     }
 
     /// `toLight(f)` — a reply file as a lightbox item.
