@@ -1755,7 +1755,7 @@ fn empty_pane() -> impl IntoElement {
 // ————————————————————————— the avatar editor —————————————————————————
 
 /// `avatarEditing`'s floating card under the pane avatar — 297 wide,
-/// Bot | Design | Upload tabs (App.tsx:3163; Design replaces Generate). Rendered from `pane()`.
+/// Bot | Own | Upload tabs (App.tsx:3163). Rendered from `pane()`.
 pub(crate) fn editor_overlay() -> impl IntoElement {
     dynamic(|| {
         let st = store();
@@ -1788,7 +1788,7 @@ pub(crate) fn editor_overlay() -> impl IntoElement {
     })
 }
 
-/// The Bot|Design|Upload pills + Reset, or Revert after a Design pick
+/// The Bot|Own|Upload pills + Reset, or Revert after an Own pick
 /// (App.tsx:3181).
 fn editor_tabs() -> impl IntoElement {
     view()
@@ -1797,8 +1797,13 @@ fn editor_tabs() -> impl IntoElement {
         .pt(px(9.0))
         .px_2()
         .gap(px(2.0))
-        .children(["bot", "design", "upload"].into_iter().map(|tb| {
+        .children(["bot", "own", "upload"].into_iter().map(|tb| {
+            let name = {
+                let mut c = tb.chars();
+                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            };
             view()
+                .label(format!("{name} tab"))
                 .rounded(px(999.0))
                 .px_2()
                 .py_1()
@@ -1810,10 +1815,7 @@ fn editor_tabs() -> impl IntoElement {
                     }
                 })
                 .child(
-                    text({
-                        let mut c = tb.chars();
-                        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-                    })
+                    text(name)
                     .text_size(px(13.0))
                     .text_color(move || {
                         if store().avatar_edit_tab.get() == tb {
@@ -1847,7 +1849,7 @@ fn editor_tabs() -> impl IntoElement {
             },
         ))
         .child(when(
-            || store().avatar_edit_tab.get() == "design" && store().design_was.get().is_some(),
+            || store().avatar_edit_tab.get() == "own" && store().design_was.get().is_some(),
             || {
                 view()
                     .h(px(22.0))
@@ -1862,18 +1864,18 @@ fn editor_tabs() -> impl IntoElement {
         ))
 }
 
-/// The editor's body — the bot grid, the generate prompt, or the upload
-/// zone (App.tsx:3214).
+/// The editor's body — the bot grid, your own avatars, or the upload zone
+/// (App.tsx:3214).
 fn editor_body() -> impl IntoElement {
     match store().avatar_edit_tab.get().as_str() {
-        "design" => design_tab().into_element(),
+        "own" => own_tab().into_element(),
         "upload" => upload_tab().into_element(),
         _ => bot_tab().into_element(),
     }
 }
 
-/// `Bot` — "Your designs" (`design::saved`), then 48pt shapes five per
-/// row, 32pt swatches six per row (App.tsx:3215).
+/// `Bot` — 48pt shapes five per row, 32pt swatches six per row
+/// (App.tsx:3215).
 fn bot_tab() -> impl IntoElement {
     let st = store();
     view()
@@ -1893,7 +1895,6 @@ fn bot_tab() -> impl IntoElement {
                 .into_element()
             },
         ))
-        .child(crate::design::saved(false))
         .child(
             view()
                 .flex_row()
@@ -2016,23 +2017,24 @@ fn wears_picture() -> bool {
         .is_some_and(|b| !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH))
 }
 
-/// `Design` — the prompt, an optional picture, and 3 mark avatars to
-/// pick from (`design::panel`); a pick applies to the bot at once.
-fn design_tab() -> impl IntoElement {
+/// `Own` — the person's own avatars ("Your designs", `design::saved`). A
+/// tap puts one on the bot, and Revert brings the old one back.
+fn own_tab() -> impl IntoElement {
     view()
         .pt(px(16.0))
         .px_3()
-        .pb(px(13.0))
+        .pb(px(20.0))
         .gap_3()
-        .child(crate::design::panel(false))
-        // Picture mode's result: the crop editor, then Set avatar.
         .child(when(
-            || store().design_mode.get() == "picture" && store().avatar_draft.get().is_some(),
+            || store().design_saved.get().is_empty(),
             || {
-                let d = store().avatar_draft.get().unwrap_or_default();
-                crop_editor(d, false).into_element()
+                text("Avatars you design show up here.")
+                    .text_size(px(13.0))
+                    .text_color(theme::MUTED)
+                    .into_element()
             },
         ))
+        .child(crate::design::saved(false))
 }
 
 /// `Upload` — the dashed drop zone, then the crop with name·size

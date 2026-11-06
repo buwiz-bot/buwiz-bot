@@ -2928,8 +2928,7 @@ pub struct Store {
     /// Reset is waiting on "Reset the avatar?": nothing is removed or
     /// reset before the confirm row's button.
     pub design_removing: Signal<Option<usize>>,
-    /// Design's mode: "mark" (3 mark avatars) or "picture" (a "Bot"-style
-    /// picture from the image model, set as a photo avatar).
+    /// Design's mode: "mark" (3 mark avatars) or "rich" (3 multi-colour ones).
     pub design_mode: Signal<&'static str>,
     pub avatar_reset_ask: Signal<bool>,
 
@@ -5894,14 +5893,7 @@ impl Store {
         if self.design_busy.get_untracked() || (prompt.is_empty() && image.is_none()) {
             return;
         }
-        if self.design_mode.get_untracked() == "picture" && !self.bot_modal.get_untracked() {
-            return self.design_picture(prompt, image);
-        }
-        let name = if self.bot_modal.get_untracked() {
-            self.bot_name.get_untracked()
-        } else {
-            self.active_bot_untracked().map(|b| b.name).unwrap_or_default()
-        };
+        let name = self.bot_name.get_untracked();
         let (model, effort, fast) = self.design_choice();
         let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model, "effort": effort, "fast": fast});
         if self.design_mode.get_untracked() == "rich" {
@@ -5985,41 +5977,6 @@ impl Store {
         );
     }
 
-    /// Picture mode: `POST /avatar/picture` (the style prompt, the
-    /// reference picture, what the user typed on top, and the picked
-    /// model, which draws it) → the crop editor's draft, which Set avatar
-    /// puts on the bot as a photo.
-    fn design_picture(&'static self, prompt: String, image: Option<AvatarDraft>) {
-        let (model, effort, fast) = self.design_choice();
-        let mut body = serde_json::json!({"prompt": prompt, "model": model, "effort": effort, "fast": fast});
-        if let Some(d) = &image {
-            body["image"] = d.uri.clone().into();
-        }
-        self.design_err.set(String::new());
-        self.design_busy.set(true);
-        self.avatar_draft.set(None);
-        spawn(async move {
-            match client::post_any("/avatar/picture", body).await {
-                Some(v) if self::b(&v, "ok") => {
-                    self.draft_crop.set(Crop { s: 1.0, x: 0.0, y: 0.0 });
-                    self.avatar_draft.set(Some(AvatarDraft {
-                        uri: s(&v, "uri"),
-                        name: s(&v, "name"),
-                        w: f64of(&v, "w"),
-                        h: f64of(&v, "h"),
-                    }));
-                }
-                Some(v) => self.design_err.set(if s(&v, "error").is_empty() {
-                    "Couldn't draw a picture".into()
-                } else {
-                    s(&v, "error")
-                }),
-                None => self.design_err.set("Couldn't draw a picture".into()),
-            }
-            self.design_busy.set(false);
-        });
-    }
-
     /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
     pub fn design_attach(&'static self, kind: &'static str) {
         self.design_err.set(String::new());
@@ -6060,16 +6017,17 @@ impl Store {
         then(self, format!("/avatar/image/{kind}"), serde_json::json!({}));
     }
 
-    /// Uses choice `i` and keeps its shape in "Your designs". A plain choice
-    /// in the primary ink keeps the bot's colour; one the prompt coloured
+    /// Uses choice `i` on the sheet's draft and keeps its shape in "Your
+    /// designs". A plain choice in the primary ink keeps the draft's colour;
+    /// one the prompt coloured
     /// brings its colour, and a rich one always does: that field is its
     /// shell (`shape_of`), which only draws the avatar.
-    pub fn design_pick(&'static self, i: usize, for_new: bool) {
+    pub fn design_pick(&'static self, i: usize) {
         let Some(c) = self.design_cands.get_untracked().get(i).cloned() else { return };
         self.design_picked.set(Some(i));
         self.design_keep(&c);
         let own = !is_primary_ink(&c.color);
-        self.design_use(c, for_new, own);
+        self.design_use(c, true, own);
     }
 
     /// Puts a body on the Create New Bot draft, with its colour if it brings
