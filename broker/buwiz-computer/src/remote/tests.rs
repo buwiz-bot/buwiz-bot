@@ -272,7 +272,7 @@ fn write_without(home: &Path, programs: &[&str], claimed: usize, sent: &[u8]) ->
         fake(&bin, name, &format!("touch {}/ran-{name}; exit 1", home.display()));
     }
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    let mut child = std::process::Command::new("/bin/sh").args(["-c", WRITE, "sh", "a.txt", &claimed.to_string()]).env("HOME", home).env("PATH", path).stdin(std::process::Stdio::piped()).spawn().unwrap();
+    let mut child = std::process::Command::new("/bin/sh").args(["-c", &format!("umask 022\n{WRITE}"), "sh", "a.txt", &claimed.to_string()]).env("HOME", home).env("PATH", path).stdin(std::process::Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(sent).unwrap();
     child.wait().unwrap().code()
 }
