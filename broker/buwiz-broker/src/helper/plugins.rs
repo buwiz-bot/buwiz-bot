@@ -783,8 +783,28 @@ impl Host {
                 return "failed";
             }
         }
+        if let Err(e) = self.keep_key_on_record(&row, &seed) {
+            g.conn.close().await;
+            self.set_state(id, "failed", Some(&e.code), &e.message);
+            return "failed";
+        }
         self.adopt(id, g);
         "running"
+    }
+
+    /// Records the public half of `seed`, the key the plugin was just
+    /// provisioned with, when `row` names another. The two part when the
+    /// keystore's item is replaced under an installed plugin, and every
+    /// certificate then fails until they agree. The record is no check on
+    /// the keystore: it is derived from it, as an update's is (9.4), and
+    /// who can write either can read the seed.
+    fn keep_key_on_record(&self, row: &Row, seed: &str) -> Res<()> {
+        let Ok(public) = buwiz_protocol::keys::SessionKey::from_seed(seed).map(|k| k.public()) else { return Ok(()) };
+        if public != row.plugin_pub {
+            eprintln!("  plugin {}: its record named another key than the keystore's; recording the keystore's", row.id);
+            self.sql(|db| db.execute("UPDATE v1_plugins SET plugin_pub=? WHERE id=?", params![public, row.id]))?;
+        }
+        Ok(())
     }
 
     /// resources/list_changed: read and verify again (6.1, 6.2 step 11).

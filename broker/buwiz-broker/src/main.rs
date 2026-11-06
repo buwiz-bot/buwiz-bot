@@ -223,7 +223,7 @@ async fn main() {
 }
 
 /// `buwiz-broker keystore-check <plugin id> [--data DIR]`: whether the
-/// keystore (`BUWIZ_KEYSTORE`, else the Keychain) holds the plugin's key, and
+/// keystore (`BUWIZ_KEYSTORE`, else the one of the data dir) holds the plugin's key, and
 /// whether its public half is the one `v1_plugins` recorded. Prints the
 /// public key only, never the seed.
 fn keystore_check(args: &[String]) -> i32 {
@@ -240,7 +240,7 @@ fn keystore_check(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let store = match Keystore::from_spec(&std::env::var("BUWIZ_KEYSTORE").unwrap_or_default()) {
+    let store = match data.as_deref().map_or_else(|| Keystore::from_spec(&keystore_spec()), data_keystore) {
         Ok(store) => store,
         Err(e) => {
             eprintln!("buwiz-broker: {e}");
@@ -303,10 +303,23 @@ fn manifest_op(args: &[String]) -> i32 {
     }
 }
 
-/// The v1 plugin host on `db`, its keystore from `BUWIZ_KEYSTORE`; `accounts`
-/// where its sign-ins go.
+fn keystore_spec() -> String {
+    std::env::var("BUWIZ_KEYSTORE").unwrap_or_default()
+}
+
+/// The keystore of a broker on `data` ([`Keystore::for_data`]).
+///
+/// [`Keystore::for_data`]: buwiz_broker::helper::keystore::Keystore::for_data
+fn data_keystore(data: &std::path::Path) -> Result<buwiz_broker::helper::keystore::Keystore, String> {
+    let no_keychain = std::env::var("BUWIZ_NO_KEYCHAIN").as_deref() == Ok("1");
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    buwiz_broker::helper::keystore::Keystore::for_data(&keystore_spec(), no_keychain, data, &home)
+}
+
+/// The v1 plugin host on `db` (`<data dir>/generated/app.db`), its keystore
+/// that data dir's; `accounts` where its sign-ins go.
 fn plugin_host(db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
-    let keys = buwiz_broker::helper::keystore::Keystore::from_spec(&std::env::var("BUWIZ_KEYSTORE").unwrap_or_default())?;
+    let keys = data_keystore(db.ancestors().nth(2).unwrap_or(db))?;
     let mut timeouts = Timeouts::default();
     // BUWIZ_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
     if let Some(ms) = buwiz_protocol::env::var("BUWIZ_V1_CALL_TIMEOUT_MS").and_then(|v| v.parse::<u64>().ok()).filter(|ms| *ms > 0) {
