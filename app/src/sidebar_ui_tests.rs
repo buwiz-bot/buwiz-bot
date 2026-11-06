@@ -20,6 +20,7 @@ fn built() -> usize {
     crate::avatar::BUILT.load(Ordering::Relaxed)
 }
 const BOTS: usize = 27;
+const MANY: usize = 120;
 static STEP: AtomicUsize = AtomicUsize::new(0);
 static REPLY: AtomicUsize = AtomicUsize::new(0);
 static RECORD: AtomicBool = AtomicBool::new(true);
@@ -133,6 +134,24 @@ fn Side() -> impl IntoElement {
                     RECORD.store(store().mock_run.borrow().is_some(), Ordering::Relaxed);
                 }))
                 .child(view().label("status 4").w(px(40.0)).h_full().on_press(|| status_on(4)))
+                .child(view().label("run all").w(px(40.0)).h_full().on_press(|| {
+                    for i in 0..BOTS {
+                        store().agent_set(format!("t{i}"), Some(format!("b{i}")), Some(("thinking".to_owned(), "Thinking".to_owned())));
+                    }
+                }))
+                .child(view().label("seed many").w(px(40.0)).h_full().on_press(|| {
+                    let bots: Vec<_> = (0..MANY)
+                        .map(|i| serde_json::json!({"id": format!("b{i}"), "name": format!("Bot {i}"), "threadId": format!("t{i}"), "shape": "blob", "color": "#1884FC"}))
+                        .collect();
+                    store().set_threads(serde_json::json!({"list": [], "bots": bots}));
+                }))
+                .child(view().label("run many").w(px(40.0)).h_full().on_press(|| {
+                    for i in 0..MANY {
+                        store().agent_set(format!("t{i}"), Some(format!("b{i}")), Some(("thinking".to_owned(), "Thinking".to_owned())));
+                    }
+                }))
+                .child(view().label("hide").w(px(40.0)).h_full().on_press(|| store().side_shown.set(false)))
+                .child(view().label("show").w(px(40.0)).h_full().on_press(|| store().side_shown.set(true)))
                 .child(view().label("unpin and open").w(px(40.0)).h_full().on_press(|| {
                     let n = REPLY.fetch_add(1, Ordering::Relaxed);
                     store().set_threads(threads("first words"));
@@ -501,6 +520,103 @@ fn a_finished_demo_leaves_no_record() {
     app.press("check record");
     assert!(!RECORD.load(Ordering::Relaxed), "a finished demo has none");
     assert_eq!(painted("b3"), Some("idle"), "and its Bot is idle");
+}
+
+/// Avatars in a hidden sidebar paint nothing, however many are running, and
+/// pick up again when it comes back.
+#[test]
+fn a_hidden_sidebar_paints_nothing() {
+    if !in_child("a_hidden_sidebar_paints_nothing") {
+        return;
+    }
+    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.press("run all");
+    app.pump(Duration::from_millis(600));
+    let at = paints();
+    app.pump(Duration::from_millis(1000));
+    let open = paints() - at;
+    println!("sidebar open: {open} paints in a second");
+    assert!(open > 100, "the Bots are running: {open}");
+    app.press("hide");
+    app.pump(Duration::from_millis(300));
+    let at = paints();
+    app.pump(Duration::from_millis(1000));
+    let hidden = paints() - at;
+    println!("sidebar hidden: {hidden} paints in a second");
+    assert_eq!(hidden, 0, "paints a second with the sidebar hidden");
+    app.press("show");
+    app.pump(Duration::from_millis(300));
+    let at = paints();
+    app.pump(Duration::from_millis(1000));
+    assert!(paints() - at > 100, "back when it's shown");
+}
+
+/// How many times avatar `bot` paints in a second.
+fn paints_of(app: &mut Headless, bots: std::ops::Range<usize>) -> Vec<usize> {
+    let of = |i: usize| crate::avatar::PAINTED_BY.lock().unwrap().get(&format!("b{i}")).copied().unwrap_or(0);
+    let at: Vec<usize> = bots.clone().map(of).collect();
+    app.pump(Duration::from_millis(1000));
+    bots.zip(at).map(|(i, n)| of(i) - n).collect()
+}
+
+fn scroll_to(app: &mut Headless, list: &str, y: f32) {
+    let id = app.view(list);
+    app.send(id, nsh_core::EventKind::Scroll, nsh_core::EventPayload::Scroll(nsh_core::geometry::point(px(0.0), px(y))));
+    app.pump(Duration::from_millis(300));
+}
+
+/// Only rows in the window paint, and scrolling moves the window: a row at
+/// the top stops as it leaves, one further down starts as it arrives.
+#[test]
+fn rows_out_of_view_paint_nothing() {
+    if !in_child("rows_out_of_view_paint_nothing") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.resize(1200.0, 400.0);
+    app.pump(Duration::from_millis(300));
+    app.press("run all");
+    app.pump(Duration::from_millis(600));
+    let top = paints_of(&mut app, 0..BOTS);
+    println!("at the top: {top:?}");
+    assert!(top[0] > 5, "the first row paints: {top:?}");
+    assert_eq!(top[BOTS - 1], 0, "the last row is out of view: {top:?}");
+    scroll_to(&mut app, "Bot list", 1000.0);
+    let down = paints_of(&mut app, 0..BOTS);
+    println!("scrolled down: {down:?}");
+    assert_eq!(down[0], 0, "the first row has left: {down:?}");
+    assert!(down[BOTS - 1] > 5, "the last row has arrived: {down:?}");
+}
+
+/// The cost of avatars is what's on screen: many more Bots, no more painting.
+#[test]
+fn many_bots_cost_what_fits_on_screen() {
+    if !in_child("many_bots_cost_what_fits_on_screen") {
+        return;
+    }
+    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+    let mut app = start();
+    app.press("seed");
+    app.pump(Duration::from_millis(400));
+    app.press("run all");
+    app.pump(Duration::from_millis(800));
+    let at = paints();
+    app.pump(Duration::from_millis(2000));
+    let few = paints() - at;
+    app.press("seed many");
+    app.pump(Duration::from_millis(1000));
+    app.press("run many");
+    app.pump(Duration::from_millis(800));
+    let at = paints();
+    app.pump(Duration::from_millis(2000));
+    let many = paints() - at;
+    println!("paints in 2 s: {few} with {BOTS} Bots, {many} with {MANY}");
+    assert!(many < few * 3 / 2, "{MANY} Bots cost {many} against {few} for {BOTS}");
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.

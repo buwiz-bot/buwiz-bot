@@ -13,6 +13,17 @@ use crate::client;
 // Server payloads
 // ---------------------------------------------------------------------------
 
+/// The part of a scrolling list on screen.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(crate) struct ListWindow {
+    /// The content's offset at the view's top.
+    pub top: f32,
+    /// The view's height (0 until it has laid out).
+    pub height: f32,
+    /// Where the view starts on the page.
+    pub page_top: f32,
+}
+
 /// A row of `GET /threads` — the sidebar's chat list.
 #[derive(Clone, PartialEq, Default)]
 pub struct ThreadMeta {
@@ -3018,6 +3029,10 @@ pub struct Store {
     frame_want: std::cell::Cell<bool>,
     /// The chat and run the last `/status` left playing.
     pub(crate) mock_run: std::cell::RefCell<Option<(String, AgentRun)>>,
+    /// What the rail ([0]) and the full sidebar ([1]) show of their lists.
+    pub(crate) side_window: [Signal<ListWindow>; 2],
+    /// Bumped when a list's layout changes, so its rows find their place again.
+    pub(crate) side_relaid: [Signal<u32>; 2],
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3294,6 +3309,8 @@ impl Store {
             frame_started: std::cell::Cell::new(false),
             frame_want: std::cell::Cell::new(false),
             mock_run: std::cell::RefCell::new(None),
+            side_window: [signal(ListWindow::default()), signal(ListWindow::default())],
+            side_relaid: [signal(0), signal(0)],
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),

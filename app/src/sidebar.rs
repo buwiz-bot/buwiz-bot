@@ -13,17 +13,74 @@ use crate::theme;
 
 /// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
 pub(crate) fn sidebar() -> impl IntoElement {
-    let shows = |full: bool| {
-        move || {
-            let st = store();
-            st.side_shown.get() && (st.side_mode.get() == "full") == full
-        }
-    };
+    let shows = |full: bool| move || form_shown(full);
     view()
         .flex_row()
         .h_full()
         .child(kept(shows(true), 240.0, || full_sidebar().into_element()))
         .child(kept(shows(false), 88.0, || rail().into_element()))
+}
+
+/// How far past the edge of a list an avatar still moves: one scrolling in
+/// is already going.
+const SEEN_MARGIN: f32 = 80.0;
+
+/// Whether the row at `node` can be seen: its form is on screen and it's in
+/// the list's window. The cost of avatars is then what fits on screen, however
+/// many Bots there are. A row that hasn't found its place yet counts as seen.
+fn row_seen(full: bool, node: ElementRef) -> std::rc::Rc<dyn Fn() -> bool> {
+    let i = full as usize;
+    let at = signal(None::<(f32, f32)>);
+    effect(move || {
+        store().side_relaid[i].get();
+        spawn(async move {
+            if let Some(m) = node.measure().await {
+                let w = store().side_window[i].get_untracked();
+                at.try_set(Some((m.page.y.0 - w.page_top + w.top, m.frame.size.height.0)));
+            }
+        });
+    });
+    let seen = computed(move || {
+        let w = store().side_window[i].get();
+        at.get().is_none_or(|(y, h)| {
+            w.height <= 0.0 || (y + h > w.top - SEEN_MARGIN && y < w.top + w.height + SEEN_MARGIN)
+        })
+    });
+    std::rc::Rc::new(move || form_shown(full) && seen.get())
+}
+
+/// A list's view laid out: keeps its size and place, and has its rows look
+/// again.
+fn list_laid_out(full: bool, list: ElementRef, height: f32) {
+    let i = full as usize;
+    spawn(async move {
+        let page_top = list.measure().await.map_or(0.0, |m| m.page.y.0);
+        let st = store();
+        st.side_window[i].update(|w| {
+            w.height = height;
+            w.page_top = page_top;
+        });
+        st.side_relaid[i].update(|n| *n += 1);
+    });
+}
+
+/// A list's content changed size: its rows have moved.
+fn list_relaid(full: bool) {
+    store().side_relaid[full as usize].update(|n| *n += 1);
+}
+
+/// A list scrolled.
+fn list_scrolled(full: bool, top: f32) {
+    let window = store().side_window[full as usize];
+    if window.get_untracked().top != top {
+        window.update(|w| w.top = top);
+    }
+}
+
+/// Whether the sidebar's `full` form, or the rail, is the one on screen.
+fn form_shown(full: bool) -> bool {
+    let st = store();
+    st.side_shown.get() && (st.side_mode.get() == "full") == full
 }
 
 /// A form of the sidebar `w` wide, made the first time it shows and kept:
@@ -175,6 +232,7 @@ fn hue(s: &str) -> Hsla {
 const RAIL_TOP: f32 = 30.0 + 36.0 + 4.0;
 
 fn rail() -> impl IntoElement {
+    let rail_list = element_ref();
     let any_pinned = computed(|| !store().pinned_bots().is_empty());
     // the open groups and their members, not their records (see `Member`)
     let rail_groups = computed(|| {
@@ -227,8 +285,15 @@ fn rail() -> impl IntoElement {
                 .child(view().absolute().top(px(RAIL_TOP)).left(px(0.0)).right(px(0.0)).child(blur_edge(true, 28.0, signal(true))))
                 .child(blur_edge(false, 28.0, signal(true)))
                 .child(
-                    scroll().flex_1().child(
+                    scroll()
+                        .flex_1()
+                        .label("Bot rail")
+                        .element_ref(&rail_list)
+                        .on_layout(move |b: &Bounds<Points>| list_laid_out(false, rail_list, b.size.height.0))
+                        .on_scroll(|e: &ScrollEvent| list_scrolled(false, e.offset.y.0))
+                        .child(
                         view()
+                            .on_layout(|_: &Bounds<Points>| list_relaid(false))
                             .items_center()
                             .gap_1()
                             .pt(px(RAIL_TOP + 8.0))
@@ -464,8 +529,10 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
     // `railPop` — measure the tile, then anchor the card at its edge
     // (the `popSeq` guard drops the answer if hover already ended).
     let node = element_ref();
-    let state_src: std::rc::Rc<dyn Fn() -> String> =
-        std::rc::Rc::new(move || store().bot_st(&bid));
+    let shown = row_seen(false, node);
+    // a memo: this avatar wakes for its own Bot's state, not every Bot's
+    let state = computed(move || store().bot_st(&bid));
+    let state_src: std::rc::Rc<dyn Fn() -> String> = std::rc::Rc::new(move || state.get());
     let face = AvatarFace::of(b);
     // memos, so a row reads these two and not the whole record each time
     let thread = computed(move || b.get().thread_id);
@@ -504,6 +571,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                             move || store().emph_bot.get() == bid3
                         })),
                         gaze: Some(gaze2.clone()),
+                        shown: Some(shown.clone()),
                         ..crate::avatar::BotAvatarProps::bot(&bv, 44.0)
                     })
                     .into_element()
@@ -810,9 +878,12 @@ fn full_sidebar() -> impl IntoElement {
                 .child(
                     scroll()
                         .flex_1()
+                        .label("Bot list")
                         .element_ref(&list)
+                        .on_layout(move |b: &Bounds<Points>| list_laid_out(true, list, b.size.height.0))
                         .on_scroll(move |e: &ScrollEvent| {
                             let y = e.offset.y.0;
+                            list_scrolled(true, y);
                             dd2.scroll_y.set(y);
                             let top = y > 4.0;
                             let bottom = y + e.size.height.0 < e.content_size.height.0 - 1.0;
@@ -828,7 +899,10 @@ fn full_sidebar() -> impl IntoElement {
                             // A drag starts where the pointer last hovered
                             // (pressed, it stops hovering); its moves pick
                             // the drop target, in this view's coordinates.
-                            .on_layout(move |b: &Bounds<Points>| dd3.width.set(b.size.width.0))
+                            .on_layout(move |b: &Bounds<Points>| {
+                                dd3.width.set(b.size.width.0);
+                                list_relaid(true);
+                            })
                             .on_mouse_move(move |e: &MouseEvent| {
                                 let at = (e.position.x.0, e.position.y.0);
                                 if e.pressed_button.is_none() {
@@ -2127,12 +2201,16 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
     let gaze = crate::avatar::BlobGaze::new();
     let gaze2 = gaze.clone();
     let gaze3 = gaze.clone();
-    let state_src: std::rc::Rc<dyn Fn() -> String> =
-        std::rc::Rc::new(move || store().bot_st(&bid));
+    // a memo: this avatar wakes for its own Bot's state, not every Bot's
+    let state = computed(move || store().bot_st(&bid));
+    let state_src: std::rc::Rc<dyn Fn() -> String> = std::rc::Rc::new(move || state.get());
     let face = AvatarFace::of(b);
     let state_src2 = state_src.clone();
     let state_src3 = state_src.clone();
+    let node = element_ref();
+    let shown = row_seen(true, node);
     let row = view()
+        .element_ref(&node)
         .child(
             view()
                 .flex_row()
@@ -2177,6 +2255,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                                     move || store().emph_bot.get() == bid3
                                 })),
                                 gaze: Some(gaze2.clone()),
+                                shown: Some(shown.clone()),
                                 ..crate::avatar::BotAvatarProps::bot(&bv, 44.0)
                             })
                             .into_element()
@@ -2295,8 +2374,10 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
     let gaze3 = gaze.clone();
     // `railPop` — same hover card as the rail tiles.
     let node = element_ref();
-    let state_src: std::rc::Rc<dyn Fn() -> String> =
-        std::rc::Rc::new(move || store().bot_st(&bid));
+    let shown = row_seen(true, node);
+    // a memo: this avatar wakes for its own Bot's state, not every Bot's
+    let state = computed(move || store().bot_st(&bid));
+    let state_src: std::rc::Rc<dyn Fn() -> String> = std::rc::Rc::new(move || state.get());
     let face = AvatarFace::of(b);
     // memos, so a row reads these two and not the whole record each time
     let thread = computed(move || b.get().thread_id);
@@ -2339,6 +2420,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                             move || store().emph_bot.get() == bid3
                         })),
                         gaze: Some(gaze2.clone()),
+                        shown: Some(shown.clone()),
                         ..crate::avatar::BotAvatarProps::bot(&bv, 72.0)
                     })
                     .into_element()
