@@ -193,6 +193,7 @@ fn a_status_write_rebuilds_no_avatar() {
     // the first write puts the status rows up, which is new, not rebuilt
     app.press("step");
     app.pump(Duration::from_millis(100));
+    pump_until_built(&mut app);
     let start = app.live.clone();
     let made = built();
     for k in 0..120 {
@@ -393,6 +394,7 @@ fn rests_after_runs(seed: &str) {
     let mut app = start();
     app.press(seed);
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let before = paints();
     app.pump(Duration::from_millis(1000));
     println!("idle at launch: {} paints in a second", paints() - before);
@@ -438,7 +440,7 @@ fn pump_until_painted(app: &mut Headless, bot: &str, state: &str) {
 
 /// Whether `name` has its row: a rail tile by its label, a sidebar row by its text.
 fn row_live(app: &mut Headless, name: &str) -> bool {
-    app.has(name) || app.texts().iter().any(|t| *t == name)
+    app.has(name) || app.texts().contains(&name)
 }
 
 /// Pumps until every Bot's row is live and no avatar has been built for a
@@ -621,6 +623,7 @@ fn a_new_face_rebuilds_that_avatar_alone() {
     let mut app = start();
     app.press("seed");
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let made = built();
     app.press("paint");
     app.pump(Duration::from_millis(200));
@@ -639,6 +642,7 @@ fn a_hover_sweep_keeps_the_rail_tiles() {
     app.press("seed");
     app.press("rail");
     app.pump(Duration::from_millis(400));
+    pump_until_built(&mut app);
     let before = app.live.clone();
     for k in 0..40 {
         let row = format!("Bot {}", k % 8);
