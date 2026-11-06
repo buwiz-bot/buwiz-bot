@@ -1041,4 +1041,5 @@ fn a_computer_can_be_pinned_to_a_group() {
     assert!(crate::hub::library::groups::group_item(&b.ctx, &bad).is_err());
 }
 
+mod remote;
 mod together;

@@ -42,11 +42,21 @@ const RAYS: usize = ATLAS_K;
 /// Atlas columns (yaw -180..170) and rows (pitch -90..90) of a custom body.
 const COLS: usize = (360.0 / ATLAS_STEP) as usize;
 const ROWS: usize = (180.0 / ATLAS_STEP) as usize + 1;
-/// The kit square's body size (`hn(1.0413, ..)`): a custom body's area
-/// is matched to it.
+/// The kit square's body size (`hn(1.0413, ..)`): a custom body's eyes are
+/// sized against it.
 const SQUARE_SIZE: f64 = 1.0413;
-/// The largest custom body size (the kit tops out at 1.521, sparkle).
-const MAX_SIZE: f64 = 1.5;
+/// How much of an avatar's frame a custom figure fills, in body units at size 1: its height, its
+/// width, and how far any point may reach from the middle. Every figure stands as tall as the
+/// others, whatever it wears, unless it's so wide or so far-reaching that it would leave the frame
+/// as it turns.
+const FIT_HEIGHT: f64 = 3.33;
+const FIT_WIDTH: f64 = 3.53;
+///
+/// The reach leaves room inside the canvas for what the states do: `nothing_leaves_the_canvas`
+/// holds it to that.
+const FIT_REACH: f64 = 2.1;
+/// The largest a custom figure draws.
+const MAX_SIZE: f64 = 2.4;
 /// The name prefix of every custom body.
 const PREFIX: &str = "custom:";
 /// The name prefix of every rich body.
@@ -792,11 +802,6 @@ fn fnv(s: &str) -> u64 {
     h
 }
 
-/// Polygon area in body units of the kit square's outline.
-fn square_area() -> f64 {
-    signed_area(&body_polygon(&bodies::zr_outline("square").path)).abs()
-}
-
 /// Build a body from a 100×100 (y down) outline.
 fn build(path: &str) -> Result<CustomBody, String> {
     let subs = subpaths(path)?;
@@ -855,7 +860,7 @@ fn build(path: &str) -> Result<CustomBody, String> {
     if poly.len() < 3 || poly_area < 1e-3 {
         return Err("the outline encloses no area".to_owned());
     }
-    let size = (SQUARE_SIZE * (square_area() / poly_area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE);
+    let size = fit_size(poly.iter().map(|p| [p[0], p[1], 0.0]));
     let circle = inscribed_circle(&poly);
     let (eyes, eye_x) = place_eyes(&poly, size, circle);
     let depth = loft_depth(circle.1);
@@ -1139,12 +1144,15 @@ fn overlaps(a: &[V2], b: &[V2]) -> bool {
 /// multi-part recipe.
 type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>, Option<solids::Solids>);
 
-/// How far from the frame's centre a figure with solids may reach, in units
-/// of its body size: the most that stays on the avatar's canvas at any
-/// angle.
-const SOLID_REACH: f64 = 1.8;
-/// The smallest a figure with solids draws (a wide brim shrinks the head).
-const SOLID_MIN_SIZE: f64 = 0.8;
+/// The size that fills the frame with a figure of these points, in body units around its centre.
+fn fit_size(points: impl Iterator<Item = V3>) -> f64 {
+    let (mut x0, mut x1, mut y0, mut y1, mut far) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for p in points {
+        (x0, x1, y0, y1) = (x0.min(p[0]), x1.max(p[0]), y0.min(p[1]), y1.max(p[1]));
+        far = far.max(p[0].hypot(p[1]).hypot(p[2]));
+    }
+    (FIT_HEIGHT / (y1 - y0)).min(FIT_WIDTH / (x1 - x0)).min(MAX_SIZE).min(FIT_REACH / far)
+}
 
 /// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops, sampled
 /// every [`solids::MARK_STEP`]. Every coordinate is checked first: sampling
@@ -1173,8 +1181,8 @@ fn chart_loops(path: &str) -> Result<Vec<Vec<V2>>, String> {
 
 /// A multi-part recipe's main geometry and extra parts: one frame from
 /// the bounding box of every outline (the `Hv` fit of the whole figure),
-/// one body size for all of them (the figure's area matched to the kit
-/// square's), each part its own loft at its place in the frame.
+/// one body size for all of them ([`fit_size`], solids included), each part
+/// its own loft at its place in the frame.
 fn multi_part(
     main: &str,
     spec: Option<&serde_json::Value>,
@@ -1239,26 +1247,13 @@ fn multi_part(
         center: [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
         renorm: [1.0, 0.0, 0.0],
     };
-    // the figure's area in body units, matched to the kit square's
     let unit = front.scale / X;
-    let area: f64 = std::iter::once(&main_pts)
-        .chain(&part_pts)
-        .map(|p| signed_area(p).abs() * unit * unit)
-        .sum();
-    let size = match &reach {
-        None => (SQUARE_SIZE * (square_area() / area).sqrt()).clamp(SQUARE_SIZE, MAX_SIZE),
-        // a figure with solids turns in 3D: it fits by its farthest point
-        Some(reach) => {
-            let c = front.center;
-            let far = reach
-                .iter()
-                .copied()
-                .chain(main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [p[0], p[1], 0.0]))
-                .map(|p| (p[0] - c[0]).hypot(p[1] - c[1]).hypot(p[2]))
-                .fold(0.0, f64::max);
-            (SOLID_REACH / (far * unit)).clamp(SOLID_MIN_SIZE, SOLID_REACH)
-        }
-    };
+    // the solids sit on the head, whose shape doesn't change with its size
+    let probe = part_body(&main_pts, &front, SQUARE_SIZE, true, None)?;
+    let scene = specs.map(|s| solids::Solids::build(&s, &solids::Head::new(&probe.loft_points, probe.depth), unit, front.center));
+    let c = front.center;
+    let flat = main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0]);
+    let size = fit_size(flat.chain(scene.iter().flat_map(|s| s.shown_points())));
     let base = Rc::new(part_body(&main_pts, &front, size, true, None)?);
     let mut parts = Vec::with_capacity(list.len());
     let mut layout = vec![Place {
@@ -1306,9 +1301,6 @@ fn multi_part(
             decals,
         });
     }
-    let scene = specs.map(|s| {
-        solids::Solids::build(&s, &solids::Head::new(&base.loft_points, base.depth), unit, front.center)
-    });
     Ok((base, parts, layout, scene))
 }
 
@@ -1832,10 +1824,10 @@ mod tests {
         h
     }
 
-    /// Plain custom bodies (round 2) draw and rest byte for byte as they
-    /// did before rich bodies existed.
+    /// Plain custom bodies draw and rest byte for byte as they did when
+    /// figures began to fill the frame ([`fit_size`]).
     #[test]
-    fn plain_custom_bodies_unchanged() {
+    fn plain_custom_bodies_match_their_snapshot() {
         let mut got = Vec::new();
         for path in [CAT, RECEIPT] {
             let name = custom_body(path).unwrap();
@@ -1846,7 +1838,7 @@ mod tests {
             }
             got.push(h);
         }
-        let want: [u64; 2] = [0x9b46cb46d116b458, 0xd3a9bc4da368affd];
+        let want: [u64; 2] = [0x3674b535ad3db32b, 0xb4b2c0d29848d22d];
         assert_eq!(got, want.to_vec());
     }
 
@@ -2091,6 +2083,146 @@ mod tests {
             rest.len() / ((REST_N + 2 * REST_EN) * 2),
             t.elapsed()
         );
+    }
+
+    /// `m` then `t`, as `[a, b, c, d, e, f]`.
+    fn then(m: [f64; 6], t: [f64; 6]) -> [f64; 6] {
+        [
+            m[0] * t[0] + m[2] * t[1],
+            m[1] * t[0] + m[3] * t[1],
+            m[0] * t[2] + m[2] * t[3],
+            m[1] * t[2] + m[3] * t[3],
+            m[0] * t[4] + m[2] * t[5] + m[4],
+            m[1] * t[4] + m[3] * t[5] + m[5],
+        ]
+    }
+
+    /// An SVG `transform` list on `m`.
+    fn transformed(mut m: [f64; 6], list: &str) -> [f64; 6] {
+        for part in list.split(')').filter(|p| !p.trim().is_empty()) {
+            let (name, args) = part.trim().split_once('(').expect("a transform");
+            let v: Vec<f64> = args.split([' ', ',']).filter_map(|n| n.parse().ok()).collect();
+            let t = match (name, v.as_slice()) {
+                ("matrix", [a, b, c, d, e, f]) => [*a, *b, *c, *d, *e, *f],
+                ("translate", [x]) => [1.0, 0.0, 0.0, 1.0, *x, 0.0],
+                ("translate", [x, y]) => [1.0, 0.0, 0.0, 1.0, *x, *y],
+                ("scale", [k]) => [*k, 0.0, 0.0, *k, 0.0, 0.0],
+                ("scale", [x, y]) => [*x, 0.0, 0.0, *y, 0.0, 0.0],
+                ("rotate", [a]) => {
+                    let (s, c) = a.to_radians().sin_cos();
+                    [c, s, -s, c, 0.0, 0.0]
+                }
+                ("rotate", [a, x, y]) => {
+                    let (s, c) = a.to_radians().sin_cos();
+                    let turn = then([1.0, 0.0, 0.0, 1.0, *x, *y], [c, s, -s, c, 0.0, 0.0]);
+                    then(turn, [1.0, 0.0, 0.0, 1.0, -x, -y])
+                }
+                _ => panic!("a transform this can't read: {part}"),
+            };
+            m = then(m, t);
+        }
+        m
+    }
+
+    /// The furthest any path of `tree` goes, in the root's units, past its middle.
+    fn furthest(tree: &MarkTree, mid: f64, outer: [f64; 6], most: &mut f64) {
+        // what's in `defs` draws only through a `use` or a clip
+        if tree.tag == "defs" {
+            return;
+        }
+        let m = tree.attr("transform").map_or(outer, |t| transformed(outer, t));
+        if let Some(d) = tree.attr("d") {
+            let v: Vec<f64> = d.replace(|c: char| c.is_ascii_alphabetic(), " ").split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            for p in v.as_chunks::<2>().0 {
+                let (x, y) = (m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]);
+                *most = most.max((x - mid).abs()).max((y - mid).abs());
+            }
+        }
+        for c in &tree.children {
+            furthest(c, mid, m, most);
+        }
+    }
+
+    fn spike(tip: [f64; 3]) -> String {
+        let s = serde_json::json!([{"kind": "tube", "color": "#112233", "path": [[50.0, 50.0, 0.0, 3.0], [tip[0], tip[1], tip[2], 1.0]]}]);
+        serde_json::json!({"o": "M50 20 C70 20 80 35 80 50 C80 65 70 80 50 80 C30 80 20 65 20 50 C20 35 30 20 50 20 Z", "c": "#FFFFFF",
+            "l": [["M47 61 L53 61 L50 64 Z", "#112233"]], "e": "#112233", "s": s}).to_string()
+    }
+
+    /// However a figure turns and whatever state it's in, nothing leaves the avatar's canvas. These
+    /// are the worst figures: a spike out to the top, the side, a corner, and toward the viewer,
+    /// each sized by [`fit_size`], one of them right at [`FIT_REACH`].
+    #[test]
+    fn nothing_leaves_the_canvas() {
+        let tab = shared_tables();
+        let display = 52.48;
+        let extent = (display * (0.92 / 0.6) * 100.0_f64).round() / 100.0;
+        // `bot_blob`: a canvas half as big again as its cell, the mark 0.82 of the cell
+        let half = display / 0.82 * 1.5 / 2.0;
+        let reach = |tree: &MarkTree| {
+            let mut most = 0.0;
+            furthest(tree, extent / 2.0, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], &mut most);
+            most
+        };
+        // `writing` turns any avatar into the kit's pencil, which is the same size on all of them
+        let writing = |what: &str| what.starts_with("writing");
+        let pencil = rich_run("blob", extent, display).iter().filter(|r| writing(&r.0)).map(|r| reach(&r.1)).fold(0.0, f64::max);
+        for tip in [[50.0, -60.0, 0.0], [120.0, -20.0, 0.0], [160.0, 50.0, 0.0], [50.0, 50.0, 95.0], [100.0, 0.0, 70.0]] {
+            let body = rich_body(&spike(tip)).unwrap();
+            for (what, tree, ..) in rich_run(body, extent, display) {
+                let most = if writing(&what) { pencil } else { half };
+                assert!(reach(&tree) <= most, "{tip:?} {what}: {} past {most}", reach(&tree));
+            }
+            let mark = Mark::new(&tab, Some(body), 1.0, false, false, 7);
+            let opts = PaintOpts { cutout: true, ink_paint: Some("#1884FC".to_owned()), ..Default::default() };
+            let size = UhSize { display_size: Some(display), extent };
+            for pitch in (-90..=90).step_by(15) {
+                for yaw in (0..360).step_by(15) {
+                    for roll in [-30.0, 0.0, 30.0] {
+                        let mut frame = mark.frame();
+                        frame.turn = [pitch as f64, yaw as f64, roll];
+                        let got = reach(&uh(&frame, &opts, extent, "m", &size, &tab));
+                        assert!(got <= half, "{tip:?} at {pitch} {yaw} {roll}: {got} past {half}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_figure_fills_the_frame_up_to_its_limits() {
+        let figure = |w: f64, h: f64| [[-w / 2.0, -h / 2.0, 0.0], [w / 2.0, h / 2.0, 0.0]];
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} against {b}");
+        // what decides it is how tall it stands
+        near(fit_size(figure(1.0, 2.0).into_iter()), FIT_HEIGHT / 2.0);
+        // too wide for that, it's its width
+        near(fit_size(figure(2.0, 1.0).into_iter()), FIT_WIDTH / 2.0);
+        // a point far out decides it, however small the rest
+        let far = [[1.5, 0.0, 0.0], [-0.5, -1.0, 0.0], [-0.5, 1.0, 0.0]];
+        near(fit_size(far.into_iter()), FIT_REACH / 1.5);
+        // one reaching toward the viewer counts too
+        let deep = [[0.0, -1.0, 0.0], [0.0, 1.0, 1.4]];
+        near(fit_size(deep.into_iter()), FIT_REACH / 1.0f64.hypot(1.4));
+        // and a speck stops at the largest size
+        near(fit_size(figure(0.1, 0.1).into_iter()), MAX_SIZE);
+        // the frame beats everything: no least size holds a figure past it
+        near(fit_size([[0.0, -1.0, 0.0], [0.0, 1.0, 6.0]].into_iter()), FIT_REACH / 1.0f64.hypot(6.0));
+    }
+
+    /// However the box of a recipe is filled, a figure stands as tall as the next.
+    #[test]
+    fn plain_outlines_of_any_shape_stand_as_tall() {
+        let size = |o: &str| {
+            let name = custom_body(o).unwrap();
+            BODIES.with(|b| b.borrow()[name].size)
+        };
+        let tall = size("M30 10 L70 10 L70 90 L30 90 Z");
+        let diamond = size("M50 10 L90 50 L50 90 L10 50 Z");
+        assert!((tall - diamond).abs() < 0.02, "{tall} against {diamond}");
+        // a square's corners swing out as it turns: the frame holds it back
+        assert!(size("M10 10 L90 10 L90 90 L10 90 Z") < tall);
+        let wide = size("M5 35 L95 35 L95 65 L5 65 Z");
+        assert!(wide < tall + (FIT_WIDTH - FIT_HEIGHT), "a wide one stops at its width: {wide}");
     }
 
     #[test]
@@ -2957,7 +3089,8 @@ mod tests {
     /// left the recipe's colours for the ink; the shade is also exact now,
     /// not read back from a rounded ink (0.7, it used to read 0.6984).
     /// It moved again when the brute and the hero were redrawn as original
-    /// avatars, palette and geometry both. The cat, unchanged, kept its value.
+    /// avatars, palette and geometry both, and the cat kept its value then.
+    /// All three moved when figures began to fill the frame ([`fit_size`]).
     #[test]
     fn rich_string_eyes_match_their_snapshot() {
         for recipe in [BRUTE, HERO, ORANGE_CAT] {
@@ -2973,7 +3106,7 @@ mod tests {
             }
             got.push(h);
         }
-        assert_eq!(got, vec![0x126d7ae350a8bc2c, 0x624cef4d242ed756, 0x45e20b9cb4a47847]);
+        assert_eq!(got, vec![0x46dcdb07f206087c, 0x37fe198591baa045, 0x3c4a15bc7ced765b]);
     }
 
     /// The two eye centroids at the front pose in a 255px sprite.

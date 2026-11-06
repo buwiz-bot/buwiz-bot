@@ -132,6 +132,7 @@ impl Provider for MockProvider {
             token: Secret::new(TOKEN),
             viewer_password: Secret::new(PASSWORD),
             dir: spec.dir.clone(),
+            link: None,
             seen: None,
         })
     }
@@ -218,6 +219,7 @@ impl Provider for MockProvider {
             token: Secret::new(TOKEN),
             viewer_password: Secret::new(PASSWORD),
             dir: spec.dir.clone(),
+            link: None,
             seen: None,
         }))
     }
@@ -246,7 +248,7 @@ impl Provider for MockProvider {
     async fn viewer(&self, machine: &Machine, screen: &Screen) -> Result<Option<Viewer>> {
         self.awake()?;
         let addr = self.viewer_addr.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        Ok(Some(Viewer { addr: addr.unwrap_or_else(|| format!("127.0.0.1:{}", screen.viewer_port)), password: machine.viewer_password.clone() }))
+        Ok(Some(Viewer { addr: addr.unwrap_or_else(|| format!("127.0.0.1:{}", screen.viewer_port)), password: machine.viewer_password.clone(), far: None }))
     }
 
     async fn screenshot(&self, _: &Machine, screen: &Screen) -> Result<Screenshot> {

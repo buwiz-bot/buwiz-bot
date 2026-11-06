@@ -53,10 +53,10 @@ pub const DEFAULT_PREFIX: &str = "buwiz-computer";
 pub const IMAGE_ENV: &str = "BUWIZ_COMPUTER_IMAGE";
 pub const PREFIX_ENV: &str = "BUWIZ_COMPUTER_PREFIX";
 
-const EXEC_PORT: u16 = 1337;
-const HOST_PORT: u16 = 1340;
+pub(crate) const EXEC_PORT: u16 = 1337;
+pub(crate) const HOST_PORT: u16 = 1340;
 /// The screens' viewers, `6900 + slot`: the box's own, then the Bots'.
-const VIEWER_PORTS: [u16; 5] = [6901, 6902, 6903, 6904, 6905];
+pub(crate) const VIEWER_PORTS: [u16; 5] = [6901, 6902, 6903, 6904, 6905];
 const LABEL: &str = "app.buwiz.computer";
 /// Where the container sees the folder its secrets are put in for a start.
 const SECRET_MOUNT: &str = "/run/buwiz-computer";
@@ -861,6 +861,7 @@ impl Provider for DockerProvider {
             token: Secret::fresh(24)?,
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
+            link: None,
             seen: None,
         })
     }
@@ -970,6 +971,7 @@ impl Provider for DockerProvider {
             token: Secret::fresh(24)?,
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
+            link: None,
             seen: None,
         }))
     }
@@ -1028,7 +1030,7 @@ impl Provider for DockerProvider {
 
     async fn viewer(&self, machine: &Machine, screen: &Screen) -> Result<Option<Viewer>> {
         let found = self.seen(machine).await?;
-        Ok(found.published(screen.viewer_port).map(|addr| Viewer { addr, password: machine.viewer_password.clone() }))
+        Ok(found.published(screen.viewer_port).map(|addr| Viewer { addr, password: machine.viewer_password.clone(), far: None }))
     }
 
     async fn screenshot(&self, machine: &Machine, screen: &Screen) -> Result<Screenshot> {
@@ -1214,6 +1216,7 @@ mod tests {
             token: Secret::new("the-token"),
             viewer_password: Secret::new("the-password"),
             dir: dir.to_path_buf(),
+            link: None,
             seen: None,
         }
     }

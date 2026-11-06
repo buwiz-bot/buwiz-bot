@@ -1465,6 +1465,12 @@ impl Solids {
         }
     }
 
+    /// Every point that shows, in body units around the frame's centre.
+    pub(super) fn shown_points(&self) -> impl Iterator<Item = V3> + '_ {
+        let scene = &self.fine;
+        scene.faces.iter().flat_map(|f| f.corners).map(|c| scene.points[c as usize])
+    }
+
     /// The scene for a mark `size` px across.
     pub(crate) fn at_size(&self, size: f64) -> &Scene {
         if size < SMALL {
