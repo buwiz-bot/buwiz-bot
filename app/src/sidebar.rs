@@ -149,8 +149,10 @@ fn place_again(i: usize) {
     }
 }
 
-/// Looks at a shown list's real offset now and then, and places its rows if
-/// that moved: a scroll nobody reported can't leave them blank for long.
+/// Looks at a shown list's real offset now and then and moves the window if
+/// it's off: a scroll nobody reported can't leave rows blank for long. Rows
+/// keep their place in the content, so this needs no pass, and a pass would
+/// wake every row for a frame.
 fn watch_offset(i: usize) {
     spawn(async move {
         loop {
@@ -163,10 +165,11 @@ fn watch_offset(i: usize) {
                 continue;
             };
             let (view, top) = (list.measure(), content.measure());
-            if let (Some(view), Some(top)) = (view.await, top.await)
-                && (view.page.y.0 - top.page.y.0 - st.side_window[i].get_untracked().top).abs() > 0.5
-            {
-                place_rows(i);
+            if let (Some(view), Some(top)) = (view.await, top.await) {
+                let offset = view.page.y.0 - top.page.y.0;
+                if (offset - st.side_window[i].get_untracked().top).abs() > 0.5 {
+                    st.side_window[i].update(|w| w.top = offset);
+                }
             }
         }
     });
