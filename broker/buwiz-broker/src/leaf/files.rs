@@ -171,12 +171,12 @@ fn byte_range(header: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// `sendRanged`: the whole file, or the asked-for bytes (206), or 416.
 /// Whether a browser shown `content_type` as a document runs what's in it.
 fn runs_script(content_type: &str) -> bool {
     content_type.starts_with("text/html") || content_type.starts_with("image/svg")
 }
 
+/// `sendRanged`: the whole file, or the asked-for bytes (206), or 416.
 fn send_ranged(path: &str, content_type: &str, range: Option<&str>, extra: Option<(&'static str, &str)>) -> Answer {
     send_as(path, content_type, range, extra, NO_SCRIPT)
 }
