@@ -614,6 +614,8 @@ pub(crate) fn pane() -> impl IntoElement {
         let Some(b) = store().active_bot() else { return };
         if pane_signal().with_untracked(|p| p.bot != b.id) {
             pane_signal().set(Pane { bot: b.id.clone(), ..Pane::default() });
+            // what was typed and agreed to was for the Bot this tab was on
+            form().clear();
         }
         spawn_detached(refresh(b.id));
     }

@@ -344,7 +344,10 @@ impl RemoteProvider {
                 let open = self.connect(machine).await?;
                 let system = if link.boxed { None } else { self.system(&open).await };
                 open.close().await;
-                system.map_or(if link.boxed { Ok(Probed::Ready { boxed: true, system: None }) } else { Err(Problem::Remote(NOT_POSIX.to_owned())) }, |s| Ok(Probed::Ready { boxed: false, system: Some(s) }))
+                if !link.boxed && system.is_none() {
+                    return Err(Problem::Remote(NOT_POSIX.to_owned()));
+                }
+                Ok(Probed::Ready { boxed: link.boxed, system })
             }
         }
     }
