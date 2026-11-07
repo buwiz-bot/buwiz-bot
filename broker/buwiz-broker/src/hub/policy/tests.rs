@@ -2193,6 +2193,27 @@ async fn the_bot_reads_one_note_of_whom_it_hears_and_no_other_bot_does() {
 }
 
 #[tokio::test]
+async fn a_chat_with_no_call_yet_reads_whom_it_hears_on_its_first_and_no_backlog() {
+    let (b, scout) = hearing_bed("accepts-first-call");
+    // older changes stay backlog, in this chat too
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "web", "enabled": false})).unwrap();
+    accepts(&b.ctx, "hex", json!("none"));
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Hex hears from nobody now."]);
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty(), "once");
+    assert!(told(&b.ctx, &scout, Some("scout")).is_empty(), "another Bot's chat starts as it did");
+    assert!(told(&b.ctx, &b.plain, None).is_empty());
+    // an Undo is a change like it: the chat's first call reads what it put back
+    let r = accepts(&b.ctx, "scout", json!("none"));
+    b.ctx.db.with(|c| c.execute("DELETE FROM policy_seen", [])).unwrap();
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    assert_eq!(told(&b.ctx, &scout, Some("scout")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Undid a change. Every Bot can message Scout now."]);
+    // a chat with a marker keeps it: what it hasn't read yet stays news
+    host_set(&b.ctx, &json!({"bot": "scout", "key": "web", "enabled": false})).unwrap();
+    accepts(&b.ctx, "scout", json!("none"));
+    assert_eq!(told(&b.ctx, &scout, Some("scout")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Scout can't use the web now. Scout hears from nobody now."]);
+}
+
+#[tokio::test]
 async fn the_accepts_route_refuses_as_it_did_and_answers_an_old_app() {
     let (b, _) = hearing_bed("accepts-route");
     let no = |body: Value| crate::hub::routes::agents::host_accepts(&b.ctx, &body).unwrap_err();
