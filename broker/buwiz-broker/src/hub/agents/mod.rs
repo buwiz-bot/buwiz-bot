@@ -1077,21 +1077,6 @@ impl Agents {
         Ok(())
     }
 
-    /// "Accept messages from": "all", "none", or a list of agent ids.
-    pub fn set_accepts(&self, s: &mut State, bot: Option<&Value>, accepts: Option<&Value>) -> Result<(), AgentError> {
-        let Some(b) = s.bot_mut(&str_or_empty(bot)) else { return fail("invalid_args", "no such agent") };
-        let ok = match accepts {
-            Some(Value::String(a)) => a == "all" || a == "none",
-            Some(Value::Array(a)) => a.iter().all(Value::is_string),
-            _ => false,
-        };
-        if !ok {
-            return fail("invalid_args", "accepts is \"all\", \"none\" or a list of agent ids");
-        }
-        b.accepts = accepts.cloned();
-        Ok(())
-    }
-
     /// A message from outside endpoint `ep`: to its agent unless `to` says
     /// otherwise; `id` is the sender's idempotency key.
     pub fn send_from(&self, s: &mut State, ep: &str, input: &Value, id: Option<Value>, out: &mut Vec<Delivery>) -> Result<Value, AgentError> {
