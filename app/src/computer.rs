@@ -26,11 +26,13 @@ use serde_json::{json, Value};
 
 use crate::client;
 use crate::live::{keep, store};
-use crate::store::spawn_detached;
+use crate::store::{spawn_detached, CtxItem};
 use crate::theme::{self, tc};
 
 const KEY_PREFIX: &str = "computer:";
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long "Woke in" stays once it shows.
+const WOKE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 const LEFT_THE_GATE: &str = "This computer's page tried to take this view somewhere else, so it was closed. Click to open it again.";
 
 /// What the broker says about this Bot's computer.
@@ -199,7 +201,7 @@ pub(crate) fn mode_words(status: &Status) -> String {
     }
 }
 
-/// What the tab's Sleep says: it wins over a job, so it says what that does to one. A remote
+/// What the menu's Sleep says: it wins over a job, so it says what that does to one. A remote
 /// computer's Disconnect stops nothing there.
 pub(crate) fn sleep_words(status: &Status) -> &'static str {
     match (status.remote.is_some(), status.jobs.iter().filter(|j| !j.frozen).count()) {
@@ -273,6 +275,9 @@ thread_local! {
     static DRIVING: Signal<std::collections::HashSet<String>> = Owner::detached().run(|| keep("computer.driving", Default::default));
     /// What the viewer open full screen last heard, with whose it is.
     static SHOWN: Signal<(String, Status)> = Owner::detached().run(|| keep("computer.shown", Default::default));
+    /// Each Bot's last wake seen on the tab, in ms, and since when its "Woke in" shows; `None` once
+    /// that's gone. The broker says how long the last wake took for as long as the computer is up.
+    static WOKE: Signal<std::collections::HashMap<String, (u64, Option<std::time::Instant>)>> = Owner::detached().run(|| keep("computer.woke", Default::default));
     /// The form for a remote computer. Secrets are in here for as long as it's open.
     static FORM: Form = Owner::detached().run(Form::new);
 }
@@ -464,11 +469,49 @@ fn pane_signal() -> Signal<Pane> {
 }
 
 fn update(bot: &str, f: impl FnOnce(&mut Pane)) {
+    let mut wake = None;
     pane_signal().update(|p| {
         if p.bot == bot {
             f(p);
+            // a pane just reset has heard nothing, and that's no sleep
+            wake = (!p.status.state.is_empty()).then(|| p.status.wake_ms.filter(|_| p.status.state == "awake"));
         }
     });
+    if let Some(wake) = wake {
+        note_wake(bot, wake);
+    }
+}
+
+/// Starts "Woke in" for a wake not seen yet, and forgets the last one when `wake` is `None`, so the
+/// next shows even if it took as long.
+fn note_wake(bot: &str, wake: Option<u64>) {
+    let woke = WOKE.with(|s| *s);
+    if woke.with_untracked(|w| w.get(bot).map(|seen| seen.0)) == wake {
+        return;
+    }
+    let Some(ms) = wake else {
+        return woke.update(|w| {
+            w.remove(bot);
+        });
+    };
+    let since = std::time::Instant::now();
+    woke.update(|w| {
+        w.insert(bot.to_owned(), (ms, Some(since)));
+    });
+    let bot = bot.to_owned();
+    spawn_detached(async move {
+        timer(WOKE_FOR).await;
+        woke.update(|w| {
+            if let Some(seen) = w.get_mut(&bot).filter(|seen| seen.1 == Some(since)) {
+                seen.1 = None;
+            }
+        });
+    });
+}
+
+/// Whether `bot`'s "Woke in" still shows.
+fn woke_shows(bot: &str) -> bool {
+    WOKE.with(|s| s.with(|w| w.get(bot).is_some_and(|seen| seen.1.is_some())))
 }
 
 fn route(bot: &str, rest: &str) -> String {
@@ -529,19 +572,19 @@ async fn refresh_tile(bot: String) {
 }
 
 /// A person clicked the computer.
-fn wake(bot: String) {
+pub(crate) fn wake(bot: String) {
     update(&bot, |p| p.status.state = "waking".to_owned());
     spawn_detached(async move {
-        if let Some(v) = client::post_any(&route(&bot, "/wake"), json!({})).await {
+        if let Some(v) = form_post(&route(&bot, "/wake"), json!({})).await {
             let status = Status::parse(&v);
             update(&bot, |p| p.status = status);
         }
     });
 }
 
-fn sleep(bot: String) {
+pub(crate) fn sleep(bot: String) {
     spawn_detached(async move {
-        let _ = client::post_any(&route(&bot, "/sleep"), json!({})).await;
+        let _ = form_post(&route(&bot, "/sleep"), json!({})).await;
         refresh(bot).await;
     });
 }
@@ -862,6 +905,22 @@ fn small_button(id: &'static str, words: &'static str, press: impl Fn() + 'stati
         .on_press(press)
 }
 
+/// For a test: what a poll of `bot` would bring, and the screen's picture if there is one.
+#[cfg(test)]
+pub(crate) fn pane_says(bot: &str, status: Status, tile: Option<String>) {
+    update(bot, |p| {
+        p.status = status;
+        p.tile = tile;
+    });
+}
+
+/// The tab as it draws the pane, for a test with no broker to ask.
+#[cfg(test)]
+pub(crate) fn pane_body() -> impl IntoElement {
+    let p = pane_signal().get();
+    body(&p.bot, "Ann", "blob", &p).into_element()
+}
+
 /// The tab as it draws `status`, for a test with no broker to ask.
 #[cfg(test)]
 pub(crate) fn body_of(status: Status) -> impl IntoElement {
@@ -869,10 +928,30 @@ pub(crate) fn body_of(status: Status) -> impl IntoElement {
     body("b1", "Ann", "blob", &p).into_element()
 }
 
+/// The computer's right-click menu, as `status` allows: nothing while it comes up or before the
+/// broker has said.
+pub(crate) fn menu_items(bot: &str, name: &str, status: &Status) -> Vec<CtxItem> {
+    match status.state.as_str() {
+        "awake" => {
+            let open = status.has_screen().then(|| CtxItem::row("Open", "external", "computer-open", format!("{bot}\u{1f}{name}")));
+            let sleep = CtxItem::row(sleep_words(status), if status.remote.is_some() { "powerOff" } else { "moon" }, "computer-sleep", bot.to_owned());
+            open.into_iter().chain([sleep]).collect()
+        }
+        "asleep" | "absent" | "error" => vec![CtxItem::row("Wake computer", "sun", "computer-wake", bot.to_owned())],
+        _ => Vec::new(),
+    }
+}
+
 fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     let awake = p.status.state == "awake";
+    let opens = awake && p.status.has_screen();
     let (b, n) = (bot.to_owned(), name.to_owned());
-    let tile = view().test_id("computer-tile").h(px(180.0)).rounded(px(12.0)).bg(theme::MAIN).items_center().justify_center().overflow_hidden();
+    let items = menu_items(bot, name, &p.status);
+    let tile = view().test_id("computer-tile").h(px(180.0)).rounded(px(12.0)).bg(theme::MAIN).items_center().justify_center().overflow_hidden().on_context_menu(move |e: &ContextMenuEvent| {
+        if !items.is_empty() {
+            crate::ctx::open(e, items.clone());
+        }
+    });
     let tile = match (&p.tile, awake) {
         (Some(uri), true) => tile
             .label("Open computer")
@@ -880,11 +959,14 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
             .on_press(move || open_full(&b, &n)),
         _ => {
             let words = p.status.headline();
-            let press = (p.status.state != "waking").then(|| b.clone());
-            let tile = tile.label("Wake computer").child(sleeping_avatar(shape)).child(text(words).text_size(px(13.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT).pt(px(6.0)));
-            match press {
-                Some(bot) if !awake => tile.on_press(move || wake(bot.clone())),
-                _ => tile,
+            let tile = tile.label(if opens { "Open computer" } else { "Wake computer" }).child(sleeping_avatar(shape)).child(text(words).text_size(px(13.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT).pt(px(6.0)));
+            if opens {
+                // no picture yet: a press still opens it
+                tile.on_press(move || open_full(&b, &n))
+            } else if !awake && p.status.state != "waking" {
+                tile.on_press(move || wake(b.clone()))
+            } else {
+                tile
             }
         }
     };
@@ -899,7 +981,7 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     if !shared.is_empty() {
         out = out.child(note(shared));
     }
-    if let Some(ms) = p.status.wake_ms.filter(|_| awake) {
+    if let Some(ms) = p.status.wake_ms.filter(|_| awake && woke_shows(bot)) {
         out = out.child(note(format!("Woke in {:.1} s", ms as f64 / 1000.0)));
     }
     if let Some(t) = &p.status.takeover {
@@ -917,14 +999,6 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     for j in &p.status.jobs {
         out = out.child(view().test_id("computer-job").child(note(j.words(p.status.remote.is_some()))));
-    }
-    if awake {
-        let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
-        let mut row = view().flex_row().gap_2().pt(px(10.0));
-        if p.status.has_screen() {
-            row = row.child(small_button("computer-open", "Open", move || open_full(&b1, &n1)));
-        }
-        out = out.child(row.child(small_button("computer-sleep", sleep_words(&p.status), move || sleep(b2.clone()))));
     }
     if p.status.remote.is_some() {
         let b = bot.to_owned();

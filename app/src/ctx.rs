@@ -54,6 +54,14 @@ fn run(it: &CtxItem) {
         }
         "bot-hide" => st.update_bot(arg, serde_json::json!({"hidden": it.flag})),
         "bot-del" => crate::computer::ask_delete(arg.to_owned()),
+        // `<bot>␟<its name>`.
+        "computer-open" => {
+            if let Some((bot, name)) = arg.split_once('\u{1f}') {
+                crate::computer::open_full(bot, name);
+            }
+        }
+        "computer-sleep" => crate::computer::sleep(arg.to_owned()),
+        "computer-wake" => crate::computer::wake(arg.to_owned()),
         // Groups' verbs carry their fields joined by U+001F (a file path
         // may hold anything else): `<group>␟<kind>␟<id>␟<origin chat>`.
         "group-item" => {
