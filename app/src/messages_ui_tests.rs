@@ -543,7 +543,7 @@ fn show_card(app: &mut Headless, bot: &'static str) {
 }
 
 fn has(app: &Headless, word: &str) -> bool {
-    app.texts().iter().any(|t| *t == word)
+    app.texts().contains(&word)
 }
 
 /// `/messages` asks the broker for the card and sends nothing to the model.
@@ -590,15 +590,15 @@ fn a_card_draws_one_row_and_follows_what_is_true_now() {
         assert!(has(&app, w), "{w}: {:?}", app.texts());
     }
     wait_for(&mut app, &seen, "/v1/host/tools?bot=nova", 1);
-    // moved somewhere else: `/tools`, or another card
+    // moved somewhere else: `/tools`, or another card. Hears alone first:
+    // Sends moving would redraw the card and hide a Hears that doesn't follow
     *seen.accepts.lock().unwrap() = json!("none");
-    *seen.sends.lock().unwrap() = json!("off");
-    on(&mut app, || {
-        store().set_threads(threads(json!("none")));
-        crate::tools::sends_moved();
-    });
+    on(&mut app, || store().set_threads(threads(json!("none"))));
     settle(&mut app);
     assert!(!has(&app, "Scout"), "off the card with the list: {:?}", app.texts());
+    *seen.sends.lock().unwrap() = json!("off");
+    on(&mut app, crate::tools::sends_moved);
+    settle(&mut app);
     assert_eq!(on(&mut app, || crate::tools::sends_of("nova")), "off");
 }
 
