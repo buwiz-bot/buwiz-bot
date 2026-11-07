@@ -97,5 +97,5 @@ fn a_relaunched_app_follows_a_run_under_way() {
     app.press("Stop this run");
     assert!(shows(&mut app, "run=none busy=false"), "the row stayed: {:?}", app.texts());
     assert!(HEARD.lock().unwrap().iter().any(|l| l.starts_with("POST /job/stop") && l.ends_with(r#"{"id":7}"#)), "{:?}", HEARD.lock().unwrap());
-    assert!(!app.texts().iter().any(|t| *t == "Stop"), "the Stop went with the run: {:?}", app.texts());
+    assert!(!app.texts().contains(&"Stop"), "the Stop went with the run: {:?}", app.texts());
 }
