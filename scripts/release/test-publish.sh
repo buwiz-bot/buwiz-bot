@@ -308,6 +308,7 @@ git_work reset --quiet --hard FETCH_HEAD
 # origin refuses the tag after the bump commit went out: the retry just works
 printf 'v0.1.0\nv0.1.1\nv0.3.0\nv0.3.1\n' > "$TMP/releases"
 origin config core.hooksPath "$TMP/origin.git/hooks"
+# shellcheck disable=SC2016 # a literal $1, for the hook
 printf '#!/bin/sh\ncase "$1" in refs/tags/*) exit 1 ;; esac\n' > "$TMP/origin.git/hooks/update"
 chmod +x "$TMP/origin.git/hooks/update"
 out="$(publish next; echo "exit=$?")"
