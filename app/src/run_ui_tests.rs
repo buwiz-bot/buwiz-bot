@@ -32,6 +32,10 @@ fn in_child(name: &str) -> bool {
 
 static HEARD: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static STOPPED: AtomicBool = AtomicBool::new(false);
+/// `/status` stops answering for the first run.
+static SILENT: AtomicBool = AtomicBool::new(false);
+/// A yes's turn came: the run before it has ended, and `/status` says so.
+static OVER: AtomicBool = AtomicBool::new(false);
 
 /// A broker with one run under way on `t7`, ended by `POST /job/stop`: a headless engine has no
 /// network, so `store.rs` asks this.
@@ -43,6 +47,12 @@ pub(crate) fn broker(line: String) -> Option<Value> {
     if line.contains("/job/stop") {
         STOPPED.store(true, Ordering::SeqCst);
         return Some(json!({"ok": true}));
+    }
+    if SILENT.load(Ordering::SeqCst) && line.contains("/status?id=7") {
+        return None;
+    }
+    if OVER.load(Ordering::SeqCst) && line.contains("/status?id=7") {
+        return Some(json!({"id": 7, "seq": 2, "phase": "done", "detail": "", "done": true, "events": []}));
     }
     Some(if STOPPED.load(Ordering::SeqCst) {
         json!({"id": 7, "seq": 2, "phase": "done", "detail": "stopped", "done": true, "events": []})
@@ -61,7 +71,12 @@ fn Row() -> impl IntoElement {
             store().active_id.set("t7".to_owned());
             store().resume_runs();
         }))
-        .child(view().label("yes-turn").w(px(40.0)).h(px(20.0)).on_press(|| store().follow_run("9".to_owned(), "t7".to_owned(), None)))
+        .child(view().label("silence").w(px(40.0)).h(px(20.0)).on_press(|| SILENT.store(true, Ordering::SeqCst)))
+        .child(view().label("same-turn").w(px(40.0)).h(px(20.0)).on_press(|| store().follow_run("7".to_owned(), "t7".to_owned(), None)))
+        .child(view().label("yes-turn").w(px(40.0)).h(px(20.0)).on_press(|| {
+            OVER.store(true, Ordering::SeqCst);
+            store().follow_run("9".to_owned(), "t7".to_owned(), None);
+        }))
         .child(crate::composer::stop_run())
         .child(text(|| {
             let run = store().agent().map(|r| r.label).unwrap_or_else(|| "none".to_owned());
@@ -97,14 +112,46 @@ fn a_relaunched_app_follows_a_run_under_way() {
     assert!(shows(&mut app, "Stop"), "it can't be stopped: {:?}", app.texts());
     assert!(HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=7")), "it isn't polling: {:?}", HEARD.lock().unwrap());
 
-    // a chat followed already keeps its one run, and a yes's turn doesn't take its place
+    // the run followed already isn't followed twice
+    app.press("same-turn");
+    assert!(shows(&mut app, "job=7."), "{:?}", app.texts());
+
+    // a yes starts only in an idle chat, so another job is what this chat runs now, and the row
+    // stays through the old watch's standing down
     app.press("yes-turn");
+    assert!(shows(&mut app, "job=9."), "a yes's turn wasn't followed: {:?}", app.texts());
     app.pump(Duration::from_millis(600));
-    assert!(!HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=9")), "it followed a second run: {:?}", HEARD.lock().unwrap());
-    assert!(shows(&mut app, "job=7."), "another run took its place: {:?}", app.texts());
+    assert!(HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=9")), "it isn't polling the new run: {:?}", HEARD.lock().unwrap());
+    assert!(shows(&mut app, "busy=true") && shows(&mut app, "job=9."), "the old watch took the row with it: {:?}", app.texts());
 
     app.press("Stop this run");
     assert!(shows(&mut app, "run=none busy=false mark=idle"), "the row stayed, or the mark settled as if it ended: {:?}", app.texts());
-    assert!(HEARD.lock().unwrap().iter().any(|l| l.starts_with("POST /job/stop") && l.ends_with(r#"{"id":7}"#)), "{:?}", HEARD.lock().unwrap());
+    assert!(HEARD.lock().unwrap().iter().any(|l| l.starts_with("POST /job/stop") && l.ends_with(r#"{"id":9}"#)), "{:?}", HEARD.lock().unwrap());
     assert!(!app.texts().contains(&"Stop"), "the Stop went with the run: {:?}", app.texts());
+}
+
+/// A watch that gives up on a broker gone quiet, with a newer run in its place, leaves that run.
+#[test]
+fn a_replaced_watch_that_gives_up_leaves_the_new_run() {
+    if !in_child("a_replaced_watch_that_gives_up_leaves_the_new_run") {
+        return;
+    }
+    let mut config = EngineConfig::new(App::Rust(Root::new::<Row>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(300.0));
+    let mut app = run(config);
+    assert!(shows(&mut app, "run=none busy=false"), "{:?}", app.texts());
+    app.press("relaunch");
+    assert!(shows(&mut app, "job=7."), "{:?}", app.texts());
+    app.press("silence");
+    // it has missed some by the time the new run comes, and goes on until it gives up
+    app.pump(Duration::from_millis(600));
+    app.press("yes-turn");
+    assert!(shows(&mut app, "job=9."), "{:?}", app.texts());
+    // the next poll would paint the row back: only a look this close sees it gone
+    for _ in 0..150 {
+        app.pump(Duration::from_millis(20));
+        assert!(!app.texts().iter().any(|t| t.contains("run=none")), "the old watch blanked the new run's row: {:?}", app.texts());
+    }
+    assert!(shows(&mut app, "busy=true") && shows(&mut app, "job=9."), "the old watch took the new run with it: {:?}", app.texts());
+    assert!(shows(&mut app, "run=Reading the mail"), "its row went: {:?}", app.texts());
 }

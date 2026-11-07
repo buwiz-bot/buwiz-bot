@@ -48,6 +48,44 @@ pub(crate) struct Status {
     pub working: bool,
     pub takeover: Option<Takeover>,
     pub remote: Option<Remote>,
+    /// the jobs on this computer, by any Bot at it
+    pub jobs: Vec<Job>,
+}
+
+/// A command a Bot left running on this computer.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Job {
+    pub name: String,
+    pub bot: String,
+    /// its computer sleeps, so it's stopped where it was
+    pub frozen: bool,
+    pub seconds_left: u64,
+}
+
+impl Job {
+    /// The tab's line: how it stands now, and nothing it can't say. A remote computer's job isn't
+    /// stopped by a disconnect, and nothing here can see it then.
+    fn words(&self, remote: bool) -> String {
+        let job = if self.name.is_empty() { format!("{}'s job", self.bot) } else { format!("{}'s job \"{}\"", self.bot, self.name) };
+        match (self.frozen, remote) {
+            (true, true) => format!("{job}: not connected, so how it stands isn't known."),
+            (true, false) => format!("{job} is frozen while this computer sleeps."),
+            (false, _) => format!("{job} is running · {} left", span(self.seconds_left)),
+        }
+    }
+
+    fn parse(v: &Value) -> Option<Self> {
+        Some(Self { name: v.get("name")?.as_str()?.to_owned(), bot: v.get("bot")?.as_str()?.to_owned(), frozen: v.get("frozen")?.as_bool()?, seconds_left: v.get("secondsLeft")?.as_u64()? })
+    }
+}
+
+/// `3 h 59 min`, or `12 min`; under a minute, `under a minute`.
+fn span(seconds: u64) -> String {
+    match (seconds / 3600, seconds % 3600 / 60) {
+        (0, 0) => "under a minute".to_owned(),
+        (0, m) => format!("{m} min"),
+        (h, m) => format!("{h} h {m} min"),
+    }
 }
 
 /// A computer a person connected.
@@ -101,6 +139,7 @@ impl Status {
             working: v.get("working").and_then(Value::as_bool).unwrap_or(false),
             takeover: v.get("takeover").and_then(Takeover::parse),
             remote: v.get("remote").and_then(Remote::parse),
+            jobs: v.get("jobs").and_then(Value::as_array).into_iter().flatten().filter_map(Job::parse).collect(),
         }
     }
 
@@ -157,6 +196,17 @@ pub(crate) fn mode_words(status: &Status) -> String {
         (None, "watch") if status.working => "Watching the agent work.".to_owned(),
         (None, "watch") => "Watching. Your clicks don't reach the screen.".to_owned(),
         _ => String::new(),
+    }
+}
+
+/// What the tab's Sleep says: it wins over a job, so it says what that does to one. A remote
+/// computer's Disconnect stops nothing there.
+pub(crate) fn sleep_words(status: &Status) -> &'static str {
+    match (status.remote.is_some(), status.jobs.iter().filter(|j| !j.frozen).count()) {
+        (true, _) => "Disconnect",
+        (false, 0) => "Sleep",
+        (false, 1) => "Sleep, and freeze its job",
+        (false, _) => "Sleep, and freeze its jobs",
     }
 }
 
@@ -804,6 +854,13 @@ fn small_button(id: &'static str, words: &'static str, press: impl Fn() + 'stati
         .on_press(press)
 }
 
+/// The tab as it draws `status`, for a test with no broker to ask.
+#[cfg(test)]
+pub(crate) fn body_of(status: Status) -> impl IntoElement {
+    let p = Pane { status, ..Pane::default() };
+    body("b1", "Ann", "blob", &p).into_element()
+}
+
 fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     let awake = p.status.state == "awake";
     let (b, n) = (bot.to_owned(), name.to_owned());
@@ -850,14 +907,16 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     } else if p.status.working {
         out = out.child(note("Its agent is using this screen.".to_owned()));
     }
+    for j in &p.status.jobs {
+        out = out.child(view().test_id("computer-job").child(note(j.words(p.status.remote.is_some()))));
+    }
     if awake {
         let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
-        let sleep_words = if p.status.remote.is_some() { "Disconnect" } else { "Sleep" };
         let mut row = view().flex_row().gap_2().pt(px(10.0));
         if p.status.has_screen() {
             row = row.child(small_button("computer-open", "Open", move || open_full(&b1, &n1)));
         }
-        out = out.child(row.child(small_button("computer-sleep", sleep_words, move || sleep(b2.clone()))));
+        out = out.child(row.child(small_button("computer-sleep", sleep_words(&p.status), move || sleep(b2.clone()))));
     }
     if p.status.remote.is_some() {
         let b = bot.to_owned();
@@ -1125,6 +1184,30 @@ mod tests {
         assert_eq!(s.takeover.unwrap().left(), "4:05");
         let bare = Status::parse(&json!({"state": "awake"}));
         assert_eq!((bare.viewer.as_str(), bare.working, bare.takeover), ("", false, None));
+    }
+
+    #[test]
+    fn a_jobs_line_says_how_it_stands_and_no_more() {
+        let job = |frozen, seconds_left| Job { name: "the build".to_owned(), bot: "Ann".to_owned(), frozen, seconds_left };
+        assert_eq!(job(false, 14_340).words(false), "Ann's job \"the build\" is running · 3 h 59 min left");
+        assert_eq!(job(false, 720).words(false), "Ann's job \"the build\" is running · 12 min left");
+        assert_eq!(job(false, 20).words(false), "Ann's job \"the build\" is running · under a minute left");
+        assert_eq!(job(true, 720).words(false), "Ann's job \"the build\" is frozen while this computer sleeps.");
+        assert_eq!(job(true, 720).words(true), "Ann's job \"the build\": not connected, so how it stands isn't known.");
+        assert_eq!(Job { name: String::new(), ..job(false, 720) }.words(false), "Ann's job is running · 12 min left");
+    }
+
+    #[test]
+    fn sleep_says_it_freezes_a_job_and_disconnect_doesnt() {
+        let job = |frozen| Job { name: "x".to_owned(), bot: "Ann".to_owned(), frozen, seconds_left: 60 };
+        let on = |jobs: Vec<Job>| Status { jobs, ..seen("awake", "", None) };
+        assert_eq!(sleep_words(&on(vec![])), "Sleep");
+        assert_eq!(sleep_words(&on(vec![job(false)])), "Sleep, and freeze its job");
+        assert_eq!(sleep_words(&on(vec![job(false), job(false)])), "Sleep, and freeze its jobs");
+        let remote = Status { remote: Some(Remote::default()), ..on(vec![job(false)]) };
+        assert_eq!(sleep_words(&remote), "Disconnect", "nothing there stops");
+        let v = json!({"state": "awake", "jobs": [{"name": "x", "bot": "Ann", "frozen": false, "secondsLeft": 60}]});
+        assert_eq!(Status::parse(&v).jobs, [job(false)]);
     }
 
     #[test]

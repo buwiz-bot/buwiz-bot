@@ -61,6 +61,29 @@ pub struct ThreadMeta {
     /// An agents' conversation's thread (`agents` on the row): never a
     /// sidebar row, a ⌘1–9 slot nor the chat restored at launch; read-only.
     pub agents: Option<crate::agents::AgentsOf>,
+    /// A run or a job is going on here, whether or not this app started it.
+    pub working: bool,
+    /// A card here waits for an answer.
+    pub waiting: bool,
+}
+
+/// What goes on in a chat with nobody watching it, most pressing last.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Work {
+    #[default]
+    None,
+    Working,
+    Waiting,
+}
+
+impl Work {
+    fn of(t: &ThreadMeta) -> Self {
+        match (t.waiting, t.working) {
+            (true, _) => Self::Waiting,
+            (_, true) => Self::Working,
+            _ => Self::None,
+        }
+    }
 }
 
 /// A routine's check time `ms` as local time: "3:42 PM", or with the date
@@ -2611,7 +2634,7 @@ impl Turn {
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
-            run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "run_ended")).then(|| s(v, "text")),
+            run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| ["run_ended", "computer_job"].contains(&s(n, "kind").as_str()))).then(|| s(v, "text")),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -3720,6 +3743,8 @@ impl Store {
                 last_app: s(t, "lastApp"),
                 routine: t.get("routine").and_then(RoutineOf::of),
                 agents: t.get("agents").and_then(crate::agents::AgentsOf::of),
+                working: b(t, "working"),
+                waiting: b(t, "waiting"),
                 bot: {
                     let b = &t["bot"];
                     if b.is_null() {
@@ -4114,6 +4139,26 @@ impl Store {
                 self.set_threads(v);
             }
         });
+    }
+
+    /// While a row has a dot, `/threads` is read now and then, so the dot goes when the work does:
+    /// a job on a computer ends with no run of this app's to say so.
+    pub fn watch_work(&'static self) {
+        set_interval(std::time::Duration::from_secs(5), move || {
+            if self.threads.with_untracked(|t| t.iter().any(|t| t.working || t.waiting)) {
+                self.refresh_threads();
+            }
+        });
+    }
+
+    /// What a sidebar row's dot says of chat `id`.
+    pub fn work_of_thread(&'static self, id: &str) -> Work {
+        self.threads.with(|t| t.iter().find(|t| t.id == id).map_or(Work::None, Work::of))
+    }
+
+    /// The same for all of Bot `id`'s chats: what needs a person comes first.
+    pub fn work_of_bot(&'static self, id: &str) -> Work {
+        self.threads.with(|t| t.iter().filter(|t| t.bot.as_ref().is_some_and(|b| b.id == id)).map(Work::of).max().unwrap_or(Work::None))
     }
 
     /// `loadModels` — the pill's lazy fetch (modelpicker.tsx:64).
@@ -6964,8 +7009,9 @@ impl Store {
 
     /// Follows the run a person's yes on a waiting card started.
     pub fn follow_run(&'static self, job: String, thread: String, bot: Option<String>) {
-        // one row a chat, as `resume_runs`
-        if self.run_jobs.with_untracked(|m| m.contains_key(&thread)) {
+        // a yes starts only in an idle chat, so another job here is one that's over: this is the
+        // chat's run now, and that one's watch stands down
+        if self.run_jobs.with_untracked(|m| m.get(&thread) == Some(&job)) {
             return;
         }
         self.follow(RunningRun { job, thread, bot, phase: "queued".to_owned(), detail: String::new() });
@@ -6984,6 +7030,10 @@ impl Store {
         self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
         self.in_store(|| spawn(async move {
             self.watch_run(job, thread.clone(), bot).await;
+            // the run that took its place has the row now
+            if self.run_jobs.with_untracked(|m| m.contains_key(&thread)) {
+                return;
+            }
             self.sending.update(|s| {
                 s.remove(&thread);
             });
@@ -7004,7 +7054,7 @@ impl Store {
         const HOLD: std::time::Duration = std::time::Duration::from_millis(800);
         // polls the broker can miss, 30 seconds of them: long enough for it to restart, and a run
         // it lost then reads `unknown`
-        const MISSES: u32 = 120;
+        const MISSES: u32 = if cfg!(test) { 8 } else { 120 };
         self.run_jobs.update(|m| {
             m.insert(thread.clone(), job.clone());
         });
@@ -7019,13 +7069,19 @@ impl Store {
             let Some(v) = run_get(&format!("/status?id={job}")).await else {
                 missed += 1;
                 if missed >= MISSES {
-                    self.agent_set(thread.clone(), bot.clone(), None);
+                    if self.run_jobs.with_untracked(|m| m.get(&thread) == Some(&job)) {
+                        self.agent_set(thread.clone(), bot.clone(), None);
+                    }
                     break;
                 }
                 timer(std::time::Duration::from_millis(250)).await;
                 continue;
             };
             missed = 0;
+            // another run of this chat took its place: nothing here is this watch's to touch now
+            if self.run_jobs.with_untracked(|m| m.get(&thread) != Some(&job)) {
+                return;
+            }
             let phase = s(&v, "phase");
             let detail = s(&v, "detail");
             let status = if detail.is_empty() { phase.clone() } else { detail.clone() };
@@ -7128,9 +7184,12 @@ impl Store {
             }
             timer(std::time::Duration::from_millis(250)).await;
         }
-        self.run_jobs.update(|m| {
-            m.remove(&thread);
-        });
+        // a watch that gave up may have been replaced as it did: that run's entry stays
+        if self.run_jobs.with_untracked(|m| m.get(&thread) == Some(&job)) {
+            self.run_jobs.update(|m| {
+                m.remove(&thread);
+            });
+        }
     }
 
     /// `POST /thread/new` — a fresh chat.

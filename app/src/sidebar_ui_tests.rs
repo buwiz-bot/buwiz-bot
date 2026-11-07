@@ -218,6 +218,13 @@ fn Side() -> impl IntoElement {
                     store().active_id.set(format!("t{}", n % BOTS));
                 }))
                 .child(view().label("seed rich").w(px(40.0)).h_full().on_press(seed_rich))
+                .child(view().label("work rows").w(px(40.0)).h_full().on_press(|| {
+                    let mut v = threads("first words");
+                    let row = |i: usize, mark: &str| serde_json::json!({"id": format!("t{i}"), "title": format!("Bot {i}"), "bot": {"id": format!("b{i}"), "name": format!("Bot {i}")}, mark: true});
+                    v["list"] = serde_json::json!([row(1, "working"), row(2, "waiting")]);
+                    store().set_threads(v);
+                }))
+                .child(view().label("rows clear").w(px(40.0)).h_full().on_press(|| store().set_threads(threads("first words"))))
                 .child(view().label("stop").w(px(40.0)).h_full().on_press(|| {
                     for i in 0..BOTS {
                         store().agent_set(format!("t{i}"), Some(format!("b{i}")), None);
@@ -233,7 +240,7 @@ fn Side() -> impl IntoElement {
                 .child(view().label("rest").w(px(40.0)).h_full().on_press(|| store().agent_set("t3".to_owned(), Some("b3".to_owned()), None)))
                 .child(text(|| {
                     let grouped = store().groups.get().iter().any(|g| g.items.iter().any(|it| it.id == "b1"));
-                    format!("probe ready=1 grouped={}", grouped as u8)
+                    format!("probe ready=1 grouped={} work={:?},{:?},{:?}", grouped as u8, store().work_of_bot("b1"), store().work_of_bot("b2"), store().work_of_bot("b3"))
                 }).text_size(px(8.0))),
         )
         .child(view().flex_1().child(crate::sidebar::sidebar()))
@@ -1112,6 +1119,24 @@ fn a_crowd_in_one_lane_keeps_moving() {
     app.pump(Duration::from_millis(1000));
     let painted = LANE_PAINTS.load(Ordering::Relaxed) - at;
     assert!(painted > 12 * 5, "{painted} paints in a second from 12 avatars");
+}
+
+/// Back from away, a row says what goes on there and what waits for a person, and the dot goes
+/// with the work. Neither says anything of what the app can be counted on for.
+#[test]
+fn a_row_shows_work_going_on_and_a_card_waiting() {
+    if !in_child("a_row_shows_work_going_on_and_a_card_waiting") {
+        return;
+    }
+    let mut app = start();
+    app.press("seed");
+    pump_until_built(&mut app);
+    assert!(!app.has("Working") && !app.has("Waiting for you"));
+    app.press("work rows");
+    pump_until(&mut app, "no dot came", |app| app.has("Working") && app.has("Waiting for you"));
+    assert!(app.texts().iter().any(|t| t.contains("work=Working,Waiting,None")), "{:?}", app.texts());
+    app.press("rows clear");
+    pump_until(&mut app, "the dots stayed", |app| !app.has("Working") && !app.has("Waiting for you"));
 }
 
 /// A status write reaches the avatar: not rebuilt, but not frozen either.

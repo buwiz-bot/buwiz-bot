@@ -28,7 +28,8 @@
 //!   a person is never made to wait for the agent.
 //! - A run can hand the screen to a person until a time limit ([`Computers::hand_over`]). Sleeping
 //!   the computer or deleting the Bot ends that too.
-//! - Nothing but a person's click sleeps a computer a run or a hand-over has.
+//! - Nothing but a person's click sleeps a computer a run, a hand-over or a job has. That click
+//!   freezes a job, and waking the computer lets it go on ([`jobs`]).
 //!
 //! A remote computer ([`buwiz_computer::RemoteProvider`]) is the same record with a connection in
 //! it, and only a person adds one, with a yes to [`consent_for`] after a Test of the same thing: the wall that makes a computer safe to
@@ -63,6 +64,9 @@ use super::policy;
 use super::routes::host;
 use super::types::{self, HubRequest, HubResponse, Pattern::Exact as X, Pattern::Segments as S, Verb};
 use super::Registry;
+
+mod awake;
+pub mod jobs;
 
 /// The own screens a box runs (`box-screen`'s `BOX_MAX_OWN_SCREENS`).
 pub const MAX_SEATS: i64 = 4;
@@ -133,6 +137,8 @@ struct Now {
     /// by Bot: how many drive tickets are being made, from before their recording check to the
     /// session being open. No recording starts meanwhile.
     coming: HashMap<String, usize>,
+    /// by id: the jobs running on the computers, so they stop a sleep in the same step as a run
+    jobs: HashMap<String, jobs::Running>,
     numbers: u64,
 }
 
@@ -152,10 +158,10 @@ impl Now {
         ended
     }
 
-    /// Whether a run or a person has a screen on `computer`. From what's here, not the seats: this
-    /// has no read to fail.
+    /// Whether a run or a person has a screen on `computer`, or a job needs it. From what's here,
+    /// not the seats: this has no read to fail.
     fn in_use(&self, computer: &str) -> bool {
-        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer)
+        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer) || self.jobs.values().any(|j| j.computer == computer && !j.past)
     }
 }
 
@@ -279,6 +285,8 @@ pub struct Computers {
     seating: tokio::sync::Mutex<()>,
     /// which models see images, as opencodex says, and when it said
     sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
+    /// held while a job runs
+    keep_awake: awake::KeepAwake,
 }
 
 /// What a tool acts with: the computer, and the screen of the Bot it was found for.
@@ -300,7 +308,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).unwrap_or_default(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default() }
+        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).unwrap_or_default(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
     }
 
     /// With this remote provider (tests).
@@ -528,7 +536,9 @@ impl Computers {
         }
         let (me, ctx) = (self.clone(), ctx.clone());
         tokio::spawn(async move {
-            let _ = me.finish_wake(&ctx, &id).await;
+            if me.finish_wake(&ctx, &id).await.is_ok() {
+                me.clear_empty_screens(&ctx, &id).await;
+            }
         });
         Ok(())
     }
@@ -598,14 +608,16 @@ impl Computers {
         if woke.is_ok() {
             Self::touch(ctx, id);
             let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL WHERE id=?", [id]));
-            self.clear_empty_screens(ctx, id).await;
+            self.freeze_jobs(id, false);
         }
         woke
     }
 
-    /// A Bot that left while it slept has its screen and slot taken down: after the wake, which
-    /// nobody should wait on for this.
+    /// A Bot that left while it slept has its jobs cancelled and its screen and slot taken down.
+    /// After the wake, and nobody waits on this: no click, and no tool call.
     async fn clear_empty_screens(&self, ctx: &HubCtx, id: &str) {
+        // what such a Bot left running is back with the wake
+        self.settle_stops(ctx, Some(id)).await;
         let Ok(machine) = self.machine(ctx, id) else { return };
         let provider = self.provider_of(&machine);
         let Ok((_, machine)) = provider.look(&machine).await else { return };
@@ -670,11 +682,14 @@ impl Computers {
     }
 
     /// Wakes `id` and waits: a routine a person let use it, with nobody there to click.
-    pub async fn wake_and_wait(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+    pub async fn wake_and_wait(self: &Arc<Self>, ctx: &Arc<HubCtx>, id: &str) -> Result<(), Problem> {
         if !self.now().waking.insert(id.to_owned()) {
             return Err(Problem::Asleep);
         }
-        self.finish_wake(ctx, id).await
+        self.finish_wake(ctx, id).await?;
+        let (me, ctx, id) = (self.clone(), ctx.clone(), id.to_owned());
+        tokio::spawn(async move { me.clear_empty_screens(&ctx, &id).await });
+        Ok(())
     }
 
     /// A person put it to sleep: once it has, whatever a person was doing on it ends. A sleep that
@@ -715,6 +730,7 @@ impl Computers {
             }
         }
         provider.sleep(&machine, depth).await?;
+        self.freeze_jobs(id, true);
         if let Some(gate) = self.gate().await {
             gate.close_computer(&machine.viewer_password);
         }
@@ -729,14 +745,16 @@ impl Computers {
         ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=? WHERE id=?", rusqlite::params![at, id])).map(|_| ()).map_err(db_problem)
     }
 
-    /// One look at every computer: the ones nobody needs go to sleep, then deeper.
-    pub async fn sleep_the_idle(&self, ctx: &HubCtx) {
+    /// One look at every computer: its jobs first, then the ones nobody needs go to sleep, then
+    /// deeper.
+    pub async fn sleep_the_idle(&self, ctx: &Arc<HubCtx>) {
         for id in Self::ids_where(ctx, "gone_at IS NOT NULL") {
             // a wake in flight could put back what this removes: the next look gets it
             if !self.now().waking.contains(&id) {
                 self.finish_retire(ctx, &id).await;
             }
         }
+        self.poll_jobs(ctx).await;
         let at = policy::now(ctx);
         for id in Self::ids(ctx) {
             if self.now().waking.contains(&id) {
@@ -835,13 +853,20 @@ impl Computers {
             now.end_handover(bot, Ended::Gone);
             now.recordings.remove(bot);
             drop(now);
-            (!last).then_some(seat)
+            (seat, last)
         };
+        let (seat, last) = seat;
         if let Some(gate) = self.gate().await {
             gate.close(bot);
         }
-        // asleep, its screen comes down at the next wake (`clear_empty_screens`)
-        if let Some(seat) = seat {
+        // its screen or none, awake or not, and last or not: a remote computer's far end doesn't go
+        // with the record
+        self.end_jobs_of(ctx, bot);
+        // the last Bot's are the sweep's (`retire_jobs`): a hung provider isn't waited on here
+        if !last {
+            // before its screen, while its user is there
+            self.settle_stops(ctx, Some(&seat.computer)).await;
+            // asleep, its screen comes down at the next wake (`clear_empty_screens`)
             if let Ok(machine) = self.machine(ctx, &seat.computer) {
                 let provider = self.provider_of(&machine);
                 if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
@@ -862,6 +887,7 @@ impl Computers {
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
         // read while the row is there. Not knowing is a try next time: the row is what finds the key
         let Ok(remote) = Self::is_remote(ctx, id) else { return };
+        self.retire_jobs(ctx, id, remote).await;
         let removed = match self.machine(ctx, id) {
             Ok(m) => self.provider_of(&m).destroy(&m).await,
             Err(_) => match (Self::is_remote(ctx, id), Self::reach_of(ctx, id)) {
@@ -878,6 +904,7 @@ impl Computers {
                 return;
             }
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
+            Self::forget_jobs(ctx, id);
             self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
             self.now().problems.remove(id);
             if valid_id(id) {
@@ -1244,6 +1271,7 @@ impl Computers {
             out["viewer"] = json!(gate.mode(bot).map(Mode::as_str));
             out["driving"] = json!(gate.driving(bot, self.quiet));
         }
+        out["jobs"] = json!(self.tab_jobs(ctx, &id));
         {
             let now = self.now();
             out["working"] = json!(now.holds.contains_key(bot));
@@ -1686,6 +1714,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.on_start(|ctx| {
         buwiz_computer::remote::ssh::clear_staged(&ctx.data.join("computers"));
         let Some(computers) = Computers::of(&ctx) else { return };
+        computers.load_jobs(&ctx);
         let tick = (computers.idle / 2).clamp(Duration::from_secs(1), Duration::from_secs(30));
         tokio::spawn(async move {
             loop {

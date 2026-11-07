@@ -29,6 +29,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     let st = store();
     st.boot();
     st.watch_plugins();
+    st.watch_work();
     // "Waiting for approval" / "Waiting for you" while a card waits.
     st.watch_cards();
 

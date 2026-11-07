@@ -23,9 +23,11 @@ use hyper::{Response, StatusCode};
 use serde_json::{json, Map, Value};
 
 use crate::helper::local::{command, exec, tools, MacTools};
+use crate::hub::computer::Computers;
 use crate::hub::ctx::HubCtx;
 use crate::hub::jobs::JobId;
 use crate::hub::library::{botctx, groups};
+use crate::hub::policy::ask;
 use crate::hub::store::json::{has_len, js_number_str, js_slice, out, template, threads_json, turns_json, Lookups};
 use crate::hub::store::Turn;
 use crate::hub::traits::{ChatTurn, TurnDone, TurnRequest, TurnRunner};
@@ -266,8 +268,26 @@ async fn threads(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
     let bots = ctx.store.read(|s| s.bots.clone());
     let integrations: std::collections::HashMap<String, Value> = wrote!(ctx.db.with(|c| Ok(bots.iter().map(|b| (b.id.clone(), botctx::integrations_of(&ctx, c, b))).collect())));
     let m = if mock() { "mock".to_owned() } else { model() };
-    let body = ctx.store.read(|s| threads_json(s, &m, |b| integrations.get(&b.id).cloned().unwrap_or(json!([]))));
+    let mut body = ctx.store.read(|s| threads_json(s, &m, |b| integrations.get(&b.id).cloned().unwrap_or(json!([]))));
+    mark_work(&ctx, &mut body);
     ok(&body)
+}
+
+/// What a person coming back reads off each row: `working`, a run or a job going on there, and
+/// `waiting`, a card there that outlived its run. Only when so: a row with neither reads as before.
+pub(crate) fn mark_work(ctx: &HubCtx, body: &mut Value) {
+    let mut working: std::collections::HashSet<String> = ctx.jobs.running().into_iter().map(|(_, thread, ..)| thread).collect();
+    working.extend(Computers::of(ctx).map(|c| c.job_threads()).unwrap_or_default());
+    let waiting = ask::waiting_chats(ctx);
+    for row in body["list"].as_array_mut().into_iter().flatten() {
+        let id = js::string_of(&row["id"]);
+        if working.contains(&id) {
+            row["working"] = json!(true);
+        }
+        if waiting.contains(&id) {
+            row["waiting"] = json!(true);
+        }
+    }
 }
 
 async fn thread_new(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {

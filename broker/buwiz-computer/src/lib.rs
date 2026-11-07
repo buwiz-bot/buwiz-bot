@@ -22,6 +22,7 @@
 pub mod docker;
 pub mod gate;
 pub mod guest;
+pub mod job;
 #[cfg(feature = "mock")]
 pub mod loopback;
 #[cfg(feature = "mock")]
