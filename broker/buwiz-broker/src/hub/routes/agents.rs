@@ -82,7 +82,7 @@ fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> H
         "endpoints/create" => done(x.create(&b, |bot| ctx.store.read(|s| a.party(s, bot).is_some()))),
         "endpoints/list" => done(x.list(b.get("bot")).map(|l| Map::from_iter([("endpoints".to_owned(), l)]))),
         "endpoints/rotate" => done(x.rotate(b.get("id"))),
-        _ => done(x.remove(b.get("id")).map(|_| Map::new())),
+        _ => done(hub.remove_endpoint(&ctx, b.get("id")).map(|_| Map::new())),
     };
     match out {
         Ok(v) => types::json(StatusCode::OK, &v),

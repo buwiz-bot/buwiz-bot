@@ -107,7 +107,11 @@ fn world_on(bots: &[&str], stub: Stub, answers: Vec<u16>, runs: Option<Arc<dyn R
                 a.remove(0)
             }
         };
-        Box::pin(async move { Ok(status) })
+        // a POST takes a moment: another send may start before this one ends
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            Ok(status)
+        })
     });
     let ext = Arc::new(Externals::new(dir.join("generated").join("app.db"), ctx.clock.clone(), post));
     let agents = Agents::new(ctx.clock.clone(), Arc::new(crate::hub::store::uuidv7), ext.clone());
@@ -1288,6 +1292,15 @@ impl crate::hub::traits::ModelApi for Scripted {
 /// A world whose request turns are real, on `steps`. `test_quiet` is a tool that puts Boss
 /// on None, `test_mark` one that counts its runs.
 fn real_world(steps: Vec<Value>) -> (World, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    real_world_on(steps, false)
+}
+
+/// [`real_world`] whose wake-ups are real too.
+fn waking_world(steps: Vec<Value>) -> (World, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    real_world_on(steps, true)
+}
+
+fn real_world_on(steps: Vec<Value>, wakes: bool) -> (World, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (calls, marks) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let (c, m) = (calls.clone(), marks.clone());
     let w = world_on(&["Scout", "Boss"], Stub::default(), Vec::new(), Some(Arc::new(super::run::Wired)), move |ctx, hub| {
@@ -1295,6 +1308,9 @@ fn real_world(steps: Vec<Value>) -> (World, Arc<AtomicUsize>, Arc<AtomicUsize>) 
         ctx.local = Some(Arc::new(crate::hub::model::testkit::Local::default()));
         ctx.ext.insert(AgentsSeam(hub.clone()));
         let settings = Arc::new(crate::hub::model::Settings::from(|_| None));
+        if wakes {
+            ctx.turns = Some(Arc::new(crate::hub::agent::Agent::new(settings.clone())));
+        }
         ctx.ext.insert(super::run::AgentRequestTurn(Arc::new(move |ctx, req| Box::pin(crate::hub::agent::request_turn(ctx, settings.clone(), req)))));
         ctx.tools.register("test_quiet", |c: Arc<HubCtx>, _: TurnCtx, _: Value| async move {
             c.store.write(|s| s.bot_mut("boss").unwrap().accepts = Some(json!("none"))).unwrap();
@@ -1376,6 +1392,222 @@ async fn undo_does_not_restart_a_stopped_run_and_its_sender_is_told() {
     assert_eq!(w.messages(&r["conversation"]), 1);
     assert_eq!(turned_away(&w.chat("scout")).len(), 1);
     assert!(!w.fire(), "nothing to run again");
+}
+
+/// Scout's reply to a note of Boss's. Boss asked nothing, so it isn't an answer.
+fn reply_to_a_note(w: &World) -> Value {
+    let r = w.send("boss", json!({"to": ["scout"], "subject": "Note", "text": "fyi"})).unwrap();
+    w.send_routed("scout", json!({"conversation": r["conversation"], "to": ["boss"], "in_reply_to": r["id"], "text": "noted"})).unwrap()
+}
+
+fn woken(w: &World) -> usize {
+    w.chat("boss").iter().filter(|u| u.text.as_deref().is_some_and(|t| t.starts_with("Reply from"))).count()
+}
+
+#[tokio::test]
+async fn a_wake_up_that_waited_for_its_chat_does_not_start_once_it_is_not_heard() {
+    let (w, calls, _) = waking_world(Vec::new());
+    let chat = w.bot("boss").thread_id.unwrap();
+    let job = w.ctx.jobs.create(&chat, Value::Null, None, false);
+    let r = reply_to_a_note(&w);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!w.hub.idle(), "waiting for Boss's chat");
+    none(&w, "boss");
+    w.ctx.jobs.with(job, |j| j.done = true);
+    w.settle().await;
+    assert_eq!(woken(&w), 0, "the turn didn't start");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(turned_away(&w.chat("scout")).len(), 1, "its sender is told, as for any message");
+    assert!(!pending_for(&w, &r["conversation"], "boss"));
+}
+
+#[tokio::test]
+async fn a_wake_up_stops_at_its_next_step_once_it_is_not_heard() {
+    let (w, calls, marks) = waking_world(vec![uses(&["test_quiet", "test_mark"]), uses(&["test_mark"])]);
+    let r = reply_to_a_note(&w);
+    w.settle().await;
+    assert_eq!(woken(&w), 1, "it had started");
+    assert_eq!((calls.load(Ordering::SeqCst), marks.load(Ordering::SeqCst)), (1, 0), "no tool or model call after None");
+    assert_eq!(turned_away(&w.chat("scout")).len(), 1);
+    assert!(!pending_for(&w, &r["conversation"], "boss"));
+}
+
+#[tokio::test]
+async fn a_true_answer_wakes_its_asker_to_the_end_of_the_turn_whatever_it_goes_to() {
+    let (w, calls, marks) = waking_world(vec![uses(&["test_quiet", "test_mark"])]);
+    let q = w.question();
+    w.send_routed("scout", json!({"conversation": q["conversation"], "to": ["boss"], "in_reply_to": q["id"], "text": "fine"})).unwrap();
+    w.settle().await;
+    assert_eq!((calls.load(Ordering::SeqCst), marks.load(Ordering::SeqCst)), (2, 1), "None doesn't stop an answer's wake-up");
+    assert!(turned_away(&w.chat("scout")).is_empty());
+}
+
+#[tokio::test]
+async fn a_request_answered_with_agent_send_is_not_called_undelivered() {
+    // the turn answers, then Boss goes quiet, and the turn ends or stops
+    struct AnswersThen(Result<String, String>);
+    impl Runs for AnswersThen {
+        fn request(&self, ctx: Arc<HubCtx>, hub: Arc<AgentsHub>, bot: Party, msg: Value, _: String) -> BoxFuture<'static, Result<String, String>> {
+            let end = self.0.clone();
+            Box::pin(async move {
+                let input = json!({"conversation": msg["conversation"], "to": [msg["from"]["id"]], "in_reply_to": msg["id"], "text": "Done"});
+                hub.write(&ctx, |s, out| hub.agents.send(s, &bot, &input, 1, None, out)).unwrap();
+                ctx.store.write(|s| s.bot_mut("boss").unwrap().accepts = Some(json!("none"))).unwrap();
+                end
+            })
+        }
+        fn reply(&self, _: Arc<HubCtx>, _: Arc<AgentsHub>, _: Party, _: Value, _: String) -> BoxFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    for end in [Ok("Done again".to_owned()), Err(super::run::STOPPED.to_owned())] {
+        let w = world_on(&["Scout", "Boss"], Stub::default(), Vec::new(), Some(Arc::new(AnswersThen(end))), |_, _| {});
+        let r = w.send_routed("scout", json!({"to": ["boss"], "subject": "Tax check", "text": "Q?", "expects_reply": true})).unwrap();
+        w.settle().await;
+        assert_eq!(w.messages(&r["conversation"]), 2, "its one answer");
+        assert!(turned_away(&w.conv(&r["conversation"]).turns).is_empty() && turned_away(&w.chat("scout")).is_empty(), "no false notice");
+        assert!(!pending_for(&w, &r["conversation"], "boss"));
+    }
+}
+
+impl World {
+    /// Boss's message to a url endpoint of its own, left waiting: → the endpoint and the message.
+    fn waiting_for_a_url(&self) -> (String, Value) {
+        let e = self.endpoint(json!({"bot": "boss", "kind": "hook", "name": "Out", "url": "http://127.0.0.1:9/out"}));
+        let ext = format!("ext:{}", e["id"].as_str().unwrap());
+        let sent = self.send("boss", json!({"to": [ext], "subject": "Out", "text": "x"})).unwrap();
+        (ext, sent)
+    }
+
+    fn outbox(&self, what: &str) -> rusqlite::types::Value {
+        self.ctx.db.with(|c| c.query_row(&format!("SELECT {what} FROM agent_outbox ORDER BY seq LIMIT 1"), [], |r| r.get(0))).unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_restart_posts_a_waiting_webhook_message_once() {
+    let w = hook_world(Vec::new(), None);
+    let (ext, sent) = w.waiting_for_a_url();
+    w.start_over();
+    w.settle().await;
+    assert_eq!(w.posts.lock().unwrap().len(), 1, "route's send and resume's are for one row");
+    assert_eq!(w.outbox("state"), rusqlite::types::Value::Text("delivered".into()));
+    assert_eq!(w.outbox("attempts"), rusqlite::types::Value::Integer(1));
+    assert!(!pending_for(&w, &sent["conversation"], &ext));
+}
+
+#[tokio::test]
+async fn a_send_that_a_crash_cut_short_goes_again_after_the_restart() {
+    let w = hook_world(Vec::new(), None);
+    w.waiting_for_a_url();
+    w.start_over();
+    w.settle().await;
+    w.ctx.db.with(|c| c.execute("UPDATE agent_outbox SET state='sending'", [])).unwrap();
+    // what a new process does on this app.db
+    let posted = Arc::new(AtomicUsize::new(0));
+    let p = posted.clone();
+    let post: Post = Arc::new(move |_, _, _| {
+        p.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(200) })
+    });
+    let next = Arc::new(Externals::new(w.dir.join("generated").join("app.db"), w.ctx.clock.clone(), post));
+    next.resume(&w.hub, &w.ctx);
+    w.settle().await;
+    assert_eq!(posted.load(Ordering::SeqCst), 1);
+    assert_eq!(w.outbox("state"), rusqlite::types::Value::Text("delivered".into()));
+}
+
+#[tokio::test]
+async fn a_message_waiting_for_a_deleted_bot_is_cleared_at_a_restart_and_its_sender_told() {
+    let w = world();
+    let r = w.send("scout", json!({"to": ["boss"], "subject": "Tax check", "text": "Q?", "expects_reply": true})).unwrap();
+    w.ctx.store.write(|s| s.bots.retain(|b| b.id != "boss")).unwrap();
+    w.start_over();
+    w.settle().await;
+    assert!(!pending_for(&w, &r["conversation"], "boss"));
+    assert_eq!(ran(&w, "request", "boss"), 0);
+    let chat = w.chat("scout");
+    let there = turned_away(&chat);
+    assert_eq!(there.len(), 1);
+    assert_eq!(there[0].text.as_deref(), Some("Boss isn't taking messages. Not delivered: Tax check"), "named as the message named it");
+    assert_eq!(turned_away(&w.conv(&r["conversation"]).turns).len(), 1);
+    w.start_over();
+    w.settle().await;
+    assert_eq!(turned_away(&w.chat("scout")).len(), 1, "told once");
+}
+
+/// Scout's message to Boss's hook, on its hold since Boss went to None: → the
+/// hook, the conversation and the endpoint as a participant.
+fn held_for_a_hook(w: &World) -> ((String, String), Value, String) {
+    let h = w.hook("boss");
+    let ext = format!("ext:{}", h.0);
+    let sent = w.post(&h, json!({"expects_reply": false})).unwrap();
+    let c = sent["conversation"].clone();
+    w.send("boss", json!({"conversation": c, "to": ["scout"], "text": "see this"})).unwrap();
+    let mut out = Vec::new();
+    w.send_hop("scout", json!({"conversation": c, "text": "for all"}), 0, &mut out).unwrap();
+    none(w, "boss");
+    w.hub.route(&w.ctx, out.into_iter().find(|d| d.to.id == ext).unwrap());
+    assert!(pending_for(w, &c, &ext), "held");
+    (h, c, ext)
+}
+
+#[tokio::test]
+async fn removing_an_endpoint_clears_what_waits_for_it_and_its_sender_is_told_once() {
+    let w = hook_world(Vec::new(), None);
+    let (h, c, ext) = held_for_a_hook(&w);
+    w.hub.remove_endpoint(&w.ctx, Some(&json!(h.0))).unwrap();
+    assert!(!pending_for(&w, &c, &ext));
+    assert_eq!(turned_away(&w.chat("scout")).len(), 1);
+    assert!(w.fire(), "the hold ends");
+    w.settle().await;
+    assert_eq!(turned_away(&w.chat("scout")).len(), 1, "and tells nobody twice");
+    assert_eq!(turned_away(&w.conv(&c).turns).len(), 1);
+}
+
+#[tokio::test]
+async fn an_endpoints_entry_left_behind_is_cleared_at_a_restart() {
+    let w = hook_world(Vec::new(), None);
+    let (h, c, ext) = held_for_a_hook(&w);
+    w.hub.externals.remove(Some(&json!(h.0))).unwrap();
+    w.start_over();
+    w.settle().await;
+    assert!(!pending_for(&w, &c, &ext));
+    assert_eq!(turned_away(&w.chat("scout"))[0].text.as_deref().map(|t| t.starts_with("CI isn't")), Some(true));
+}
+
+#[tokio::test]
+async fn a_conversation_deleted_during_a_hold_leaves_the_sender_told_in_its_own_chat() {
+    let w = world();
+    let (_, d) = w.waiting();
+    let thread = d.thread.clone();
+    w.hub.deliver(&w.ctx, d);
+    w.settle().await;
+    w.ctx.store.write(|s| s.list.retain(|t| t.id != thread)).unwrap();
+    assert!(w.fire());
+    w.settle().await;
+    let chat = w.chat("scout");
+    let there = turned_away(&chat);
+    assert_eq!(there.len(), 1);
+    assert!(there[0].notice.as_ref().unwrap()["thread"].is_null(), "nothing to open");
+}
+
+#[tokio::test]
+async fn a_message_whose_conversation_no_longer_resolves_is_cleared_where_it_waits() {
+    let w = world();
+    let (r, _) = w.waiting();
+    let moved = json!("conv_moved");
+    w.ctx
+        .store
+        .write(|s| {
+            let i = conversation_index(s, r["conversation"].as_str().unwrap()).unwrap();
+            mark_mut(&mut s.list[i]).unwrap().insert("conversation".into(), moved.clone());
+        })
+        .unwrap();
+    w.start_over();
+    w.settle().await;
+    assert!(!pending_for(&w, &moved, "boss"));
+    assert_eq!(turned_away(&w.chat("scout")).len(), 1);
 }
 
 // ————— the pieces —————
