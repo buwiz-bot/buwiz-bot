@@ -3,6 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
+use crate::hub::agent::runs;
 use crate::hub::agent::runs::tests::{agent, until, Script};
 use crate::hub::computer::jobs::{LIMIT, MAX_LIMIT, PER_BOT};
 use crate::hub::policy::ask;
@@ -322,6 +323,26 @@ async fn with_routines_on_a_finished_job_starts_one_turn() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(script.calls.load(Ordering::SeqCst), 1, "one turn, once");
     assert_eq!(notices(&b).len(), 1);
+}
+
+#[tokio::test]
+async fn a_jobs_turn_that_fails_tells_the_chat_once() {
+    let mut b = lazy("job-turn-failed");
+    let script = Arc::new(Script::default());
+    let rejected = "llm-api 401: 401 invalid x-api-key";
+    *script.fails.lock().unwrap() = Some(rejected.to_owned());
+    with_model(&mut b, &script);
+    set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
+    awake(&b, &b.ann.0).await;
+    started(&b, json!({"command": "x"})).await;
+    job_is(&b, "exit 0");
+    b.computers.sleep_the_idle(&b.ctx).await;
+    until("no turn started", || script.calls.load(Ordering::SeqCst) >= 1).await;
+    until("the turn never ended", || !b.ctx.jobs.busy(&b.ann.1)).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let failures: Vec<String> = b.ctx.store.read(|s| s.thread(&b.ann.1).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_some_and(|n| n["reason"] == runs::FAILED)).map(|u| u.text.clone().unwrap()).collect());
+    assert_eq!(failures, [runs::failed_said(rejected)]);
 }
 
 #[tokio::test]
