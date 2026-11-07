@@ -99,7 +99,7 @@ const SIGHT_TTL: Duration = Duration::from_secs(60);
 pub fn consent_for(reach: &Reach, boxed: bool) -> String {
     let can = if boxed { "run commands, read and change files and use the screen there" } else { "run commands, read and change files there" };
     let key = if matches!(reach, Reach::Ssh { .. }) { " A copy of the SSH key is kept in this Mac's Keychain until you remove the computer." } else { "" };
-    format!("The AI will act on this machine with every right this login has. It can {can}, and that includes deleting things. Nothing walls it off. The Bot's switches still apply, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine.{key}")
+    format!("The AI will act on this machine with every right this login has. It can {can}, and that includes deleting things. Nothing walls it off. The Bot's switches still apply. Adding this computer puts its computer switch at Ask, unless it's Off, and with its computer switch at On it acts without asking each time. Sleep only disconnects, and Remove only forgets the connection: neither touches the machine.{key}")
 }
 
 /// How long a person has between a Test and their yes.
@@ -161,7 +161,7 @@ impl Now {
     /// Whether a run or a person has a screen on `computer`, or a job needs it. From what's here,
     /// not the seats: this has no read to fail.
     fn in_use(&self, computer: &str) -> bool {
-        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer) || self.jobs.values().any(|j| j.computer == computer && !j.past)
+        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer) || self.jobs.values().any(|j| j.computer == computer && !j.past && !j.unread)
     }
 }
 
@@ -271,7 +271,8 @@ pub struct Computers {
     /// what a person's Test passed, as [`Computers::fingerprint`]s: a yes covers that and nothing
     /// else. In memory, and with this broker's own salt
     tested: Mutex<HashMap<String, Instant>>,
-    tested_salt: String,
+    /// `None` when the system gave no randomness: no Test can be kept then
+    tested_salt: Option<String>,
     gate: tokio::sync::OnceCell<Option<Gate>>,
     now: Mutex<Now>,
     machines: Mutex<HashMap<String, Machine>>,
@@ -308,7 +309,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).unwrap_or_default(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
+        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
     }
 
     /// With this remote provider (tests).
@@ -918,37 +919,40 @@ impl Computers {
 
     // ---- remote computers ----
 
-    /// Everything a yes is for: where, as who, with what, and who it must prove to be.
-    fn fingerprint(&self, m: &Machine) -> String {
+    /// Everything a yes is for: which Bot, where, as who, with what, and who it must prove to be.
+    fn fingerprint(&self, m: &Machine, bot: &str) -> Result<String, Problem> {
+        let salt = self.tested_salt.as_deref().ok_or_else(|| Problem::Remote(NO_SALT.to_owned()))?;
         use sha2::{Digest, Sha256};
         let link = m.link.as_ref();
         let key = link.and_then(|l| l.key.as_ref()).map_or("", Secret::expose);
         let pin = link.and_then(|l| l.pin.as_deref()).unwrap_or_default();
         let reach = serde_json::to_string(&m.reach).unwrap_or_default();
-        let parts = [self.tested_salt.as_str(), reach.as_str(), m.token.expose(), m.viewer_password.expose(), key, pin];
+        let parts = [salt, bot, reach.as_str(), m.token.expose(), m.viewer_password.expose(), key, pin];
         let mut hash = Sha256::new();
         for part in parts {
             hash.update(part.len().to_le_bytes());
             hash.update(part.as_bytes());
         }
-        hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
 
-    /// Whether this exact record passed a Test in time. Once: a yes that fails starts again.
-    fn take_tested(&self, m: &Machine) -> bool {
+    /// Whether `bot` passed a Test of this exact record in time. Once: a yes that fails starts again.
+    fn take_tested(&self, m: &Machine, bot: &str) -> bool {
+        let Ok(print) = self.fingerprint(m, bot) else { return false };
         let mut tested = self.tested.lock().unwrap_or_else(|e| e.into_inner());
         tested.retain(|_, at| at.elapsed() < TESTED_LIFE);
-        tested.remove(&self.fingerprint(m)).is_some()
+        tested.remove(&print).is_some()
     }
 
-    /// A person's test of what they typed: who the far end says it is, or that the way in works, and
-    /// the words their yes would be to. No token or viewer password leaves here.
-    pub async fn probe_remote(&self, ctx: &HubCtx, asked: &Asked) -> Result<(Probed, String), Problem> {
+    /// A person's test of what they typed for `bot`: who the far end says it is, or that the way in
+    /// works, and the words their yes would be to. No token or viewer password leaves here.
+    pub async fn probe_remote(&self, ctx: &HubCtx, bot: &str, asked: &Asked) -> Result<(Probed, String), Problem> {
         let dir = Scratch::new(ctx)?;
         let machine = asked.machine(&dir.0)?;
+        let print = self.fingerprint(&machine, bot)?;
         let probed = self.remote.trial(&machine).await?;
         if matches!(probed, Probed::Ready { .. }) {
-            self.tested.lock().unwrap_or_else(|e| e.into_inner()).insert(self.fingerprint(&machine), Instant::now());
+            self.tested.lock().unwrap_or_else(|e| e.into_inner()).insert(print, Instant::now());
         }
         Ok((probed, consent_for(&machine.reach, machine.has_screen())))
     }
@@ -971,7 +975,7 @@ impl Computers {
 
     async fn seat_remote(&self, ctx: &HubCtx, bot: &str, id: &str, dir: &std::path::Path, asked: &Asked) -> Result<(), Problem> {
         let machine = asked.machine(dir)?;
-        if !self.take_tested(&machine) {
+        if !self.take_tested(&machine, bot) {
             return Err(Problem::Remote(NOT_TESTED.to_owned()));
         }
         if let Probed::Trust { .. } = self.remote.probe(&machine).await? {
@@ -1343,6 +1347,7 @@ impl Computers {
 
 const HAS_ONE: &str = "This Bot already has a computer.";
 const NOT_TESTED: &str = "This isn't what was tested. Test it again, read what it shows, and say yes then.";
+const NO_SALT: &str = "This Mac couldn't make the random number a Test needs, so nothing was tested. Restart Buwiz Bot and try again.";
 const NO_YES: &str = "A person has to read the words on the form and say yes first.";
 
 /// The keystore of this broker's data dir: the Keychain for the owner's, a file store for any other.
@@ -1655,12 +1660,9 @@ fn asked(body: &Value) -> Asked {
 /// `{ok: true, screen, system}` for a computer that works, `{ok: false, code: "trust", fingerprint,
 /// pin}` for one a person must look at first. Anything else is a refusal.
 async fn test_remote(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    if !host::authorized(&req.headers) {
-        return host::unauthorized();
-    }
-    let Some(computers) = Computers::of(&ctx) else { return unavailable() };
+    let (computers, bot) = bot_route!(ctx, req);
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
-    match computers.probe_remote(&ctx, &asked(&body)).await {
+    match computers.probe_remote(&ctx, &bot, &asked(&body)).await {
         Ok((Probed::Ready { boxed, system }, consent)) => types::json(StatusCode::OK, &json!({"ok": true, "screen": boxed, "system": system, "consent": consent})),
         Ok((Probed::Trust { fingerprint, pin, vouched }, _)) => types::json(StatusCode::OK, &json!({"ok": false, "code": "trust", "fingerprint": fingerprint, "pin": pin, "vouched": vouched})),
         Err(p) => refused(&p),
@@ -1702,7 +1704,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
         ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::Docker))));
     }
     routes.route(Verb::Get, X("/v1/host/computers"), list);
-    routes.route(Verb::Post, X("/v1/host/computer/remote/test"), test_remote);
+    routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/test"), test_remote);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote"), add_remote);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/remove"), remove_remote);
     routes.route(Verb::Get, S("/v1/host/computer/bot/*"), status);

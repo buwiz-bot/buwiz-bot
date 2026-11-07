@@ -173,7 +173,7 @@ async fn ask_comes_with_a_remote_computer_and_a_persons_choice_stands() {
 
 /// What every kind must say, whichever sentences it drops.
 fn says_the_rest(words: &str) {
-    for part in ["every right this login has", "that includes deleting things", "Nothing walls it off", "Sleep only disconnects", "with its computer switch at On"] {
+    for part in ["every right this login has", "that includes deleting things", "Nothing walls it off", "Sleep only disconnects", "puts its computer switch at Ask, unless it's Off", "with its computer switch at On"] {
         assert!(words.contains(part), "{part}: {words}");
     }
 }
@@ -201,12 +201,16 @@ fn a_yes_covers_what_was_tested_and_nothing_else() {
     let asked = |url: &str, key: &std::path::Path, token: Option<&str>, viewer: Option<&str>, pin: &str| Asked { url: url.into(), key_file: Some(key.to_owned()), token: token.map(Secret::new), viewer_password: viewer.map(Secret::new), pin: Some(pin.into()) }.machine(&dir).unwrap();
     let (key_a, key_b) = (key_at(&dir), other.join("id"));
     let tested = asked("ssh://me@h", &key_a, Some("t"), Some("v"), KEYLESS_PIN);
+    let test_it = || c.tested.lock().unwrap().insert(c.fingerprint(&tested, "b_ann").unwrap(), Instant::now());
     let pass = |m: &Machine| {
-        c.tested.lock().unwrap().insert(c.fingerprint(&tested), Instant::now());
-        c.take_tested(m)
+        test_it();
+        c.take_tested(m, "b_ann")
     };
     assert!(pass(&tested));
-    assert!(!c.take_tested(&tested), "a yes is good once");
+    assert!(!c.take_tested(&tested, "b_ann"), "a yes is good once");
+    test_it();
+    assert!(!c.take_tested(&tested, "b_bea"), "another Bot's yes");
+    c.tested.lock().unwrap().clear();
     for (what, m) in [
         ("the login", asked("ssh://root@h", &key_a, Some("t"), Some("v"), KEYLESS_PIN)),
         ("the host", asked("ssh://me@other", &key_a, Some("t"), Some("v"), KEYLESS_PIN)),
@@ -218,10 +222,32 @@ fn a_yes_covers_what_was_tested_and_nothing_else() {
         assert!(!pass(&m), "{what} changed after the Test");
         c.tested.lock().unwrap().clear();
     }
-    c.tested.lock().unwrap().insert(c.fingerprint(&tested), Instant::now() - TESTED_LIFE);
-    assert!(!c.take_tested(&tested), "a Test from long ago");
+    c.tested.lock().unwrap().insert(c.fingerprint(&tested, "b_ann").unwrap(), Instant::now() - TESTED_LIFE);
+    assert!(!c.take_tested(&tested, "b_ann"), "a Test from long ago");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&other);
+}
+
+/// With no randomness a Test's mark would be the same on every run, so there's no Test at all.
+#[tokio::test]
+async fn no_randomness_refuses_the_test_and_reaches_nobody() {
+    let dir = far_dir("no-salt");
+    let b = bed_with("remote-no-salt", |p| Computers { tested_salt: None, ..Computers::new(p) });
+    let body = json!({"url": "ssh://me@127.0.0.1:9", "keyFile": key_at(&dir), "pin": KEYLESS_PIN});
+    let (status, said) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_ann", "", body)).await).await;
+    assert_ne!(status, StatusCode::OK, "{said}");
+    assert!(said["message"].as_str().unwrap().contains("nothing was tested"), "{said}");
+    assert!(b.computers.tested.lock().unwrap().is_empty());
+    let machine = Asked { url: "ssh://me@h".into(), key_file: Some(key_at(&dir)), pin: Some(KEYLESS_PIN.into()), ..Asked::default() }.machine(&dir).unwrap();
+    assert!(!b.computers.take_tested(&machine, "b_ann"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_test_is_for_a_bot_that_exists() {
+    let b = bed("remote-no-bot");
+    let (status, said) = answer_of(super::test_remote(b.ctx.clone(), route_body("b_nobody", "", json!({"url": "https://box.example.com"}))).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
 }
 
 #[tokio::test]

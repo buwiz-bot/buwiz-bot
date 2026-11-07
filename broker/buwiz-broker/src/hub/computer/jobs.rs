@@ -21,7 +21,9 @@
 //!   the row, so a restart doesn't lose it, and it's checked again as it starts, so a person
 //!   who turned routines off in between isn't charged for it.
 //!
-//! While a job runs, and isn't frozen, the Mac is kept awake ([`super::awake`]).
+//! While a job runs, and isn't frozen, the Mac is kept awake ([`super::awake`]). One whose computer's
+//! record can't be read holds nothing up, as nothing can look at it: its row stays, and it holds
+//! again at the first look that reads the record.
 //!
 //! A job can be over on the record and still be on the computer: its Bot left while the computer
 //! slept, or a start's end wasn't heard. Its row owes a cancel ([`Computers::settle_stops`]), by the
@@ -89,6 +91,8 @@ pub(super) struct Running {
     pub(super) frozen: bool,
     /// its limit passed and it couldn't be stopped: it no longer holds anything up
     pub(super) past: bool,
+    /// its computer's record can't be read: it holds nothing up until that reads again
+    pub(super) unread: bool,
 }
 
 /// A `computer_jobs` row.
@@ -179,7 +183,7 @@ impl Computers {
         let found = running(ctx);
         let mut now = self.now();
         for j in found {
-            now.jobs.insert(j.id, Running { bot: j.bot, computer: j.computer, thread: j.thread, starting: false, frozen: false, past: false });
+            now.jobs.insert(j.id, Running { bot: j.bot, computer: j.computer, thread: j.thread, starting: false, frozen: false, past: false, unread: false });
         }
         drop(now);
         self.sync_awake();
@@ -197,7 +201,7 @@ impl Computers {
             if now.jobs.values().filter(|j| j.bot == live.bot).count() >= PER_BOT {
                 return Err(TOO_MANY.to_owned());
             }
-            now.jobs.insert(id.clone(), Running { bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), starting: true, frozen: false, past: false });
+            now.jobs.insert(id.clone(), Running { bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), starting: true, frozen: false, past: false, unread: false });
         }
         let at = policy::now(ctx);
         let job = Job { id: id.clone(), bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), name: name.to_owned(), started: at, until: at + super::millis(limit), state: "running".to_owned(), exit: None };
@@ -335,7 +339,12 @@ impl Computers {
                 continue;
             }
             let over = at >= j.until;
-            match self.live(ctx, &j.bot).await {
+            let looked = self.live(ctx, &j.bot).await;
+            let unread = self.machine(ctx, &j.computer).is_err();
+            if let Some(r) = self.now().jobs.get_mut(&j.id) {
+                r.unread = unread;
+            }
+            match looked {
                 Ok(live) if live.computer == j.computer => {
                     self.set_frozen(&j.id, false);
                     if self.look_at(ctx, &live, &j, false).await || !over {
@@ -349,7 +358,7 @@ impl Computers {
                 }
                 // nothing it ran is left. A record that can't be read says Gone too, and says
                 // nothing of the box: that's for the next look
-                Err(Problem::Gone) if self.machine(ctx, &j.computer).is_ok() => self.end_job(ctx, &j, End::Lost, false),
+                Err(Problem::Gone) if !unread => self.end_job(ctx, &j, End::Lost, false),
                 // a limit is for what can be reached: frozen it stays, and lets the computer go
                 Err(Problem::Asleep) => {
                     self.set_frozen(&j.id, true);
@@ -495,11 +504,11 @@ impl Computers {
         shown.iter().map(|(j, frozen)| json!({"name": j.name, "bot": super::bot_name(ctx, &j.bot), "frozen": frozen, "secondsLeft": (j.until - at).max(0) / 1000})).collect()
     }
 
-    /// What holds the Mac up follows the jobs: on while one runs, off when none does. Two of these
-    /// can land out of order: the sweep's, each tick, puts that right.
+    /// What holds the Mac up follows the jobs: on while one runs, off when none does. It's set under
+    /// the lock, so two of these can't land out of order. `KeepAwake` takes only its own lock.
     fn sync_awake(&self) {
-        let wanted = self.now().jobs.values().any(|j| !j.frozen && !j.past);
-        self.keep_awake.set(wanted);
+        let now = self.now();
+        self.keep_awake.set(now.jobs.values().any(|j| !j.frozen && !j.past && !j.unread));
     }
 
     /// This broker is on its way out: nothing of it stays.

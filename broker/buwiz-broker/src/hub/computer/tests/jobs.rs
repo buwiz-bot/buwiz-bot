@@ -314,6 +314,32 @@ async fn a_record_that_cant_be_read_ends_no_job_and_a_box_really_gone_does() {
     assert_eq!(row_of(&b, &id).0, "lost", "with its record there, absent is gone");
 }
 
+/// A job nothing can look at lets the Mac and the box go, and takes them back with its record.
+#[tokio::test]
+async fn a_job_with_a_record_that_cant_be_read_holds_nothing_until_it_reads() {
+    let (program, _log) = fake_caffeinate("record-holds");
+    let b = bed_with("job-record-holds", |p| Computers { keep_awake: awake::KeepAwake::with(program), ..Computers::new(p) });
+    let computer = awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x"})).await;
+    let c = &b.computers;
+    assert!(c.keep_awake.holding() && c.now().in_use(&computer));
+    let record = Computers::dir(&b.ctx, &computer).join("machine.json");
+    let kept = std::fs::read(&record).unwrap();
+    std::fs::write(&record, "not json").unwrap();
+    c.machines.lock().unwrap().clear();
+    c.sleep_the_idle(&b.ctx).await;
+    assert!(!c.keep_awake.holding(), "the Mac is held for a job nothing can see");
+    assert!(!c.now().in_use(&computer), "the box is held for a job nothing can see");
+    assert_eq!(row_of(&b, &id).0, "running");
+    assert!(notices(&b).is_empty());
+
+    std::fs::write(&record, kept).unwrap();
+    c.sleep_the_idle(&b.ctx).await;
+    assert!(c.keep_awake.holding(), "a job that reads again holds the Mac again");
+    assert!(c.now().in_use(&computer), "a job that reads again holds the box again");
+    assert_eq!(row_of(&b, &id).0, "running");
+}
+
 /// Not knowing how many tries there have been isn't having had enough of them.
 #[tokio::test]
 async fn a_failed_read_of_the_tries_lets_nothing_go() {
@@ -325,6 +351,31 @@ async fn a_failed_read_of_the_tries_lets_nothing_go() {
     b.computers.stop_failed(&b.ctx, &job);
     assert!(!b.computers.now().jobs[&id].past, "the box goes free on a guess");
     assert!(notices(&b).is_empty(), "a person told on a guess");
+}
+
+/// A sync that's behind can't undo the one after it: the wish and the doing are one step.
+#[tokio::test]
+async fn two_syncs_land_in_the_order_they_read() {
+    let (program, _log) = fake_caffeinate("order");
+    let b = bed_with("job-order", |p| Computers { keep_awake: awake::KeepAwake::with(program), ..Computers::new(p) });
+    let computer = awake(&b, &b.ann.0).await;
+    started(&b, json!({"command": "x"})).await;
+    b.computers.freeze_jobs(&computer, true);
+    assert!(!b.computers.keep_awake.holding());
+
+    let (entered, inside) = std::sync::mpsc::channel();
+    b.computers.keep_awake.pause_next(move || {
+        entered.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+    });
+    let (first, second) = (b.computers.clone(), b.computers.clone());
+    let (one, two) = (computer.clone(), computer.clone());
+    let behind = std::thread::spawn(move || first.freeze_jobs(&one, false));
+    inside.recv().unwrap();
+    let after = std::thread::spawn(move || second.freeze_jobs(&two, true));
+    behind.join().unwrap();
+    after.join().unwrap();
+    assert!(!b.computers.keep_awake.holding(), "the job is frozen and the Mac is held");
 }
 
 /// Two syncs can land out of order: whatever they left, the sweep's puts it right.
