@@ -154,13 +154,19 @@ pub const TEST_TOKEN: &str = "unit-test-host-token";
 /// `/mcp/tools/state` and `/mcp/server/delete` are the leaf's, locked there), a market
 /// plugin (`/plugins/install`; `/plugins/connect` adds and enables its server;
 /// `/plugins/settings` changes the env its servers run with) and a skill (`/skills`
-/// creates or rewrites one; `/skills/state`, `/skills/delete`). The app sends the host
-/// token to them; a Bot's shell, which can reach the port but not the token, gets 401.
-pub const LOCKED: [&str; 7] = ["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete"];
+/// creates or rewrites one; `/skills/state`, `/skills/delete`), and a person's Stop on a run
+/// (`/job/stop`). The app sends the host token to them; a Bot's shell, which can reach the port
+/// but not the token, gets 401. [`LOCKED_READS`] are the same for a GET.
+pub const LOCKED: [&str; 8] = ["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete", "/job/stop"];
 
-/// Whether a request is a POST to a [`LOCKED`] route without this broker's host token.
+/// The routes whose GET is locked: every Bot's runs, which no Bot reads.
+pub const LOCKED_READS: [&str; 1] = ["/jobs/running"];
+
+/// Whether a request is a POST to a [`LOCKED`] route, or a GET of a [`LOCKED_READS`] one, without
+/// this broker's host token.
 pub fn locked_out(method: &Method, path: &str, headers: &HeaderMap) -> bool {
-    method == Method::POST && LOCKED.contains(&path) && !authorized(headers)
+    let locked = (method == Method::POST && LOCKED.contains(&path)) || (method == Method::GET && LOCKED_READS.contains(&path));
+    locked && !authorized(headers)
 }
 
 /// The answer to a locked route asked without the token.

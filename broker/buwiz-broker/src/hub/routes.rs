@@ -106,6 +106,8 @@ pub const ROUTES: &[Entry] = &[
     // 5.2 chats
     e(Post, X("/chat"), Hub(Chat)),
     e(Get, P("/status"), Hub(Chat)),
+    e(Post, X("/job/stop"), Hub(Chat)),
+    e(Get, X("/jobs/running"), Hub(Chat)),
     e(Get, X("/threads"), Hub(Chat)),
     e(Get, X("/turns"), Hub(Chat)),
     e(Post, X("/thread/new"), Hub(Chat)),
@@ -363,7 +365,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 127);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 129);
         assert_eq!(count(&|o| o == Rust), 33);
     }
 }
