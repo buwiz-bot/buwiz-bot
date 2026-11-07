@@ -138,7 +138,7 @@ async fn a_routines_card_waits_and_is_its_routines() {
     let turn = || TurnCtx { routine: Some("r1".into()), ..TurnCtx::default() };
     let run = run_of(&b, turn());
     run.state().external = true;
-    let out = exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await;
+    let out = tokio::time::timeout(Duration::from_secs(2), exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}}))).await.expect("the call parked");
     b.ctx.jobs.with(run.job, |j| j.done = true);
     assert_eq!(out, Out::err(ask::WAITS.into()), "nobody there, whether or not the app is");
     assert_eq!(states(&b), ["waiting"]);
