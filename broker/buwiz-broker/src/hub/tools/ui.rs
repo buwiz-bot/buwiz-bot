@@ -144,6 +144,26 @@ impl UiLink {
         rx
     }
 
+    /// Whether the app is there: it holds this stream open for as long as it runs, so its end is
+    /// the app's. Nobody else can answer a card.
+    pub fn connected(&self) -> bool {
+        self.bot.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|b| !b.is_closed())
+    }
+
+    /// A test's app, there for as long as the test runs.
+    #[cfg(test)]
+    pub fn app_is_there(&self) {
+        let (tx, rx) = mpsc::channel(16);
+        std::mem::forget(rx);
+        *self.bot.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    }
+
+    /// A test's app, gone.
+    #[cfg(test)]
+    pub fn app_went(&self) {
+        *self.bot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Sends `request` to the Bot; → its answer.
     async fn ask(&self, request: &Envelope, wait: Duration) -> Result<Response, String> {
         let bot = self.bot.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -461,6 +481,18 @@ mod tests {
 
     async fn asked(link: &std::sync::Arc<UiLink>) -> Result<Response, String> {
         link.ask(&request("ui-t".into(), None).unwrap(), Duration::from_secs(2)).await
+    }
+
+    #[tokio::test]
+    async fn the_app_is_there_for_as_long_as_it_holds_its_stream() {
+        let link = UiLink::default();
+        assert!(!link.connected(), "it never came");
+        let stream = link.attach();
+        assert!(link.connected());
+        drop(stream);
+        assert!(!link.connected(), "the window closed");
+        let _back = link.attach();
+        assert!(link.connected(), "and it came back");
     }
 
     #[tokio::test]

@@ -121,6 +121,13 @@ fn redact_text(s: &str) -> String {
     }
 }
 
+/// Whether `input` holds what's never kept: a value under a secret's name, a ticket, a token or a
+/// TIN.
+pub fn holds_secret(input: &Value) -> bool {
+    let text = js::stringify(input);
+    redact_value(input) != *input || scrub(&text, true) != text
+}
+
 /// `s` cut to `max` chars, the cut said: `…[truncated N chars]`.
 pub fn cut(s: &str, max: usize) -> String {
     let n = s.chars().count();

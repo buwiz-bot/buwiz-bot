@@ -29,6 +29,7 @@ use super::plugins::{self as pv, PluginView};
 use super::text::{self, approved_text, len16, nonempty, num, num_or_null, params_problem, params_summary, tpl};
 use super::threads;
 use crate::hub::ctx::{Db, HubCtx};
+use crate::hub::policy::ask;
 use crate::hub::traits::TurnRequest;
 use crate::hub::types::{ToolResult, TurnCtx};
 use crate::js;
@@ -37,6 +38,8 @@ use crate::v1::V1Error;
 pub const SEEN_MAX: usize = 1000;
 pub const POLL_MS: u64 = 15_000;
 const ITEM_MAX: usize = 40_000;
+/// Why a routine with a card of its own doesn't run.
+const WAITS: &str = "a card of its is waiting for an answer";
 /// a webhook: at most HOOK_RATE calls a minute per instance, HOOK_ITEMS items
 pub const HOOK_RATE: usize = 10;
 const HOOK_ITEMS: usize = 100;
@@ -752,6 +755,9 @@ impl V1 {
         if self.is_running(&row.id) {
             return refuse("rate_limited", format!("{name} is already running"));
         }
+        if ask::routine_waits(ctx, &row.id) {
+            return refuse("rate_limited", format!("{name}: {WAITS}"));
+        }
         if self.host.thread(&row.thread).is_none() {
             return refuse("not_found", format!("{name}'s chat was deleted"));
         }
@@ -1149,6 +1155,11 @@ impl V1 {
             let _ = Self::set_cols(db, id, "last_run=?", &[&(started as i64)]);
             return json!({"ran": false, "reason": why});
         }
+        // a card of its own waits for a person: no model until it's answered, and its items stay unseen
+        if ask::routine_waits(ctx, &row.id) {
+            let _ = Self::set_cols(db, id, "last_run=?", &[&(started as i64)]);
+            return json!({"ran": false, "reason": WAITS});
+        }
         let mut run = Run { id: format!("run_{}", js::number(started)), name: Self::name_of(&r, &row), items: 0, home, seq: None, turn: None };
         match self.run_items(ctx, &r, &row, started, &mut run, given).await {
             Ok(res) => {
@@ -1190,6 +1201,10 @@ impl V1 {
             let item_id = s(item, "id").to_owned();
             if known.contains(&item_id) {
                 continue;
+            }
+            // the last item's turn left a card: the rest stay unseen until it's answered
+            if ask::routine_waits(ctx, &row.id) {
+                break;
             }
             if run.home.is_none() {
                 run.home = Some(threads::ensure(self.host.as_ref(), &row.plugin, rid(r), Some(&row.id), &run.name, &row.thread));

@@ -103,6 +103,10 @@ pub struct RunState {
     pub beyond_screens: bool,
     /// the screen this run touched first: its own until the run ends
     pub screen_hold: Option<crate::hub::computer::Hold>,
+    /// the yes this turn was started with, until the call it covers comes (`policy::ask`)
+    pub yes: Option<crate::hub::policy::ask::Yes>,
+    /// that yes, for the length of that one call
+    pub yes_in_hand: Option<crate::hub::policy::ask::Yes>,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
@@ -118,7 +122,8 @@ pub struct Run {
 impl Run {
     pub fn new(ctx: Arc<HubCtx>, mut turn: TurnCtx, job: JobId, settings: Arc<Settings>) -> Self {
         turn.job = Some(job);
-        Self { ctx, turn, job, settings, st: Mutex::new(RunState::default()) }
+        let yes = turn.yes.take();
+        Self { ctx, turn, job, settings, st: Mutex::new(RunState { yes, ..RunState::default() }) }
     }
 
     pub fn state(&self) -> MutexGuard<'_, RunState> {
@@ -239,14 +244,22 @@ async fn offered(run: &Run) -> Vec<Value> {
 pub async fn exec_tool(run: &Run, block: &Value) -> Out {
     let name = block.get("name").map(js::string_of).unwrap_or_default();
     let input = block.get("input").filter(|i| js::truthy(i)).cloned().unwrap_or_else(|| json!({}));
-    if let Some(no) = controls::refusal(run, &name, &input) {
+    // a yes goes on the first call it covers, whichever way that call goes
+    crate::hub::policy::ask::spend(run, &name, &input);
+    let out = exec_call(run, &name, &input).await;
+    run.state().yes_in_hand = None;
+    out
+}
+
+async fn exec_call(run: &Run, name: &str, input: &Value) -> Out {
+    if let Some(no) = controls::refusal(run, name, input) {
         return no;
     }
-    if let Some(no) = controls::ask_first(run, &name, &input).await {
+    if let Some(no) = controls::ask_first(run, name, input).await {
         return no;
     }
-    controls::note_external(run, &name);
-    match dispatch(run, &name, &input).await {
+    controls::note_external(run, name);
+    match dispatch(run, name, input).await {
         Ok(out) => out,
         Err(e) => Out::err(format!("tool error: {}", js::slice_utf16(&e, 500))),
     }

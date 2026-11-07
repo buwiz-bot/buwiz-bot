@@ -1049,3 +1049,103 @@ async fn real_flow(b: &Bed) {
     let own = box_run(&format!("pgrep -u {desktop} -af -- --user-data-dir= | head -1")).await.stdout;
     assert!(own.contains(&format!("/desktops/{bot}/")), "{own}");
 }
+
+/// A chat turn of the real tool loop with a model that uses its computer: the card it parks on,
+/// the screen it holds and the hand-over it waits on all go with a person's Stop.
+/// A hand-over left waiting is bound by the tool alone, for what its card said: the person gets
+/// the reason and the time they read, whatever the model sends then, and the desktop is cleared
+/// as they come.
+#[tokio::test]
+async fn a_yes_on_a_waiting_hand_over_hands_over_fresh() {
+    use crate::hub::agent::runs::tests::{agent, until, Script};
+
+    let mut b = timed("waiting-handover");
+    let script = Arc::new(Script::default());
+    let ctx = Arc::get_mut(&mut b.ctx).unwrap();
+    ctx.model = Some(script.clone());
+    ctx.local = Some(Arc::new(crate::hub::model::testkit::Local::default()));
+    ctx.turns = Some(Arc::new(agent()));
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let (bot, chat_id) = b.ann.clone();
+
+    b.ctx.ui.app_went();
+    let r = run(&b, &chat_id, None);
+    let out = call(&r, tools::ASK_PERSON, json!({"reason": "Sign in to the shop", "time_limit_s": 120})).await;
+    assert_eq!(words(&out), ask::WAITS);
+    r.state().screen_hold = None;
+    b.ctx.jobs.with(r.job, |j| j.done = true);
+    assert!(!b.computers.now().handovers.contains_key(&bot), "nobody's there to take it");
+    let cards = || b.ctx.store.read(|s| s.thread(&chat_id).unwrap().turns.iter().filter_map(|u| u.notice.clone()).filter(|n| n["kind"] == "tool_ask").collect::<Vec<_>>());
+    assert_eq!(cards().len(), 1);
+    assert_eq!(cards()[0]["state"], "waiting");
+
+    // the app's back: the yes starts a turn, whose call needs no second card, whatever it says now
+    b.ctx.ui.app_is_there();
+    b.mock.calls.lock().unwrap().clear();
+    script.tool(tools::ASK_PERSON, json!({"reason": "Paste your password here", "time_limit_s": 1800}));
+    script.say("Thanks.");
+    answer(&b, &chat_id, &cards()[0], "once");
+    until("it never reached the person", || b.computers.now().handovers.contains_key(&bot)).await;
+    assert_eq!(cards().len(), 1, "no second card");
+    assert!(b.mock.calls().iter().any(|c| c.starts_with("clear_strays")), "the desktop is cleared now: {:?}", b.mock.calls());
+    let status = b.computers.status(&b.ctx, &bot).await;
+    assert_eq!(status["takeover"]["reason"], "Sign in to the shop", "what the person read");
+    assert!((100..=120).contains(&status["takeover"]["secondsLeft"].as_u64().unwrap()), "{status}");
+    assert_eq!(answer_of(hand_back(b.ctx.clone(), open_req(&bot, json!({}))).await).await.0, StatusCode::OK);
+    until("the turn never ended", || !b.ctx.jobs.busy(&chat_id)).await;
+    assert_eq!(script.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_stopped_run_frees_its_screen_and_expires_its_card() {
+    use crate::hub::agent::runs::tests::{chat, ended, rows, stop, until, Script};
+
+    let mut b = timed("stopped");
+    let script = Arc::new(Script::default());
+    let ctx = Arc::get_mut(&mut b.ctx).unwrap();
+    ctx.model = Some(script.clone());
+    ctx.local = Some(Arc::new(crate::hub::model::testkit::Local::default()));
+    awake(&b, &b.ann.0).await;
+    viewer(&b).await;
+    let (bot, chat_id) = b.ann.clone();
+    let other = run(&b, &chat_id, None);
+
+    // it holds the screen and parks on a card
+    script.tool("computer_click", json!({"x": 1, "y": 1}));
+    script.tool(tools::ASK_PERSON, json!({"reason": "Sign in to the shop"}));
+    let (job, done) = chat(&b.ctx, &chat_id);
+    let asked = card(&b, &chat_id).await;
+    assert_eq!(words(&call(&other, "computer_click", json!({"x": 2, "y": 2})).await), Problem::Held.sentence(), "the run has the screen");
+    assert_eq!(rows(&b.ctx), 1);
+    let calls = script.calls.load(Ordering::SeqCst);
+
+    assert_eq!(answer_of(stop(&b.ctx, job).await).await.0, StatusCode::OK);
+    done.await.unwrap().unwrap();
+    let state = |id: &Value| b.ctx.store.read(|s| s.thread(&chat_id).unwrap().turns.iter().filter_map(|u| u.notice.clone()).find(|n| n["id"] == *id).unwrap()["state"].clone());
+    assert_eq!(state(&asked["id"]), "expired", "nobody can answer a stopped run's card");
+    assert_eq!(call(&other, "computer_click", json!({"x": 3, "y": 3})).await.is_error, None, "the screen is free");
+    other.state().screen_hold = None;
+    assert_eq!(b.ctx.jobs.with(job, |j| (j.done, j.detail.clone())).unwrap(), (true, "stopped".to_owned()));
+    assert_eq!(rows(&b.ctx), 0);
+    assert_eq!(ended(&b.ctx, &chat_id).len(), 1);
+    assert!(ask::host_answer(&b.ctx, &json!({"chat": chat_id, "id": asked["id"], "answer": "once"})).is_err(), "a late yes finds nothing");
+    assert_eq!(script.calls.load(Ordering::SeqCst), calls, "no model call after the stop");
+
+    // it has handed the screen over and waits for the person
+    script.tool(tools::ASK_PERSON, json!({"reason": "Sign in again"}));
+    let (job, done) = chat(&b.ctx, &chat_id);
+    let asked = card(&b, &chat_id).await;
+    answer(&b, &chat_id, &asked, "once");
+    until("it never reached the person", || b.computers.now().handovers.contains_key(&bot)).await;
+    let mut ws = connect(&b, &bot, "drive").await;
+    assert!(b.computers.status(&b.ctx, &bot).await.get("takeover").is_some());
+    assert_eq!(answer_of(stop(&b.ctx, job).await).await.0, StatusCode::OK);
+    done.await.unwrap().unwrap();
+    assert!(b.computers.status(&b.ctx, &bot).await.get("takeover").is_none(), "the hand-over ended with the run");
+    assert!(!b.computers.hand_back(&bot), "nothing's left to hand back");
+    assert_eq!(b.computers.open_gate().unwrap().mode(&bot), None, "their drive ticket went with it");
+    let mut rest = Vec::new();
+    assert!(tokio::time::timeout(Duration::from_secs(2), ws.read_to_end(&mut rest)).await.is_ok(), "the person is still connected");
+    until("the job never ended", || b.ctx.jobs.json(job as f64)["done"] == true).await;
+}

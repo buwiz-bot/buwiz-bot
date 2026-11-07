@@ -902,6 +902,7 @@ async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
 
     // RTN-09 approve stores the approval; the plugin list shows it
     assert_eq!(text(hub.answer(req(Method::POST, "/v1/host/routines/approve", None, Some(json!({"plugin": FX, "routine": "fx-digest"})))).await).await.0, 401, "RTN-09: host token");
+    assert_eq!(text(hub.answer(req(Method::POST, "/v1/host/tools/ask", None, Some(json!({"chat": "t1", "id": "a_1", "answer": "once"})))).await).await.0, 401, "a card's answer takes the host token");
     let digest = || async {
         let (_, t) = text(hub.answer(req(Method::GET, "/v1/host/plugins", tok, None)).await).await;
         let v: Value = serde_json::from_str(&t).unwrap();
@@ -1402,4 +1403,132 @@ fn the_backoff_doubles_after_the_third_failure_and_is_capped() {
     assert_eq!([0.0, 1.0, 2.0, 3.0, 4.0, 8.0, 20.0].map(|e| interval_ms(&row(60.0, e)) / base), [1.0, 1.0, 1.0, 2.0, 4.0, 64.0, 64.0]);
     assert_eq!(interval_ms(&row(3600.0, 8.0)), 86_400_000.0, "min(base·2^k, max(base, day))");
     assert_eq!(interval_ms(&row(604_800.0, 8.0)), 604_800_000.0);
+}
+
+/// A timer counts time the Mac was awake, not the wall clock's: a 2-hour routine armed just before
+/// a 3-hour sleep would otherwise wait 2 more hours on waking. A short wait reads the clock again.
+#[tokio::test]
+async fn a_late_timer_fires_by_the_wall_clock() {
+    use std::time::Duration;
+
+    let w = v0_world("wake");
+    const START_AT: f64 = 1_000_000_000.0;
+    const MAX_WAIT_MS: f64 = 60_000.0;
+    w.ctx.clock.manual_step(Some(START_AT), false);
+    let r = w.v0.create(&w.ctx, &json!({"name": "Every two hours", "thread": "t1", "every_s": 7200, "prompt": "Report."}), true, None).await.unwrap();
+    let id = r["id"].as_str().unwrap().to_owned();
+    w.ctx.db.with(|c| c.execute("UPDATE routines SET last_run=? WHERE id=?", rusqlite::params![START_AT as i64, id])).unwrap();
+    w.v0.arm(&w.ctx, &id);
+
+    // awake: a short wait that finds the tick isn't due only arms again
+    let wait = w.ctx.clock.manual_wait().expect("a timer");
+    assert!(wait as f64 <= MAX_WAIT_MS, "armed for {wait} ms");
+    assert!(w.ctx.clock.manual_step(Some(START_AT + wait as f64), true));
+    assert_eq!(w.stub.count(), 0, "not due yet");
+
+    // the Mac sleeps 3 hours; the timer lost that time, and has only its own wait left to run
+    let wait = w.ctx.clock.manual_wait().expect("armed again");
+    assert!(wait as f64 <= MAX_WAIT_MS, "armed for {wait} ms");
+    assert!(w.ctx.clock.manual_step(Some(START_AT + 3.0 * 3_600_000.0 + wait as f64), true));
+    for _ in 0..200 {
+        if w.stub.count() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(w.stub.count(), 1, "it fired within a wait of waking");
+}
+
+// ── a routine with a card waiting ────────────────────────────────────────
+
+/// A card of `routine`'s left waiting for a person, as a turn of its leaves one (`policy::ask`);
+/// → its chat and id.
+fn card_of(ctx: &HubCtx, routine: &str) -> (String, String) {
+    ctx.store.load().unwrap();
+    let chat = ctx
+        .store
+        .write(|s| {
+            let t = s.fresh_thread("c");
+            let id = t.id.clone();
+            s.list.push(t);
+            id
+        })
+        .unwrap();
+    let id = format!("a_{routine}");
+    assert!(crate::hub::tools::miniapps::post_in(ctx, &chat, &json!({"kind": "tool_ask", "id": id, "bot": "", "tool": "memory_add", "title": "Save this?", "state": "waiting", "at": START})));
+    ctx.db.with(|c| c.execute("INSERT INTO ask_waiting(id, chat, tool, input, routine, at) VALUES(?,?,'memory_add','{}',?,?)", rusqlite::params![id, chat, routine, START as i64])).unwrap();
+    (chat, id)
+}
+
+#[tokio::test]
+async fn a_routine_with_a_waiting_card_doesnt_fire() {
+    let w = v0_world("waits");
+    let ctx = &w.ctx;
+    w.mcp.add("items", vec![json!({"name": "list"})], json!({}));
+    w.mcp.answer("list", json!({"content": [], "structuredContent": {"items": [{"id": "x1"}]}}));
+    let r = w.v0.create(ctx, &json!({"name": "Every minute", "thread": "t1", "every_s": 60, "prompt": "go", "check": {"server": "items", "tool": "list", "ids": "items[].id"}}), true, None).await.unwrap();
+    let id = r["id"].as_str().unwrap().to_owned();
+    let other = w.v0.create(ctx, &json!({"name": "Another", "thread": "t1", "every_s": 60, "prompt": "go"}), true, None).await.unwrap();
+    let (chat, card) = card_of(ctx, &id);
+
+    // a minute at a time for an hour, and a person's Run now: nothing reaches the model
+    for minute in 1..=60 {
+        ctx.clock.manual_step(Some(START + f64::from(minute) * 60_000.0), false);
+        w.v0.tick(ctx, &id).await;
+    }
+    w.v0.run(ctx, Some(&r["id"])).await.unwrap();
+    assert_eq!(w.stub.count(), 0, "a routine with a card waiting makes no model call");
+    let row = V0::row_of(&ctx.db, &id).unwrap();
+    assert_eq!((row.seen.as_deref(), row.last_check, row.errors), (Some("[]"), None, Some(0.0)), "its items stay new, and waiting is no failure");
+    assert!(next_is_a_minute_off(&w.v0, ctx, &id), "it doesn't spin on an overdue tick");
+
+    // another routine isn't held by it
+    w.v0.tick(ctx, other["id"].as_str().unwrap()).await;
+    assert_eq!(w.stub.count(), 1);
+
+    // answered, it goes on, with the item it held back
+    crate::hub::policy::ask::host_answer(ctx, &json!({"chat": chat, "id": card, "answer": "no"})).unwrap();
+    w.v0.tick(ctx, &id).await;
+    assert_eq!(w.stub.count(), 2, "it fires again");
+    assert!(w.stub.all()[1].prompt.contains("x1"));
+}
+
+fn next_is_a_minute_off(v0: &V0, ctx: &HubCtx, id: &str) -> bool {
+    v0.json(&V0::row_of(&ctx.db, id).unwrap())["next_run"].as_f64().unwrap() > ctx.clock.now()
+}
+
+#[tokio::test]
+async fn a_routine_card_past_its_week_lets_the_routine_go_on() {
+    let w = v0_world("waits-week");
+    let ctx = &w.ctx;
+    let r = w.v0.create(ctx, &json!({"name": "Every minute", "thread": "t1", "every_s": 60, "prompt": "go"}), true, None).await.unwrap();
+    let id = r["id"].as_str().unwrap().to_owned();
+    card_of(ctx, &id);
+    ctx.clock.manual_step(Some(START + crate::hub::policy::ask::KEEP as f64), false);
+    w.v0.tick(ctx, &id).await;
+    assert_eq!(w.stub.count(), 1, "nobody answered in a week, and it isn't held for ever");
+}
+
+#[tokio::test]
+async fn a_v1_routine_with_a_waiting_card_doesnt_fire() {
+    let w = World::new("waits-v1", rtn_routines(), &[("chat-1", "uid-chat-1", "Scout")], |_, _| {});
+    w.fake.mail(json!([mail1(), mail2()]));
+    let (ctx, v1) = (&w.ctx, &w.v1);
+    v1.enable(ctx, &b(json!({"routine": "bir-mail", "thread": "chat-1"}))).unwrap();
+    v1.approve(ctx, &b(json!({"routine": "bir-mail"}))).unwrap();
+    let inst = w.inst("bir-mail");
+    let (chat, card) = card_of(ctx, &inst);
+
+    w.step(300.0);
+    v1.run_due(ctx).await;
+    assert_eq!(w.stub.count(), 0, "no model call");
+    assert!(w.fake.calls_to("fx_query").is_empty(), "nor anything else");
+    assert_eq!(w.listed("bir-mail")["seen_count"], 0, "its items stay unseen");
+    // a person's Run now, or a hook, is told why
+    assert_eq!(v1.run(ctx, &b(json!({"routine": "bir-mail", "wait": true}))).await.unwrap_err().code, "rate_limited");
+
+    crate::hub::policy::ask::host_answer(ctx, &json!({"chat": chat, "id": card, "answer": "no"})).unwrap();
+    w.step(300.0);
+    v1.run_due(ctx).await;
+    assert_eq!(w.stub.count(), 2, "answered, both items run");
 }

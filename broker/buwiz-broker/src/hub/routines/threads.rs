@@ -21,6 +21,7 @@ pub fn notice_text(n: &Value) -> String {
     let list = |k: &str| n.get(k).and_then(Value::as_array).filter(|l| !l.is_empty()).map(|l| l.iter().map(js::string_of).collect::<Vec<_>>());
     match n.get("kind").and_then(Value::as_str) {
         Some("tool_ask") => return s("title"),
+        Some("run_ended") => return crate::hub::agent::runs::said(&s("reason")).to_owned(),
         Some("messages") => return format!("Who can message {}?", s("botName")),
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
         Some("app_uninstall") => return format!("Uninstall {}? It removes its {}.", s("title"), buwiz_protocol::ui::uninstall_removes(&s("id"))),
