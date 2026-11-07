@@ -2840,9 +2840,6 @@ pub struct Store {
     pub routine_templates: Signal<Vec<crate::routines::RoutineTemplate>>,
     pub routine_ask_email: Signal<Option<(String, String)>>,
     pub routine_email: Signal<String>,
-    /// Agents' conversations' last messages, for a bot's Details:
-    /// (thread, its turn count when read, message count, last message).
-    pub agents_last: Signal<Vec<(String, i64, i64, String)>>,
     /// Conversations the user resumed here (their notices stop offering
     /// Resume before `/threads` says so).
     pub agents_resumed: Signal<Vec<String>>,
@@ -3253,7 +3250,6 @@ impl Store {
             routine_templates: signal(Vec::new()),
             routine_ask_email: signal(None),
             routine_email: signal(String::new()),
-            agents_last: signal(Vec::new()),
             agents_resumed: signal(Vec::new()),
             keys_send: signal((0, String::new())),
             keys_print: signal((0, String::new(), String::new(), String::new())),
@@ -3962,30 +3958,6 @@ impl Store {
             answered(r);
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
-            }
-        });
-    }
-
-    /// Read the last message of each conversation in `rows` whose turn
-    /// count changed since (`GET /turns?thread=`), for a bot's Details.
-    pub fn load_agents_last(&'static self, rows: Vec<(String, i64)>) {
-        let stale: Vec<(String, i64)> = self.agents_last.with_untracked(|l| {
-            rows.into_iter().filter(|(t, n)| !l.iter().any(|(x, c, _, _)| x == t && c == n)).collect()
-        });
-        if stale.is_empty() {
-            return;
-        }
-        spawn_detached(async move {
-            for (thread, count) in stale {
-                let Some(v) = client::get(&format!("/turns?thread={}", client::urlenc(&thread))).await else { continue };
-                if s(&v, "thread") != thread {
-                    continue;
-                }
-                let (n, last) = crate::agents::last_message(&v);
-                self.agents_last.update(|l| {
-                    l.retain(|(x, ..)| *x != thread);
-                    l.push((thread.clone(), count, n, last));
-                });
             }
         });
     }

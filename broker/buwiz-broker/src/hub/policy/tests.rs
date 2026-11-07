@@ -2086,6 +2086,7 @@ async fn a_card_is_posted_in_the_chat_it_was_asked_in_and_carries_no_state() {
     });
     assert_eq!(text.as_deref(), Some("Who can message Hex?"));
     assert_eq!(notice, json!({"kind": "messages", "bot": "hex", "botName": "Hex", "said": "/messages hex"}), "whom it hears is read when drawn");
+    assert_eq!(b.ctx.store.read(|s| crate::hub::store::json::preview(s.thread(&chat))), "", "no preview in the sidebar");
     assert_eq!(card(json!({"chat": chat, "bot": "nobody"})).unwrap_err().0, "invalid_args");
     assert_eq!(card(json!({"chat": "gone", "bot": "hex"})).unwrap_err().0, "not_found");
 }

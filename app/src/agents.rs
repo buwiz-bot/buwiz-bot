@@ -420,63 +420,12 @@ pub fn restore_target(active: &str, rows: &[ThreadMeta], bots: &[RoxBot]) -> Str
         .unwrap_or_default()
 }
 
-/// One of a bot's conversations, as its Details pane lists it.
-#[derive(Clone, PartialEq, Default, Debug)]
-pub struct ConversationRow {
-    pub thread: String,
-    pub conversation: String,
-    pub subject: String,
-    /// "Scout, Boss".
-    pub participants: String,
-    pub archived: bool,
-    pub paused: bool,
-    pub created_at: f64,
-}
-
-/// Bot `bot`'s conversations, newest first; archived ones after.
-pub fn conversations_of(bot: &str, threads: &[ThreadMeta], bots: &[RoxBot]) -> Vec<ConversationRow> {
-    let mut out: Vec<ConversationRow> = threads
-        .iter()
-        .filter_map(|t| t.agents.as_ref().map(|a| (t, a)))
-        .filter(|(_, a)| a.participants.iter().any(|p| p == bot))
-        .map(|(t, a)| ConversationRow {
-            thread: t.id.clone(),
-            conversation: a.conversation.clone(),
-            subject: if a.subject.is_empty() { t.name.clone() } else { a.subject.clone() },
-            participants: a.participants.iter().map(|p| name_of(p, bots)).collect::<Vec<_>>().join(", "),
-            archived: a.archived,
-            paused: a.paused > 0.0,
-            created_at: a.created_at,
-        })
-        .collect();
-    out.sort_by(|x, y| x.archived.cmp(&y.archived).then(y.created_at.total_cmp(&x.created_at)));
-    out
-}
-
 /// Bot `parent`'s temporary helpers: (live ones, past ones), newest first.
 pub fn helpers_of(parent: &str, bots: &[RoxBot]) -> (Vec<RoxBot>, Vec<RoxBot>) {
     let mut mine: Vec<RoxBot> = bots.iter().filter(|b| b.helper.as_ref().is_some_and(|h| h.parent == parent)).cloned().collect();
     let at = |b: &RoxBot| b.helper.as_ref().map(|h| h.created_at).unwrap_or(0.0);
     mine.sort_by(|x, y| at(y).total_cmp(&at(x)));
     mine.into_iter().partition(|b| b.helper.as_ref().is_some_and(|h| h.ended_at <= 0.0))
-}
-
-/// The last message of a conversation's turns and how many there are.
-pub fn last_message(turns: &serde_json::Value) -> (i64, String) {
-    let msgs: Vec<&serde_json::Value> = turns
-        .get("turns")
-        .and_then(|t| t.as_array())
-        .map(|t| t.iter().filter(|t| s(t, "role") == "agent_message").collect())
-        .unwrap_or_default();
-    let last = msgs
-        .last()
-        .map(|m| {
-            let from = m.get("message").and_then(|e| e.get("from")).map(Peer::of).map(|p| p.name).unwrap_or_default();
-            let text: String = s(m, "text").split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
-            if from.is_empty() { text } else { format!("{from}: {text}") }
-        })
-        .unwrap_or_default();
-    (msgs.len() as i64, last)
 }
 
 #[cfg(test)]
@@ -635,14 +584,8 @@ mod tests {
     }
 
     #[test]
-    fn a_bot_lists_its_conversations_and_helpers() {
+    fn a_bot_lists_its_helpers() {
         let mut bots = vec![bot("scout", "Scout", "t2"), bot("boss", "Boss", "t3"), bot("ada", "Ada", "t4")];
-        let mut old = conv("t9", &["scout", "ada"], "Old", 9.0);
-        old.agents.as_mut().unwrap().archived = true;
-        let threads = vec![conv("t5", &["scout", "boss"], "Q3", 1.0), conv("t6", &["boss", "ada"], "Not his", 2.0), old, conv("t7", &["ada", "scout", "boss"], "Friday", 3.0)];
-        let rows = conversations_of("scout", &threads, &bots);
-        let got: Vec<(&str, &str, bool)> = rows.iter().map(|r| (r.subject.as_str(), r.participants.as_str(), r.archived)).collect();
-        assert_eq!(got, vec![("Friday", "Ada, Scout, Boss", false), ("Q3", "Scout, Boss", false), ("Old", "Scout, Ada", true)]);
         let mut live = bot("sorter", "Sorter", "t8");
         live.helper = Some(HelperOf { parent: "scout".into(), task: "Sort".into(), created_at: 5.0, ended_at: 0.0 });
         let mut past = bot("filer", "Filer", "t11");
@@ -653,16 +596,5 @@ mod tests {
         let (now, before) = helpers_of("scout", &bots);
         assert_eq!(now.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), vec!["Sorter"]);
         assert_eq!(before.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), vec!["Filer"]);
-    }
-
-    #[test]
-    fn a_conversations_last_message_reads_with_its_sender() {
-        let turns = json!({"turns": [
-            {"role": "agent_message", "text": "Please check", "message": {"from": {"id": "scout", "name": "Scout"}}},
-            {"role": "agent_message", "text": "Both are\nrecorded.", "message": {"from": {"id": "boss", "name": "Boss"}}},
-            {"role": "notice", "text": "Paused"},
-        ]});
-        assert_eq!(last_message(&turns), (2, "Boss: Both are recorded.".to_owned()));
-        assert_eq!(last_message(&json!({"turns": []})), (0, String::new()));
     }
 }

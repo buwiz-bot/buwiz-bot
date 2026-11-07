@@ -590,9 +590,11 @@ fn asset_file(code: &str) -> Option<String> {
 }
 
 /// The `/threads` preview: the latest text, markdown marks and runs of
-/// space flattened, 160 UTF-16 units.
+/// space flattened, 160 UTF-16 units. A `/messages` card is a control, not
+/// something said: its title is no preview.
 pub fn preview(t: Option<&Thread>) -> String {
-    let last = t.and_then(|t| t.turns.iter().rev().find(|x| x.text.as_deref().is_some_and(|s| !s.is_empty()) || x.caption.as_deref().is_some_and(|s| !s.is_empty())));
+    let card = |x: &Turn| x.notice.as_ref().is_some_and(|n| n["kind"] == "messages");
+    let last = t.and_then(|t| t.turns.iter().rev().find(|x| !card(x) && (x.text.as_deref().is_some_and(|s| !s.is_empty()) || x.caption.as_deref().is_some_and(|s| !s.is_empty()))));
     let text = last.and_then(|x| x.text.clone().filter(|s| !s.is_empty()).or_else(|| x.caption.clone().filter(|s| !s.is_empty()))).unwrap_or_default();
     let stripped: String = text.chars().filter(|c| !matches!(c, '#' | '*' | '`' | '>' | '_')).collect();
     js_slice(&squeeze(&stripped), 160)
@@ -739,6 +741,17 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_messages_card_is_no_preview() {
+        let card = || Turn::notice("Who can message Nova?", json!({"kind": "messages", "bot": "nova", "botName": "Nova", "said": "/messages"}));
+        let of = |turns: Vec<Turn>| preview(Some(&Thread { turns, ..Default::default() }));
+        assert_eq!(of(vec![card()]), "", "alone: the app's No messages yet");
+        let said = Turn { role: "ai".into(), text: Some("Both are **recorded**.".into()), ..Default::default() };
+        assert_eq!(of(vec![said.clone(), card(), card()]), "Both are recorded.");
+        // any other notice stays a preview
+        assert_eq!(of(vec![said, Turn::notice("Scout → Nova · Tax check", json!({"kind": "agents_started"}))]), "Scout → Nova · Tax check");
+    }
 
     #[test]
     fn store_json_lone_halves_and_numbers() {
