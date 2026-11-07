@@ -102,7 +102,7 @@ pub enum Clock {
 pub struct Manual {
     now: f64,
     next: u64,
-    timers: VecDeque<(u64, Timer)>,
+    timers: VecDeque<(u64, u64, Timer)>,
 }
 
 impl Clock {
@@ -137,7 +137,7 @@ impl Clock {
                 let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
                 let id = m.next;
                 m.next += 1;
-                m.timers.push_back((id, f));
+                m.timers.push_back((id, ms, f));
                 id
             }
         }
@@ -151,8 +151,15 @@ impl Clock {
                     t.abort();
                 }
             }
-            Clock::Manual(m) => m.lock().unwrap_or_else(|e| e.into_inner()).timers.retain(|(t, _)| *t != id),
+            Clock::Manual(m) => m.lock().unwrap_or_else(|e| e.into_inner()).timers.retain(|(t, _, _)| *t != id),
         }
+    }
+
+    /// Manual time: the oldest timer's wait, as it was set.
+    #[cfg(test)]
+    pub fn manual_wait(&self) -> Option<u64> {
+        let Clock::Manual(m) = self else { return None };
+        m.lock().unwrap_or_else(|e| e.into_inner()).timers.front().map(|(_, ms, _)| *ms)
     }
 
     /// Manual time: set it to `now`, and fire the oldest timer when `fire`.
@@ -164,7 +171,7 @@ impl Clock {
                 m.now = now;
             }
             if fire {
-                m.timers.pop_front().map(|(_, f)| f)
+                m.timers.pop_front().map(|(_, _, f)| f)
             } else {
                 None
             }

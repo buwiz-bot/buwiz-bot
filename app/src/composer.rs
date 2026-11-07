@@ -155,17 +155,23 @@ pub(crate) fn composer() -> impl IntoElement {
                         let Some((seed, shape, color)) = key.get() else {
                             return view().into_element();
                         };
-                        statusfx::status_fx(
-                            shape,
-                            color,
-                            std::rc::Rc::new(|| {
-                                store().agent().map(|a| a.state).unwrap_or_default()
-                            }),
-                            20.0,
-                            Some(seed),
-                            move || store().agent().map(|a| a.label).unwrap_or_default(),
-                        )
-                        .into_element()
+                        view()
+                            .flex_row()
+                            .w_full()
+                            .items_center()
+                            .gap_2()
+                            .child(statusfx::status_fx(
+                                shape,
+                                color,
+                                std::rc::Rc::new(|| {
+                                    store().agent().map(|a| a.state).unwrap_or_default()
+                                }),
+                                20.0,
+                                Some(seed),
+                                move || store().agent().map(|a| a.label).unwrap_or_default(),
+                            ))
+                            .child(stop_run())
+                            .into_element()
                     })
                 }),
         )
@@ -184,6 +190,16 @@ pub(crate) fn composer() -> impl IntoElement {
                         .otherwise(|| dock_card().into_element()),
                 ),
         )
+}
+
+/// The status row's Stop, while the open chat has a run to stop.
+pub(crate) fn stop_run() -> impl IntoElement {
+    dynamic(|| {
+        if !store().run_stoppable() {
+            return view().into_element();
+        }
+        crate::chat::notice_act("Stop", "Stop this run".to_owned(), || store().stop_run()).into_element()
+    })
 }
 
 /// "Agents only · read-only · Message Scout in its chat" in place of

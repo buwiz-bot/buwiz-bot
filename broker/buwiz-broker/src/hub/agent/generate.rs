@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use super::placeholders::drop_pending;
+use super::runs;
 use super::slash_mock::{mock, slash, upload};
 use super::tool_log;
 use super::turn::agent_turn;
@@ -115,6 +117,25 @@ pub async fn background_turn(run: &Run, shown: &str, prompt: &str, extra: &Value
         j.result = Some("reply".into());
     });
     text.map(|_| done)
+}
+
+/// What's left to do of a run a person stopped, its future already dropped: the card it was
+/// waiting on has expired and its hand-over has ended with it. It keeps what its tools did, says
+/// so in the chat and ends its job; its screen goes with the `Run`. → the shown turn's place (the
+/// last user turn), for a caller that wants one.
+pub fn stopped(run: &Run) -> Option<TurnDone> {
+    let ctx = &run.ctx;
+    drop_pending(run);
+    if let Err(e) = append_reply(run, "") {
+        eprintln!("  a stopped run's tools: {e}");
+    }
+    crate::hub::tools::miniapps::post_in(ctx, &run.turn.thread, &runs::notice(runs::STOPPED));
+    ctx.jobs.finish(&ctx.store, run.job, runs::STOPPED, Some(runs::STOPPED));
+    ctx.store.read(|s| {
+        let t = s.thread(&run.turn.thread)?;
+        let seq = t.turns.iter().rposition(|u| u.role == "user")?;
+        Some(TurnDone { seq, turn: t.turns[seq].id.clone()? })
+    })
 }
 
 /// An agent's request (agents-wire.mjs `runRequest`): `agentTurn` on the

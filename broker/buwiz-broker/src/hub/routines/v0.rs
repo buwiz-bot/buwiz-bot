@@ -28,8 +28,10 @@ use crate::js;
 const MIN_EVERY: f64 = 60.0;
 const MAX_EVERY: f64 = 7.0 * 86400.0;
 pub const SEEN_MAX: usize = 5000;
-/// the longest a timer waits at once (`2 ** 31 - 1` ms)
-const MAX_WAIT: f64 = 2_147_483_647.0;
+/// the longest a timer waits at once. A timer doesn't count time the Mac slept, so it's kept
+/// short and each wake-up reads the wall clock: a tick that fell due in a sleep fires within this
+/// of waking.
+const MAX_WAIT: f64 = 60_000.0;
 
 const SCHEMA: &str = r#"
   CREATE TABLE IF NOT EXISTS routines(

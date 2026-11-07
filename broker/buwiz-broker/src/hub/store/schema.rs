@@ -141,6 +141,8 @@ const TRIED: &[&str] = &[
     "ALTER TABLE computers ADD COLUMN gone_at INTEGER",
     // where it is, no secret in it: its files can be found with its record lost
     "ALTER TABLE computers ADD COLUMN reach TEXT",
+    // the runs under way: a row still here at a start is a run a restart cut off
+    "CREATE TABLE IF NOT EXISTS runs(job INTEGER PRIMARY KEY, thread TEXT NOT NULL, at INTEGER)",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

@@ -13,6 +13,7 @@
 pub mod files;
 pub mod generate;
 pub mod placeholders;
+pub mod runs;
 pub mod slash_mock;
 pub mod tool_log;
 pub mod turn;
@@ -75,8 +76,13 @@ impl TurnRunner for Agent {
                 turn.model = choice_of(&ctx, &turn.thread, turn.acting_bot.as_deref());
             }
             let extra = req.mark.unwrap_or_else(|| json!({}));
-            let run = Run::new(ctx, turn, job, settings);
-            generate::background_turn(&run, &req.shown, &req.prompt, &extra).await
+            let thread = turn.thread.clone();
+            let run = Run::new(ctx.clone(), turn, job, settings);
+            match runs::under_way(&ctx, job, &thread, generate::background_turn(&run, &req.shown, &req.prompt, &extra)).await {
+                Some(done) => done,
+                // a person's stop is no failure: a routine doesn't count it towards its backoff
+                None => generate::stopped(&run).ok_or_else(|| "stopped".to_owned()),
+            }
         })
     }
 
@@ -89,8 +95,15 @@ impl TurnRunner for Agent {
             turn.thread = thread_of(&ctx, &turn.thread);
             // BUG: /retry runs outside the thread's model choice (MODEL-01)
             turn.model = if chat.retry.is_some() { retry_choice() } else { choice_of(&ctx, &turn.thread, turn.acting_bot.as_deref()) };
-            let run = Run::new(ctx, turn, job, settings);
-            generate::generate(&run, &chat.prompt, &chat.extra, chat.retry.as_deref()).await
+            let thread = turn.thread.clone();
+            let run = Run::new(ctx.clone(), turn, job, settings);
+            match runs::under_way(&ctx, job, &thread, generate::generate(&run, &chat.prompt, &chat.extra, chat.retry.as_deref())).await {
+                Some(done) => done,
+                None => {
+                    generate::stopped(&run);
+                    Ok(())
+                }
+            }
         })
     }
 }
@@ -121,7 +134,8 @@ pub async fn request_turn(ctx: Arc<HubCtx>, settings: Arc<Settings>, req: AgentR
 /// Track B's 5.4: the runner (in place of any other) and an agent's
 /// request turn (5.6's seam). The office it calls is installed by
 /// `office::install` (6.1, in process; it was D31's Node child).
-pub fn install(_routes: &mut Registry, ctx: &mut HubCtx) {
+pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
+    routes.on_start(|ctx| runs::cut_off(&ctx));
     let settings = Arc::new(Settings::global().clone());
     ctx.turns = Some(Arc::new(Agent::new(settings.clone())));
     ctx.ext.insert(AgentRequestTurn(Arc::new(move |ctx, req| Box::pin(request_turn(ctx, settings.clone(), req)))));

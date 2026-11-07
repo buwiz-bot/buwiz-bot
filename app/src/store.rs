@@ -1424,6 +1424,8 @@ pub struct Turn {
     pub tool_ask: Option<ToolAskNotice>,
     /// A `notice` turn's sentence: what the Hub refused the AI on a screen.
     pub ui_refused: Option<String>,
+    /// A `notice` turn's sentence: why a run ended early (a Stop, a restart).
+    pub run_ended: Option<String>,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -2030,6 +2032,47 @@ pub struct AgentRun {
     pub bot: Option<String>,
 }
 
+/// One of `GET /jobs/running`'s runs.
+struct RunningRun {
+    job: String,
+    thread: String,
+    bot: Option<String>,
+    phase: String,
+    detail: String,
+}
+
+#[cfg(not(test))]
+async fn run_get(path: &str) -> Option<serde_json::Value> {
+    client::get(path).await
+}
+
+#[cfg(not(test))]
+async fn run_post(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
+    client::post(path, body).await
+}
+
+/// A headless engine has no network.
+#[cfg(test)]
+async fn run_get(path: &str) -> Option<serde_json::Value> {
+    crate::run_ui_tests::broker(format!("GET {path}"))
+}
+
+#[cfg(test)]
+async fn run_post(path: &str, body: serde_json::Value) -> Option<serde_json::Value> {
+    crate::run_ui_tests::broker(format!("POST {path} {body}"))
+}
+
+fn running_runs(v: &serde_json::Value) -> Vec<RunningRun> {
+    let jobs = v.get("jobs").and_then(|j| j.as_array()).map(Vec::as_slice).unwrap_or_default();
+    jobs.iter()
+        .filter_map(|j| {
+            let job = j.get("id")?.as_u64()?.to_string();
+            let bot = Some(s(j, "bot")).filter(|b| !b.is_empty());
+            Some(RunningRun { job, thread: s(j, "thread"), bot, phase: s(j, "phase"), detail: s(j, "detail") })
+        })
+        .collect()
+}
+
 /// The transient "job settled" flash (agent finished / failed): the bot's
 /// mark plays `state` for a few seconds (`settle()` in App.tsx).
 #[derive(Clone, PartialEq)]
@@ -2554,6 +2597,7 @@ impl Turn {
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
+            run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "run_ended")).then(|| s(v, "text")),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -2652,6 +2696,9 @@ pub struct Store {
     /// `agentRuns` — the live run per thread; a thread's status row and
     /// its bot's mark read their own entry (App.tsx:113).
     pub agent_runs: Signal<BTreeMap<String, AgentRun>>,
+    /// The job of the run being followed in a thread: what its Stop stops. A row with no job
+    /// (a card waiting, a `/status` demo) has no Stop.
+    pub run_jobs: Signal<BTreeMap<String, String>>,
     /// Each interactive card's state by its key (`cards::CardState`): no
     /// entry is still open. Kept while Rox runs; a form's typed values are
     /// never here.
@@ -3171,6 +3218,7 @@ impl Store {
             at_open: signal(false),
             sending: signal(std::collections::BTreeSet::new()),
             agent_runs: signal(BTreeMap::new()),
+            run_jobs: signal(BTreeMap::new()),
             card_states: signal(std::collections::HashMap::new()),
             card_picks: signal(std::collections::HashMap::new()),
             card_remember: signal(std::collections::BTreeSet::new()),
@@ -3450,6 +3498,7 @@ impl Store {
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
+            self.resume_runs();
             // Launched on a link (`open buwiz://…`, or `rox buwiz://…`): Rox
             // opens there once the chats are known.
             self.booted.set(true);
@@ -6786,6 +6835,56 @@ impl Store {
         });
     }
 
+    /// Whether the open chat's run can be stopped from here.
+    pub fn run_stoppable(&'static self) -> bool {
+        let chat = self.active_id.get();
+        self.run_jobs.with(|m| m.contains_key(&chat))
+    }
+
+    /// The status row's Stop: `POST /job/stop` for the open chat's run. The run ends in the
+    /// broker and `watch_run` sees it end, so nothing here changes the row.
+    pub fn stop_run(&'static self) {
+        let chat = self.active_id.get_untracked();
+        let Some(id) = self.run_jobs.with_untracked(|m| m.get(&chat).and_then(|j| j.parse::<u64>().ok())) else { return };
+        spawn_detached(async move {
+            if run_post("/job/stop", serde_json::json!({"id": id})).await.is_none() {
+                crate::toast::show("Couldn't stop it. It may have just finished.");
+            }
+        });
+    }
+
+    /// Follows the runs the broker has under way, as `send` follows one it started: the window
+    /// closing ends the app, not the run.
+    pub fn resume_runs(&'static self) {
+        self.in_store(|| spawn(async move {
+            let Some(v) = run_get("/jobs/running").await else { return };
+            for run in running_runs(&v) {
+                // one row a chat: a second run there (a routine's) stays unfollowed
+                if self.run_jobs.with_untracked(|m| m.contains_key(&run.thread)) {
+                    continue;
+                }
+                let RunningRun { job, thread, bot, phase, detail } = run;
+                self.run_jobs.update(|m| {
+                    m.insert(thread.clone(), job.clone());
+                });
+                self.sending.update(|s| {
+                    s.insert(thread.clone());
+                });
+                let state = phase_state(&phase).to_owned();
+                let label = if detail.is_empty() { crate::statusfx::status_label(&state) } else { detail };
+                self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
+                self.in_store(|| spawn(async move {
+                    self.watch_run(job, thread.clone(), bot).await;
+                    self.sending.update(|s| {
+                        s.remove(&thread);
+                    });
+                    self.emph_bot.set(String::new());
+                    self.refresh_turns();
+                }));
+            }
+        }));
+    }
+
     /// Poll `/status?id=` until the run settles; each tick refreshes turns
     /// so streamed text lands without waiting for the end. The payload is
     /// `{id, seq, phase, detail, done}`. `thread`/`bot` are the run's
@@ -6796,15 +6895,30 @@ impl Store {
         // minute. The server's recent `events` are queued,
         // so a step shorter than the poll (a fast tool) still shows.
         const HOLD: std::time::Duration = std::time::Duration::from_millis(800);
-        let started = std::time::Instant::now();
+        // polls the broker can miss, 30 seconds of them: long enough for it to restart, and a run
+        // it lost then reads `unknown`
+        const MISSES: u32 = 120;
+        self.run_jobs.update(|m| {
+            m.insert(thread.clone(), job.clone());
+        });
+        let mut missed = 0;
         let mut shown: Option<(String, String)> = None;
         let mut queue: std::collections::VecDeque<(String, String)> = Default::default();
         let mut last_seq = 0i64;
         let mut shown_at = std::time::Instant::now();
         let mut tick = 0u32;
         let mut opened: Option<String> = None;
-        while started.elapsed() < std::time::Duration::from_secs(30 * 60) {
-            let Some(v) = client::get(&format!("/status?id={job}")).await else { break };
+        loop {
+            let Some(v) = run_get(&format!("/status?id={job}")).await else {
+                missed += 1;
+                if missed >= MISSES {
+                    self.agent_set(thread.clone(), bot.clone(), None);
+                    break;
+                }
+                timer(std::time::Duration::from_millis(250)).await;
+                continue;
+            };
+            missed = 0;
             let phase = s(&v, "phase");
             let detail = s(&v, "detail");
             let status = if detail.is_empty() { phase.clone() } else { detail.clone() };
@@ -6878,13 +6992,14 @@ impl Store {
                 // outcome for 8s.
                 // Grok: `settle(bot, /^(failed|generator error)/.test(detail)
                 //   ? "failed" : "finished")`.
-                let ok = !(status.starts_with("failed") || status.starts_with("generator error"));
+                // `unknown`: the broker that had the run is gone
+                let ok = !(status.starts_with("failed") || status.starts_with("generator error") || phase == "unknown");
                 // A new app's icon is drawn after the turn ends.
                 self.watch_app_icons();
                 // the files, images and Drive links the reply made join
                 // the open chat's Library
                 self.refresh_thread_apps();
-                self.agent_set(thread, bot.clone(), None);
+                self.agent_set(thread.clone(), bot.clone(), None);
                 self.emph_bot.set(String::new());
                 self.settled.set(Some(Settle {
                     name: s(&v, "name"),
@@ -6901,6 +7016,9 @@ impl Store {
             }
             timer(std::time::Duration::from_millis(250)).await;
         }
+        self.run_jobs.update(|m| {
+            m.remove(&thread);
+        });
     }
 
     /// `POST /thread/new` — a fresh chat.

@@ -168,6 +168,8 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, X("/thread/delete"), thread_delete);
     routes.route(Verb::Post, X("/thread/select"), thread_select);
     routes.route(Verb::Get, P("/status"), status);
+    routes.route(Verb::Post, X("/job/stop"), job_stop);
+    routes.route(Verb::Get, X("/jobs/running"), jobs_running);
     routes.route(Verb::Post, X("/copy"), copy);
     routes.route(Verb::Post, X("/react"), react);
     routes.route(Verb::Post, X("/turn/delete"), turn_delete);
@@ -431,6 +433,35 @@ async fn status(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         None => 0.0,
     };
     ok(&ctx.jobs.json(id))
+}
+
+/// `POST /job/stop {id}`: a person's Stop. One of the [`LOCKED`](super::host::LOCKED) routes, so
+/// the front door lets only the app through; no tool of the model's calls it.
+pub(crate) async fn job_stop(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let b = match parse(&req.body) {
+        Ok(b) => b,
+        Err(e) => return refused(&e, true),
+    };
+    let Some(id) = b.get("id").and_then(Value::as_u64) else { return refused("send {id}", true) };
+    if ctx.jobs.stop(id) {
+        ok(&json!({"ok": true}))
+    } else {
+        answer(404, out(&json!({"ok": false, "error": "no run under way has that id"})), true)
+    }
+}
+
+/// `GET /jobs/running`: the runs under way, for an app that wasn't there when they started.
+pub(crate) async fn jobs_running(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
+    let jobs: Vec<Value> = ctx
+        .jobs
+        .running()
+        .into_iter()
+        .map(|(id, thread, phase, detail)| {
+            let bot = ctx.store.read(|s| s.thread_bot(&thread).map(|b| b.id.clone()));
+            json!({"id": id, "thread": thread, "bot": bot, "phase": phase, "detail": detail})
+        })
+        .collect();
+    ok(&json!({"jobs": jobs}))
 }
 
 async fn copy(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {

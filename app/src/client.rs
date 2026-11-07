@@ -74,9 +74,9 @@ pub(crate) fn token_in(path: &std::path::Path) -> Option<String> {
 /// The routes outside `/v1/host/` locked to the host token: a Bot's shell
 /// must not add, install or switch on a server, plugin or skill through
 /// them (the old switch routes, `/mcp/servers`, the market's install,
-/// connect and settings, and `/skills`). Their GETs, which read, get the
-/// token too.
-const LOCKED: [&str; 10] = [
+/// connect and settings, and `/skills`), and only a person stops a run
+/// (`/job/stop`). Their GETs, which read, get the token too.
+const LOCKED: [&str; 11] = [
     "/mcp/tools/state",
     "/mcp/server/state",
     "/mcp/server/delete",
@@ -87,6 +87,7 @@ const LOCKED: [&str; 10] = [
     "/plugins/install",
     "/plugins/connect",
     "/plugins/settings",
+    "/job/stop",
 ];
 
 /// Whether `path` is one of the broker's host-internal routes, which carry

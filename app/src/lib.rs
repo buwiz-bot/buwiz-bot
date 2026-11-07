@@ -229,6 +229,9 @@ mod sidebar_ui_tests;
 mod mini_ui_tests;
 
 #[cfg(test)]
+mod run_ui_tests;
+
+#[cfg(test)]
 mod app_name_tests {
     use super::pick_app_name;
 

@@ -1403,3 +1403,37 @@ fn the_backoff_doubles_after_the_third_failure_and_is_capped() {
     assert_eq!(interval_ms(&row(3600.0, 8.0)), 86_400_000.0, "min(base·2^k, max(base, day))");
     assert_eq!(interval_ms(&row(604_800.0, 8.0)), 604_800_000.0);
 }
+
+/// A timer counts time the Mac was awake, not the wall clock's: a 2-hour routine armed just before
+/// a 3-hour sleep would otherwise wait 2 more hours on waking. A short wait reads the clock again.
+#[tokio::test]
+async fn a_late_timer_fires_by_the_wall_clock() {
+    use std::time::Duration;
+
+    let w = v0_world("wake");
+    const START_AT: f64 = 1_000_000_000.0;
+    const MAX_WAIT_MS: f64 = 60_000.0;
+    w.ctx.clock.manual_step(Some(START_AT), false);
+    let r = w.v0.create(&w.ctx, &json!({"name": "Every two hours", "thread": "t1", "every_s": 7200, "prompt": "Report."}), true, None).await.unwrap();
+    let id = r["id"].as_str().unwrap().to_owned();
+    w.ctx.db.with(|c| c.execute("UPDATE routines SET last_run=? WHERE id=?", rusqlite::params![START_AT as i64, id])).unwrap();
+    w.v0.arm(&w.ctx, &id);
+
+    // awake: a short wait that finds the tick isn't due only arms again
+    let wait = w.ctx.clock.manual_wait().expect("a timer");
+    assert!(wait as f64 <= MAX_WAIT_MS, "armed for {wait} ms");
+    assert!(w.ctx.clock.manual_step(Some(START_AT + wait as f64), true));
+    assert_eq!(w.stub.count(), 0, "not due yet");
+
+    // the Mac sleeps 3 hours; the timer lost that time, and has only its own wait left to run
+    let wait = w.ctx.clock.manual_wait().expect("armed again");
+    assert!(wait as f64 <= MAX_WAIT_MS, "armed for {wait} ms");
+    assert!(w.ctx.clock.manual_step(Some(START_AT + 3.0 * 3_600_000.0 + wait as f64), true));
+    for _ in 0..200 {
+        if w.stub.count() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(w.stub.count(), 1, "it fired within a wait of waking");
+}
