@@ -169,6 +169,16 @@ async fn jobs(image: &str, m: &Machine) {
     next.run(m, &a, "rm .jobs/j_boot/boot", 20_000).await.unwrap();
     assert_eq!(next.run(m, &a, &job::stop("j_boot"), 20_000).await.unwrap().exit_code, Some(0));
 
+    // a deep sleep is a stop: a frozen job doesn't come back from it, and what's left says nothing
+    // of how it ended, so that's the broker's to say at the sleep
+    start_job(&next, m, &a, "j_deep", "sleep 300").await;
+    next.sleep(m, Sleep::Light).await.unwrap();
+    next.sleep(m, Sleep::Deep).await.unwrap();
+    assert_eq!(next.power(m).await.unwrap(), Power::Asleep);
+    next.wake(m).await.unwrap();
+    let a = next.screen_up(m, "c2j_a").await.unwrap();
+    assert_eq!(seen(&next, m, &a, "j_deep").await, Some(Seen::Gone), "it came back from a stop");
+
     // a stop takes what it started, and leaves no code
     next.run(m, &a, &job::stop("j_two"), 20_000).await.unwrap();
     assert_eq!(seen(&next, m, &a, "j_two").await, Some(Seen::Gone));
