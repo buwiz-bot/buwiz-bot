@@ -57,8 +57,8 @@ const FIT_WIDTH: f64 = 3.53;
 const FIT_REACH: f64 = 2.1;
 /// The largest a custom figure draws.
 const MAX_SIZE: f64 = 2.4;
-/// How big a head is drawn, as the side of a square of its area. Headgear
-/// that can't fit around a head this big draws a smaller one.
+/// How big a head is drawn: the side of a square as big as its bounding box.
+/// Headgear that can't fit around a head this big draws a smaller one.
 const HEAD_SPAN: f64 = 2.3;
 /// The name prefix of every custom body.
 const PREFIX: &str = "custom:";
@@ -1150,20 +1150,22 @@ type MultiPart = (Rc<CustomBody>, Vec<RichPart>, Vec<Place>, Option<solids::Soli
 
 /// The size that fills the frame with a figure of these points, in body units around its centre.
 fn fit_size(points: impl Iterator<Item = V3>) -> f64 {
-    let (mut x0, mut x1, mut y0, mut y1, mut far) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
-    for p in points {
-        (x0, x1, y0, y1) = (x0.min(p[0]), x1.max(p[0]), y0.min(p[1]), y1.max(p[1]));
-        far = far.max(p[0].hypot(p[1]).hypot(p[2]));
-    }
-    (FIT_HEIGHT / (y1 - y0)).min(FIT_WIDTH / (x1 - x0)).min(MAX_SIZE).min(FIT_REACH / far)
+    let points: Vec<V3> = points.collect();
+    let (w, h) = extent(points.iter().copied());
+    let far = points.iter().fold(0.0f64, |far, p| far.max(p[0].hypot(p[1]).hypot(p[2])));
+    (FIT_HEIGHT / h).min(FIT_WIDTH / w).min(MAX_SIZE).min(FIT_REACH / far)
+}
+
+/// The box around these points: least x and y, then most.
+fn bounds(points: impl Iterator<Item = V2>) -> [f64; 4] {
+    points.fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |[x0, y0, x1, y1], p| {
+        [x0.min(p[0]), y0.min(p[1]), x1.max(p[0]), y1.max(p[1])]
+    })
 }
 
 /// How wide and tall these points stand.
 fn extent(points: impl Iterator<Item = V3>) -> (f64, f64) {
-    let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
-    for p in points {
-        (x0, x1, y0, y1) = (x0.min(p[0]), x1.max(p[0]), y0.min(p[1]), y1.max(p[1]));
-    }
+    let [x0, y0, x1, y1] = bounds(points.map(|p| [p[0], p[1]]));
     (x1 - x0, y1 - y0)
 }
 
@@ -1229,39 +1231,13 @@ fn multi_part(
             .ok_or_else(|| format!("part {n} needs an outline (\"o\")"))?;
         part_pts.push(outline_points(o).map_err(|e| format!("part {n}: {e}"))?);
     }
-    let (mut x0, mut x1, mut y0, mut y1) = (
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-    );
-    for p in main_pts.iter().chain(part_pts.iter().flatten()) {
-        x0 = x0.min(p[0]);
-        x1 = x1.max(p[0]);
-        y0 = y0.min(p[1]);
-        y1 = y1.max(p[1]);
-    }
     let specs = solid_spec
         .map(|s| solids::parse(s, &|v, what| colour(v, what), &chart_loops))
         .transpose()?;
     // solids count toward the frame as seen from the front
-    let reach = specs.as_ref().map(|s| {
-        let (mut hx0, mut hx1, mut hy0, mut hy1) =
-            (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
-        for p in &main_pts {
-            hx0 = hx0.min(p[0]);
-            hx1 = hx1.max(p[0]);
-            hy0 = hy0.min(p[1]);
-            hy1 = hy1.max(p[1]);
-        }
-        solids::reach(s, [hx0, hy0, hx1, hy1])
-    });
-    for p in reach.iter().flatten() {
-        x0 = x0.min(p[0]);
-        x1 = x1.max(p[0]);
-        y0 = y0.min(p[1]);
-        y1 = y1.max(p[1]);
-    }
+    let reach = specs.as_ref().map(|s| solids::reach(s, bounds(main_pts.iter().copied())));
+    let reached = reach.iter().flatten().map(|p| [p[0], p[1]]);
+    let [x0, y0, x1, y1] = bounds(main_pts.iter().chain(part_pts.iter().flatten()).copied().chain(reached));
     let front = FrontMap {
         scale: BV / (x1 - x0).max(y1 - y0),
         center: [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
@@ -1272,9 +1248,9 @@ fn multi_part(
     let probe = part_body(&main_pts, &front, SQUARE_SIZE, true, None)?;
     let scene = specs.map(|s| solids::Solids::build(&s, &solids::Head::new(&probe.loft_points, probe.depth), unit, front.center));
     let c = front.center;
-    let flat = main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0]);
-    let head = main_pts.iter().map(|p| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0]);
-    let size = head_size(head, fit_size(flat.chain(scene.iter().flat_map(|s| s.shown_points()))));
+    let placed = |p: &V2| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0];
+    let flat = main_pts.iter().chain(part_pts.iter().flatten()).map(placed);
+    let size = head_size(main_pts.iter().map(placed), fit_size(flat.chain(scene.iter().flat_map(|s| s.shown_points()))));
     let base = Rc::new(part_body(&main_pts, &front, size, true, None)?);
     let mut parts = Vec::with_capacity(list.len());
     let mut layout = vec![Place {
@@ -1846,7 +1822,7 @@ mod tests {
     }
 
     /// Plain custom bodies draw and rest byte for byte as they did when
-    /// figures began to fill the frame ([`fit_size`]).
+    /// heads took one size ([`head_size`]).
     #[test]
     fn plain_custom_bodies_match_their_snapshot() {
         let mut got = Vec::new();
@@ -2247,6 +2223,41 @@ mod tests {
         assert!((hat - bare).abs() < 1e-9, "a hat that fits changes nothing: {hat} against {bare}");
         let tower = head([50.0, -60.0, 0.0]);
         assert!(tower < bare * 0.9, "a tower doesn't fit around that head: {tower} against {bare}");
+    }
+
+    /// A hat as a part counts toward the frame like any other, and the frame comes first.
+    #[test]
+    fn the_frame_beats_the_head_size_on_a_hatted_figure() {
+        const HEAD: &str = "M50 30 C62 30 70 38 70 50 C70 62 62 70 50 70 C38 70 30 62 30 50 C30 38 38 30 50 30 Z";
+        let head = |parts: serde_json::Value| {
+            let recipe = serde_json::json!({"o": HEAD, "c": "#336699", "e": "#112233", "p": parts}).to_string();
+            let name = rich_body(&recipe).unwrap();
+            // `HEAD` is 40 across and 40 tall
+            BODIES.with(|b| {
+                let body = &b.borrow()[name];
+                40.0 * body.front.scale / X * body.size
+            })
+        };
+        let bare = head(serde_json::json!([]));
+        assert!((bare - HEAD_SPAN).abs() < 1e-9, "{bare}");
+        let hatted = head(serde_json::json!([{"o": "M30 0 L70 0 L70 34 L30 34 Z", "c": "#112233"}]));
+        assert!(hatted < bare * 0.9, "the frame holds the head back: {hatted} against {bare}");
+    }
+
+    /// In a plain outline nothing says which part is head, so headgear drawn into its path counts
+    /// as head and what's under it draws smaller. Parts and solids are how to keep a head its size.
+    #[test]
+    fn headgear_in_a_plain_outline_shrinks_the_head() {
+        let unit = |o: &str| {
+            let name = custom_body(o).unwrap();
+            BODIES.with(|b| {
+                let body = &b.borrow()[name];
+                body.front.scale * body.size
+            })
+        };
+        let bare = unit("M30 30 L70 30 L70 70 L30 70 Z");
+        let hatted = unit("M30 30 L45 5 L55 5 L70 30 L70 70 L30 70 Z");
+        assert!(hatted < bare * 0.95, "{hatted} against {bare}");
     }
 
     /// Plain outlines are heads too, whatever their shape, until the frame holds one back.
@@ -3131,7 +3142,7 @@ mod tests {
     /// not read back from a rounded ink (0.7, it used to read 0.6984).
     /// It moved again when the brute and the hero were redrawn as original
     /// avatars, palette and geometry both, and the cat kept its value then.
-    /// All three moved when figures began to fill the frame ([`fit_size`]).
+    /// All three moved when heads took one size ([`head_size`]).
     #[test]
     fn rich_string_eyes_match_their_snapshot() {
         for recipe in [BRUTE, HERO, ORANGE_CAT] {
