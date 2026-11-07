@@ -144,16 +144,68 @@ async fn a_running_job_keeps_the_computer_up_until_its_limit() {
     assert!(asleep(&b));
 }
 
+/// A stop that fails leaves a job. It stays one until a person has been told, then lets go.
 #[tokio::test]
-async fn a_job_past_its_limit_that_wont_stop_doesnt_hold_the_computer() {
-    let b = lazy("job-stuck");
+async fn a_job_past_its_limit_that_wont_stop_stays_a_job_until_it_lets_go() {
+    let (b, log) = awake_bed("job-stuck");
     awake(&b, &b.ann.0).await;
     let id = started(&b, json!({"command": "x", "time_limit_s": 3600})).await;
-    b.mock.replies.lock().unwrap().insert(0, ("kill -TERM".to_owned(), Err(Problem::Failed("no".to_owned()))));
+    let line = held(&log, 1).await;
+    *b.mock.fails.lock().unwrap() = Some("kill -TERM".to_owned());
     b.ctx.clock.manual_step(Some(b.ctx.clock.now() + 3_600_000.0), false);
+
+    for _ in 0..19 {
+        b.computers.sleep_the_idle(&b.ctx).await;
+    }
+    assert_eq!(power(&b), Power::Awake, "it slept under a live job");
+    assert!(running(&line), "the Mac was let go under it");
+    let tab = b.computers.status(&b.ctx, &b.ann.0).await;
+    assert_eq!(tab["jobs"].as_array().unwrap().len(), 1, "{tab}");
+    assert_eq!(b.computers.now().jobs.values().filter(|j| j.bot == b.ann.0).count(), 1, "it counts");
+    assert!(notices(&b).is_empty());
+
     b.computers.sleep_the_idle(&b.ctx).await;
-    assert!(asleep(&b));
-    assert_eq!(row_of(&b, &id).0, "running", "the next look it can reach stops it");
+    assert!(asleep(&b), "a stop that never works doesn't hold a box up for ever");
+    assert!(!running(&line));
+    assert_eq!(row_of(&b, &id).0, "running", "the record stays true");
+    assert_eq!(notices(&b).iter().filter(|(state, _)| state == "unstopped").count(), 1);
+
+    // the next look that reaches it tries again, and says nothing twice
+    awake(&b, &b.ann.0).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(notices(&b).iter().filter(|(state, _)| state == "unstopped").count(), 1);
+    *b.mock.fails.lock().unwrap() = None;
+    awake(&b, &b.ann.0).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(row_of(&b, &id).0, "limit");
+    assert_eq!(notices(&b).iter().filter(|(state, _)| state == "unstopped").count(), 1);
+}
+
+/// A computer that can't be asked at all is the same: a problem on it isn't a job gone.
+#[tokio::test]
+async fn a_job_past_its_limit_on_a_computer_that_wont_answer_stays_a_job() {
+    let b = lazy("job-noanswer");
+    awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x", "time_limit_s": 3600})).await;
+    b.ctx.clock.manual_step(Some(b.ctx.clock.now() + 3_600_000.0), false);
+    *b.mock.look_problem.lock().unwrap() = Some(Problem::ProviderDown("Docker".to_owned()));
+    b.computers.sleep_the_idle(&b.ctx).await;
+    let r = b.computers.now().jobs.get(&id).cloned().expect("still a job");
+    assert!(!r.past);
+}
+
+/// A model's stop that didn't take isn't a stop.
+#[tokio::test]
+async fn a_stop_the_box_says_failed_ends_nothing() {
+    let b = bed("job-stop-failed");
+    awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x"})).await;
+    *b.mock.fails.lock().unwrap() = Some("kill -TERM".to_owned());
+    let r = run(&b, &b.ann.1, None);
+    let o = call(&r, "computer_job_stop", json!({"id": id})).await;
+    assert_eq!(o.is_error, Some(true));
+    assert!(words(&o).contains("may still be running"), "{}", words(&o));
+    assert_eq!(row_of(&b, &id).0, "running");
 }
 
 #[tokio::test]
@@ -406,8 +458,9 @@ async fn a_deleted_bots_jobs_go_with_its_computer() {
     let id = started(&b, json!({"command": "x"})).await;
     b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
     assert!(b.computers.now().jobs.is_empty());
-    assert_eq!(cancels(&b, &id), 1, "stopped before anything else, last Bot or not");
+    assert_eq!(cancels(&b, &id), 0, "the sweep's to do");
     b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(cancels(&b, &id), 1, "stopped before anything else, last Bot or not");
     assert!(b.ctx.db.with(|c| c.query_row("SELECT 1 FROM computer_jobs WHERE id=?", [&id], |r| r.get::<_, i64>(0)).optional()).unwrap().is_none());
 }
 
@@ -734,7 +787,8 @@ async fn a_wake_or_a_leaving_pays_only_its_own_computers_stops() {
     b.ctx.db.with(|c| c.execute("INSERT INTO computer_jobs(id, bot_id, computer_id, thread, name, started_at, until_at, state, stop_owed) VALUES('j_far','b_ann',?,?,'',0,0,'lost',1)", rusqlite::params![a, b.ann.1])).unwrap();
     b.computers.sleep(&b.ctx, &other, Sleep::Light).await.unwrap();
     awake(&b, &b.bea.0).await;
-    b.computers.end_jobs_of(&b.ctx, &b.bea.0, &other).await;
+    b.computers.end_jobs_of(&b.ctx, &b.bea.0);
+    b.computers.settle_stops(&b.ctx, Some(&other)).await;
     assert_eq!(cancels(&b, "j_far"), 0, "a far machine held up a click here");
     b.computers.sleep_the_idle(&b.ctx).await;
     assert_eq!(cancels(&b, "j_far"), 1, "the sweep has them all");
@@ -781,9 +835,9 @@ async fn last_bot_leaves_a_remote_it_cant_reach(b: &Bed) -> String {
     b.ctx.db.with(|c| c.execute("UPDATE computers SET provider='remote' WHERE id=?", [&computer])).unwrap();
     *b.mock.fails.lock().unwrap() = Some("/cancel".to_owned());
     b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
     assert_eq!(cancels(b, &id), 1, "it tried before the record went");
-    b.computers.sleep_the_idle(&b.ctx).await;
-    b.computers.sleep_the_idle(&b.ctx).await;
     id
 }
 
@@ -821,4 +875,32 @@ async fn a_local_computers_retire_warns_of_nothing() {
     b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(!notices(&b).iter().any(|(state, _)| state == "unstopped"), "{:?}", notices(&b));
+}
+
+/// The promise of `detach`: a hung provider isn't waited on, and a Bot still goes.
+#[tokio::test]
+async fn the_last_bot_goes_with_the_cancel_left_to_the_sweep() {
+    let b = bed("job-detach-hung");
+    awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x"})).await;
+    *b.mock.hold_run.lock().unwrap() = Some("/cancel".to_owned());
+    tokio::time::timeout(Duration::from_secs(2), b.computers.detach(&b.ctx, &b.ann.0)).await.expect("the detach waited on the box").unwrap();
+    assert_eq!(owed(&b, &id), 1);
+    *b.mock.hold_run.lock().unwrap() = None;
+}
+
+/// A routine's wake holds up its tool call: what a left Bot owes isn't part of that.
+#[tokio::test]
+async fn a_wake_and_wait_waits_on_no_owed_cancel() {
+    let b = bed("job-wake-hung");
+    let computer = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &computer).await.unwrap();
+    let id = started(&b, json!({"command": "x"})).await;
+    b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
+    b.computers.leave(&b.ctx, &b.ann.0).await.unwrap();
+    *b.mock.hold_run.lock().unwrap() = Some("/cancel".to_owned());
+    tokio::time::timeout(Duration::from_secs(2), b.computers.wake_and_wait(&b.ctx, &computer)).await.expect("the wake waited on the cancel").unwrap();
+    assert_eq!(owed(&b, &id), 1);
+    *b.mock.hold_run.lock().unwrap() = None;
+    until("it was never paid", || owed(&b, &id) == 0).await;
 }

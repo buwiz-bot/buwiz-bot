@@ -8,6 +8,9 @@
 //!
 //! `box-exec`'s own `detach` won't do: it's capped at 10 minutes, and it keeps its state in memory.
 //!
+//! A job is its process group, not `run.sh`: that ends with its command, and what the command left
+//! in the background is still the job, until a stop takes the whole group.
+//!
 //! What's in those files is the job's own to write. A model can lie in them about its own job, and
 //! everything here runs as that Bot's user, so a false `pid` reaches nothing that user couldn't.
 
@@ -25,10 +28,11 @@ fn quoted(text: &str) -> String {
 
 /// What `run.sh` holds. The command gets a shell of its own, so nothing it says can reach the lines
 /// that record how it ended. `exit` appears whole or not at all. Its pid is written before it looks
-/// for a `cancel` mark: a [`cancel`] either finds that pid or leaves a mark this finds.
+/// for a `cancel` mark: a [`cancel`] either finds that pid or leaves a mark this finds. `boot` goes
+/// first, so a pid always has one.
 pub fn script(id: &str, command: &str) -> String {
     let (dir, command) = (format!("{FOLDER}/{id}"), quoted(command));
-    format!("#!/bin/sh\necho $$ > {dir}/pid\n[ -e {dir}/cancel ] && exit 0\n/bin/sh -c {command} > {dir}/out 2>&1 < /dev/null\ncode=$?\necho \"$code\" > {dir}/exit.new && mv {dir}/exit.new {dir}/exit\n")
+    format!("#!/bin/sh\nps -o lstart= -p 1 > {dir}/boot 2>/dev/null\necho $$ > {dir}/pid\n[ -e {dir}/cancel ] && exit 0\n/bin/sh -c {command} > {dir}/out 2>&1 < /dev/null\ncode=$?\necho \"$code\" > {dir}/exit.new && mv {dir}/exit.new {dir}/exit\n")
 }
 
 /// Starts `run.sh` and answers with its pid once it has written one. A host with no `setsid`, as a
@@ -44,24 +48,31 @@ pub fn start(id: &str) -> String {
     )
 }
 
-/// Whether `$p` is still this job: a pid alone can be another process's after a restart. A
-/// finished one that nobody reaped has lost its arguments, so it doesn't count either.
-fn alive(id: &str) -> String {
-    format!("ps -o args= -p \"$p\" 2>/dev/null | grep -qF {}", script_path(id))
+/// Whether `$p` is still this job's group, on the boot of the computer it started on: after a
+/// restart the same number can be anyone's, and a `boot` that doesn't match says so. A job from
+/// before `boot` has none, and counts.
+fn ours(id: &str) -> String {
+    format!("{{ b=$(cat {FOLDER}/{id}/boot 2>/dev/null); [ -z \"$b\" ] || [ \"$b\" = \"$(ps -o lstart= -p 1 2>/dev/null)\" ]; }}")
 }
 
-/// One line for [`read_look`].
+/// Whether group `$p` has a live member. Its leader may be long gone: `run.sh` ends with its
+/// command, and what that left running goes on. One that ended and wasn't reaped doesn't count.
+const GROUP: &str = r#"ps -A -o pgid= -o stat= 2>/dev/null | awk -v p="$p" '$1 == p && $2 !~ /^Z/ { f = 1 } END { exit !f }'"#;
+
+/// One line for [`read_look`]. A job is over when its group is: a command that left something
+/// running in the background hasn't ended, whatever `exit` says, so its limit and its stop still
+/// reach what's left. Its code is read once that has gone too.
 pub fn look(id: &str) -> String {
     let dir = format!("{FOLDER}/{id}");
-    let alive = alive(id);
-    format!("p=$(cat {dir}/pid 2>/dev/null)\nif [ -s {dir}/exit ]; then echo \"exit $(cat {dir}/exit)\"\nelif [ -n \"$p\" ] && {alive}; then echo running\nelse echo gone\nfi")
+    let ours = ours(id);
+    format!("p=$(cat {dir}/pid 2>/dev/null)\nif [ -n \"$p\" ] && {ours} && {GROUP}; then echo running\nelif [ -s {dir}/exit ]; then echo \"exit $(cat {dir}/exit)\"\nelse echo gone\nfi")
 }
 
 /// How a job stands, from what [`look`] printed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Seen {
     Running,
-    /// it ended by itself, with this code
+    /// it ended by itself, with this code, and nothing of it is left
     Exited(i32),
     /// it isn't there and said nothing: a restart of the computer, or a kill from inside it
     Gone,
@@ -77,17 +88,21 @@ pub fn read_look(stdout: &str) -> Option<Seen> {
     }
 }
 
-/// Ends the job's whole group: a moment to finish, then for good.
+/// Ends the job's whole group, its leader there or not: about 2 seconds for the group to finish,
+/// then for good. A zero exit code says the group has no member left.
 pub fn stop(id: &str) -> String {
     let dir = format!("{FOLDER}/{id}");
-    let alive = alive(id);
+    let ours = ours(id);
     format!(
         "p=$(cat {dir}/pid 2>/dev/null)\n\
          case \"$p\" in ''|*[!0-9]*) exit 0;; esac\n\
-         {alive} || exit 0\n\
+         {ours} || exit 0\n\
+         {GROUP} || exit 0\n\
          kill -TERM \"-$p\" 2>/dev/null\n\
-         i=0; while [ \"$i\" -lt 20 ] && {alive}; do sleep 0.1; i=$((i+1)); done\n\
+         i=0; while [ \"$i\" -lt 20 ] && {GROUP}; do sleep 0.1; i=$((i+1)); done\n\
          kill -KILL \"-$p\" 2>/dev/null\n\
+         i=0; while [ \"$i\" -lt 20 ] && {GROUP}; do sleep 0.1; i=$((i+1)); done\n\
+         {GROUP} && exit 1\n\
          exit 0"
     )
 }
@@ -201,10 +216,79 @@ mod tests {
         assert_ne!(sh(&dir, &cancel(ID)).status.code(), Some(0));
     }
 
+    /// A command that left something behind: `run.sh` wrote its code and went, and that's no end.
     #[test]
-    fn a_pid_that_is_another_process_now_isnt_the_job() {
+    fn what_a_job_left_in_the_background_is_still_the_job() {
+        let dir = folder("left", "sleep 300 & echo $! > child; echo started");
+        started(&dir);
+        let began = Instant::now();
+        while !dir.join(FOLDER).join(ID).join("exit").exists() {
+            assert!(began.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(seen(&dir), Some(Seen::Running), "its child runs on");
+        let child = std::fs::read_to_string(dir.join("child")).unwrap();
+        assert_eq!(sh(&dir, &cancel(ID)).status.code(), Some(0));
+        assert!(!sh(&dir, &format!("ps -o pid= -p {}", child.trim())).status.success(), "a cancel reaches it");
+        assert_eq!(seen(&dir), Some(Seen::Exited(0)), "and with nothing left, its code stands");
+    }
+
+    /// Leaving the group: a child that can't be signalled keeps a stop from saying it worked.
+    #[test]
+    fn a_stop_says_so_when_a_member_outlives_it() {
+        let dir = folder("outlive", "sleep 300");
+        started(&dir);
+        until(&dir, Seen::Running);
+        // `kill` that can't kill: the group goes on, so the answer can't be that it stopped
+        let line = stop(ID).replace("kill -KILL", "true").replace("kill -TERM", "true").replace("-lt 20", "-lt 1");
+        assert_eq!(sh(&dir, &line).status.code(), Some(1));
+        assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
+    }
+
+    /// TERM ends `run.sh` at once: the grace is for the group, or a child gets none.
+    #[test]
+    fn a_child_gets_its_grace_after_the_leader_has_gone() {
+        let dir = folder("grace", "sh -c 'trap \"sleep 1; echo graceful > g.txt; exit 0\" TERM; while :; do sleep 0.1; done' & wait");
+        started(&dir);
+        until(&dir, Seen::Running);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
+        assert!(dir.join("g.txt").exists(), "killed before it could finish");
+    }
+
+    /// After a restart its number can be anyone's: a look or a stop leaves that alone.
+    #[test]
+    fn a_group_from_another_boot_isnt_the_job() {
+        let dir = folder("boot", "sleep 300");
+        started(&dir);
+        until(&dir, Seen::Running);
+        let boot = dir.join(FOLDER).join(ID).join("boot");
+        let real = std::fs::read(&boot).unwrap();
+        assert!(!real.is_empty());
+        std::fs::write(&boot, "Thu Jan  1 00:00:00 1970").unwrap();
+        assert_eq!(seen(&dir), Some(Seen::Gone));
+        assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
+        std::fs::write(&boot, real).unwrap();
+        assert_eq!(seen(&dir), Some(Seen::Running), "it wasn't touched");
+        assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
+    }
+
+    /// A job that was running when this came in has no `boot`: it's still found, and stopped.
+    #[test]
+    fn a_job_from_before_boot_still_counts() {
+        let dir = folder("noboot", "sleep 300");
+        started(&dir);
+        until(&dir, Seen::Running);
+        std::fs::remove_file(dir.join(FOLDER).join(ID).join("boot")).unwrap();
+        assert_eq!(seen(&dir), Some(Seen::Running));
+        assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
+        assert_eq!(seen(&dir), Some(Seen::Gone));
+    }
+
+    #[test]
+    fn a_pid_with_no_group_isnt_the_job() {
         let dir = folder("pid", "true");
-        std::fs::write(dir.join(FOLDER).join(ID).join("pid"), std::process::id().to_string()).unwrap();
+        std::fs::write(dir.join(FOLDER).join(ID).join("pid"), "999999").unwrap();
         assert_eq!(seen(&dir), Some(Seen::Gone));
         assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
     }

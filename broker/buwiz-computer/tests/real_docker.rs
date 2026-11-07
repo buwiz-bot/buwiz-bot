@@ -141,6 +141,34 @@ async fn jobs(image: &str, m: &Machine) {
     assert_eq!(next.run(m, &a, "ls late.txt 2>/dev/null", 20_000).await.unwrap().stdout.trim(), "", "it ran after its cancel");
     assert_eq!(seen(&next, m, &a, "j_late").await, Some(Seen::Gone));
 
+    // what a job leaves in the background is the job: `run.sh` has gone with its code, and the
+    // group is what a look, the limit and a cancel go by
+    start_job(&next, m, &a, "j_bg", "sleep 600 & echo started").await;
+    for _ in 0..40 {
+        if !next.run(m, &a, "cat .jobs/j_bg/exit 2>/dev/null", 20_000).await.unwrap().stdout.trim().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(next.run(m, &a, "cat .jobs/j_bg/exit", 20_000).await.unwrap().stdout.trim(), "0");
+    assert_eq!(seen(&next, m, &a, "j_bg").await, Some(Seen::Running), "its child runs on");
+    assert_eq!(next.run(m, &a, &job::cancel("j_bg"), 20_000).await.unwrap().exit_code, Some(0));
+    assert_eq!(next.run(m, &a, "ps -eo args | grep -c '[s]leep 600'", 20_000).await.unwrap().stdout.trim(), "0", "the cancel missed it");
+    assert_eq!(seen(&next, m, &a, "j_bg").await, Some(Seen::Exited(0)));
+
+    // TERM ends the leader at once, and a child still gets its grace
+    start_job(&next, m, &a, "j_grace", "sh -c 'trap \"sleep 1; echo graceful > g.txt; exit 0\" TERM; while :; do sleep 0.1; done' & wait").await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(next.run(m, &a, &job::stop("j_grace"), 20_000).await.unwrap().exit_code, Some(0));
+    assert_eq!(next.run(m, &a, "cat g.txt", 20_000).await.unwrap().stdout.trim(), "graceful", "killed inside its grace");
+
+    // after a restart its number isn't its own: a stale `boot` leaves that group alone
+    start_job(&next, m, &a, "j_boot", "sleep 300").await;
+    next.run(m, &a, "echo old > .jobs/j_boot/boot", 20_000).await.unwrap();
+    assert_eq!(seen(&next, m, &a, "j_boot").await, Some(Seen::Gone));
+    next.run(m, &a, "rm .jobs/j_boot/boot", 20_000).await.unwrap();
+    assert_eq!(next.run(m, &a, &job::stop("j_boot"), 20_000).await.unwrap().exit_code, Some(0));
+
     // a stop takes what it started, and leaves no code
     next.run(m, &a, &job::stop("j_two"), 20_000).await.unwrap();
     assert_eq!(seen(&next, m, &a, "j_two").await, Some(Seen::Gone));

@@ -536,7 +536,9 @@ impl Computers {
         }
         let (me, ctx) = (self.clone(), ctx.clone());
         tokio::spawn(async move {
-            let _ = me.finish_wake(&ctx, &id).await;
+            if me.finish_wake(&ctx, &id).await.is_ok() {
+                me.clear_empty_screens(&ctx, &id).await;
+            }
         });
         Ok(())
     }
@@ -607,13 +609,12 @@ impl Computers {
             Self::touch(ctx, id);
             let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL WHERE id=?", [id]));
             self.freeze_jobs(id, false);
-            self.clear_empty_screens(ctx, id).await;
         }
         woke
     }
 
-    /// A Bot that left while it slept has its screen and slot taken down: after the wake, which
-    /// nobody should wait on for this.
+    /// A Bot that left while it slept has its jobs cancelled and its screen and slot taken down.
+    /// After the wake, and nobody waits on this: no click, and no tool call.
     async fn clear_empty_screens(&self, ctx: &HubCtx, id: &str) {
         // what such a Bot left running is back with the wake
         self.settle_stops(ctx, Some(id)).await;
@@ -681,11 +682,14 @@ impl Computers {
     }
 
     /// Wakes `id` and waits: a routine a person let use it, with nobody there to click.
-    pub async fn wake_and_wait(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+    pub async fn wake_and_wait(self: &Arc<Self>, ctx: &Arc<HubCtx>, id: &str) -> Result<(), Problem> {
         if !self.now().waking.insert(id.to_owned()) {
             return Err(Problem::Asleep);
         }
-        self.finish_wake(ctx, id).await
+        self.finish_wake(ctx, id).await?;
+        let (me, ctx, id) = (self.clone(), ctx.clone(), id.to_owned());
+        tokio::spawn(async move { me.clear_empty_screens(&ctx, &id).await });
+        Ok(())
     }
 
     /// A person put it to sleep: once it has, whatever a person was doing on it ends. A sleep that
@@ -855,11 +859,14 @@ impl Computers {
         if let Some(gate) = self.gate().await {
             gate.close(bot);
         }
-        // first, while its user is there. Its screen or none, awake or not, and last or not: a remote
-        // computer's far end doesn't go with the record
-        self.end_jobs_of(ctx, bot, &seat.computer).await;
-        // asleep, its screen comes down at the next wake (`clear_empty_screens`)
+        // its screen or none, awake or not, and last or not: a remote computer's far end doesn't go
+        // with the record
+        self.end_jobs_of(ctx, bot);
+        // the last Bot's are the sweep's (`retire_jobs`): a hung provider isn't waited on here
         if !last {
+            // before its screen, while its user is there
+            self.settle_stops(ctx, Some(&seat.computer)).await;
+            // asleep, its screen comes down at the next wake (`clear_empty_screens`)
             if let Ok(machine) = self.machine(ctx, &seat.computer) {
                 let provider = self.provider_of(&machine);
                 if let Ok((Power::Awake, machine)) = provider.look(&machine).await {

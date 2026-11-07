@@ -10,9 +10,10 @@
 //!
 //! - A person's Sleep still wins: it freezes the job, and waking the computer lets it go on. The
 //!   tab's button says so. A job doesn't count as running while it's frozen.
-//! - Past its limit a job is stopped at the next look that can reach it. One frozen past its limit
-//!   stays frozen on the record and stops holding the computer up, so the deep sleep can still take
-//!   it.
+//! - Past its limit a job is stopped at the next look that can reach it. Until that works it stays
+//!   a job: on the tab, in the count, and holding its computer up. One frozen past its limit, or one
+//!   whose stop failed [`STOP_TRIES`] times (a person is told, once), stays on the record and lets
+//!   the computer and the Mac go, and each look still tries.
 //! - The end of a job is one `UPDATE ... WHERE state='running'`: the sweep and a model's status call
 //!   can meet there, and only one posts the notice. A notice is free. A model turn follows only with
 //!   `computer_routines` On, at most one, and it waits for a run under way in that chat. It's owed in
@@ -85,7 +86,7 @@ pub(super) struct Running {
     starting: bool,
     /// its computer sleeps, so it's stopped where it was
     pub(super) frozen: bool,
-    /// its limit passed while nothing could reach it: it no longer holds the computer up
+    /// its limit passed and it couldn't be stopped: it no longer holds anything up
     pub(super) past: bool,
 }
 
@@ -317,7 +318,9 @@ impl Computers {
         if j.state != "running" {
             return Ok(facts(ctx, &j));
         }
-        command(live, &job::stop(id)).await.map_err(|p| p.sentence())?;
+        if !answered(live.provider.as_ref(), &live.machine, &live.screen, &job::stop(id)).await {
+            return Err("That job couldn't be stopped: part of it may still be running. Try again in a moment.".to_owned());
+        }
         self.end_job(ctx, &j, End::Stopped, true);
         Ok(facts(ctx, &Self::job_of(ctx, &live.bot, id).unwrap_or(j)))
     }
@@ -337,12 +340,10 @@ impl Computers {
                     if self.look_at(ctx, &live, &j, false).await || !over {
                         continue;
                     }
-                    match command(&live, &job::stop(&j.id)).await {
-                        Ok(_) => self.end_job(ctx, &j, End::Limit, false),
-                        // it's had its time: the next look tries again, and the computer can sleep
-                        Err(_) => {
-                            self.now().jobs.remove(&j.id);
-                        }
+                    if answered(live.provider.as_ref(), &live.machine, &live.screen, &job::stop(&j.id)).await {
+                        self.end_job(ctx, &j, End::Limit, false);
+                    } else {
+                        self.stop_failed(ctx, &j);
                     }
                 }
                 // nothing it ran is left
@@ -356,15 +357,26 @@ impl Computers {
                         }
                     }
                 }
-                _ if over => {
-                    self.now().jobs.remove(&j.id);
-                }
+                _ if over => self.stop_failed(ctx, &j),
                 _ => {}
             }
         }
         self.settle_stops(ctx, None).await;
         self.start_owed_turns(ctx);
         self.sync_awake();
+    }
+
+    /// `j` is past its limit and still there. It stays a job, and the next look tries again. Past
+    /// [`STOP_TRIES`] of these it stops holding anything up, and a person hears, once.
+    fn stop_failed(&self, ctx: &HubCtx, j: &Job) {
+        let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_tries=stop_tries+1 WHERE id=?", [&j.id]));
+        let tries = ctx.db.with(|c| c.query_row("SELECT stop_tries FROM computer_jobs WHERE id=?", [&j.id], |r| r.get::<_, i64>(0))).unwrap_or(STOP_TRIES);
+        if let Some(r) = self.now().jobs.get_mut(&j.id) {
+            r.past = tries >= STOP_TRIES;
+        }
+        if tries == STOP_TRIES {
+            warn(ctx, j);
+        }
     }
 
     /// Asks the computer how `j` stands, and ends it if it has: whether it did. `by_model` is a
@@ -445,14 +457,13 @@ impl Computers {
         }
     }
 
-    /// `bot` left `computer`: nothing would look after its jobs now, so they end, and each owes a
-    /// cancel. One that can't be paid now, on a computer asleep, is paid at its next wake.
-    pub(super) async fn end_jobs_of(&self, ctx: &HubCtx, bot: &str, computer: &str) {
+    /// `bot` left: nothing would look after its jobs now, so they end, and each owes a cancel. Who
+    /// pays it is the caller's to say: this waits on no computer.
+    pub(super) fn end_jobs_of(&self, ctx: &HubCtx, bot: &str) {
         for j in Self::jobs_of(ctx, bot).into_iter().filter(|j| j.state == "running") {
             self.end_job(ctx, &j, End::Left, true);
             let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=1 WHERE id=?", [&j.id]));
         }
-        self.settle_stops(ctx, Some(computer)).await;
     }
 
     /// `computer` has gone: its rows go with it.
@@ -473,7 +484,7 @@ impl Computers {
 
     /// What holds the Mac up follows the jobs: on while one runs, off when none does.
     fn sync_awake(&self) {
-        let wanted = self.now().jobs.values().any(|j| !j.frozen);
+        let wanted = self.now().jobs.values().any(|j| !j.frozen && !j.past);
         self.keep_awake.set(wanted);
     }
 
@@ -494,6 +505,11 @@ fn give_up_on(ctx: &HubCtx, j: &Job) {
     if !matches!(ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=0 WHERE id=? AND stop_owed=1", [&j.id])), Ok(1)) {
         return;
     }
+    warn(ctx, j);
+}
+
+/// A person hears that `j` may still be running.
+fn warn(ctx: &HubCtx, j: &Job) {
     let n = json!({"kind": NOTICE, "id": j.id, "bot": j.bot, "name": j.name, "state": UNSTOPPED, "exit": Value::Null});
     if !post_in(ctx, &j.thread, &n) {
         policy::log_activity(ctx, None, &said(&j.name, UNSTOPPED, None), "", UNSTOPPED, false);
@@ -520,9 +536,14 @@ fn folder_of(bot: &str) -> Screen {
     Screen { display: String::new(), viewer_port: 0, folder: format!("agents/{bot}"), profile: None }
 }
 
+/// Whether the computer ran `line` and said it worked.
+async fn answered(provider: &dyn Provider, machine: &Machine, screen: &Screen, line: &str) -> bool {
+    matches!(provider.run(machine, screen, line, LOOK_MS).await, Ok(out) if out.exit_code == Some(0))
+}
+
 /// Whether the computer said `id` is cancelled.
 async fn cancelled(provider: &dyn Provider, machine: &Machine, screen: &Screen, id: &str) -> bool {
-    matches!(provider.run(machine, screen, &job::cancel(id), LOOK_MS).await, Ok(out) if out.exit_code == Some(0))
+    answered(provider, machine, screen, &job::cancel(id)).await
 }
 
 /// Writes `run.sh` and starts it. Its folder is the Bot's own, links followed, as any file's is.
