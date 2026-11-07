@@ -10,7 +10,8 @@
 //!   change to the open chat's Bot through `/v1/host/agents/accepts`.
 //!
 //! Only the person's own Enter runs these: `store::send_text` (a chip, a
-//! choice card) sends the same words on to the AI as plain text.
+//! choice card) sends the same words on to the AI as plain text, and a
+//! plugin's `prompt` answer can't place them in the box.
 
 use nsh_core::prelude::*;
 use serde_json::{Value, json};
@@ -23,7 +24,8 @@ use crate::theme;
 
 const OPEN_A_BOT: &str = "Open a Bot's chat first.";
 const HELPER: &str = "A helper takes messages only from its parent.";
-const NOT_CONNECTED: &str = "Couldn't reach the broker, so nothing changed.";
+/// No answer: the broker may have applied it all the same.
+const UNCONFIRMED: &str = "Couldn't confirm that change. Showing what the broker has now.";
 /// What pressing Some leaves in the box: the list opens for the first name.
 const ALLOW: &str = "/messages allow ";
 
@@ -218,9 +220,9 @@ fn run_as(rest: &str, said: String) {
         Outcome::Say(s) => crate::toast::show(s),
         Outcome::Card(bot) => post_card(bot, said),
         Outcome::Set { bot, accepts } => {
-            let id = bot.clone();
+            let (id, chat) = (bot.clone(), st.active_id.get_untracked());
             st.agents_accepts(bot, accepts, move |r| {
-                answered(&id, r);
+                answered(&id, &chat, r);
             });
         }
     }
@@ -237,25 +239,36 @@ fn post_card(bot: String, said: String) {
         match crate::client::post_any("/v1/host/agents/card", json!({"chat": chat, "bot": bot, "said": said.trim()})).await {
             Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => store().refresh_turns(),
             Some(v) => crate::toast::show(crate::tools::refusal(&v, "")),
-            None => crate::toast::show(NOT_CONNECTED),
+            None => crate::toast::show("Couldn't reach the broker."),
         }
     });
 }
 
-/// The route's answer: `{ok, text, undo}` is the receipt, a refusal a toast.
-/// True when it went through.
-fn answered(bot: &str, r: Option<Value>) -> bool {
+/// The route's answer to a change made in `chat`: `{ok, text, undo}` is the
+/// receipt there. With another chat open by then it is a toast, the Undo
+/// staying in `/tools`; a refusal is a toast. True when it went through.
+fn answered(bot: &str, chat: &str, r: Option<Value>) -> bool {
     let st = store();
     match r {
         Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => {
-            let name = st.bots.with_untracked(|b| name_of(bot, b));
-            st.add_local_wire_turn(&receipt(bot, &name, &v, crate::tools::now_ms()));
+            if st.active_id.get_untracked() == chat {
+                let name = st.bots.with_untracked(|b| name_of(bot, b));
+                st.add_local_wire_turn(&receipt(bot, &name, &v, crate::tools::now_ms()));
+            } else {
+                crate::toast::show(away(&v));
+            }
             return true;
         }
         Some(v) => crate::toast::show(crate::tools::refusal(&v, "")),
-        None => crate::toast::show(NOT_CONNECTED),
+        None => crate::toast::show(UNCONFIRMED),
     }
     false
+}
+
+/// What a change says with its chat no longer open.
+fn away(answer: &Value) -> String {
+    let text = answer.get("text").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Changed.");
+    if answer.get("undo").and_then(Value::as_str).is_some_and(|u| !u.is_empty()) { format!("{text} Undo it in /tools.") } else { text.to_owned() }
 }
 
 /// The route's answer as an applied `tools_change` turn, the receipt a
@@ -316,9 +329,9 @@ fn control(caption: &str, choices: Vec<Choice>) -> impl IntoElement {
 
 /// Whom `id` hears from changes, with its receipt and Undo.
 fn change(id: &str, to: Accepts) {
-    let bot = id.to_owned();
+    let (bot, chat) = (id.to_owned(), store().active_id.get_untracked());
     store().agents_accepts(id.to_owned(), to, move |r| {
-        answered(&bot, r);
+        answered(&bot, &chat, r);
     });
 }
 
@@ -326,11 +339,11 @@ fn change(id: &str, to: Accepts) {
 /// name. Only in that Bot's own chat, where `allow` means it, and never
 /// over words the person is writing.
 fn some(id: &str) {
-    let bot = id.to_owned();
+    let (bot, chat) = (id.to_owned(), store().active_id.get_untracked());
     store().agents_accepts(id.to_owned(), Accepts::List(Vec::new()), move |r| {
         let st = store();
         let here = st.active_bot_untracked().is_some_and(|b| b.id == bot);
-        if answered(&bot, r) && here && st.draft.get_untracked().trim().is_empty() {
+        if answered(&bot, &chat, r) && here && st.draft.get_untracked().trim().is_empty() {
             crate::composer::draft_changed(ALLOW);
             crate::composer::focus();
         }
@@ -359,9 +372,9 @@ fn sends_control(id: &str) -> impl IntoElement {
             word,
             now == state,
             Box::new(move || {
-                let b = bot.clone();
+                let (b, chat) = (bot.clone(), store().active_id.get_untracked());
                 crate::tools::set_sends(bot.clone(), state, move |r| {
-                    answered(&b, r);
+                    answered(&b, &chat, r);
                 });
             }),
         )
@@ -617,6 +630,13 @@ mod tests {
 
     fn notice(answer: Value) -> crate::store::ToolsChangeNotice {
         Turn::of(&receipt("nova", "Nova", &answer, 5)).tools_change.expect("a tools_change notice")
+    }
+
+    #[test]
+    fn with_its_chat_gone_a_change_says_where_undo_is_while_it_has_one() {
+        assert_eq!(away(&json!({"ok": true, "text": "Nova hears from nobody now.", "undo": "u_1"})), "Nova hears from nobody now. Undo it in /tools.");
+        assert_eq!(away(&json!({"ok": true, "text": "x", "undo": null})), "x");
+        assert_eq!(away(&json!({"ok": true})), "Changed.");
     }
 
     #[test]

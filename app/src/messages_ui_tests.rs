@@ -74,7 +74,9 @@ impl Network for Broker {
             HttpBody::Bytes(b) => serde_json::from_slice(b).unwrap_or(Value::Null),
             _ => Value::Null,
         };
-        if path == ROUTE && self.reply["ok"] == true {
+        // a null `reply`: it applies, and the answer never arrives
+        let lost = path == ROUTE && self.reply.is_null();
+        if path == ROUTE && (self.reply["ok"] == true || lost) {
             *self.accepts.lock().unwrap() = body["accepts"].clone();
         }
         if path == "/v1/host/tools/undo" {
@@ -83,6 +85,10 @@ impl Network for Broker {
         self.log.lock().unwrap().push((path.clone(), body));
         if path == "/v1/host/tools/set" {
             *self.sends.lock().unwrap() = self.log.lock().unwrap().last().map(|(_, b)| b["state"].clone()).unwrap_or_default();
+        }
+        if lost {
+            events(FetchEvent::Failed("the connection broke".to_owned()));
+            return Box::new(Done);
         }
         let answer = match path.as_str() {
             ROUTE => self.reply.clone(),
@@ -170,6 +176,7 @@ fn Stage() -> impl IntoElement {
     view()
         .size_full()
         .child(text("probe ready=1"))
+        .child(crate::toast::layer())
         .child(view().label("job").w(px(40.0)).h(px(24.0)).on_press(|| {
             if let Some(job) = JOB.lock().unwrap().take() {
                 job();
@@ -340,11 +347,54 @@ fn a_choice_press_does_not_run_it() {
     assert!(heard(&seen, ROUTE).is_empty(), "{:?}", seen.log.lock().unwrap());
 }
 
-/// A plugin's `prompt` answer places the line in the box: it runs on the
-/// person's own Enter, and not before.
+/// The receipt belongs to the chat the line was typed in: gone from there
+/// before the answer, it is a toast saying where Undo is, not a line in
+/// whichever chat is open.
 #[test]
-fn text_placed_in_the_box_runs_on_the_persons_enter() {
-    if !in_child("text_placed_in_the_box_runs_on_the_persons_enter") {
+fn a_change_answered_after_leaving_its_chat_is_a_toast() {
+    if !in_child("a_change_answered_after_leaving_its_chat_is_a_toast") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("none"));
+    place(&mut app, "/messages allow scout");
+    on(&mut app, || {
+        let st = store();
+        st.send();
+        st.active_id.set("t_plain".to_owned());
+        st.turns_of.set("t_plain".to_owned());
+    });
+    wait_for(&mut app, &seen, ROUTE, 1);
+    settle(&mut app);
+    assert!(on(&mut app, || store().local_turns.borrow().is_empty()), "no receipt anywhere");
+    assert!(app.texts().iter().any(|t| t.contains(SAID) && t.contains("Undo it in /tools.")), "{:?}", app.texts());
+}
+
+/// No answer doesn't mean nothing changed: the app says it couldn't confirm
+/// and shows what the broker really has.
+#[test]
+fn a_lost_answer_is_unconfirmed_and_the_real_state_comes_back() {
+    if !in_child("a_lost_answer_is_unconfirmed_and_the_real_state_comes_back") {
+        return;
+    }
+    let (mut app, seen) = start(Value::Null);
+    open(&mut app, &seen, "t_nova", json!("all"));
+    let refreshes = heard(&seen, "/threads").len();
+    place(&mut app, "/messages none");
+    send(&mut app);
+    wait_for(&mut app, &seen, ROUTE, 1);
+    wait_for(&mut app, &seen, "/threads", refreshes + 1);
+    settle(&mut app);
+    assert_eq!(accepts_held(&mut app), Some(crate::agents::Accepts::None), "it did apply");
+    assert!(app.texts().iter().any(|t| t.contains("Couldn't confirm")), "{:?}", app.texts());
+    assert!(!app.texts().iter().any(|t| t.contains("nothing changed")), "{:?}", app.texts());
+    assert!(on(&mut app, || store().local_turns.borrow().is_empty()), "no receipt for what isn't known");
+}
+
+/// A line in the box runs on the person's own Enter, and not before.
+#[test]
+fn a_line_in_the_box_runs_on_the_persons_enter() {
+    if !in_child("a_line_in_the_box_runs_on_the_persons_enter") {
         return;
     }
     let (mut app, seen) = start(ok_reply());
@@ -355,6 +405,31 @@ fn text_placed_in_the_box_runs_on_the_persons_enter() {
     send(&mut app);
     assert_eq!(wait_for(&mut app, &seen, ROUTE, 1)[0], json!({"bot": "nova", "accepts": "none"}));
     assert!(heard(&seen, "/chat").is_empty());
+}
+
+/// A plugin's `prompt` answer can't stage the command, however it is
+/// dressed: the box keeps what it held, and the person is told.
+#[test]
+fn a_plugins_prompt_cannot_place_the_command_in_the_box() {
+    if !in_child("a_plugins_prompt_cannot_place_the_command_in_the_box") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("none"));
+    for line in ["/messages allow all", "  /messages none\n", "/messages", "/messages:none"] {
+        on(&mut app, move || store().v1_place_prompt(line));
+        assert_eq!(draft(&mut app), "", "{line:?}");
+    }
+    app.pump(Duration::from_millis(100));
+    assert!(app.texts().iter().any(|t| t.contains("can't put /messages in the box")), "{:?}", app.texts());
+    place(&mut app, "my own words");
+    on(&mut app, || store().v1_place_prompt("/messages allow all"));
+    assert_eq!(draft(&mut app), "my own words", "kept");
+    // any other prompt still lands
+    place(&mut app, "");
+    on(&mut app, || store().v1_place_prompt("Tell me about /messages"));
+    assert_eq!(draft(&mut app), "Tell me about /messages");
+    assert!(heard(&seen, ROUTE).is_empty() && heard(&seen, "/chat").is_empty());
 }
 
 /// Before the servers' commands are known a chip's send waits for them.
