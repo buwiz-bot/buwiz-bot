@@ -9,7 +9,7 @@ use nsh_core::prelude::*;
 use nsh_engine::{App, EngineConfig};
 use serde_json::json;
 
-use crate::computer::{Status, Takeover};
+use crate::computer::{Job, Status, Takeover};
 
 const CHILD: &str = "BUWIZ_COMPUTER_UI_TEST";
 
@@ -80,6 +80,46 @@ fn the_bar_takes_control_gives_it_up_and_hands_back() {
 
     app.press("another bot");
     assert!(shows(&mut app, "Take control"), "another Bot's viewer says nothing of this one: {:?}", app.texts());
+}
+
+#[component]
+fn Tab() -> impl IntoElement {
+    // first read here: the store's owner is the root's, and it lives as long as the app
+    let _ = crate::live::store();
+    let on = signal(Status { state: "awake".to_owned(), ..Status::default() });
+    let job = |frozen| Job { name: "the build".to_owned(), bot: "Ann".to_owned(), frozen, seconds_left: 14_340 };
+    view()
+        .size_full()
+        .child(view().label("a job").w(px(40.0)).h(px(20.0)).on_press(move || on.update(|s| s.jobs = vec![job(false)])))
+        .child(view().label("asleep").w(px(40.0)).h(px(20.0)).on_press(move || on.set(Status { state: "asleep".to_owned(), jobs: vec![job(true)], ..Status::default() })))
+        .child(view().label("over").w(px(40.0)).h(px(20.0)).on_press(move || on.set(Status { state: "awake".to_owned(), ..Status::default() })))
+        .child(dynamic(move || crate::computer::body_of(on.get()).into_element()))
+        .child(text("probe ready=1").text_size(px(8.0)))
+}
+
+#[test]
+fn the_tab_says_how_a_job_stands_and_sleep_says_what_it_does() {
+    if !in_child("the_tab_says_how_a_job_stands_and_sleep_says_what_it_does") {
+        return;
+    }
+    let mut config = EngineConfig::new(App::Rust(Root::new::<Tab>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(600.0));
+    let mut app = run(config);
+    assert!(shows(&mut app, "Sleep") && !shows(&mut app, "'s job"), "{:?}", app.texts());
+
+    app.press("a job");
+    assert!(shows(&mut app, "Ann's job \"the build\" is running · 3 h 59 min left"), "{:?}", app.texts());
+    assert!(shows(&mut app, "Sleep, and freeze its job"), "{:?}", app.texts());
+    // pick 1B: a job's state and nothing of what the Bot can be counted on for
+    for promise in ["always", "keeps working", "while this Mac", "isn't a server"] {
+        assert!(!app.texts().iter().any(|t| t.to_lowercase().contains(promise)), "{promise}: {:?}", app.texts());
+    }
+
+    app.press("asleep");
+    assert!(shows(&mut app, "frozen while this computer sleeps"), "{:?}", app.texts());
+
+    app.press("over");
+    assert!(!shows(&mut app, "'s job") && !shows(&mut app, "freeze"), "{:?}", app.texts());
 }
 
 #[component]

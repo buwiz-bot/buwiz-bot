@@ -432,6 +432,47 @@ async fn a_routine_turn_leaves_one_card() {
     assert_eq!(states(&b), ["waiting", "waiting"]);
 }
 
+/// Told there's a card already, a turn asked for nothing new: Activity has no line for it.
+#[tokio::test]
+async fn a_call_turned_away_by_the_one_card_rule_logs_nothing() {
+    let b = gone("one-card-log");
+    let run = run_of(&b, TurnCtx { routine: Some("r1".into()), ..TurnCtx::default() });
+    run.state().external = true;
+    let shell = |c: &str| json!({"name": "shell_run", "input": {"command": c, "cwd": "/"}});
+    exec_tool(&run, &shell("echo one")).await;
+    let logged = |b: &Bed| super::activity(&b.ctx, None).iter().filter(|a| a["outcome"] == "needs_ok").count();
+    assert_eq!(logged(&b), 1);
+    assert_eq!(exec_tool(&run, &shell("echo two")).await, Out::err(ask::ONE_CARD.into()));
+    assert_eq!(logged(&b), 1);
+}
+
+/// A stop between the card and its row: nothing can answer that card, and it doesn't stay.
+#[tokio::test]
+async fn a_card_that_lost_its_row_expires() {
+    let b = gone("stranded");
+    assert_eq!(call(&b, "memory_add", json!({"text": "tea"})).await, Out::err(ask::WAITS.into()));
+    assert_eq!(call(&b, "memory_add", json!({"text": "coffee"})).await, Out::err(ask::WAITS.into()));
+    let lost = cards(&b)[1]["id"].as_str().unwrap().to_owned();
+    b.ctx.db.with(|c| c.execute("DELETE FROM ask_waiting WHERE id=?", [&lost])).unwrap();
+    ask::expire_waiting(&b.ctx);
+    assert_eq!(states(&b), ["waiting", "waiting"], "a card just posted may have its row on the way");
+    b.ctx.clock.manual_step(Some(START + 60_000.0), false);
+    ask::expire_waiting(&b.ctx);
+    assert_eq!(states(&b), ["waiting", "expired"], "the card with its row stays");
+    assert_eq!(rows(&b.ctx), 1);
+}
+
+/// Not reading the rows isn't reading that there are none.
+#[tokio::test]
+async fn a_failed_read_of_the_rows_expires_no_card() {
+    let b = gone("stranded-read");
+    call(&b, "memory_add", json!({"text": "tea"})).await;
+    b.ctx.db.with(|c| c.execute("ALTER TABLE ask_waiting RENAME TO ask_gone", [])).unwrap();
+    b.ctx.clock.manual_step(Some(START + 60_000.0), false);
+    ask::expire_waiting(&b.ctx);
+    assert_eq!(states(&b), ["waiting"]);
+}
+
 /// With the switch On no card comes, so nothing but the call itself can spend the yes: left
 /// over, it would pass the outside-content guard on a later call.
 #[tokio::test]

@@ -8,7 +8,7 @@ use nsh_core::prelude::*;
 use crate::avatar::bot_avatar;
 use crate::icons::{icon, icon_sized};
 use crate::live::store;
-use crate::store::{spawn_detached, GroupRow, RoxApp, RoxBot, RoxGroup, ThreadMeta};
+use crate::store::{spawn_detached, GroupRow, RoxApp, RoxBot, RoxGroup, ThreadMeta, Work};
 use crate::theme;
 
 /// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
@@ -2264,6 +2264,14 @@ fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
     })
 }
 
+/// A row's dot: something goes on in that chat, or a card there waits for a person.
+fn work_dot(work: Memo<Work>) -> impl IntoElement {
+    let dot = |word: &'static str, color: AdaptiveColor| view().label(word).size(px(8.0)).rounded(px(4.0)).bg(color).into_element();
+    view()
+        .child(when(move || work.get() == Work::Working, move || dot("Working", theme::GHOST)))
+        .child(when(move || work.get() == Work::Waiting, move || dot("Waiting for you", theme::ACCENT)))
+}
+
 /// A chat's row; `src` makes it draggable into groups (and says which
 /// group it shows in).
 fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
@@ -2334,7 +2342,11 @@ fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
                                 .text_color(theme::GHOST)
                                 .number_of_lines(1),
                         ),
-                ),
+                )
+                .child(work_dot(computed({
+                    let tid = t.get().id.clone();
+                    move || store().work_of_thread(&tid)
+                }))),
         )
         .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
@@ -2463,7 +2475,11 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                                 .text_color(theme::GHOST)
                                 .number_of_lines(1),
                         ),
-                ),
+                )
+                .child(work_dot(computed({
+                    let bid = b0.id.clone();
+                    move || store().work_of_bot(&bid)
+                }))),
         )
         .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
         .on_mouse_move(move |e: &MouseEvent| {

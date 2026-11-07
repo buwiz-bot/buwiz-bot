@@ -146,6 +146,14 @@ const TRIED: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS runs(job INTEGER PRIMARY KEY, thread TEXT NOT NULL, at INTEGER)",
     // the highest job any run has had: ids go on after it, row or no row
     "CREATE TABLE IF NOT EXISTS job_mark(id INTEGER PRIMARY KEY CHECK(id=1), high INTEGER NOT NULL)",
+    // the jobs left running on the computers (`hub/computer/jobs.rs`): a job outlives a restart
+    "CREATE TABLE IF NOT EXISTS computer_jobs(
+    id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, computer_id TEXT NOT NULL, thread TEXT NOT NULL, name TEXT NOT NULL,
+    started_at INTEGER NOT NULL, until_at INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'running', exit_code INTEGER, ended_at INTEGER, turn_owed INTEGER NOT NULL DEFAULT 0)",
+    // it's over on the record, and what ran may still be there: the computer is owed a cancel
+    "ALTER TABLE computer_jobs ADD COLUMN stop_owed INTEGER NOT NULL DEFAULT 0",
+    // how many cancels a computer that was up didn't take: past a few a person is told
+    "ALTER TABLE computer_jobs ADD COLUMN stop_tries INTEGER NOT NULL DEFAULT 0",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but
