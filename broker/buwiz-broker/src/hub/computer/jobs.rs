@@ -464,9 +464,7 @@ impl Computers {
             let ctx = ctx.clone();
             tokio::spawn(async move {
                 if let Err(e) = runner.run(ctx.clone(), req).await {
-                    eprintln!("✗ job {job} crashed: {e}");
-                    ctx.jobs.with(job, |r| r.done = true);
-                    ctx.jobs.set(&ctx.store, job, "done", &format!("generator error — {e}"));
+                    crate::hub::agent::runs::failed(&ctx, job, &e);
                 }
             });
         }

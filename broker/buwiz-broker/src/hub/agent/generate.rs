@@ -103,14 +103,18 @@ fn tools_on(run: &Run) -> bool {
 
 /// `backgroundTurn(job, thread, shown, prompt, extra)`: `shown` in the
 /// chat, `prompt` to the model; the reply with what the tools made, even
-/// after a crash. → the shown turn's place.
-pub async fn background_turn(run: &Run, shown: &str, prompt: &str, extra: &Value) -> Result<TurnDone, String> {
+/// after a crash. → the shown turn's place. `told` is a job whose maker ends it on a failure
+/// (`runs::failed`): done here, an app would stop reading before the chat had the notice.
+pub async fn background_turn(run: &Run, shown: &str, prompt: &str, extra: &Value, told: bool) -> Result<TurnDone, String> {
     let ctx = &run.ctx;
     let done = ctx.store.append_turn(&run.turn.thread, Turn::user(shown).with_extra(extra))?.ok_or_else(|| format!("unknown thread {}", run.turn.thread))?;
     ctx.store.write_index();
     let text = if tools_on(run) { agent_turn(run, prompt, &json!({}), &[]).await } else { Ok(chat_reply(run, prompt, &json!({}), &[]).await) };
     append_reply(run, text.as_deref().unwrap_or(""))?;
     ctx.store.write_index();
+    if told && text.is_err() {
+        return text.map(|_| done);
+    }
     run.set_job("done", "replied");
     ctx.jobs.with(run.job, |j| {
         j.done = true;

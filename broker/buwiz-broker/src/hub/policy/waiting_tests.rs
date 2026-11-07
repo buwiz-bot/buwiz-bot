@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 use super::ask;
 use super::{RealChatsDefaults, DAY};
-use crate::hub::agent::runs::tests::{agent, until, Script};
+use crate::hub::agent::runs::tests::{agent, stop, until, Script};
+use crate::hub::agent::runs;
 use crate::hub::ctx::HubCtx;
 use crate::hub::library::botctx;
 use crate::hub::model::Settings;
@@ -534,4 +535,44 @@ async fn two_yeses_on_two_cards_start_one_turn() {
     assert_eq!(code.lock().unwrap().as_deref(), Some("busy"), "the second finds the chat taken");
     assert_eq!(states(&b), ["allowed", "waiting"], "and its card still waits");
     assert_eq!(b.model.calls.load(Ordering::SeqCst), 1, "one turn");
+}
+
+const REJECTED: &str = "llm-api 401: 401 invalid x-api-key";
+
+/// A waiting card and a yes on it; → the turn's job.
+async fn yes_on_a_card(b: &Bed) -> u64 {
+    call(b, "memory_add", json!({"text": "tea"})).await;
+    let n = cards(b).pop().unwrap();
+    assert_eq!(n["state"], "waiting");
+    answer(b, &n["id"], "once").unwrap()["job"].as_u64().unwrap()
+}
+
+fn failures(b: &Bed) -> Vec<String> {
+    b.ctx.store.read(|s| s.thread(&b.chat).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_some_and(|n| n["reason"] == runs::FAILED)).map(|u| u.text.clone().unwrap()).collect())
+}
+
+#[tokio::test]
+async fn a_yes_whose_turn_fails_leaves_one_notice_and_never_reads_as_replied() {
+    let b = gone("yes-failed");
+    *b.model.fails.lock().unwrap() = Some(REJECTED.to_owned());
+    let job = yes_on_a_card(&b).await;
+    idle(&b).await;
+    assert_eq!(failures(&b), [runs::failed_said(REJECTED)]);
+    let st = b.ctx.jobs.json(job as f64);
+    assert_eq!(st["detail"], format!("generator error — {REJECTED}"));
+    assert!(st["events"].as_array().unwrap().iter().all(|e| e["detail"] != "replied"), "{st}");
+}
+
+/// A Stop in a chat deleted under the run: `stopped` has no turn to name, and the runner's `Err`
+/// is all that says so.
+#[tokio::test]
+async fn a_stopped_yes_is_no_failure_even_with_its_chat_gone() {
+    let b = gone("yes-stopped");
+    let job = yes_on_a_card(&b).await;
+    until("the run never started", || !b.ctx.jobs.running().is_empty()).await;
+    b.ctx.store.write(|s| s.list.retain(|t| t.id != b.chat)).unwrap();
+    assert_eq!(stop(&b.ctx, job).await.status(), 200);
+    until("the stop never landed", || b.ctx.jobs.json(job as f64)["done"] == true).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(b.ctx.jobs.json(job as f64)["detail"], runs::STOPPED);
 }
