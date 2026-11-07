@@ -125,7 +125,6 @@ struct Outbox {
     endpoint: String,
     msg: String,
     at: f64,
-    state: String,
     attempts: i64,
 }
 
@@ -167,7 +166,8 @@ impl Endpoints for Externals {
 }
 
 impl Externals {
-    /// The endpoints on app.db at `path`; its tables made when missing.
+    /// The endpoints on app.db at `path`; its tables made when missing. A row
+    /// still `sending` is a send the last run didn't finish: it is queued again.
     pub fn new(path: std::path::PathBuf, clock: Arc<Clock>, post: Post) -> Self {
         let x = Self { db: Db::new(path), clock, post, hits: Mutex::new(HashMap::new()), waiting: Mutex::new(Vec::new()) };
         let made = x.db.with(|c| {
@@ -180,7 +180,8 @@ impl Externals {
       PRIMARY KEY(endpoint, id));
     CREATE TABLE IF NOT EXISTS agent_outbox(
       seq INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, msg TEXT NOT NULL, at INTEGER NOT NULL,
-      state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER);",
+      state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER);
+    UPDATE agent_outbox SET state='queued' WHERE state='sending';",
             )
         });
         if let Err(e) = made {
@@ -406,14 +407,16 @@ impl Externals {
     }
 
     /// One outgoing attempt: 2xx delivered, 4xx dropped (its sender told),
-    /// 5xx or no answer retried with backoff until a day has passed.
+    /// 5xx or no answer retried with backoff until a day has passed. It claims
+    /// its row (`queued` to `sending`) in one step, so a row has one send at a
+    /// time however many are started.
     pub fn send<'a>(self: &'a Arc<Self>, hub: &'a Arc<AgentsHub>, ctx: &'a Arc<HubCtx>, seq: i64) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let o = self
                 .db
                 .with(|c| {
-                    c.query_row("SELECT endpoint, msg, at, state, attempts FROM agent_outbox WHERE seq=?", [seq], |r| {
-                        Ok(Outbox { endpoint: r.get(0)?, msg: r.get(1)?, at: r.get::<_, f64>(2)?, state: r.get(3)?, attempts: r.get(4)? })
+                    c.query_row("SELECT endpoint, msg, at, attempts FROM agent_outbox WHERE seq=?", [seq], |r| {
+                        Ok(Outbox { endpoint: r.get(0)?, msg: r.get(1)?, at: r.get::<_, f64>(2)?, attempts: r.get(3)? })
                     })
                     .optional()
                 })
@@ -422,7 +425,7 @@ impl Externals {
             let Some(o) = o else { return };
             let r = self.row(&o.endpoint);
             let Some((r, url)) = r.and_then(|r| r.url.clone().filter(|u| !u.is_empty()).map(|u| (r, u))) else { return };
-            if o.state != "queued" {
+            if !matches!(self.db.with(|c| c.execute("UPDATE agent_outbox SET state='sending' WHERE seq=? AND state='queued'", [seq])), Ok(1)) {
                 return;
             }
             // a retry, or a restart's: its endpoint may have stopped hearing it since
@@ -430,7 +433,7 @@ impl Externals {
             let to = ctx.store.read(|s| hub.agents.party(s, &format!("ext:{}", r.id)).filter(|p| !hub.agents.heard(s, p, &msg)));
             if let Some(to) = to {
                 let _ = self.db.with(|c| c.execute("UPDATE agent_outbox SET state='dropped' WHERE seq=?", [seq]));
-                hub.turn_away(ctx, &to, &msg);
+                hub.turn_away(ctx, &to, &msg, None);
                 return;
             }
             let t = ((self.now() / 1000.0).floor() as i64).to_string();
@@ -449,7 +452,7 @@ impl Externals {
             }
             let wait = 3_600_000u64.min(30_000 * 2u64.saturating_pow((attempts - 1).clamp(0, 30) as u32));
             let next = self.now() as i64 + wait as i64;
-            let _ = self.db.with(|c| c.execute("UPDATE agent_outbox SET attempts=?, next_at=? WHERE seq=?", params![attempts, next, seq]));
+            let _ = self.db.with(|c| c.execute("UPDATE agent_outbox SET state='queued', attempts=?, next_at=? WHERE seq=?", params![attempts, next, seq]));
             let (x, hub, ctx2) = (self.clone(), hub.clone(), ctx.clone());
             ctx.clock.set_timeout(
                 wait,

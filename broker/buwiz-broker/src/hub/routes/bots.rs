@@ -50,6 +50,7 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Post, X("/avatar/design"), |ctx, req| keep_alive(avatar_design(ctx, req)));
     routes.route(Verb::Post, X("/avatar/picture"), |ctx, req| keep_alive(avatar_picture(ctx, req)));
     routes.route(Verb::Post, X("/avatar/packs"), avatar_packs);
+    routes.route(Verb::Post, X("/avatar/check"), avatar_check);
 }
 
 /// A bot's avatar fields: its shape, colour, a custom shape's outline, and
@@ -741,6 +742,22 @@ async fn avatar_packs(_ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
+/// What an install would refuse of the designs sent. Saves nothing.
+async fn avatar_check(_ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    use crate::hub::library::avatar_packs::refusals;
+    let b = match parse(&req.body) {
+        Ok(b) => b,
+        Err(e) => return refused(&e, false),
+    };
+    let Some(designs) = b.get("designs").and_then(Value::as_array) else {
+        return refused("send the designs to check", false);
+    };
+    match refusals(designs) {
+        Ok(found) => ok(&json!({"ok": true, "refused": found})),
+        Err(e) => refused(&e, false),
+    }
+}
+
 fn text_of(m: &Value) -> String {
     m.get("content")
         .and_then(Value::as_array)
@@ -1165,6 +1182,43 @@ async fn svg_picture(ctx: &Arc<HubCtx>, ask: &str, block: Option<Value>, pick: &
     let _ = std::fs::remove_file(&svg_path);
     r?;
     Ok(if chosen.is_empty() { avatar_model(Settings::global()) } else { chosen.to_owned() })
+}
+
+#[cfg(test)]
+mod avatar_check_tests {
+    use super::*;
+    use crate::hub::traits::Clock;
+    use crate::hub::Hub;
+    use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+    use hyper::Method;
+
+    async fn post(hub: &Hub, body: &str) -> (u16, Value) {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let req = HubRequest { method: Method::POST, url: "/avatar/check".into(), headers, body: Bytes::from(body.to_owned()), params: Vec::new() };
+        let res = hub.answer(req).await;
+        let status = res.status().as_u16();
+        (status, serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap())
+    }
+
+    /// Through the whole hub, so a route that's dropped from the table or the registry fails here.
+    #[tokio::test]
+    async fn the_route_answers_what_an_install_would_refuse() {
+        let dir = std::env::temp_dir().join(format!("buwiz-avatar-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = Hub::new(HubCtx::new(dir.clone(), Clock::manual()), Vec::new());
+        let sends = |why: &str| json!({"ok": false, "error": why});
+        assert_eq!(post(&hub, "{}").await, (400, sends("send the designs to check")));
+        assert_eq!(post(&hub, r#"{"designs": "Fox"}"#).await, (400, sends("send the designs to check")));
+        let good = json!({"name": "Blob", "shape": "blob", "color": "#E8772E"});
+        let bad = json!({"name": "Dot", "shape": "custom", "color": "#E8772E", "outline": "M50 50 L51 50 L51 51 Z"});
+        let (status, answer) = post(&hub, &json!({"designs": [good, bad]}).to_string()).await;
+        assert_eq!((status, &answer["ok"]), (200, &json!(true)));
+        let refused = answer["refused"].as_array().unwrap();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0]["name"], "Dot");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[cfg(test)]
