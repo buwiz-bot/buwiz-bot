@@ -147,7 +147,11 @@ fn a_replaced_watch_that_gives_up_leaves_the_new_run() {
     app.pump(Duration::from_millis(600));
     app.press("yes-turn");
     assert!(shows(&mut app, "job=9."), "{:?}", app.texts());
-    app.pump(Duration::from_millis(3000));
+    // the next poll would paint the row back: only a look this close sees it gone
+    for _ in 0..150 {
+        app.pump(Duration::from_millis(20));
+        assert!(!app.texts().iter().any(|t| t.contains("run=none")), "the old watch blanked the new run's row: {:?}", app.texts());
+    }
     assert!(shows(&mut app, "busy=true") && shows(&mut app, "job=9."), "the old watch took the new run with it: {:?}", app.texts());
     assert!(shows(&mut app, "run=Reading the mail"), "its row went: {:?}", app.texts());
 }
