@@ -656,7 +656,8 @@ pub(crate) fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         crate::tools::ask_row(n, chat.to_owned()).into_element()
     } else if let Some(said) = t.ui_refused.clone().or_else(|| t.run_ended.clone()) {
         let tone = if t.run_failed { theme::WARN } else { theme::MUTED };
-        view().flex_row().w_full().justify_center().child(text(said).text_size(px(12.0)).text_color(tone)).into_element()
+        // a provider's words can run long: it wraps instead of running off both edges
+        view().flex_row().w_full().justify_center().child(text(said).text_size(px(12.0)).text_color(tone).text_center().max_w(px(620.0)).flex_shrink(1.0)).into_element()
     } else if t.role == "notice" {
         // a notice of a kind this build doesn't know
         view().into_element()
