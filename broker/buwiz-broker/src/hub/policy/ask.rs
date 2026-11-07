@@ -284,6 +284,12 @@ pub fn routine_waits(ctx: &HubCtx, routine: &str) -> bool {
     !kept(ctx, "WHERE routine=?", routine).is_empty()
 }
 
+/// The chats with a card waiting for an answer.
+pub fn waiting_chats(ctx: &HubCtx) -> std::collections::HashSet<String> {
+    let oldest = now(ctx) - KEEP;
+    kept(ctx, "", "").into_iter().filter(|k| k.at > oldest).map(|k| k.chat).collect()
+}
+
 /// Leaves the call on a waiting card, parking nothing: → what the model is told.
 fn wait(run: &Run, a: &Asking) -> String {
     let ctx = &run.ctx;

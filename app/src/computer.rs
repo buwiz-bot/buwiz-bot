@@ -63,8 +63,28 @@ pub(crate) struct Job {
 }
 
 impl Job {
+    /// The tab's line: how it stands now, and nothing it can't say. A remote computer's job isn't
+    /// stopped by a disconnect, and nothing here can see it then.
+    fn words(&self, remote: bool) -> String {
+        let job = if self.name.is_empty() { format!("{}'s job", self.bot) } else { format!("{}'s job \"{}\"", self.bot, self.name) };
+        match (self.frozen, remote) {
+            (true, true) => format!("{job}: not connected, so how it stands isn't known."),
+            (true, false) => format!("{job} is frozen while this computer sleeps."),
+            (false, _) => format!("{job} is running · {} left", span(self.seconds_left)),
+        }
+    }
+
     fn parse(v: &Value) -> Option<Self> {
         Some(Self { name: v.get("name")?.as_str()?.to_owned(), bot: v.get("bot")?.as_str()?.to_owned(), frozen: v.get("frozen")?.as_bool()?, seconds_left: v.get("secondsLeft")?.as_u64()? })
+    }
+}
+
+/// `3 h 59 min`, or `12 min`; under a minute, `under a minute`.
+fn span(seconds: u64) -> String {
+    match (seconds / 3600, seconds % 3600 / 60) {
+        (0, 0) => "under a minute".to_owned(),
+        (0, m) => format!("{m} min"),
+        (h, m) => format!("{h} h {m} min"),
     }
 }
 
@@ -834,6 +854,13 @@ fn small_button(id: &'static str, words: &'static str, press: impl Fn() + 'stati
         .on_press(press)
 }
 
+/// The tab as it draws `status`, for a test with no broker to ask.
+#[cfg(test)]
+pub(crate) fn body_of(status: Status) -> impl IntoElement {
+    let p = Pane { status, ..Pane::default() };
+    body("b1", "Ann", "blob", &p).into_element()
+}
+
 fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     let awake = p.status.state == "awake";
     let (b, n) = (bot.to_owned(), name.to_owned());
@@ -879,6 +906,9 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
         );
     } else if p.status.working {
         out = out.child(note("Its agent is using this screen.".to_owned()));
+    }
+    for j in &p.status.jobs {
+        out = out.child(view().test_id("computer-job").child(note(j.words(p.status.remote.is_some()))));
     }
     if awake {
         let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
@@ -1154,6 +1184,17 @@ mod tests {
         assert_eq!(s.takeover.unwrap().left(), "4:05");
         let bare = Status::parse(&json!({"state": "awake"}));
         assert_eq!((bare.viewer.as_str(), bare.working, bare.takeover), ("", false, None));
+    }
+
+    #[test]
+    fn a_jobs_line_says_how_it_stands_and_no_more() {
+        let job = |frozen, seconds_left| Job { name: "the build".to_owned(), bot: "Ann".to_owned(), frozen, seconds_left };
+        assert_eq!(job(false, 14_340).words(false), "Ann's job \"the build\" is running · 3 h 59 min left");
+        assert_eq!(job(false, 720).words(false), "Ann's job \"the build\" is running · 12 min left");
+        assert_eq!(job(false, 20).words(false), "Ann's job \"the build\" is running · under a minute left");
+        assert_eq!(job(true, 720).words(false), "Ann's job \"the build\" is frozen while this computer sleeps.");
+        assert_eq!(job(true, 720).words(true), "Ann's job \"the build\": not connected, so how it stands isn't known.");
+        assert_eq!(Job { name: String::new(), ..job(false, 720) }.words(false), "Ann's job is running · 12 min left");
     }
 
     #[test]

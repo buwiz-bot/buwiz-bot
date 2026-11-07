@@ -391,3 +391,47 @@ async fn a_deleted_bots_jobs_go_with_its_computer() {
     assert!(b.ctx.db.with(|c| c.query_row("SELECT 1 FROM computer_jobs WHERE id=?", [&id], |r| r.get::<_, i64>(0)).optional()).unwrap().is_none());
     assert!(b.computers.now().jobs.is_empty());
 }
+
+/// What `GET /threads` marks on `b`'s two chats, as (working, waiting).
+fn marks(b: &Bed) -> [(Value, Value); 2] {
+    let mut body = json!({"list": [{"id": b.ann.1}, {"id": b.bea.1}]});
+    crate::hub::routes::chat::mark_work(&b.ctx, &mut body);
+    [0, 1].map(|i| (body["list"][i]["working"].clone(), body["list"][i]["waiting"].clone()))
+}
+
+#[tokio::test]
+async fn a_row_says_a_job_is_running_and_a_card_waits() {
+    let b = bed("job-rows");
+    let computer = awake(&b, &b.ann.0).await;
+    let clear = (Value::Null, Value::Null);
+    assert_eq!(marks(&b), [clear.clone(), clear.clone()], "a row with nothing going on reads as it did");
+
+    let id = started(&b, json!({"command": "x"})).await;
+    assert_eq!(marks(&b), [(json!(true), Value::Null), clear.clone()]);
+
+    // frozen, it's going nowhere, and a dot would say otherwise
+    b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
+    assert_eq!(marks(&b)[0], clear);
+    awake(&b, &b.ann.0).await;
+    assert_eq!(marks(&b)[0].0, json!(true));
+
+    job_is(&b, "exit 0");
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(row_of(&b, &id).0, "done");
+    assert_eq!(marks(&b)[0], clear);
+
+    let at = policy::now(&b.ctx);
+    b.ctx.db.with(|c| c.execute("INSERT INTO ask_waiting(id, chat, tool, input, routine, at) VALUES('a_1',?,'computer_run',NULL,NULL,?)", rusqlite::params![b.bea.1, at])).unwrap();
+    assert_eq!(marks(&b)[1], (Value::Null, json!(true)));
+    b.ctx.clock.manual_step(Some(at as f64 + ask::KEEP as f64 + 1.0), false);
+    assert_eq!(marks(&b)[1], clear, "past its week it isn't waiting");
+}
+
+#[tokio::test]
+async fn a_run_under_way_marks_its_row_for_an_app_that_wasnt_there() {
+    let b = bed("run-rows");
+    let job = b.ctx.jobs.create(&b.ann.1, Value::Null, None, false);
+    assert_eq!(marks(&b)[0].0, Value::Null);
+    b.ctx.jobs.with(job, |j| j.abort = Some(Arc::new(tokio::sync::Notify::new())));
+    assert_eq!(marks(&b)[0].0, json!(true));
+}
