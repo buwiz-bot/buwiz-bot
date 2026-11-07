@@ -329,7 +329,9 @@ async fn a_failed_read_of_the_tries_lets_nothing_go() {
 /// Two syncs can land out of order: whatever they left, the sweep's puts it right.
 #[tokio::test]
 async fn the_sweep_puts_what_holds_the_mac_right() {
-    let (b, log) = awake_bed("sync");
+    let (program, log) = fake_caffeinate("sync");
+    // not idle: a computer going to sleep syncs by itself, and the sweep is what's on trial
+    let b = bed_with("sync", |p| Computers { keep_awake: awake::KeepAwake::with(program), ..Computers::new(p) });
     awake(&b, &b.ann.0).await;
     b.computers.keep_awake.set(true);
     let line = held(&log, 1).await;
