@@ -2092,6 +2092,7 @@ async fn a_card_is_posted_in_the_chat_it_was_asked_in_and_carries_no_state() {
     });
     assert_eq!(text.as_deref(), Some("Who can message Hex?"));
     assert_eq!(notice, json!({"kind": "messages", "bot": "hex", "botName": "Hex", "said": "/messages hex"}), "whom it hears is read when drawn");
+    assert_eq!(b.ctx.store.read(|s| crate::hub::store::json::preview(s.thread(&chat))), "", "no preview in the sidebar");
     assert_eq!(card(json!({"chat": chat, "bot": "nobody"})).unwrap_err().0, "invalid_args");
     assert_eq!(card(json!({"chat": "gone", "bot": "hex"})).unwrap_err().0, "not_found");
 }
@@ -2195,6 +2196,27 @@ async fn the_bot_reads_one_note_of_whom_it_hears_and_no_other_bot_does() {
     assert!(told(&b.ctx, &b.plain, None).is_empty());
     host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
     assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Undid a change. Every Bot can message Hex now."]);
+}
+
+#[tokio::test]
+async fn a_chat_with_no_call_yet_reads_whom_it_hears_on_its_first_and_no_backlog() {
+    let (b, scout) = hearing_bed("accepts-first-call");
+    // older changes stay backlog, in this chat too
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "web", "enabled": false})).unwrap();
+    accepts(&b.ctx, "hex", json!("none"));
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Hex hears from nobody now."]);
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty(), "once");
+    assert!(told(&b.ctx, &scout, Some("scout")).is_empty(), "another Bot's chat starts as it did");
+    assert!(told(&b.ctx, &b.plain, None).is_empty());
+    // an Undo is a change like it: the chat's first call reads what it put back
+    let r = accepts(&b.ctx, "scout", json!("none"));
+    b.ctx.db.with(|c| c.execute("DELETE FROM policy_seen", [])).unwrap();
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    assert_eq!(told(&b.ctx, &scout, Some("scout")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Undid a change. Every Bot can message Scout now."]);
+    // a chat with a marker keeps it: what it hasn't read yet stays news
+    host_set(&b.ctx, &json!({"bot": "scout", "key": "web", "enabled": false})).unwrap();
+    accepts(&b.ctx, "scout", json!("none"));
+    assert_eq!(told(&b.ctx, &scout, Some("scout")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Scout can't use the web now. Scout hears from nobody now."]);
 }
 
 #[tokio::test]

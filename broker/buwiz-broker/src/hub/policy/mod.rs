@@ -342,8 +342,9 @@ pub fn take_notes(ctx: &HubCtx, thread: &str, bot: Option<&str>) -> Vec<Value> {
 /// What changed since `thread`'s marker (oldest first): (the user's, a Bot's in another
 /// thread, each as "Hex made this change: …"). The Mac's reach every thread, a Bot's
 /// switches only that Bot's; a Bot's change is never news in the thread it made it in. The
-/// marker moves past them; a thread without one starts now, with no backlog. A change in
-/// `told` (a card answer's note) is not repeated.
+/// marker moves past them; a thread without one starts now, with no backlog (but [`record`]
+/// gives a Bot's chat one when whom it hears changes). A change in `told` (a card answer's
+/// note) is not repeated.
 fn unseen_changes(ctx: &HubCtx, thread: &str, bot: Option<&str>, told: &HashSet<&str>) -> (Vec<String>, Vec<String>) {
     let at = now(ctx);
     let last: Option<String> = db(ctx, |c| c.query_row("SELECT last FROM policy_seen WHERE thread=?", [thread], |r| r.get(0)).optional()).ok().flatten();
@@ -711,8 +712,17 @@ struct Recorded<'a> {
 
 fn record(ctx: &HubCtx, r: &Recorded, change: &Change, text: &str, undo: Option<&Change>) -> Result<(), String> {
     let at = now(ctx);
+    // a switch shows in the tools a thread's first call gets, but whom a Bot hears shows nowhere:
+    // its chat, marker or not, reads this change on its next call
+    let chat = match change {
+        Change::Accepts { bot, .. } => ctx.store.read(|s| s.bot(bot).and_then(|b| b.thread_id.clone())),
+        _ => None,
+    };
     db(ctx, |c| {
         c.execute("DELETE FROM policy_change WHERE at < ?", [at - KEEP])?;
+        if let Some(t) = &chat {
+            c.execute("INSERT OR IGNORE INTO policy_seen(thread, last, at) VALUES(?, COALESCE((SELECT MAX(id) FROM policy_change), 'u_'), ?)", rusqlite::params![t, at])?;
+        }
         c.execute(
             "INSERT INTO policy_change(id, at, actor, bot_id, text, said, undo, target, thread, undoes) VALUES(?,?,?,?,?,?,?,?,?,?)",
             rusqlite::params![r.id, at, r.actor, bot_of_change(change), text, r.said, undo.map(|u| u.to_json().to_string()), change.target(), r.thread, r.undoes],
