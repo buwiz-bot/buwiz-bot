@@ -424,7 +424,7 @@ impl Host {
         .unwrap_or_default()
     }
 
-    fn lock_of(&self, id: &str) -> Arc<AsyncMutex<()>> {
+    pub(crate) fn lock_of(&self, id: &str) -> Arc<AsyncMutex<()>> {
         self.locks.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_owned()).or_default().clone()
     }
 
