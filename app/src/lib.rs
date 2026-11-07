@@ -43,6 +43,7 @@ pub mod live;
 mod mark;
 mod md;
 mod mermaid;
+mod messages;
 mod office;
 pub mod mini;
 pub mod mini_v1;
@@ -227,6 +228,9 @@ mod sidebar_ui_tests;
 
 #[cfg(test)]
 mod mini_ui_tests;
+
+#[cfg(test)]
+mod messages_ui_tests;
 
 #[cfg(test)]
 mod app_name_tests {

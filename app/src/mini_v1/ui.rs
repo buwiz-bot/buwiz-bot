@@ -1028,6 +1028,7 @@ impl Store {
                                 label: c.label,
                                 hint: String::new(),
                                 detail: c.detail,
+                                bot: String::new(),
                             })
                             .collect();
                         crate::slash::show_rows(rows);
@@ -1115,6 +1116,7 @@ impl Store {
                             label: c.label,
                             hint: String::new(),
                             detail: c.detail,
+                            bot: String::new(),
                         })
                         .collect(),
                     _ => Vec::new(),
