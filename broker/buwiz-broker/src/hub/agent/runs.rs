@@ -4,7 +4,8 @@
 //! expires it), its hand-over (`Handing` ends it), any command it was waiting on. Its screen's
 //! `Hold` lives in the `Run`, which the entry point drops as it returns.
 //!
-//! The row goes when the run ends. A broker that dies leaves it, so a row found at the next start
+//! The row goes when the run ends, and only then: a broker shutting down drops its tasks, which
+//! isn't an end, and one that's killed drops nothing. So a row found at the next start
 //! ([`cut_off`]) is a run a restart ended, and the chat is told.
 
 use std::future::Future;
@@ -37,7 +38,7 @@ pub fn notice(reason: &str) -> Value {
     json!({"kind": "run_ended", "reason": reason})
 }
 
-/// The run's marks, gone with it.
+/// What a task that's gone can't clear up itself.
 struct Marks<'a> {
     ctx: &'a HubCtx,
     job: JobId,
@@ -50,10 +51,6 @@ impl Drop for Marks<'_> {
             self.ctx.jobs.finish(&self.ctx.store, self.job, "failed — the run crashed", None);
         }
         self.ctx.jobs.with(self.job, |j| j.abort = None);
-        let dropped = self.ctx.db.with(|c| c.execute("DELETE FROM runs WHERE job=?", [self.job as i64]));
-        if let Err(e) = dropped {
-            eprintln!("buwiz-broker: runs: {e}");
-        }
     }
 }
 
@@ -66,11 +63,15 @@ pub async fn under_way<T>(ctx: &HubCtx, job: JobId, thread: &str, turn: impl Fut
     let _marks = Marks { ctx, job };
     let abort = Arc::new(Notify::new());
     ctx.jobs.with(job, |j| j.abort = Some(abort.clone()));
-    tokio::select! {
+    let ended = tokio::select! {
         biased;
         () = abort.notified() => None,
         done = turn => Some(done),
+    };
+    if let Err(e) = ctx.db.with(|c| c.execute("DELETE FROM runs WHERE job=?", [job as i64])) {
+        eprintln!("buwiz-broker: runs: {e}");
     }
+    ended
 }
 
 /// On start: each run the last broker left behind gets its notice, and job ids go on after them.
@@ -225,15 +226,20 @@ pub(crate) mod tests {
         (Arc::new(ctx), thread)
     }
 
-    /// A broker that dies runs no `Drop`: the first hub's run is left hanging, not ended, while
-    /// the next hub starts on its data.
-    #[tokio::test]
-    async fn a_run_cut_by_a_restart_leaves_a_notice() {
+    /// A broker that's shut down drops its tasks mid-run: that's a restart, not an end. (One
+    /// that's killed drops nothing, so it leaves the same row.)
+    #[test]
+    fn a_run_cut_by_a_restart_leaves_a_notice() {
         let dir = temp("cut");
         let (first, thread) = hub_on(&dir, Some(Arc::new(Script::default())));
         first.jobs.start_after(40);
-        let (job, _hung) = chat(&first, &thread);
-        until("the run never started", || rows(&first) == 1).await;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let job = runtime.block_on(async {
+            let (job, _hung) = chat(&first, &thread);
+            until("the run never started", || rows(&first) == 1).await;
+            job
+        });
+        drop(runtime);
 
         let (next, _) = hub_on(&dir, None);
         assert_eq!(rows(&next), 1, "the row is on disk, where the next broker reads it");

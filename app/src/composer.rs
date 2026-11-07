@@ -160,7 +160,8 @@ pub(crate) fn composer() -> impl IntoElement {
                             .w_full()
                             .items_center()
                             .gap_2()
-                            .child(statusfx::status_fx(
+                            // the row fills what it's given: Stop keeps its own width
+                            .child(view().flex_1().min_w(px(0.0)).child(statusfx::status_fx(
                                 shape,
                                 color,
                                 std::rc::Rc::new(|| {
@@ -169,7 +170,7 @@ pub(crate) fn composer() -> impl IntoElement {
                                 20.0,
                                 Some(seed),
                                 move || store().agent().map(|a| a.label).unwrap_or_default(),
-                            ))
+                            )))
                             .child(stop_run())
                             .into_element()
                     })
