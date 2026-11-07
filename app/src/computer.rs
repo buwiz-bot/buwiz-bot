@@ -593,11 +593,12 @@ async fn form_post(path: &str, body: Value) -> Option<Value> {
 /// Asks the broker about what's in the form, with what's been trusted so far.
 fn test_remote() {
     let f = form();
+    let bot = pane_signal().with_untracked(|p| p.bot.clone());
     f.note.set(String::new());
     f.stage.set(Stage::Busy);
     let asked_at = f.edits.get_untracked();
     spawn_detached(async move {
-        let reply = form_post("/v1/host/computer/remote/test", f.body()).await;
+        let reply = form_post(&route(&bot, "/remote/test"), f.body()).await;
         if f.edits.get_untracked() != asked_at {
             return;
         }
@@ -773,11 +774,18 @@ fn field(id: &'static str, hint: &'static str, masked: bool, value: Signal<Strin
     )
 }
 
-/// What a person is asked to check. A public authority's word is for the name, not the machine, and
-/// a pinned certificate has to be trusted again when it renews.
-pub(crate) fn trust_words(fingerprint: &str, vouched: bool) -> String {
+/// Whether `url` is a box behind TLS: a certificate answers for it, and no SSH key comes into it.
+pub(crate) fn over_https(url: &str) -> bool {
+    url.trim().get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
+/// What a person is asked to check. Over https that's a certificate, which may be on a server in
+/// front of the box and not on the box. A public authority's word is for the name, not the machine,
+/// and a pinned certificate has to be trusted again when it renews.
+pub(crate) fn trust_words(fingerprint: &str, vouched: bool, https: bool) -> String {
     let vouched = if vouched { " A public authority vouches for this name. When its certificate renews, you'd remove this computer and add it again." } else { "" };
-    format!("Nothing has been sent yet. Check that this is that machine's key, on the machine itself, before you trust it: {fingerprint}.{vouched}")
+    let check = if https { "Check this against the certificate on the server that answers at this address" } else { "Check that this is that machine's key, on the machine itself," };
+    format!("Nothing has been sent yet. {check} before you trust it: {fingerprint}.{vouched}")
 }
 
 /// What the form shows under its fields, for the stage it's at.
@@ -789,7 +797,7 @@ fn stage_part(stage: Stage) -> impl IntoElement {
         Stage::Busy => out.child(note("Asking that machine…".to_owned())),
         Stage::Editing => out.child(small_button("computer-remote-test", "Test", test_remote)),
         Stage::Trust { fingerprint, pin, vouched } => out
-            .child(view().test_id("computer-remote-fingerprint").child(note(trust_words(&fingerprint, vouched))))
+            .child(view().test_id("computer-remote-fingerprint").child(note(trust_words(&fingerprint, vouched, over_https(&f.url.get_untracked())))))
             .child(small_button("computer-remote-trust", "I checked, trust it", move || {
                 f.pin.set(pin.clone());
                 test_remote();
@@ -825,9 +833,9 @@ pub(crate) fn remote_form() -> impl IntoElement {
                     .gap_2()
                     .child(note("A running Buwiz computer, over ssh:// or https://, or any SSH host for commands and files.".to_owned()))
                     .child(field("computer-remote-url", "ssh://you@host or https://box.example.com", false, f.url))
-                    .child(field("computer-remote-key", "SSH key file, like ~/.ssh/id_ed25519", false, f.key_file))
+                    .child(when(move || !f.url.with(|u| over_https(u)), move || field("computer-remote-key", "SSH key file, like ~/.ssh/id_ed25519", false, f.key_file).into_element()))
                     .child(field("computer-remote-token", "The box's token (none for a plain SSH host)", true, f.token))
-                    .child(field("computer-remote-viewer", "The box's viewer password", true, f.viewer))
+                    .child(field("computer-remote-viewer", "The box's viewer password (none for a plain SSH host)", true, f.viewer))
                     .child(view().test_id("computer-remote-note").child(text(move || f.note.get()).number_of_lines(4).text_size(px(12.0)).text_color(theme::MUTED)))
                     .child(dynamic(move || stage_part(f.stage.get()).into_element()))
                     .child(view().flex_row().child(small_button("computer-remote-cancel", "Cancel", move || f.clear())))
@@ -1328,9 +1336,26 @@ mod tests {
 
     #[test]
     fn a_public_authoritys_word_is_said_for_what_it_is() {
-        assert!(!trust_words("ab", false).contains("public authority"));
-        let words = trust_words("ab", true);
+        assert!(!trust_words("ab", false, true).contains("public authority"));
+        let words = trust_words("ab", true, true);
         assert!(words.contains("Nothing has been sent yet") && words.contains("public authority") && words.contains("renews"), "{words}");
+    }
+
+    #[test]
+    fn a_certificate_isnt_called_a_key_on_the_machine() {
+        let https = trust_words("ab", false, true);
+        assert!(https.contains("the certificate on the server") && !https.contains("machine"), "{https}");
+        assert!(trust_words("ab", false, false).contains("that machine's key, on the machine itself"));
+    }
+
+    #[test]
+    fn https_goes_by_the_address_a_person_typed() {
+        for url in ["https://box.example.com", " HTTPS://box.example.com", "https://"] {
+            assert!(over_https(url), "{url}");
+        }
+        for url in ["", "ssh://me@h", "https", "me@h", "httpsé://x"] {
+            assert!(!over_https(url), "{url}");
+        }
     }
 
     #[test]

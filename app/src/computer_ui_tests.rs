@@ -170,9 +170,32 @@ fn the_form_trusts_a_key_only_on_a_press_and_adds_only_on_a_yes_and_keeps_no_sec
     wait_for(&mut app, "empty=true");
     let sent = std::mem::take(&mut crate::computer::CANNED.lock().unwrap().1);
     assert_eq!(sent.len(), 3, "{sent:?}");
-    assert!(sent[0].0.ends_with("/remote/test") && sent[0].1["token"] == "sesame" && sent[0].1["pin"] == "", "{sent:?}");
+    assert!(sent[0].0.ends_with("/computer/bot/b1/remote/test") && sent[0].1["token"] == "sesame" && sent[0].1["pin"] == "", "{sent:?}");
     assert_eq!(sent[1].1["pin"], "ssh-ed25519 AAAA", "the pin follows the press");
     assert!(sent[2].0.ends_with("/computer/bot/b1/remote") && sent[2].1["consent"] == true, "{sent:?}");
+}
+
+#[test]
+fn an_https_address_has_no_ssh_key_field_and_a_certificate_to_check() {
+    if !in_child("an_https_address_has_no_ssh_key_field_and_a_certificate_to_check") {
+        return;
+    }
+    crate::computer::CANNED.lock().unwrap().0 = vec![json!({"ok": false, "code": "trust", "fingerprint": "ab12", "pin": "ab12"})];
+    let mut config = EngineConfig::new(App::Rust(Root::new::<RemoteForm>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(700.0));
+    let mut app = run(config);
+    app.press("on b1");
+    app.press("Connect a remote computer");
+    wait_for(&mut app, "Test");
+    let key = "SSH key file, like ~/.ssh/id_ed25519";
+    assert!(app.has(key), "an ssh:// form needs its key field");
+    assert!(app.has("The box's viewer password (none for a plain SSH host)"), "a plain SSH host needs no viewer password");
+    app.type_text("ssh://you@host or https://box.example.com", "https://box.example.com");
+    app.pump(Duration::from_millis(60));
+    assert!(!app.has(key), "https asks for no SSH key");
+    app.press("Test");
+    wait_for(&mut app, "ab12");
+    assert!(shows(&mut app, "the certificate on the server") && !shows(&mut app, "on the machine itself"), "{:?}", app.texts());
 }
 
 fn reach_ready(app: &mut Headless) {

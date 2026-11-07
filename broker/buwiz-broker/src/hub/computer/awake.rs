@@ -24,6 +24,9 @@ pub struct KeepAwake {
     told: AtomicBool,
     #[cfg(test)]
     logged: std::sync::atomic::AtomicUsize,
+    /// runs once, at the next `set`, before it does anything
+    #[cfg(test)]
+    pause: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl KeepAwake {
@@ -38,6 +41,8 @@ impl KeepAwake {
             told: AtomicBool::new(false),
             #[cfg(test)]
             logged: Default::default(),
+            #[cfg(test)]
+            pause: Mutex::default(),
         }
     }
 
@@ -47,8 +52,28 @@ impl KeepAwake {
         Self::of(Some(program))
     }
 
+    /// The next `set` runs `then` first (tests).
+    #[cfg(test)]
+    pub fn pause_next(&self, then: impl FnOnce() + Send + 'static) {
+        *self.pause.lock().unwrap() = Some(Box::new(then));
+    }
+
+    /// Whether anything is held now (tests).
+    #[cfg(test)]
+    pub fn holding(&self) -> bool {
+        self.held.lock().unwrap().is_some()
+    }
+
     /// Held when `wanted`, let go when not. One that died by itself is started again.
     pub fn set(&self, wanted: bool) {
+        #[cfg(test)]
+        {
+            // taken first: a second `set` isn't to wait on this one's pause
+            let then = self.pause.lock().unwrap().take();
+            if let Some(then) = then {
+                then();
+            }
+        }
         let Some(program) = &self.program else { return };
         if !wanted {
             self.told.store(false, Ordering::Relaxed);

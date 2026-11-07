@@ -15,7 +15,7 @@
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
 
-use regex_lite::Regex;
+use regex_lite::{Captures, Regex};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -35,10 +35,10 @@ pub const FAILED: &str = "failed";
 
 /// What a `run_ended` notice says. The model never reads it: notices stay out of its history.
 pub fn said(reason: &str) -> &'static str {
-    if reason == RESTART {
-        "The Bot's service restarted, so this run ended before it finished."
-    } else {
-        "Stopped before it finished."
+    match reason {
+        RESTART => "The Bot's service restarted, so this run ended before it finished.",
+        FAILED => "Something went wrong, so this message wasn't answered. Try again, or pick another model.",
+        _ => "Stopped before it finished.",
     }
 }
 
@@ -50,21 +50,64 @@ pub fn notice(reason: &str) -> Value {
 /// What of a provider's message a failed run's notice keeps.
 const SAID: usize = 160;
 
+const HIDDEN: &str = "[hidden]";
+/// What `error_message` writes for a provider that sent nothing: not the provider's words.
+const NO_BODY: &str = "status code (no body)";
+
 /// What can't go in a chat: a credential a provider or a proxy echoes back, whole or masked.
 static SECRET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(?:bearer|basic)\s+[^\s"',;)]+|\b(?:sk|pk|rk|xai|gsk|ghp|gho|ghs|github_pat|tkt)[-_][^\s"',;)]+|\b(?:AIza|eyJ)[^\s"',;)]+|[\w.-]*(?:key|token|secret|password)["']?\s*[=:]\s*["']?[^\s"',;&)]+|[\w+/=*.-]{24,}"#).unwrap()
+    Regex::new(r#"(?i)\bauthorization["']?\s*[=:]\s*["']?(?:(?:basic|bearer)\s+)?[^\s"',;&)]+|\bbearer\s+[^\s"',;)]+|\b(?:sk|pk|rk|xai|gsk|ghp|gho|ghs|github_pat|tkt)[-_][^\s"',;)]+|\b(?:AIza|eyJ)[^\s"',;)]+|[\w.-]*(?:key|token|secret|password)["']?\s*[=:]\s*["']?[^\s"',;&)]+"#).unwrap()
 });
+
+/// What may be a credential or may be words: what follows "basic", and any long unbroken run.
+static MAYBE_SECRET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bbasic\s+([^\s"',;)]+)|[\w+/=*.-]{24,}"#).unwrap());
+
+/// Letters and digits no word is made of: both at once, or capitals inside small letters.
+fn jumbled(piece: &str) -> bool {
+    let has = |test: fn(&u8) -> bool| piece.as_bytes().iter().any(test);
+    let inner_capitals = piece.as_bytes().iter().skip(1).any(u8::is_ascii_uppercase);
+    (has(u8::is_ascii_digit) && has(u8::is_ascii_alphabetic)) || (has(u8::is_ascii_lowercase) && inner_capitals)
+}
+
+/// Whether a long run reads as a key, not a name like `claude-haiku-4-5-20251001`: it's masked or
+/// padded, or most of it is pieces that are jumbled or too long to be a word.
+fn looks_random(run: &str) -> bool {
+    if run.contains(['*', '+', '=']) {
+        return true;
+    }
+    let pieces = || run.split(|c: char| !c.is_ascii_alphanumeric());
+    let all: usize = pieces().map(str::len).sum();
+    let odd: usize = pieces().filter(|p| p.len() >= 16 || jumbled(p)).map(str::len).sum();
+    odd * 2 > all
+}
+
+/// `said` with every credential hidden, and every name and plain word kept.
+fn hide_secrets(said: &str) -> String {
+    let said = SECRET.replace_all(said, HIDDEN);
+    let hidden = MAYBE_SECRET.replace_all(&said, |found: &Captures<'_>| {
+        let secret = match found.get(1) {
+            Some(word) => {
+                let word = word.as_str().trim_end_matches(['.', ':', '!', '?']);
+                jumbled(word) || !word.bytes().all(|b| b.is_ascii_alphabetic())
+            }
+            None => looks_random(&found[0]),
+        };
+        if secret { HIDDEN.to_owned() } else { found[0].to_owned() }
+    });
+    hidden.into_owned()
+}
 
 /// A provider's message as one short line: its JSON's own words, no markup, no credential.
 fn provider_said(m: &str) -> String {
     let body = m.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
-    if body.starts_with('<') {
+    if body.starts_with('<') || body == NO_BODY {
         return String::new();
     }
-    let parsed = serde_json::from_str::<Value>(body).ok();
-    let said = parsed.as_ref().and_then(|v| ["/error/message", "/message", "/error"].iter().find_map(|p| v.pointer(p)?.as_str())).unwrap_or(body);
+    let parsed = serde_json::from_str::<Value>(body).ok().filter(|v| v.is_object() || v.is_array());
+    // an object with no words in it has nothing for a person
+    let said = parsed.as_ref().map_or(body, |v| ["/error/message", "/message", "/error"].iter().find_map(|p| v.pointer(p)?.as_str()).unwrap_or_default());
     // before the cut, which could leave half a key the pattern no longer knows
-    let said = js::squeeze(&SECRET.replace_all(said, "[hidden]"));
+    let said = js::squeeze(&hide_secrets(said));
     let said = said.trim_end_matches('.');
     if said.chars().count() > SAID {
         return said.chars().take(SAID).collect::<String>() + "…";
@@ -76,12 +119,16 @@ fn provider_said(m: &str) -> String {
 pub fn failed_said(e: &str) -> String {
     let model = e.starts_with("llm-api");
     let (status, m) = parse_llm(e);
-    if matches!(status, Some(401 | 403)) {
+    if status == Some(401) {
         return "The model rejected its API key, so this message wasn't answered. Check the key, or pick another model.".to_owned();
     }
-    let lead = if model { "The model call failed" } else { "Something went wrong" };
     let said = provider_said(m);
     let why = if said.is_empty() { String::new() } else { format!(" ({said})") };
+    // a refusal can be about the account, the model or the region, not only the key
+    if status == Some(403) {
+        return format!("The model's provider refused access, so this message wasn't answered{why}. Check that this account can use this model, or pick another model.");
+    }
+    let lead = if model { "The model call failed" } else { "Something went wrong" };
     format!("{lead}, so this message wasn't answered{why}. Try again, or pick another model.")
 }
 
@@ -545,7 +592,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_failure_reads_in_plain_words_and_never_holds_a_credential() {
-        assert_eq!(failed_said("llm-api 403: forbidden"), REJECTED_SAID);
+        assert_eq!(failed_said("llm-api 401: nope"), REJECTED_SAID);
         assert_eq!(failed_said(&rejected()), REJECTED_SAID);
         let plain = |why: &str| format!("The model call failed, so this message wasn't answered ({why}). Try again, or pick another model.");
         assert_eq!(failed_said(r#"llm-api 500: 500 {"type":"error","error":{"type":"api_error","message":"upstream exploded"}}"#), plain("upstream exploded"));
@@ -574,6 +621,72 @@ pub(crate) mod tests {
             assert!(!said.contains(secret), "{said}");
         }
         assert!(failed_said("llm-api 400: max_tokens: 99999 is too large").contains("max_tokens: 99999"), "not every number is a secret");
+    }
+
+    #[test]
+    fn a_refused_call_says_access_was_refused_and_not_that_the_key_is_bad() {
+        let refused = |why: &str| format!("The model's provider refused access, so this message wasn't answered{why}. Check that this account can use this model, or pick another model.");
+        assert_eq!(failed_said(r#"llm-api 403: 403 {"error":{"type":"forbidden","message":"Request not allowed in this region"}}"#), refused(" (Request not allowed in this region)"));
+        assert_eq!(failed_said(r#"llm-api 403: 403 {"error":{"code":7}}"#), refused(""));
+        assert!(!failed_said(&format!("llm-api 403: refused for {KEY}")).contains("xxxx"), "a refusal's words are hidden as any others");
+    }
+
+    #[test]
+    fn names_and_plain_words_stay() {
+        for kept in [
+            "model claude-haiku-4-5-20251001 not found",
+            "model claude-3-5-sonnet-20241022 is retired",
+            "no model anthropic/claude-3.5-sonnet-20241022 here",
+            "no model meta-llama/llama-3.1-405b-instruct here",
+            "no model qwen2.5-coder-32b-instruct-preview here",
+            "Basic plan required",
+            "The basic tier can't use this. Basic plan.",
+            "rate_limit_exceeded_for_this_organization",
+        ] {
+            assert_eq!(provider_said(kept), kept.trim_end_matches('.'));
+        }
+    }
+
+    #[test]
+    fn keys_go_whatever_they_look_like() {
+        for (leak, secret) in [
+            ("Authorization: Basic dXNlcjpwYXNz was refused", "dXNlcjpwYXNz"),
+            ("Authorization: Basic abcdefgh was refused", "abcdefgh"),
+            ("basic dXNlcjpwYXNz was refused", "dXNlcjpwYXNz"),
+            ("basic abc123 was refused", "abc123"),
+            ("Authorization: Bearer abcd1234 was refused", "abcd1234"),
+            ("Bearer abcd was refused", "abcd"),
+            ("api_key=hush42 was refused", "hush42"),
+            ("opaque a3f1c9e87b2d4f60a1b2c3d4e5f60718 given", "a3f1c9e8"),
+            ("opaque qzxkvjwmplrtnbgdhcfsyaeu given", "qzxkvjwm"),
+            ("opaque 550e8400-e29b-41d4-a716-446655440000 given", "550e8400"),
+            ("masked abcd****************wxyz given", "wxyz"),
+            ("padded Zm9vYmFyYmF6cXV4Zm9vYmFy== given", "Zm9v"),
+            ("in claude-haiku-sk-abc123 a name", "abc123"),
+        ] {
+            let said = provider_said(leak);
+            assert!(!said.contains(secret) && said.contains("[hidden]"), "{said}");
+        }
+    }
+
+    #[test]
+    fn an_error_with_no_words_in_it_shows_no_json() {
+        let plain = "The model call failed, so this message wasn't answered. Try again, or pick another model.";
+        for body in [r#"{"error":{"code":500}}"#, r#"{"error":{"message":{"code":1}}}"#, r#"{"status":"bad"}"#, r#"[{"code":1}]"#, "{}"] {
+            assert_eq!(failed_said(&format!("llm-api 500: 500 {body}")), plain, "{body}");
+        }
+    }
+
+    #[test]
+    fn an_empty_answer_isnt_the_providers_words() {
+        assert_eq!(failed_said("llm-api 500: 500 status code (no body)"), "The model call failed, so this message wasn't answered. Try again, or pick another model.");
+    }
+
+    #[test]
+    fn a_failed_notice_with_no_words_still_says_it_failed() {
+        assert!(said(FAILED).contains("wasn't answered"), "{}", said(FAILED));
+        assert_eq!(said(STOPPED), "Stopped before it finished.");
+        assert!(said(RESTART).contains("restarted"));
     }
 
     #[test]
