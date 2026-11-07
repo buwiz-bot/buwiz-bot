@@ -23,7 +23,8 @@
 //!   goes on the first call it covers, whichever way that call goes. The call still goes through
 //!   every switch and the shell's gate, so a yes passes a card and no more.
 //!   `computer_ask_person` is bound by the tool alone, and the hand-over uses the reason and time
-//!   limit the person read, whatever the model sends: its other checks run fresh.
+//!   limit the person read, whatever the model sends: its other checks run fresh. A yes with
+//!   none of that kept hands nothing over.
 //! - The call itself is in `ask_waiting`, with the routine that made it. It survives a restart
 //!   and expires after [`KEEP`]. A call holding a secret ([`tool_log::holds_secret`]) isn't
 //!   kept: it's refused as before.
@@ -57,6 +58,8 @@ pub const WAIT: Duration = Duration::from_secs(600);
 
 /// How long a waiting card can be answered, in ms: a week away.
 pub const KEEP: i64 = 7 * DAY;
+/// A waiting card's row follows it at once: one with none this long after, in ms, never had it.
+const CARD_TO_ROW: i64 = 60_000;
 /// How often the broker looks for a waiting card past [`KEEP`], in ms.
 const SWEEP: u64 = 3_600_000;
 
@@ -285,6 +288,12 @@ pub(crate) fn yes_for_test(tool: &str, input: Value) -> Yes {
     Yes::new(tool.to_owned(), Some(input))
 }
 
+/// A test's yes with nothing kept of its card.
+#[cfg(test)]
+pub(crate) fn bare_yes_for_test(tool: &str) -> Yes {
+    Yes::new(tool.to_owned(), None)
+}
+
 /// Between two steps that have to hold together (tests), in `ctx.ext`: it runs as if another
 /// thread got in right there.
 #[cfg(test)]
@@ -314,6 +323,12 @@ pub fn yes_terms(run: &Run) -> Option<Value> {
     run.state().yes_in_hand.as_ref().and_then(|y| y.input.clone())
 }
 
+/// Whether this call's yes kept nothing of what its card asked. A hand-over's terms are the
+/// person's: without them there's nothing they said yes to.
+pub fn yes_lost_its_terms(run: &Run) -> bool {
+    run.state().yes_in_hand.as_ref().is_some_and(|y| y.input.is_none())
+}
+
 /// Whether a card's call can be kept for its answer.
 fn keepable(a: &Asking) -> bool {
     !a.input.as_ref().is_some_and(tool_log::holds_secret)
@@ -341,6 +356,33 @@ pub fn expire_waiting(ctx: &HubCtx) {
             log_ask(ctx, n["bot"].as_str().filter(|b| !b.is_empty()), shown(&k.tool, n["title"].as_str().unwrap_or(""), n["preview"].as_str().unwrap_or("")), &k.tool, "expired");
         }
         forget(ctx, &k.id);
+    }
+    clear_stranded(ctx);
+}
+
+/// A broker that stopped between a card and its row left a card nothing can answer: it expires.
+/// Only one older than [`CARD_TO_ROW`], so a card just posted isn't taken for one. A failed read of
+/// the rows clears nothing.
+fn clear_stranded(ctx: &HubCtx) {
+    let rows = db(ctx, |c| {
+        let mut q = c.prepare("SELECT id FROM ask_waiting")?;
+        let r = q.query_map([], |r| r.get::<_, String>(0))?;
+        r.collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+    });
+    let Ok(rows) = rows else { return };
+    let at = now(ctx);
+    let stranded = |n: &Value| n["kind"] == "tool_ask" && n["state"] == "waiting" && n["at"].as_i64().is_some_and(|t| at - t >= CARD_TO_ROW) && !n["id"].as_str().is_some_and(|id| rows.contains(id));
+    let found: Vec<Value> = ctx.store.read(|s| s.list.iter().flat_map(|t| t.turns.iter()).filter_map(|u| u.notice.clone()).filter(|n| stranded(n)).collect());
+    if found.is_empty() {
+        return;
+    }
+    edit(ctx, None, stranded, |n| {
+        n["state"] = json!("expired");
+        n["at"] = json!(at);
+    });
+    for n in found {
+        let tool = js::string_of(&n["tool"]);
+        log_ask(ctx, n["bot"].as_str().filter(|b| !b.is_empty()), shown(&tool, n["title"].as_str().unwrap_or(""), n["preview"].as_str().unwrap_or("")), &tool, "expired");
     }
 }
 
@@ -375,10 +417,10 @@ fn wait(run: &Run, a: &Asking) -> String {
         return WAITS.to_owned();
     }
     let what = shown(&a.tool, &a.title, &a.preview);
-    log_ask(ctx, bot, what, &a.tool, "needs_ok");
     if routine_of(&run.turn).is_some_and(|r| routine_waits(ctx, &r)) {
         return ONE_CARD.to_owned();
     }
+    log_ask(ctx, bot, what, &a.tool, "needs_ok");
     if !keepable(a) {
         return NOBODY.to_owned();
     }

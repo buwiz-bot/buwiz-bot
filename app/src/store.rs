@@ -7037,8 +7037,9 @@ impl Store {
 
     /// Follows the run a person's yes on a waiting card started.
     pub fn follow_run(&'static self, job: String, thread: String, bot: Option<String>) {
-        // one row a chat, as `resume_runs`
-        if self.run_jobs.with_untracked(|m| m.contains_key(&thread)) {
+        // a yes starts only in an idle chat, so another job here is one that's over: this is the
+        // chat's run now, and that one's watch stands down
+        if self.run_jobs.with_untracked(|m| m.get(&thread) == Some(&job)) {
             return;
         }
         self.follow(RunningRun { job, thread, bot, phase: "queued".to_owned(), detail: String::new() });
@@ -7057,6 +7058,10 @@ impl Store {
         self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
         self.in_store(|| spawn(async move {
             self.watch_run(job, thread.clone(), bot).await;
+            // the run that took its place has the row now
+            if self.run_jobs.with_untracked(|m| m.contains_key(&thread)) {
+                return;
+            }
             self.sending.update(|s| {
                 s.remove(&thread);
             });
@@ -7099,6 +7104,10 @@ impl Store {
                 continue;
             };
             missed = 0;
+            // another run of this chat took its place: nothing here is this watch's to touch now
+            if self.run_jobs.with_untracked(|m| m.get(&thread) != Some(&job)) {
+                return;
+            }
             let phase = s(&v, "phase");
             let detail = s(&v, "detail");
             let status = if detail.is_empty() { phase.clone() } else { detail.clone() };

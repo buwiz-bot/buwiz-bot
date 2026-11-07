@@ -135,6 +135,7 @@ pub fn defs() -> Vec<Value> {
 }
 
 const RUN_REMOTE: &str = "Run a shell command on your computer, in your own folder there, and get its output. This computer is a remote machine a person connected: the command runs there with whatever access they gave, and nothing walls it off from the rest of that machine.";
+const NO_TERMS: &str = "That yes didn't keep what the card asked for, so nothing was handed over. Tell the person what you need, and ask for the screen again if they agree.";
 const REMOTE_NO_HANDOVER: &str = "A remote computer's screen can't be handed over here: nothing can check from outside that what you run there can't see it. Ask the person in chat to open the viewer and take control, and say what you need.";
 
 /// The tools this turn is offered: a turn nobody can answer can't ask a person, and no screen on a
@@ -321,6 +322,9 @@ fn hold_screen(run: &Run, computers: &std::sync::Arc<Computers>, live: &Live) ->
 
 /// `computer_ask_person`: a card, then the screen is the person's until it comes back.
 async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live, input: &Value) -> Out {
+    if asking::yes_lost_its_terms(run) {
+        return Out::err(NO_TERMS.to_owned());
+    }
     // a yes on a waiting card was to what that card said, whatever the model says now
     let said = asking::yes_terms(run);
     let input = said.as_ref().unwrap_or(input);
