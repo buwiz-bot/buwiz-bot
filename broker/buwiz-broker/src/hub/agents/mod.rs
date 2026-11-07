@@ -385,6 +385,28 @@ fn msg_field<'a>(u: &'a Turn, key: &str) -> Option<&'a Value> {
     u.message.as_ref().and_then(|m| m.get(key))
 }
 
+/// `u.message?.from?.id`: the broker's record of who sent it.
+fn sender_of(u: &Turn) -> Option<&str> {
+    msg_field(u, "from").and_then(|f| f.get("id")).and_then(Value::as_str)
+}
+
+/// Whether `message` is `from`'s true answer to `to`'s own question. Any
+/// sender can write `in_reply_to`, so it counts only if the message it cites
+/// is in this conversation, was sent by `to` to `from` and expected a reply,
+/// and `from` has not answered it already (`message` itself not counted).
+fn answers(s: &State, to: &Party, from: &Party, message: &Value) -> bool {
+    let Some(cited) = message.get("in_reply_to").filter(|r| js::truthy(r)) else { return false };
+    let Some(ti) = message.get("conversation").filter(|c| js::truthy(c)).and_then(|c| conversation_index(s, &js::string_of(c))) else { return false };
+    let mut said = s.list[ti].turns.iter().filter(|u| u.role == "agent_message");
+    let asked = said.clone().any(|u| {
+        msg_field(u, "id") == Some(cited)
+            && sender_of(u) == Some(to.id.as_str())
+            && truthy(msg_field(u, "expects_reply"))
+            && msg_field(u, "to").and_then(Value::as_array).is_some_and(|a| a.iter().any(|p| p.get("id").and_then(Value::as_str) == Some(from.id.as_str())))
+    });
+    asked && !said.any(|u| sender_of(u) == Some(from.id.as_str()) && msg_field(u, "in_reply_to") == Some(cited) && msg_field(u, "id") != message.get("id"))
+}
+
 /// The conversation's thread index (`conversation(conv)`).
 pub fn conversation_index(s: &State, conv: &str) -> Option<usize> {
     s.list.iter().position(|t| mark(t).and_then(|m| m.get("conversation")).and_then(Value::as_str) == Some(conv))
@@ -434,20 +456,64 @@ impl Agents {
         }
     }
 
-    /// The agents `caller` may message: live, not itself, taking messages
-    /// from it; a temporary helper only to its parent. An outside sender
-    /// reaches the one agent its endpoint belongs to; the user every live
-    /// agent but the helpers (every agent takes the user's messages).
+    /// Whether `to` hears `from`, on every path a message takes: the one
+    /// answer to "may this reach that Bot?". True for the user, for that
+    /// Bot's own webhook or bridge whatever it accepts, for a sender it
+    /// accepts, and for a true answer to its own question ([`answers`]).
+    /// Another Bot's endpoint is on no list. An endpoint hears as the Bot it
+    /// belongs to does, and the user hears everyone in their conversation.
+    ///
+    /// `message` is what is read of the message: its `conversation`,
+    /// `in_reply_to` and, once recorded, its `id`. [`Value::Null`] asks about
+    /// a new message. A temporary helper's own rule is [`reaches`](Self::reaches)'s.
+    pub fn hears(&self, s: &State, to: &Party, from: &Party, message: &Value) -> bool {
+        if from.is_user() || to.is_user() {
+            return true;
+        }
+        let Some(b) = s.bot(to.owner.as_deref().unwrap_or(&to.id)) else { return false };
+        if from.id == b.id || from.owner.as_deref() == Some(b.id.as_str()) {
+            return true;
+        }
+        (!from.external() && accepts(b, &from.id)) || answers(s, to, from, message)
+    }
+
+    /// [`hears`](Self::hears) for a message already recorded, from its own
+    /// `from`: what a delivery asks. A sender since gone is not heard.
+    pub fn heard(&self, s: &State, to: &Party, msg: &Value) -> bool {
+        let from = msg.get("from").and_then(|f| f.get("id")).and_then(Value::as_str);
+        from.and_then(|id| self.party(s, id)).is_some_and(|from| self.hears(s, to, &from, msg))
+    }
+
+    /// Whether a message from `from` may go to `to`: it [`hears`](Self::hears)
+    /// them, its Bot is live, and a temporary helper takes messages only from
+    /// its parent, itself and its own endpoints, which no answer changes. All
+    /// of it is read on the Bot `to` belongs to, as `hears` does: a helper's
+    /// endpoint is shut as the helper is, and an ended helper's take nothing.
+    ///
+    /// The user is let past the helper rule here: in a running chat they
+    /// reach a helper in it, because you always get in. Starting a message to
+    /// a helper is another matter ([`reachable`](Self::reachable)).
+    fn reaches(&self, s: &State, from: &Party, to: &Party, message: &Value) -> bool {
+        let shut = s.bot(to.owner.as_deref().unwrap_or(&to.id)).is_some_and(|b| {
+            let kept_out = has_helper(b) && !from.is_user() && b.id != from.id && helper_of(b, "parent").and_then(Value::as_str) != Some(&from.id) && from.owner.as_deref() != Some(b.id.as_str());
+            !live(b) || kept_out
+        });
+        !shut && self.hears(s, to, from, message)
+    }
+
+    /// The agents `caller` may start a message to: live, not itself, those
+    /// it [`reaches`](Self::reaches). An outside sender reaches the one agent
+    /// its endpoint belongs to; the user every live agent but the helpers.
     pub fn reachable<'a>(&self, s: &'a State, caller: &Party) -> Vec<&'a Bot> {
+        self.reachable_with(s, caller, &Value::Null)
+    }
+
+    /// [`reachable`](Self::reachable) for `message`, which may be an answer.
+    fn reachable_with<'a>(&self, s: &'a State, caller: &Party, message: &Value) -> Vec<&'a Bot> {
         if caller.is_user() {
             return s.bots.iter().filter(|b| live(b) && !has_helper(b)).collect();
         }
-        match &caller.owner {
-            Some(owner) => s.bots.iter().filter(|b| &b.id == owner && live(b) && accepts(b, &caller.id)).collect(),
-            None => {
-                s.bots.iter().filter(|b| b.id != caller.id && live(b) && accepts(b, &caller.id) && (!has_helper(b) || helper_of(b, "parent").and_then(Value::as_str) == Some(&caller.id))).collect()
-            }
-        }
+        s.bots.iter().filter(|b| b.id != caller.id && live(b) && self.reaches(s, caller, &Party::of(b), message)).collect()
     }
 
     /// `agents_list {}`.
@@ -473,8 +539,8 @@ impl Agents {
         )
     }
 
-    /// One recipient as `to` names it: an id, a name, or `{id}`.
-    fn recipient(&self, s: &State, caller: &Party, r: &Value) -> Result<Party, AgentError> {
+    /// One recipient of `message` as `to` names it: an id, a name, or `{id}`.
+    fn recipient(&self, s: &State, caller: &Party, r: &Value, message: &Value) -> Result<Party, AgentError> {
         let key = match r {
             Value::String(k) => Some(k.clone()),
             _ => {
@@ -505,7 +571,7 @@ impl Agents {
         if b.id == caller.id {
             return fail("invalid_args", "an agent cannot message itself");
         }
-        if !self.reachable(s, caller).iter().any(|x| x.id == b.id) {
+        if !self.reachable_with(s, caller, message).iter().any(|x| x.id == b.id) {
             return fail("not_allowed", format!("{} does not take messages from you", b.name));
         }
         Ok(Party::of(b))
@@ -626,17 +692,21 @@ impl Agents {
             }
             return fail("hop_limit", format!("a message relayed more than {HOP} times between agents is refused"));
         }
+        // what `hears` reads of this message. Only these two: `input` is the
+        // sender's, and an `id` in it would excuse its last answer.
+        let message = json!({"conversation": get("conversation"), "in_reply_to": get("in_reply_to")});
+        let mut not_taken: Vec<Party> = Vec::new();
         // one agent may come as its id or name alone
         let to_given = match get("to") {
             Some(Value::String(x)) if x != "*" => Some(json!([x])),
             other => other.cloned(),
         };
         let to: Vec<Party> = match &to_given {
-            Some(Value::String(_)) => self.reachable(s, caller).into_iter().filter(|b| !has_helper(b)).map(Party::of).collect(),
+            Some(Value::String(_)) => self.reachable_with(s, caller, &message).into_iter().filter(|b| !has_helper(b)).map(Party::of).collect(),
             Some(Value::Array(a)) if !a.is_empty() => {
                 let mut to: Vec<Party> = Vec::new();
                 for r in a {
-                    let p = self.recipient(s, caller, r)?;
+                    let p = self.recipient(s, caller, r, &message)?;
                     if p.is_user() && !ti.is_some_and(|i| includes(&s.list[i], &p.id)) {
                         return fail("not_allowed", "the user is answered only in a conversation they started");
                     }
@@ -647,13 +717,20 @@ impl Agents {
                 }
                 to
             }
-            None if ti.is_some() => participants(&s.list[ti.expect("checked")])
-                .iter()
-                .filter(|p| p.as_str() != Some(caller.id.as_str()))
-                .filter_map(|p| self.party(s, &js::string_of(p)))
-                .filter(|p| p.external() || p.is_user() || s.bot(&p.id).is_some_and(live))
-                .collect(),
-            None if caller.external() => self.reachable(s, caller).into_iter().map(Party::of).collect(),
+            None if ti.is_some() => {
+                let (heard, refused): (Vec<Party>, Vec<Party>) = participants(&s.list[ti.expect("checked")])
+                    .iter()
+                    .filter(|p| p.as_str() != Some(caller.id.as_str()))
+                    .filter_map(|p| self.party(s, &js::string_of(p)))
+                    .filter(|p| p.external() || p.is_user() || s.bot(&p.id).is_some_and(live))
+                    .partition(|p| self.reaches(s, caller, p, &message));
+                if heard.is_empty() && !refused.is_empty() {
+                    return fail("not_allowed", "nobody else in this conversation takes messages from you");
+                }
+                not_taken = refused;
+                heard
+            }
+            None if caller.external() => self.reachable_with(s, caller, &message).into_iter().map(Party::of).collect(),
             _ => return fail("invalid_args", "give `to`: a list of agents, or \"*\" for all of them"),
         };
         if to.is_empty() {
@@ -763,7 +840,11 @@ impl Agents {
         for b in &to {
             out.push(Delivery { to: b.clone(), msg: msg.clone(), thread: tid.clone() });
         }
-        Ok(json!({"id": msg["id"], "conversation": msg["conversation"], "delivered_to": [], "queued_for": to.iter().map(|b| json!(b.id)).collect::<Vec<_>>()}))
+        let mut sent = json!({"id": msg["id"], "conversation": msg["conversation"], "delivered_to": [], "queued_for": to.iter().map(|b| json!(b.id)).collect::<Vec<_>>()});
+        if !not_taken.is_empty() {
+            sent["not_taken_by"] = not_taken.iter().map(|p| json!({"id": p.id, "name": p.name})).collect();
+        }
+        Ok(sent)
     }
 
     /// The message `msg_id` reached `bot` (its turn ran, or it needed none).

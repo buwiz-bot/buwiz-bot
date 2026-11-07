@@ -711,6 +711,320 @@ async fn hook_a_bridge_receives_what_its_agent_sends_waiting_for_it_when_asked()
     assert_eq!(w.hub.externals.receive(&r, &json!({})).await, json!({"messages": []}), "taken once");
 }
 
+// ————— who a Bot hears (`Agents::hears`) —————
+
+fn none(w: &World, bot: &str) {
+    w.set_bot(bot, |b| b.accepts = Some(json!("none")));
+}
+
+fn ran(w: &World, kind: &str, who: &str) -> usize {
+    w.stub.ran.lock().unwrap().iter().filter(|(k, b, ..)| k == kind && b == who).count()
+}
+
+impl World {
+    /// Boss's question to Scout, its deliveries left unrouted.
+    fn question(&self) -> Value {
+        self.send("boss", json!({"to": ["scout"], "subject": "Q3", "text": "How is Q3?", "expects_reply": true})).unwrap()
+    }
+
+    fn messages(&self, conv: &Value) -> usize {
+        self.conv(conv).turns.iter().filter(|u| u.role == "agent_message").count()
+    }
+
+    fn hook(&self, bot: &str) -> (String, String) {
+        let h = self.endpoint(json!({"bot": bot, "kind": "hook", "name": "CI"}));
+        (h["id"].as_str().unwrap().to_owned(), h["secret"].as_str().unwrap().to_owned())
+    }
+
+    fn post(&self, hook: &(String, String), fields: Value) -> Result<Value, (u16, String)> {
+        let body = env(fields);
+        self.incoming(&hook.0, &hook.1, &body, Some(&self.signed(&hook.1, &body, 0)))
+    }
+}
+
+#[tokio::test]
+async fn hears_a_running_chat_to_a_bot_on_none_or_off_its_list_is_refused_with_no_turn_and_no_notice() {
+    for accepts in [json!("none"), json!(["ada"])] {
+        let w = world();
+        let r = w.send("scout", json!({"to": ["boss"], "subject": "Tax", "text": "first"})).unwrap();
+        w.set_bot("boss", |b| b.accepts = Some(accepts.clone()));
+        let (chat, sender) = (w.chat("boss").len(), w.chat("scout").len());
+        let count = w.chat("boss")[0].notice.as_ref().unwrap()["count"].clone();
+        let no = w.send_routed("scout", json!({"conversation": r["conversation"], "text": "still there?", "expects_reply": true})).unwrap_err();
+        assert_eq!(no.code, "not_allowed");
+        w.settle().await;
+        assert_eq!(w.messages(&r["conversation"]), 1, "nothing recorded");
+        assert_eq!((w.chat("boss").len(), w.chat("scout").len()), (chat, sender));
+        assert_eq!(w.chat("boss")[0].notice.as_ref().unwrap()["count"], count, "the notice did not move");
+        assert_eq!(ran(&w, "request", "boss"), 0, "no turn");
+    }
+}
+
+#[tokio::test]
+async fn hears_a_group_delivers_to_the_rest_and_says_who_did_not_take_it() {
+    let w = world();
+    let r = w.send("scout", json!({"to": ["boss", "ada"], "subject": "Tax", "text": "first"})).unwrap();
+    none(&w, "boss");
+    let notices = w.chat("boss")[0].notice.clone();
+    let sent = w.send_routed("scout", json!({"conversation": r["conversation"], "text": "both of you?", "expects_reply": true})).unwrap();
+    assert_eq!(sent["queued_for"], json!(["ada"]));
+    assert_eq!(sent["not_taken_by"], json!([{"id": "boss", "name": "Boss"}]));
+    w.settle().await;
+    let t = w.conv(&r["conversation"]);
+    let msg = t.turns.iter().rev().find(|u| u.role == "agent_message").unwrap();
+    assert_eq!(msg.message.as_ref().unwrap()["to"].as_array().unwrap().len(), 1, "Boss is not on the message");
+    assert_eq!(ran(&w, "request", "ada"), 1);
+    assert_eq!(ran(&w, "request", "boss"), 0);
+    assert_eq!(w.chat("boss")[0].notice, notices);
+    // everyone hears: nothing to report
+    assert!(w.send("ada", json!({"conversation": r["conversation"], "to": ["scout"], "text": "ok"})).unwrap().get("not_taken_by").is_none());
+}
+
+#[tokio::test]
+async fn hears_an_answer_gets_in_and_wakes_the_asker_on_none_and_on_a_list() {
+    for accepts in [json!("none"), json!(["ada"])] {
+        // the answer run.rs sends for Scout's turn
+        let w = world_with(&["Scout", "Boss", "Ada"], Stub { answer: Mutex::new(Some("Q3 is fine".into())), ..Default::default() }, Vec::new());
+        w.set_bot("boss", |b| b.accepts = Some(accepts.clone()));
+        let q = w.send_routed("boss", json!({"to": ["scout"], "subject": "Q3", "text": "How is Q3?", "expects_reply": true})).unwrap();
+        w.settle().await;
+        assert_eq!(w.messages(&q["conversation"]), 2, "the answer is in");
+        assert_eq!(ran(&w, "reply", "boss"), 1, "and it woke Boss");
+        assert!(w.conv(&q["conversation"]).turns.iter().all(|u| u.pending.is_none()));
+
+        // one the turn sends itself, each way of naming the asker
+        for to in [json!({"to": ["boss"]}), json!({"to": "*"}), json!({})] {
+            let w = world();
+            let q = w.question();
+            w.set_bot("boss", |b| b.accepts = Some(accepts.clone()));
+            let mut a = json!({"conversation": q["conversation"], "in_reply_to": q["id"], "text": "fine"});
+            a.as_object_mut().unwrap().extend(to.as_object().unwrap().clone());
+            let sent = w.send_routed("scout", a).unwrap();
+            assert!(sent["queued_for"].as_array().unwrap().contains(&json!("boss")));
+            w.settle().await;
+            assert_eq!(ran(&w, "reply", "boss"), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn hears_a_forged_answer_is_refused() {
+    let w = world();
+    let q = w.question();
+    let c = &q["conversation"];
+    // Boss's note to Scout that asks nothing, Scout's own question, and Boss's question to Ada alone
+    let note = w.send("boss", json!({"conversation": c, "to": ["scout"], "text": "fyi"})).unwrap();
+    let own = w.send("scout", json!({"conversation": c, "to": ["boss"], "text": "and you?", "expects_reply": true})).unwrap();
+    let ada = w.send("boss", json!({"conversation": c, "to": ["ada"], "text": "Ada?", "expects_reply": true})).unwrap();
+    // the same question from Boss in another conversation
+    let elsewhere = w.send("boss", json!({"to": ["scout"], "subject": "Other", "text": "other", "expects_reply": true})).unwrap();
+    none(&w, "boss");
+    let before = w.messages(c);
+    for (why, cited) in [("asks nothing", &note["id"]), ("its own", &own["id"]), ("sent to Ada", &ada["id"]), ("another conversation", &elsewhere["id"]), ("not a message", &json!("msg_nope"))] {
+        for to in [json!({"to": ["boss"]}), json!({"to": "*"})] {
+            let mut a = json!({"conversation": c, "in_reply_to": cited, "text": "let me in"});
+            a.as_object_mut().unwrap().extend(to.as_object().unwrap().clone());
+            let r = w.send("scout", a);
+            match r {
+                // to all: Boss is left out, or the citation is refused for what it is
+                Ok(sent) if to["to"] == json!("*") => assert!(!sent["queued_for"].as_array().unwrap().contains(&json!("boss")), "{why}"),
+                Err(e) if to["to"] == json!("*") => assert_eq!(e.code, "invalid_args", "{why}"),
+                r => assert_eq!(code(r), "not_allowed", "{why}"),
+            }
+        }
+    }
+    // no conversation to answer in
+    assert_eq!(code(w.send("scout", json!({"to": ["boss"], "subject": "x", "in_reply_to": q["id"], "text": "y"}))), "not_allowed");
+    // a true answer doesn't carry anyone else in
+    assert_eq!(code(w.send("ada", json!({"conversation": c, "to": ["boss"], "in_reply_to": q["id"], "text": "not asked"}))), "not_allowed", "Ada wasn't asked");
+    none(&w, "ada");
+    assert_eq!(code(w.send("scout", json!({"conversation": c, "to": ["boss", "ada"], "in_reply_to": q["id"], "text": "fine"}))), "not_allowed", "Ada asked nothing of Scout");
+    assert_eq!(w.messages(c) - before, 3, "only the three broadcasts that cited this conversation, none to Boss");
+}
+
+#[test]
+fn hears_a_second_answer_is_refused_and_an_id_of_the_senders_does_not_excuse_it() {
+    let w = world();
+    let q = w.question();
+    none(&w, "boss");
+    let first = w.send("scout", json!({"to": ["boss"], "conversation": q["conversation"], "in_reply_to": q["id"], "text": "fine"})).unwrap();
+    let again = json!({"to": ["boss"], "conversation": q["conversation"], "in_reply_to": q["id"], "text": "and more"});
+    assert_eq!(code(w.send("scout", again.clone())), "not_allowed");
+    assert_eq!(code(w.send("scout", json!({"conversation": q["conversation"], "in_reply_to": q["id"], "text": "and more"}))), "not_allowed", "a running chat too");
+    // the tool's input and a bridge's body are the sender's own
+    let mut forged = again;
+    forged["id"] = first["id"].clone();
+    assert_eq!(code(w.send("scout", forged)), "not_allowed");
+    // the question sent to two is one answer each
+    let w = world();
+    let q = w.send("boss", json!({"to": ["scout", "ada"], "subject": "Q3", "text": "?", "expects_reply": true})).unwrap();
+    none(&w, "boss");
+    for who in ["scout", "ada"] {
+        w.send(who, json!({"to": ["boss"], "conversation": q["conversation"], "in_reply_to": q["id"], "text": "fine"})).unwrap();
+    }
+}
+
+#[test]
+fn hears_an_answer_reaches_no_helper_but_its_parents() {
+    let w = world();
+    let made = w.create("scout", json!({"name": "Runner", "purpose": "run", "temporary": true})).unwrap();
+    let h = made["id"].as_str().unwrap().to_owned();
+    let q = w.send(&h, json!({"to": ["boss"], "subject": "Q", "text": "?", "expects_reply": true})).unwrap();
+    let answer = json!({"conversation": q["conversation"], "in_reply_to": q["id"], "text": "fine"});
+    let mut named = answer.clone();
+    named["to"] = json!([h]);
+    assert_eq!(code(w.send("boss", named)), "not_allowed");
+    assert_eq!(code(w.send("boss", answer)), "not_allowed", "a running chat too");
+    // its parent still does
+    let r = w.send("scout", json!({"to": [h], "subject": "Go", "text": "go"})).unwrap();
+    w.send("scout", json!({"conversation": r["conversation"], "text": "and?"})).unwrap();
+}
+
+#[tokio::test]
+async fn hears_a_webhook_and_a_bridge_reach_their_own_bot_whatever_it_accepts() {
+    for accepts in [json!("none"), json!(["ada"])] {
+        let w = hook_world(Vec::new(), None);
+        let h = w.hook("boss");
+        let b = w.endpoint(json!({"bot": "boss", "kind": "bridge", "name": "Claude Code"}));
+        w.set_bot("boss", |x| x.accepts = Some(accepts.clone()));
+        let sent = w.post(&h, json!({})).unwrap();
+        assert_eq!(w.messages(&sent["conversation"]), 1);
+        w.post(&h, json!({"id": "msg_hook00000002", "to": ["boss"]})).unwrap();
+        w.post(&h, json!({"id": "msg_hook00000003", "conversation": sent["conversation"]})).unwrap();
+        w.settle().await;
+        assert_eq!(ran(&w, "request", "boss"), 3);
+        let id = b["id"].as_str().unwrap();
+        let sent = w.hub.write(&w.ctx, |s, out| w.hub.agents.send_from(s, id, &json!({"subject": "Status", "text": "Q3?", "expects_reply": true}), None, out)).unwrap();
+        assert_eq!(sent["queued_for"], json!(["boss"]));
+        w.settle().await;
+        assert_eq!(ran(&w, "request", "boss"), 4);
+    }
+}
+
+#[tokio::test]
+async fn hears_another_bots_webhook_and_bridge_are_refused_whatever_it_accepts() {
+    let names = [json!({"to": ["scout"]}), json!({"to": "scout"})];
+    for accepts in [Value::Null, json!("none"), json!("list")] {
+        let w = hook_world(Vec::new(), None);
+        let h = w.hook("boss");
+        let b = w.endpoint(json!({"bot": "boss", "kind": "bridge", "name": "Claude Code"}));
+        let bridge = b["id"].as_str().unwrap();
+        match accepts.as_str() {
+            Some("none") => none(&w, "scout"),
+            // a list naming the endpoint is still not its way in
+            Some("list") => w.set_bot("scout", |x| x.accepts = Some(json!([format!("ext:{}", h.0), format!("ext:{bridge}")]))),
+            _ => {}
+        }
+        for to in &names {
+            assert_eq!(w.post(&h, to.clone()), Err((400, "not_allowed".into())));
+            let mut m = json!({"subject": "Q", "text": "t"});
+            m["to"] = to["to"].clone();
+            let no = w.hub.write(&w.ctx, |s, out| w.hub.agents.send_from(s, bridge, &m, None, out)).unwrap_err();
+            assert_eq!(no.code, "not_allowed");
+        }
+    }
+}
+
+#[tokio::test]
+async fn hears_a_running_chat_keeps_to_the_endpoints_own_bot_and_an_endpoint_hears_as_its_bot() {
+    let w = hook_world(Vec::new(), None);
+    let h = w.hook("boss");
+    let ext = format!("ext:{}", h.0);
+    let sent = w.post(&h, json!({"expects_reply": false})).unwrap();
+    let c = &sent["conversation"];
+    w.send("boss", json!({"conversation": c, "to": ["scout"], "text": "Scout, see this"})).unwrap();
+    // from the hook: to Boss, not to Scout, who takes everyone's
+    let r = w.post(&h, json!({"id": "msg_hook00000002", "conversation": c, "expects_reply": false})).unwrap();
+    assert_eq!(r["not_taken_by"], json!([{"id": "scout", "name": "Scout"}]));
+    let last = w.conv(c).turns.iter().rev().find(|u| u.role == "agent_message").cloned().unwrap();
+    assert_eq!(last.message.as_ref().unwrap()["to"], json!([{"kind": "agent", "id": "boss", "name": "Boss"}]));
+    // from Scout: Boss's hook takes it while Boss would
+    let open = w.send("scout", json!({"conversation": c, "text": "hello"})).unwrap();
+    assert_eq!(open["queued_for"].as_array().unwrap().len(), 2);
+    assert!(open["queued_for"].as_array().unwrap().contains(&json!(ext)));
+    none(&w, "boss");
+    assert_eq!(code(w.send("scout", json!({"conversation": c, "text": "hello?"}))), "not_allowed");
+    // Boss itself still writes to its own hook
+    assert_eq!(w.send("boss", json!({"conversation": c, "to": [ext], "text": "from me"})).unwrap()["queued_for"], json!([ext]));
+}
+
+#[tokio::test]
+async fn hears_a_reply_wakes_no_one_unless_it_is_heard() {
+    // sent while Boss took it, delivered once Boss is on None: not an answer
+    let w = world();
+    let r = w.send("boss", json!({"to": ["scout"], "subject": "Note", "text": "fyi"})).unwrap();
+    let mut out = Vec::new();
+    w.send_hop("scout", json!({"conversation": r["conversation"], "in_reply_to": r["id"], "text": "noted"}), 0, &mut out).unwrap();
+    none(&w, "boss");
+    let d = out.into_iter().find(|d| d.to.id == "boss").unwrap();
+    w.hub.deliver(&w.ctx, d.clone());
+    w.settle().await;
+    assert_eq!(ran(&w, "reply", "boss"), 0);
+    assert!(w.conv(&r["conversation"]).turns.iter().all(|u| u.pending.as_ref().is_none_or(|p| !p.as_array().unwrap().contains(&json!("boss")))), "and it is done with");
+    // the same message on All wakes Boss as it did
+    w.set_bot("boss", |b| b.accepts = None);
+    w.hub.deliver(&w.ctx, d);
+    w.settle().await;
+    assert_eq!(ran(&w, "reply", "boss"), 1);
+}
+
+/// A helper of Scout's, with a bridge of its own, in one conversation with
+/// it: → (the helper, its endpoint, the conversation).
+fn helper_with_bridge(w: &World) -> (String, String, Value) {
+    let h = w.create("scout", json!({"name": "Runner", "purpose": "run", "temporary": true})).unwrap()["id"].as_str().unwrap().to_owned();
+    let b = w.endpoint(json!({"bot": h, "kind": "bridge", "name": "Claude Code"}));
+    let id = b["id"].as_str().unwrap().to_owned();
+    let sent = w.ctx.store.write(|s| w.hub.agents.send_from(s, &id, &json!({"subject": "Run", "text": "go"}), None, &mut Vec::new())).unwrap().unwrap();
+    (h, format!("ext:{id}"), sent["conversation"].clone())
+}
+
+#[test]
+fn hears_a_helpers_endpoint_is_shut_as_the_helper_is() {
+    let w = world();
+    let (h, ext, c) = helper_with_bridge(&w);
+    w.send(&h, json!({"conversation": c, "to": ["boss", "ada", "scout"], "text": "all of you"})).unwrap();
+    // from a Bot that isn't its parent: neither the helper nor its bridge
+    let sent = w.send("boss", json!({"conversation": c, "text": "and you?"})).unwrap();
+    let q = sent["queued_for"].as_array().unwrap();
+    assert!(!q.contains(&json!(h)) && !q.contains(&json!(ext)), "{q:?}");
+    let not: Vec<&Value> = sent["not_taken_by"].as_array().unwrap().iter().map(|p| &p["id"]).collect();
+    assert!(not.contains(&&json!(h)) && not.contains(&&json!(ext)), "{not:?}");
+    // from its parent, and from the helper itself to its own bridge
+    let q = w.send("scout", json!({"conversation": c, "text": "go on"})).unwrap()["queued_for"].clone();
+    assert!(q.as_array().unwrap().contains(&json!(h)) && q.as_array().unwrap().contains(&json!(ext)), "{q}");
+    let q = w.send(&h, json!({"conversation": c, "text": "done"})).unwrap()["queued_for"].clone();
+    assert!(q.as_array().unwrap().contains(&json!(ext)), "{q}");
+}
+
+#[test]
+fn hears_an_ended_helpers_endpoint_takes_nothing() {
+    let w = world();
+    let (h, ext, c) = helper_with_bridge(&w);
+    w.send(&h, json!({"conversation": c, "to": ["scout"], "text": "for you"})).unwrap();
+    w.remove("scout", json!({"id": h})).unwrap();
+    assert_eq!(code(w.send("scout", json!({"conversation": c, "text": "anyone?"}))), "not_allowed", "not even from its parent");
+    w.send("scout", json!({"conversation": c, "to": ["boss"], "text": "Boss, a word"})).unwrap();
+    // beside someone who takes it, it is left out and reported
+    let sent = w.send("scout", json!({"conversation": c, "text": "and now?"})).unwrap();
+    assert_eq!(sent["queued_for"], json!(["boss"]));
+    assert_eq!(sent["not_taken_by"], json!([{"id": ext, "name": "Claude Code"}]));
+}
+
+#[tokio::test]
+async fn hears_the_user_still_reaches_a_helper_in_a_running_chat() {
+    let w = world();
+    let plain = w.plain();
+    let me = format!("chat:{plain}");
+    let h = w.create("scout", json!({"name": "Runner", "purpose": "run", "temporary": true})).unwrap()["id"].as_str().unwrap().to_owned();
+    let r = w.send(&me, json!({"to": ["scout"], "subject": "Run", "text": "start"})).unwrap();
+    w.send("scout", json!({"conversation": r["conversation"], "to": [h], "text": "take this"})).unwrap();
+    let sent = w.send(&me, json!({"conversation": r["conversation"], "text": "both of you"})).unwrap();
+    assert!(sent["queued_for"].as_array().unwrap().contains(&json!(h)), "{sent}");
+    assert!(sent.get("not_taken_by").is_none());
+    // but it starts nothing with one
+    assert_eq!(code(w.send(&me, json!({"to": [h], "subject": "x", "text": "y"}))), "not_allowed");
+}
+
 // ————— the pieces —————
 
 #[test]
