@@ -371,7 +371,7 @@ impl AgentsHub {
                         eprintln!("agents: {}'s reply to {} refused: {}", bot.id, js_str(Some(&msg_id)), e.code);
                     }
                 }
-            } else if msg.get("in_reply_to").is_some_and(js::truthy) {
+            } else if msg.get("in_reply_to").is_some_and(js::truthy) && ctx.store.read(|s| self.agents.heard(s, &bot, &msg)) {
                 self.runs.reply(ctx.clone(), self.clone(), bot.clone(), msg.clone(), thread.clone()).await?;
             }
             Ok(())

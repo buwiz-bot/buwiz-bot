@@ -47,7 +47,7 @@ buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "79883a82059
 books-screens = { git = "https://github.com/buwiz-app/books", rev = "dbc5dce580bdc4c0a9f0373a7c08812d0c537318" }
 # Google Workspace's native screens (`gws.workspace`). It pins buwiz-app too:
 # the same rule as books-screens.
-gws-screens = { git = "https://github.com/buwiz-app/google-workspace", rev = "1aa9147b12f4651cb325f1b998302c2d15328d3e" }
+gws-screens = { git = "https://github.com/buwiz-app/google-workspace", rev = "1075cf8538a284bb322f38112da6b2f8a04ff0ab" }
 
 [dev-dependencies]
 # Books' manifest, at books-screens' rev: every native screen it names is

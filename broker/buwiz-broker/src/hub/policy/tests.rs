@@ -2046,3 +2046,198 @@ async fn the_chats_view_lists_plain_chats_memories_and_a_click_forgets_one() {
     let section = crate::hub::library::botctx::chats_section(&b.ctx);
     assert!(section.contains("- I like coffee") && !section.contains("tea"), "{section}");
 }
+
+// ---- whom a Bot hears (`Change::Accepts`) ----
+
+/// The bed with Scout, whose chat reads the notes too.
+fn hearing_bed(label: &str) -> (Bed, String) {
+    let b = bed(label);
+    let scout = b
+        .ctx
+        .store
+        .write(|s| {
+            let t = s.fresh_thread("Scout");
+            let id = t.id.clone();
+            s.bots.push(Bot::new("scout", "Scout", "blob", "#FFFFFF", Some(t.id.clone())));
+            s.list.push(t);
+            id
+        })
+        .unwrap();
+    (b, scout)
+}
+
+fn accepts(ctx: &HubCtx, bot: &str, to: Value) -> Value {
+    crate::hub::routes::agents::host_accepts(ctx, &json!({"bot": bot, "accepts": to})).unwrap()
+}
+
+fn hears_now(ctx: &HubCtx, bot: &str) -> Option<Value> {
+    ctx.store.read(|s| s.bot(bot).unwrap().accepts.clone())
+}
+
+#[tokio::test]
+async fn an_undo_of_accepts_restores_the_exact_earlier_value() {
+    let (b, _) = hearing_bed("accepts-undo");
+    let list = json!(["scout", "ada", "nova"]);
+    accepts(&b.ctx, "hex", list.clone());
+    let none = accepts(&b.ctx, "hex", json!("none"));
+    assert_eq!(none["text"], "Hex hears from nobody now.");
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(json!("none")));
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": none["undo"]})).unwrap()["text"], PUT_BACK);
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(list), "the whole list, in its order");
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": none["undo"]})).unwrap_err().code, "stale", "once");
+    // never set comes back as never set, not as "all"
+    let first = accepts(&b.ctx, "scout", json!("none"));
+    host_undo(&b.ctx, &json!({"undo": first["undo"]})).unwrap();
+    assert_eq!(hears_now(&b.ctx, "scout"), None);
+    // what the Undo put back is on disk
+    let again = HubCtx::new(b.ctx.data.clone(), Clock::manual());
+    again.store.load().unwrap();
+    assert_eq!(hears_now(&again, "hex"), Some(json!(["scout", "ada", "nova"])));
+}
+
+#[tokio::test]
+async fn an_undo_of_accepts_goes_stale_after_a_later_change_to_that_bot_alone() {
+    let (b, _) = hearing_bed("accepts-stale");
+    let first = accepts(&b.ctx, "hex", json!("none"));
+    // another Bot's, a switch and a word that changes nothing leave it good
+    accepts(&b.ctx, "scout", json!("none"));
+    host_set(&b.ctx, &json!({"bot": "hex", "key": "shell", "state": "off"})).unwrap();
+    let same = accepts(&b.ctx, "hex", json!("none"));
+    assert_eq!((same["ok"].clone(), same["undo"].clone()), (json!(true), Value::Null));
+    assert!(recent(&b.ctx).iter().find(|r| r["undo"] == first["undo"]).is_some(), "still undoable");
+    // a later change to it does not
+    let later = accepts(&b.ctx, "hex", json!(["scout"]));
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": first["undo"]})).unwrap_err().code, "stale");
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(json!(["scout"])));
+    // the later one puts back None, and a Bot that is gone has nothing to put back
+    host_undo(&b.ctx, &json!({"undo": later["undo"]})).unwrap();
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(json!("none")));
+    let gone = accepts(&b.ctx, "scout", json!("all"));
+    b.ctx.store.write(|s| s.bots.retain(|x| x.id != "scout")).unwrap();
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": gone["undo"]})).unwrap_err().code, "stale");
+    assert!(recent(&b.ctx).iter().all(|r| r.get("undo") != Some(&gone["undo"])));
+}
+
+#[tokio::test]
+async fn accepts_that_changes_nothing_leaves_no_row_and_never_set_is_all() {
+    let (b, _) = hearing_bed("accepts-noop");
+    let r = accepts(&b.ctx, "hex", json!("all"));
+    assert_eq!((r["ok"].clone(), r["undo"].clone()), (json!(true), Value::Null));
+    assert_eq!(hears_now(&b.ctx, "hex"), None);
+    assert!(recent(&b.ctx).is_empty());
+}
+
+#[tokio::test]
+async fn accepts_shows_in_recent_changes_for_24_hours() {
+    let (b, _) = hearing_bed("accepts-recent");
+    let r = accepts(&b.ctx, "hex", json!("none"));
+    let rec = recent(&b.ctx);
+    assert_eq!(rec, [json!({"at": rec[0]["at"], "actor": "human", "text": "Hex hears from nobody now.", "undo": r["undo"]})]);
+    let view = host_view(&b.ctx, Some("hex")).unwrap();
+    assert_eq!(view["recent"], json!(rec), "where /tools reads it");
+    step(&b.ctx, (DAY - 1000) as f64);
+    assert_eq!(recent(&b.ctx).len(), 1);
+    step(&b.ctx, 2000.0);
+    assert!(recent(&b.ctx).is_empty());
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap_err().code, "stale");
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(json!("none")));
+    // an undone one says so
+    let again = accepts(&b.ctx, "scout", json!("none"));
+    host_undo(&b.ctx, &json!({"undo": again["undo"]})).unwrap();
+    assert_eq!(recent(&b.ctx)[0]["undone"], json!(true));
+}
+
+#[tokio::test]
+async fn accepts_says_what_changed() {
+    let (b, _) = hearing_bed("accepts-text");
+    let text = |to: Value| accepts(&b.ctx, "hex", to)["text"].as_str().unwrap().to_owned();
+    assert_eq!(text(json!(["scout"])), "Hex hears only from Scout now.");
+    assert_eq!(text(json!(["scout", "ada"])), "ada can now message Hex.");
+    assert_eq!(text(json!(["ada"])), "Scout can't message Hex now.");
+    assert_eq!(text(json!(["scout", "gone1", "gone2"])), "Hex hears only from Scout, gone1, gone2 now.");
+    assert_eq!(text(json!([])), "No Bot is on Hex's list now.");
+    assert_eq!(text(json!("none")), "Hex hears from nobody now.");
+    assert_eq!(text(json!("all")), "Every Bot can message Hex now.");
+}
+
+#[tokio::test]
+async fn the_bot_reads_one_note_of_whom_it_hears_and_no_other_bot_does() {
+    let (b, scout) = hearing_bed("accepts-note");
+    told(&b.ctx, &b.hex, Some("hex"));
+    told(&b.ctx, &scout, Some("scout"));
+    told(&b.ctx, &b.plain, None);
+    let r = accepts(&b.ctx, "hex", json!("none"));
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Hex hears from nobody now."]);
+    assert!(told(&b.ctx, &b.hex, Some("hex")).is_empty(), "once");
+    assert!(told(&b.ctx, &scout, Some("scout")).is_empty());
+    assert!(told(&b.ctx, &b.plain, None).is_empty());
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    assert_eq!(told(&b.ctx, &b.hex, Some("hex")), ["[Buwiz Bot, the app (not a message from the user):]\nSince your last message, the user changed: Undid a change. Every Bot can message Hex now."]);
+}
+
+#[tokio::test]
+async fn the_accepts_route_refuses_as_it_did_and_answers_an_old_app() {
+    let (b, _) = hearing_bed("accepts-route");
+    let no = |body: Value| crate::hub::routes::agents::host_accepts(&b.ctx, &body).unwrap_err();
+    let shape = ("invalid_args".to_owned(), "accepts is \"all\", \"none\" or a list of agent ids".to_owned());
+    assert_eq!(no(json!({"bot": "nobody", "accepts": "all"})), ("invalid_args".to_owned(), "no such agent".to_owned()));
+    assert_eq!(no(json!({"bot": "hex", "accepts": "some"})), shape);
+    assert_eq!(no(json!({"bot": "hex", "accepts": [1]})), shape);
+    assert_eq!(no(json!({"bot": "hex"})), shape);
+    assert_eq!(no(json!({"bot": "hex", "accepts": null})), shape);
+    // an old app sends "all" or "none", reads `ok`, then /threads
+    assert_eq!(accepts(&b.ctx, "hex", json!("none"))["ok"], json!(true));
+    let t = b.ctx.store.read(|s| crate::hub::store::json::threads_json(s, "m", |_| json!([])));
+    assert_eq!(t["bots"].as_array().unwrap().iter().find(|x| x["id"] == "hex").unwrap()["accepts"], json!("none"));
+}
+
+#[tokio::test]
+async fn no_model_tool_or_card_changes_whom_a_bot_hears() {
+    let (b, _) = hearing_bed("accepts-model");
+    accepts(&b.ctx, "hex", json!("none"));
+    let undo = recent(&b.ctx)[0]["undo"].clone();
+    let rows = |b: &Bed| -> i64 { b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM policy_change WHERE target LIKE 'accepts:%'", [], |r| r.get(0))).unwrap() };
+    // every control tool, given what an accepts change would carry
+    let run = run_in(&b.ctx, &b.hex);
+    for name in crate::hub::tools::controls::NAMES {
+        for input in [
+            json!({"op": "accepts", "bot": "hex", "to": "all", "from": "none"}),
+            json!({"key": "accepts", "bot": "hex", "state": "on"}),
+            json!({"key": "accepts:hex", "state": "on", "enabled": true}),
+            json!({"mode": "accepts", "accepts": "all", "undo": undo}),
+            json!({"pattern": "accepts", "kind": "allow", "accepts": "all"}),
+        ] {
+            call(&run, name, input).await;
+        }
+    }
+    assert_eq!((hears_now(&b.ctx, "hex"), rows(&b)), (Some(json!("none")), 1));
+    // a card can't carry one: `tools/answer` reads its change through `change_of`
+    for n in [json!({"op": "accepts", "bot": "hex", "to": "all", "from": "none"}), Change::Accepts { bot: "hex".into(), to: json!("all"), from: json!("none") }.to_json()] {
+        assert_eq!(change_of(&n), None);
+    }
+    // nothing outside the route and this module makes one, and only the host route undoes
+    fn sources(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                sources(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(files.len() > 100, "the walk found the sources");
+    let rel = |p: &PathBuf| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
+    let with = |needle: &str| -> Vec<String> {
+        let mut f: Vec<String> = files.iter().filter(|p| std::fs::read_to_string(p).unwrap().contains(needle)).map(rel).filter(|p| p != "hub/policy/tests.rs").collect();
+        f.sort();
+        f
+    };
+    assert_eq!(with("Change::Accepts"), ["hub/policy/mod.rs", "hub/routes/agents.rs"]);
+    assert_eq!(with("host_accepts"), ["hub/routes/agents.rs"]);
+    assert_eq!(with("host_undo"), ["hub/policy/mod.rs", "hub/routes/host.rs"]);
+    assert!(with("policy::undo").is_empty());
+}
