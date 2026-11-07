@@ -50,6 +50,7 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Post, X("/avatar/design"), |ctx, req| keep_alive(avatar_design(ctx, req)));
     routes.route(Verb::Post, X("/avatar/picture"), |ctx, req| keep_alive(avatar_picture(ctx, req)));
     routes.route(Verb::Post, X("/avatar/packs"), avatar_packs);
+    routes.route(Verb::Post, X("/avatar/check"), avatar_check);
 }
 
 /// A bot's avatar fields: its shape, colour, a custom shape's outline, and
@@ -737,6 +738,22 @@ async fn avatar_packs(_ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     };
     match got {
         Ok(v) => ok(&v),
+        Err(e) => refused(&e, false),
+    }
+}
+
+/// What an install would refuse of the designs sent. Saves nothing.
+async fn avatar_check(_ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    use crate::hub::library::avatar_packs::refusals;
+    let b = match parse(&req.body) {
+        Ok(b) => b,
+        Err(e) => return refused(&e, false),
+    };
+    let Some(designs) = b.get("designs").and_then(Value::as_array) else {
+        return refused("send the designs to check", false);
+    };
+    match refusals(designs) {
+        Ok(found) => ok(&json!({"ok": true, "refused": found})),
         Err(e) => refused(&e, false),
     }
 }
