@@ -1,38 +1,163 @@
 name: Release
 
-# A v* tag builds, signs, notarizes and packs Buwiz Bot, and keeps the dmg,
-# its checksum and latest.json as workflow artifacts. Nothing is uploaded
-# to R2 or to a GitHub release: docs/release.md has the publish commands.
-# workflow_dispatch runs the same steps; without the signing secrets it is
-# an ad-hoc dry run (an unsigned, unnotarized dmg).
+# Builds Buwiz Bot, publishes a GitHub release and uploads to Cloudflare R2.
+# `just publish` (scripts/release/publish.sh) is what starts it, from the
+# version's tag: no push, PR or merge does. docs/release.md has the rest.
+#
+# A secret left unset degrades, it doesn't fail:
+#   no signing secrets  an unsigned dmg, a GitHub pre-release, nothing on R2
+#   no R2 secrets       a GitHub release, nothing on R2
+# The exception is a replace, which stops if R2 holds the version and this run
+# can't write it, unless keep_r2 says to leave those files live.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (MAJOR.MINOR.PATCH); run this from its tag, v<version>
+        required: true
+        type: string
+      replace:
+        description: Replace an existing release of this version
+        required: false
+        type: boolean
+        default: false
+      keep_r2:
+        description: On a replace that can't write R2, go ahead and leave R2's files live
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# never cancel a run that may be signing or notarizing
+# one release at a time, and never cancel a run that may be signing,
+# notarizing or uploading
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version }}
+  REPLACE: ${{ inputs.replace }}
 
 jobs:
-  macos:
-    name: macOS arm64 dmg
-    runs-on: macos-15
+  # Everything that can be refused is refused here, before the long build.
+  preflight:
+    name: Check the version
+    runs-on: ubuntu-24.04
+    outputs:
+      r2: ${{ steps.secrets.outputs.r2 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag and the Cargo versions agree
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version must be MAJOR.MINOR.PATCH, not '$VERSION'" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
+            echo "a release runs from its tag, v$VERSION, not $GITHUB_REF: use just publish" >&2
+            exit 1
+          fi
+          for toml in app/Cargo.toml broker/buwiz-broker/Cargo.toml; do
+            found="$(awk -F'"' '/^\[/{s=$0} s=="[package]" && /^version *=/{print $2; exit}' "$toml")"
+            if [ "$found" != "$VERSION" ]; then
+              echo "tag v$VERSION does not match $toml's version $found" >&2
+              exit 1
+            fi
+          done
+
+      - name: Nothing is overwritten unless asked
+        if: inputs.replace != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          exists="$(scripts/release/release-exists.sh "v$VERSION")"
+          if [ "$exists" = yes ]; then
+            echo "v$VERSION is already released; 'just publish $VERSION' replaces it" >&2
+            exit 1
+          fi
+
+      - name: Publishing secrets
+        id: secrets
+        shell: bash
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          signing=yes
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_KEY_P8; do
+            [ -n "${!name}" ] || signing=no
+          done
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          missing=""
+          for name in R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -z "$missing" ]; then
+            echo "r2=true" >> "$GITHUB_OUTPUT"
+            echo "r2_ready=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::missing$missing: this release skips R2, so buwiz.com will not offer it"
+            echo "r2=false" >> "$GITHUB_OUTPUT"
+            echo "r2_ready=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: A replace can replace what is on R2
+        if: inputs.replace == true
+        shell: bash
+        env:
+          SIGNING: ${{ steps.secrets.outputs.signing }}
+          R2: ${{ steps.secrets.outputs.r2_ready }}
+          KEEP: ${{ inputs.keep_r2 && 'yes' || 'no' }}
+        run: scripts/release/override-check.sh "$VERSION" "$SIGNING" "$R2" "$KEEP"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
+    strategy:
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-15
+            # release-file-{platform}-{arch}-{kind}: manifest.py reads this
+            artifact: release-file-macos-arm64-dmg
+            files: dist/*.dmg
+          # Switched off: the Bot doesn't run on these yet, so there is nothing
+          # to ship. app/src/main.rs's main only exits there, app/Cargo.toml
+          # takes no nsh Linux or Windows backend, and the office crates and
+          # the Agent Hub are macOS-only (docs/release.md, "Targets"). Turning
+          # one on takes that port, then packaging steps here: every step
+          # below is macOS's.
+          # - target: linux-x64
+          #   runner: ubuntu-24.04
+          #   artifact: release-file-linux-x64-deb
+          #   files: dist/*.deb
+          # - target: windows-x64
+          #   runner: windows-2025
+          #   artifact: release-file-windows-x64-exe
+          #   files: dist/*.exe
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Version and signing inputs
+      - name: Signing inputs
         id: inputs
         shell: bash
         env:
@@ -42,25 +167,16 @@ jobs:
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
           NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
         run: |
-          VERSION="$(awk -F'"' '/^\[/{s=$0} s=="[package]" && /^version *=/{print $2; exit}' app/Cargo.toml)"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
-            echo "tag $GITHUB_REF_NAME does not match app/Cargo.toml's version $VERSION" >&2
-            exit 1
-          fi
           missing=""
           for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_KEY_P8; do
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -z "$missing" ]; then
             echo "signed=true" >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_REF_TYPE" = tag ]; then
-            echo "a tagged release needs every signing secret; missing:$missing" >&2
-            exit 1
           else
-            echo "::warning::missing$missing: this run is an ad-hoc dry run (not signed with Developer ID, not notarized)"
+            echo "::warning::missing$missing: this build is signed ad hoc, not notarized; it goes out as a GitHub pre-release and not to R2"
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
@@ -151,6 +267,15 @@ jobs:
             scripts/release/dmg.sh -
           fi
 
+      - name: The built app is this version
+        shell: bash
+        run: |
+          built="$(plutil -extract CFBundleShortVersionString raw -o - dist/*.app/Contents/Info.plist)"
+          if [ "$built" != "$VERSION" ]; then
+            echo "the app says $built, the tag v$VERSION" >&2
+            exit 1
+          fi
+
       - name: Gatekeeper check
         if: steps.inputs.outputs.signed == 'true'
         shell: bash
@@ -159,17 +284,27 @@ jobs:
           spctl -a -vvv -t open --context context:primary-signature dist/*.dmg
           xcrun stapler validate dist/*.dmg
 
-      - name: latest.json
-        run: scripts/release/manifest.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 7
+          path: ${{ matrix.files }}
+
+      - name: Note whether it was signed
+        shell: bash
+        env:
+          SIGNED: ${{ steps.inputs.outputs.signed }}
+        run: |
+          mkdir -p status
+          echo "$SIGNED" > status/signed
 
       - uses: actions/upload-artifact@v4
         with:
-          name: buwiz-bot-${{ steps.inputs.outputs.version }}-macos-arm64${{ steps.inputs.outputs.signed != 'true' && '-unsigned' || '' }}
+          name: release-status-${{ matrix.target }}
           if-no-files-found: error
-          path: |
-            dist/*.dmg
-            dist/*.dmg.sha256
-            dist/latest.json
+          retention-days: 7
+          path: status/signed
 
       - name: Remove the signing material
         if: always()
@@ -177,3 +312,65 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/cert.p12"
+
+  # The only job that writes anywhere, and only once every target has built:
+  # a failed build leaves what is published as it was.
+  publish:
+    name: Publish
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      R2_READY: ${{ needs.preflight.outputs.r2 }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-file-*
+          path: files
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-status-*
+          path: status
+
+      - name: Manifest and checksums
+        run: python3 scripts/release/manifest.py files "$VERSION" out
+
+      - name: Was every target signed
+        id: state
+        shell: bash
+        run: echo "signed=$(scripts/release/signed-state.sh files status)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to R2
+        id: r2
+        if: steps.state.outputs.signed == 'true' && needs.preflight.outputs.r2 == 'true'
+        env:
+          R2_BUCKET: buwiz-releases
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: scripts/release/r2-publish.sh files out
+
+      # After R2: a failure here leaves R2 ahead of GitHub, and the summary
+      # says so. The replace path updates the release in place, never deletes.
+      - name: GitHub release
+        id: ghrelease
+        env:
+          SIGNED: ${{ steps.state.outputs.signed }}
+        run: scripts/release/gh-publish.sh files out
+
+      - name: Summary
+        if: always()
+        env:
+          SIGNED: ${{ steps.state.outputs.signed }}
+          R2_OUTCOME: ${{ steps.r2.outcome }}
+          GH_OUTCOME: ${{ steps.ghrelease.outcome }}
+        run: scripts/release/summary.sh >> "$GITHUB_STEP_SUMMARY"
