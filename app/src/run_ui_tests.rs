@@ -65,7 +65,8 @@ fn Row() -> impl IntoElement {
         .child(crate::composer::stop_run())
         .child(text(|| {
             let run = store().agent().map(|r| r.label).unwrap_or_else(|| "none".to_owned());
-            format!("probe ready=1 run={run} busy={} mark={}", store().sending.get().contains("t7"), store().bot_st("b1"))
+            let job = store().run_jobs.with(|m| m.get("t7").cloned()).unwrap_or_default();
+            format!("probe ready=1 run={run} busy={} mark={} job={job}.", store().sending.get().contains("t7"), store().bot_st("b1"))
         }))
 }
 
@@ -100,7 +101,7 @@ fn a_relaunched_app_follows_a_run_under_way() {
     app.press("yes-turn");
     app.pump(Duration::from_millis(600));
     assert!(!HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=9")), "it followed a second run: {:?}", HEARD.lock().unwrap());
-    assert_eq!(store().run_jobs.with_untracked(|m| m.get("t7").cloned()).as_deref(), Some("7"));
+    assert!(shows(&mut app, "job=7."), "another run took its place: {:?}", app.texts());
 
     app.press("Stop this run");
     assert!(shows(&mut app, "run=none busy=false mark=idle"), "the row stayed, or the mark settled as if it ended: {:?}", app.texts());
