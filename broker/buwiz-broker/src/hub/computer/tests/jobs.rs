@@ -910,13 +910,15 @@ async fn a_wake_and_wait_waits_on_no_owed_cancel() {
 async fn a_job_given_up_on_lets_the_mac_go_with_its_box_still_up() {
     let (program, log) = fake_caffeinate("given-up");
     let b = bed_with("job-given-up", |p| Computers { keep_awake: awake::KeepAwake::with(program), ..Computers::new(p) });
-    awake(&b, &b.ann.0).await;
+    let computer = awake(&b, &b.ann.0).await;
     started(&b, json!({"command": "x", "time_limit_s": 3600})).await;
     let line = held(&log, 1).await;
     *b.mock.fails.lock().unwrap() = Some("kill -TERM".to_owned());
     b.ctx.clock.manual_step(Some(b.ctx.clock.now() + 3_600_000.0), false);
     for _ in 0..20 {
         assert!(running(&line), "let go too soon");
+        // something else keeps it from being idle
+        Computers::touch(&b.ctx, &computer);
         b.computers.sleep_the_idle(&b.ctx).await;
     }
     assert_eq!(power(&b), Power::Awake);
