@@ -230,24 +230,113 @@ async fn a_persons_sleep_still_wins() {
     assert_eq!(power(&b), Power::Awake);
 }
 
+/// Frozen past its limit it lets the computer go, and stays a job until something ends it.
 #[tokio::test]
-async fn a_job_frozen_past_its_limit_lets_go_and_is_stopped_once_it_can_be() {
-    let b = lazy("job-frozen-limit");
+async fn a_job_frozen_past_its_limit_stays_frozen_and_is_stopped_once_it_can_be() {
+    let b = bed_with("job-frozen-limit", |p| Computers { idle: Duration::ZERO, deep: Duration::from_secs(86_400), ..Computers::new(p) });
+    let computer = awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x", "time_limit_s": 3600})).await;
+    b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
+    b.ctx.clock.manual_step(Some(b.ctx.clock.now() + 3_600_000.0), false);
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(row_of(&b, &id).0, "running", "nothing could reach it to stop it");
+    let r = b.computers.now().jobs.get(&id).cloned().expect("frozen, it's still there");
+    assert!(r.frozen && r.past, "{r:?}");
+    assert!(!b.computers.now().in_use(&computer), "the deep sleep can take it");
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["jobs"][0]["frozen"], true, "the tab says so");
+    awake(&b, &b.ann.0).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(row_of(&b, &id).0, "limit");
+}
+
+/// A deep sleep stops the box, and the job in it. Asked later, the box says only that it's gone.
+#[tokio::test]
+async fn a_deep_sleep_that_takes_a_job_past_its_limit_ends_it_by_its_limit() {
+    let mut b = lazy("job-deep");
+    let script = Arc::new(Script::default());
+    script.say("Noted.");
+    with_model(&mut b, &script);
+    set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
     let computer = awake(&b, &b.ann.0).await;
     let id = started(&b, json!({"command": "x", "time_limit_s": 3600})).await;
     b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
     b.ctx.clock.manual_step(Some(b.ctx.clock.now() + 3_600_000.0), false);
     b.mock.calls.lock().unwrap().clear();
+    job_is(&b, "gone");
     b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(b.mock.calls().iter().any(|c| c.starts_with("sleep")), "{:?}", b.mock.calls());
+    assert_eq!(row_of(&b, &id).0, "limit");
+    assert_eq!(notices(&b), [("limit".to_owned(), "Job reached its time limit and was stopped.".to_owned())]);
+    assert!(b.computers.now().jobs.is_empty());
+
+    // what a limit gets, once
     b.computers.sleep_the_idle(&b.ctx).await;
-    assert!(b.mock.calls().iter().any(|c| c.starts_with("sleep")), "the deep sleep can take it: {:?}", b.mock.calls());
-    assert_eq!(row_of(&b, &id).0, "running", "nothing could reach it to stop it");
-    let r = b.computers.now().jobs.get(&id).cloned().expect("frozen, it's still there");
-    assert!(r.frozen && r.past, "{r:?}");
-    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["jobs"][0]["frozen"], true, "the tab says so");
+    until("no turn started", || script.calls.load(Ordering::SeqCst) == 1).await;
+    until("the turn never ended", || !b.ctx.jobs.busy(&b.ann.1)).await;
+    assert!(script.bodies.lock().unwrap()[0].to_string().contains("reached its time limit"));
     awake(&b, &b.ann.0).await;
     b.computers.sleep_the_idle(&b.ctx).await;
-    assert_eq!(row_of(&b, &id).0, "limit");
+    assert_eq!(notices(&b).len(), 1, "the wake finds nothing new to say");
+    assert_eq!(script.calls.load(Ordering::SeqCst), 1);
+}
+
+/// A remote computer's deep sleep hangs up: what's there runs on, so it isn't ended here.
+#[tokio::test]
+async fn a_remote_computers_deep_sleep_ends_no_job() {
+    let b = bed("job-deep-remote");
+    let computer = awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x", "time_limit_s": 3600})).await;
+    b.ctx.db.with(|c| c.execute("UPDATE computers SET provider='remote' WHERE id=?", [&computer])).unwrap();
+    b.ctx.clock.manual_step(Some(b.ctx.clock.now() + 3_600_000.0), false);
+    b.computers.sleep(&b.ctx, &computer, Sleep::Deep).await.unwrap();
+    assert_eq!(row_of(&b, &id).0, "running");
+}
+
+/// `machine.json` not read isn't the box gone: the row stays for a look that can tell.
+#[tokio::test]
+async fn a_record_that_cant_be_read_ends_no_job_and_a_box_really_gone_does() {
+    let b = bed("job-record");
+    let computer = awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x"})).await;
+    let record = Computers::dir(&b.ctx, &computer).join("machine.json");
+    let kept = std::fs::read(&record).unwrap();
+    std::fs::write(&record, "not json").unwrap();
+    b.computers.machines.lock().unwrap().clear();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(row_of(&b, &id).0, "running");
+    assert!(notices(&b).is_empty());
+    assert!(b.computers.now().jobs.contains_key(&id));
+
+    std::fs::write(&record, kept).unwrap();
+    b.mock.set_power(Power::Absent);
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(row_of(&b, &id).0, "lost", "with its record there, absent is gone");
+}
+
+/// Not knowing how many tries there have been isn't having had enough of them.
+#[tokio::test]
+async fn a_failed_read_of_the_tries_lets_nothing_go() {
+    let b = bed("job-tries-read");
+    awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x"})).await;
+    let job = Computers::jobs_of(&b.ctx, &b.ann.0).pop().unwrap();
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computer_jobs RENAME TO jobs_gone", [])).unwrap();
+    b.computers.stop_failed(&b.ctx, &job);
+    assert!(!b.computers.now().jobs[&id].past, "the box goes free on a guess");
+    assert!(notices(&b).is_empty(), "a person told on a guess");
+}
+
+/// Two syncs can land out of order: whatever they left, the sweep's puts it right.
+#[tokio::test]
+async fn the_sweep_puts_what_holds_the_mac_right() {
+    let (program, log) = fake_caffeinate("sync");
+    // not idle: a computer going to sleep syncs by itself, and the sweep is what's on trial
+    let b = bed_with("sync", |p| Computers { keep_awake: awake::KeepAwake::with(program), ..Computers::new(p) });
+    awake(&b, &b.ann.0).await;
+    b.computers.keep_awake.set(true);
+    let line = held(&log, 1).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(!running(&line), "held with no job");
 }
 
 #[tokio::test]
