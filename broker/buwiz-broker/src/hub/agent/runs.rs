@@ -54,13 +54,26 @@ const HIDDEN: &str = "[hidden]";
 /// What `error_message` writes for a provider that sent nothing: not the provider's words.
 const NO_BODY: &str = "status code (no body)";
 
-/// What can't go in a chat: a credential a provider or a proxy echoes back, whole or masked.
+/// What can't go in a chat: a credential a provider or a proxy echoes back, whole or masked. After
+/// `Authorization:` that's the whole value, its scheme and what follows it.
 static SECRET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\bauthorization["']?\s*[=:]\s*["']?(?:(?:basic|bearer)\s+)?[^\s"',;&)]+|\bbearer\s+[^\s"',;)]+|\b(?:sk|pk|rk|xai|gsk|ghp|gho|ghs|github_pat|tkt)[-_][^\s"',;)]+|\b(?:AIza|eyJ)[^\s"',;)]+|[\w.-]*(?:key|token|secret|password)["']?\s*[=:]\s*["']?[^\s"',;&)]+"#).unwrap()
+    Regex::new(r#"(?i)\bauthorization["']?\s*[=:]\s*["']?(?:[\w-]+\s+)?[^\s,;&)]+|\b(?:sk|pk|rk|xai|gsk|ghp|gho|ghs|github_pat|tkt)[-_][^\s"',;)]+|\b(?:AIza|eyJ)[^\s"',;)]+"#).unwrap()
 });
 
-/// What may be a credential or may be words: what follows "basic", and any long unbroken run.
-static MAYBE_SECRET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bbasic\s+([^\s"',;)]+)|[\w+/=*.-]{24,}"#).unwrap());
+/// A labelled value: a credential, unless it's one of [`PLAIN_AFTER_LABEL`].
+static LABELLED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)[\w.-]*(?:key|token|secret|password)["']?\s*[=:]\s*["']?([^\s"',;&)]+)"#).unwrap());
+
+/// What may be a credential or may be words: what follows "bearer" or "basic", and any long
+/// unbroken run. After [`LABELLED`], so `Bearer token: x` can't keep `token` and show `x`.
+static MAYBE_SECRET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bbearer\s+([^\s"',;)]+)|\bbasic\s+([^\s"',;)]+)|[\w+/=*.-]{24,}"#).unwrap());
+
+/// The words a provider puts after a label or "bearer" when it's saying what's wrong. Anything else
+/// there could be a credential, however much it looks like a word.
+const PLAIN_AFTER_LABEL: [&str; 16] = ["auth", "authentication", "empty", "expired", "header", "invalid", "is", "malformed", "missing", "none", "not", "null", "required", "revoked", "token", "was"];
+
+fn plain_after_label(value: &str) -> bool {
+    PLAIN_AFTER_LABEL.contains(&value.trim_end_matches(['.', '!', '?']).to_ascii_lowercase().as_str())
+}
 
 /// Letters and digits no word is made of: both at once, or capitals inside small letters.
 fn jumbled(piece: &str) -> bool {
@@ -84,13 +97,15 @@ fn looks_random(run: &str) -> bool {
 /// `said` with every credential hidden, and every name and plain word kept.
 fn hide_secrets(said: &str) -> String {
     let said = SECRET.replace_all(said, HIDDEN);
+    let said = LABELLED.replace_all(&said, |found: &Captures<'_>| if plain_after_label(&found[1]) { found[0].to_owned() } else { HIDDEN.to_owned() });
     let hidden = MAYBE_SECRET.replace_all(&said, |found: &Captures<'_>| {
-        let secret = match found.get(1) {
-            Some(word) => {
+        let secret = match (found.get(1), found.get(2)) {
+            (Some(value), _) => !plain_after_label(value.as_str()),
+            (_, Some(word)) => {
                 let word = word.as_str().trim_end_matches(['.', ':', '!', '?']);
                 jumbled(word) || !word.bytes().all(|b| b.is_ascii_alphabetic())
             }
-            None => looks_random(&found[0]),
+            _ => looks_random(&found[0]),
         };
         if secret { HIDDEN.to_owned() } else { found[0].to_owned() }
     });
@@ -105,7 +120,11 @@ fn provider_said(m: &str) -> String {
     }
     let parsed = serde_json::from_str::<Value>(body).ok().filter(|v| v.is_object() || v.is_array());
     // an object with no words in it has nothing for a person
-    let said = parsed.as_ref().map_or(body, |v| ["/error/message", "/message", "/error"].iter().find_map(|p| v.pointer(p)?.as_str()).unwrap_or_default());
+    let said = parsed.as_ref().map_or(body, |v| {
+        // some providers wrap the error in a list
+        let v = v.get(0).unwrap_or(v);
+        ["/error/message", "/message", "/error"].iter().find_map(|p| v.pointer(p)?.as_str()).unwrap_or_default()
+    });
     // before the cut, which could leave half a key the pattern no longer knows
     let said = js::squeeze(&hide_secrets(said));
     let said = said.trim_end_matches('.');
@@ -663,6 +682,47 @@ pub(crate) mod tests {
             ("masked abcd****************wxyz given", "wxyz"),
             ("padded Zm9vYmFyYmF6cXV4Zm9vYmFy== given", "Zm9v"),
             ("in claude-haiku-sk-abc123 a name", "abc123"),
+        ] {
+            let said = provider_said(leak);
+            assert!(!said.contains(secret) && said.contains("[hidden]"), "{said}");
+        }
+    }
+
+    #[test]
+    fn the_whole_of_an_authorization_value_goes() {
+        for (leak, secret) in [
+            ("Authorization: Token 8f3ac21d9 was refused", "8f3ac21d9"),
+            ("Authorization: ApiKey hunter2 was refused", "hunter2"),
+            ("authorization=Digest abc123def", "abc123def"),
+            (r#"{"Authorization": "Token 8f3ac21d9"} was sent"#, "8f3ac21d9"),
+            (r#"Authorization: Token token="8f3ac21d9", sent"#, "8f3ac21d9"),
+            ("Authorization: 8f3ac21d9", "8f3ac21d9"),
+        ] {
+            let said = provider_said(leak);
+            assert!(!said.contains(secret) && said.contains("[hidden]"), "{said}");
+        }
+        assert!(!provider_said("Authorization: Token 8f3ac21d9").contains("Token"), "the scheme goes with it");
+    }
+
+    #[test]
+    fn an_error_in_a_list_gives_its_first_message() {
+        assert_eq!(provider_said(r#"[{"error":{"code":429,"message":"Quota exceeded for this project"}}]"#), "Quota exceeded for this project");
+        assert_eq!(provider_said(r#"[{"message":"first"},{"message":"second"}]"#), "first");
+        assert_eq!(provider_said(r#"[{"error":"plain"}]"#), "plain");
+        assert_eq!(provider_said("[]"), "");
+    }
+
+    #[test]
+    fn plain_words_after_a_label_stay_and_a_value_doesnt() {
+        for kept in ["bearer token missing", "Bearer token expired", "token: expired", "api_key: invalid", "password: required"] {
+            assert_eq!(provider_said(kept), kept);
+        }
+        for (leak, secret) in [
+            ("Bearer abcd was refused", "abcd"),
+            ("token: hushhush", "hushhush"),
+            ("password: hunter", "hunter"),
+            ("Bearer token: abc123", "abc123"),
+            ("aaaa/bbbb/cccc/dddd/eeee/ffff/token: hush42", "hush42"),
         ] {
             let said = provider_said(leak);
             assert!(!said.contains(secret) && said.contains("[hidden]"), "{said}");
