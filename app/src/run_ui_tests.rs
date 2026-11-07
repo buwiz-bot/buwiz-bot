@@ -32,6 +32,8 @@ fn in_child(name: &str) -> bool {
 
 static HEARD: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static STOPPED: AtomicBool = AtomicBool::new(false);
+/// A yes's turn came: the run before it has ended, and `/status` says so.
+static OVER: AtomicBool = AtomicBool::new(false);
 
 /// A broker with one run under way on `t7`, ended by `POST /job/stop`: a headless engine has no
 /// network, so `store.rs` asks this.
@@ -43,6 +45,9 @@ pub(crate) fn broker(line: String) -> Option<Value> {
     if line.contains("/job/stop") {
         STOPPED.store(true, Ordering::SeqCst);
         return Some(json!({"ok": true}));
+    }
+    if OVER.load(Ordering::SeqCst) && line.contains("/status?id=7") {
+        return Some(json!({"id": 7, "seq": 2, "phase": "done", "detail": "", "done": true, "events": []}));
     }
     Some(if STOPPED.load(Ordering::SeqCst) {
         json!({"id": 7, "seq": 2, "phase": "done", "detail": "stopped", "done": true, "events": []})
@@ -62,7 +67,10 @@ fn Row() -> impl IntoElement {
             store().resume_runs();
         }))
         .child(view().label("same-turn").w(px(40.0)).h(px(20.0)).on_press(|| store().follow_run("7".to_owned(), "t7".to_owned(), None)))
-        .child(view().label("yes-turn").w(px(40.0)).h(px(20.0)).on_press(|| store().follow_run("9".to_owned(), "t7".to_owned(), None)))
+        .child(view().label("yes-turn").w(px(40.0)).h(px(20.0)).on_press(|| {
+            OVER.store(true, Ordering::SeqCst);
+            store().follow_run("9".to_owned(), "t7".to_owned(), None);
+        }))
         .child(crate::composer::stop_run())
         .child(text(|| {
             let run = store().agent().map(|r| r.label).unwrap_or_else(|| "none".to_owned());
