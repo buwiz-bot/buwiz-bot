@@ -485,11 +485,18 @@ impl Agents {
     }
 
     /// Whether a message from `from` may go to `to`: it [`hears`](Self::hears)
-    /// them, and a temporary helper takes messages only from its parent and
-    /// its own endpoints, which no answer changes.
+    /// them, its Bot is live, and a temporary helper takes messages only from
+    /// its parent, itself and its own endpoints, which no answer changes. All
+    /// of it is read on the Bot `to` belongs to, as `hears` does: a helper's
+    /// endpoint is shut as the helper is, and an ended helper's take nothing.
+    ///
+    /// The user is let past the helper rule here: in a running chat they
+    /// reach a helper in it, because you always get in. Starting a message to
+    /// a helper is another matter ([`reachable`](Self::reachable)).
     fn reaches(&self, s: &State, from: &Party, to: &Party, message: &Value) -> bool {
-        let shut = s.bot(&to.id).is_some_and(|b| {
-            has_helper(b) && !from.is_user() && helper_of(b, "parent").and_then(Value::as_str) != Some(&from.id) && from.owner.as_deref() != Some(b.id.as_str())
+        let shut = s.bot(to.owner.as_deref().unwrap_or(&to.id)).is_some_and(|b| {
+            let kept_out = has_helper(b) && !from.is_user() && b.id != from.id && helper_of(b, "parent").and_then(Value::as_str) != Some(&from.id) && from.owner.as_deref() != Some(b.id.as_str());
+            !live(b) || kept_out
         });
         !shut && self.hears(s, to, from, message)
     }

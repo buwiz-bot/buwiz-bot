@@ -968,6 +968,63 @@ async fn hears_a_reply_wakes_no_one_unless_it_is_heard() {
     assert_eq!(ran(&w, "reply", "boss"), 1);
 }
 
+/// A helper of Scout's, with a bridge of its own, in one conversation with
+/// it: → (the helper, its endpoint, the conversation).
+fn helper_with_bridge(w: &World) -> (String, String, Value) {
+    let h = w.create("scout", json!({"name": "Runner", "purpose": "run", "temporary": true})).unwrap()["id"].as_str().unwrap().to_owned();
+    let b = w.endpoint(json!({"bot": h, "kind": "bridge", "name": "Claude Code"}));
+    let id = b["id"].as_str().unwrap().to_owned();
+    let sent = w.ctx.store.write(|s| w.hub.agents.send_from(s, &id, &json!({"subject": "Run", "text": "go"}), None, &mut Vec::new())).unwrap().unwrap();
+    (h, format!("ext:{id}"), sent["conversation"].clone())
+}
+
+#[test]
+fn hears_a_helpers_endpoint_is_shut_as_the_helper_is() {
+    let w = world();
+    let (h, ext, c) = helper_with_bridge(&w);
+    w.send(&h, json!({"conversation": c, "to": ["boss", "ada", "scout"], "text": "all of you"})).unwrap();
+    // from a Bot that isn't its parent: neither the helper nor its bridge
+    let sent = w.send("boss", json!({"conversation": c, "text": "and you?"})).unwrap();
+    let q = sent["queued_for"].as_array().unwrap();
+    assert!(!q.contains(&json!(h)) && !q.contains(&json!(ext)), "{q:?}");
+    let not: Vec<&Value> = sent["not_taken_by"].as_array().unwrap().iter().map(|p| &p["id"]).collect();
+    assert!(not.contains(&&json!(h)) && not.contains(&&json!(ext)), "{not:?}");
+    // from its parent, and from the helper itself to its own bridge
+    let q = w.send("scout", json!({"conversation": c, "text": "go on"})).unwrap()["queued_for"].clone();
+    assert!(q.as_array().unwrap().contains(&json!(h)) && q.as_array().unwrap().contains(&json!(ext)), "{q}");
+    let q = w.send(&h, json!({"conversation": c, "text": "done"})).unwrap()["queued_for"].clone();
+    assert!(q.as_array().unwrap().contains(&json!(ext)), "{q}");
+}
+
+#[test]
+fn hears_an_ended_helpers_endpoint_takes_nothing() {
+    let w = world();
+    let (h, ext, c) = helper_with_bridge(&w);
+    w.send(&h, json!({"conversation": c, "to": ["scout"], "text": "for you"})).unwrap();
+    w.remove("scout", json!({"id": h})).unwrap();
+    assert_eq!(code(w.send("scout", json!({"conversation": c, "text": "anyone?"}))), "not_allowed", "not even from its parent");
+    w.send("scout", json!({"conversation": c, "to": ["boss"], "text": "Boss, a word"})).unwrap();
+    // beside someone who takes it, it is left out and reported
+    let sent = w.send("scout", json!({"conversation": c, "text": "and now?"})).unwrap();
+    assert_eq!(sent["queued_for"], json!(["boss"]));
+    assert_eq!(sent["not_taken_by"], json!([{"id": ext, "name": "Claude Code"}]));
+}
+
+#[tokio::test]
+async fn hears_the_user_still_reaches_a_helper_in_a_running_chat() {
+    let w = world();
+    let plain = w.plain();
+    let me = format!("chat:{plain}");
+    let h = w.create("scout", json!({"name": "Runner", "purpose": "run", "temporary": true})).unwrap()["id"].as_str().unwrap().to_owned();
+    let r = w.send(&me, json!({"to": ["scout"], "subject": "Run", "text": "start"})).unwrap();
+    w.send("scout", json!({"conversation": r["conversation"], "to": [h], "text": "take this"})).unwrap();
+    let sent = w.send(&me, json!({"conversation": r["conversation"], "text": "both of you"})).unwrap();
+    assert!(sent["queued_for"].as_array().unwrap().contains(&json!(h)), "{sent}");
+    assert!(sent.get("not_taken_by").is_none());
+    // but it starts nothing with one
+    assert_eq!(code(w.send(&me, json!({"to": [h], "subject": "x", "text": "y"}))), "not_allowed");
+}
+
 // ————— the pieces —————
 
 #[test]
