@@ -157,6 +157,9 @@ pub struct Delivery {
     pub msg: Value,
     /// the conversation's `t<n>` id
     pub thread: String,
+    /// it has had its hold (or a restart ended it): unheard now, it is turned
+    /// away at once ([`AgentsHub::admit`])
+    pub held: bool,
 }
 
 // ————— JavaScript's ways with values —————
@@ -328,6 +331,7 @@ pub fn notice_text(n: &Value) -> String {
         Some("agent_created") => format!("{} made a new agent: {}", f("parent"), f("name")),
         Some("helper_finished") => format!("Helper {} finished", f("name")),
         Some("agents_paused") => format!("Paused: these agents have exchanged {PER_HOUR} messages in an hour"),
+        Some("agents_turned_away") => format!("{} isn't taking messages. Not delivered: {}", js_str(n.get("to").and_then(|x| x.get("name"))), f("subject")),
         _ => {
             let to = n.get("to").and_then(Value::as_array).cloned().unwrap_or_default();
             let to = if to.len() == 1 { js_str(to[0].get("name")) } else { format!("{} agents", to.len()) };
@@ -477,11 +481,12 @@ impl Agents {
         (!from.external() && accepts(b, &from.id)) || answers(s, to, from, message)
     }
 
-    /// [`hears`](Self::hears) for a message already recorded, from its own
-    /// `from`: what a delivery asks. A sender since gone is not heard.
+    /// [`reaches`](Self::reaches) for a message already recorded, from its
+    /// own `from`: what a delivery asks, then and at every step of its turn.
+    /// A sender since gone is not heard.
     pub fn heard(&self, s: &State, to: &Party, msg: &Value) -> bool {
         let from = msg.get("from").and_then(|f| f.get("id")).and_then(Value::as_str);
-        from.and_then(|id| self.party(s, id)).is_some_and(|from| self.hears(s, to, &from, msg))
+        from.and_then(|id| self.party(s, id)).is_some_and(|from| self.reaches(s, &from, to, msg))
     }
 
     /// Whether a message from `from` may go to `to`: it [`hears`](Self::hears)
@@ -838,7 +843,7 @@ impl Agents {
             self.notice_in(s, p, ti, &msg);
         }
         for b in &to {
-            out.push(Delivery { to: b.clone(), msg: msg.clone(), thread: tid.clone() });
+            out.push(Delivery { to: b.clone(), msg: msg.clone(), thread: tid.clone(), held: false });
         }
         let mut sent = json!({"id": msg["id"], "conversation": msg["conversation"], "delivered_to": [], "queued_for": to.iter().map(|b| json!(b.id)).collect::<Vec<_>>()});
         if !not_taken.is_empty() {
@@ -858,17 +863,32 @@ impl Agents {
         }
     }
 
+    /// `msg` won't reach `to`: nothing is waiting for it now, and its sender
+    /// reads why, in the conversation and in its own chat. Its AI isn't woken.
+    pub fn turned_away(&self, s: &mut State, to: &Party, msg: &Value) {
+        let Some(ti) = conversation_index(s, &str_or_empty(msg.get("conversation"))) else { return };
+        let (tid, uid) = (s.list[ti].id.clone(), s.list[ti].uid.clone());
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        self.delivered(s, &tid, &id, &to.id);
+        let n = json!({"kind": "agents_turned_away", "conversation": msg.get("conversation"), "thread": tid, "thread_uid": uid, "to": to.wire(), "subject": msg.get("subject"), "last_id": id});
+        let mut here = n.clone();
+        here["at"] = ms(self.now());
+        let uid = self.uid();
+        s.list[ti].turns.push(Turn { id: Some(uid), ..Turn::notice(&notice_text(&n), here) });
+        if let Some(from) = msg.get("from").and_then(|f| f.get("id")).and_then(Value::as_str) {
+            self.notice(s, from, &n);
+        }
+    }
+
     /// Every message still waiting for a recipient, oldest first: what a
-    /// restart hands on again (spec 5.5).
+    /// restart hands on, each with no hold left (spec 5.5).
     pub fn undelivered(&self, s: &State) -> Vec<Delivery> {
         let mut out = Vec::new();
         for t in s.list.iter().filter(|t| t.agents.is_some()) {
             for u in &t.turns {
                 for id in u.pending.as_ref().and_then(Value::as_array).into_iter().flatten() {
                     let Some(p) = self.party(s, &js::string_of(id)) else { continue };
-                    if p.external() || p.is_user() || s.bot(&p.id).is_some_and(live) {
-                        out.push(Delivery { to: p, msg: u.message.clone().unwrap_or(Value::Null), thread: t.id.clone() });
-                    }
+                    out.push(Delivery { to: p, msg: u.message.clone().unwrap_or(Value::Null), thread: t.id.clone(), held: true });
                 }
             }
         }

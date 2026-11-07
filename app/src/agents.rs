@@ -170,6 +170,9 @@ pub enum NoticeKind {
     Waiting,
     /// A message to an outside endpoint failed (plain).
     Undelivered,
+    /// A recipient stopped taking the sender's messages (Open: the
+    /// conversation).
+    TurnedAway,
 }
 
 /// A `notice` turn about agents: its line (the turn's text, as the broker
@@ -195,6 +198,7 @@ impl AgentsNotice {
             "agents_hop_limit" => NoticeKind::HopLimit,
             "agents_waiting" => NoticeKind::Waiting,
             "agents_undelivered" => NoticeKind::Undelivered,
+            "agents_turned_away" => NoticeKind::TurnedAway,
             _ => return None,
         };
         let thread = Some(s(v, "thread_uid")).filter(|u| !u.is_empty()).unwrap_or_else(|| s(v, "thread"));
@@ -540,6 +544,9 @@ mod tests {
         assert_eq!((wait.kind, wait.opens(), wait.thread.as_str(), wait.open_label().as_str()), (NoticeKind::Waiting, true, "uid-3", "Open Boss's chat"));
         let lost = AgentsNotice::of(&json!({"kind": "agents_undelivered", "endpoint": "ah_1", "message": "msg_3"}), "Not delivered to CI (HTTP 404)".into()).unwrap();
         assert_eq!((lost.kind, lost.opens()), (NoticeKind::Undelivered, false), "plain text");
+        let away = AgentsNotice::of(&json!({"kind": "agents_turned_away", "conversation": "conv_9", "thread": "t10", "thread_uid": "uid-10", "last_id": "msg_4"}), "Nova isn't taking messages. Not delivered: Tax check".into()).unwrap();
+        assert_eq!((away.kind, away.opens(), away.thread.as_str(), away.message.as_str()), (NoticeKind::TurnedAway, true, "uid-10", "msg_4"));
+        assert_eq!(away.open_label(), "Open the conversation");
     }
 
     #[test]

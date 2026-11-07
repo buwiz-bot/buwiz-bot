@@ -11,6 +11,11 @@
 //! - A message that expects no reply only notifies: the notices and
 //!   agent_read carry it.
 //!
+//! Every delivery is asked again whether its recipient still hears the sender
+//! ([`AgentsHub::admit`]). A message that isn't heard is held [`HOLD_MS`] in
+//! memory, which lets an Undo save it, then turned away. A running turn
+//! stops at its next step ([`STOPPED`], `agent/turn.rs`), and sends no answer.
+//!
 //! The turns are a [`Runs`]: [`Wired`] on the hub (`ctx.turns` for a
 //! reply, the [`AgentRequestTurn`] seam for a request), a stub in tests.
 
@@ -33,6 +38,12 @@ pub const PER_AGENT: usize = 1;
 pub const TOTAL: usize = 4;
 
 const MOCK_REPLY: &str = "_(mock reply — no model configured)_";
+
+/// How long a message that stopped being heard waits: the receipt's 8-second
+/// Undo and a margin, as the app's timer starts when it draws the receipt.
+pub const HOLD_MS: u64 = 10_000;
+/// A request's turn ended because its recipient stopped hearing the sender.
+pub const STOPPED: &str = "stopped: the recipient no longer takes this sender's messages";
 
 /// The text a recipient's turn reads: the message, wrapped as a peer's
 /// (`peerPrompt`).
@@ -196,6 +207,7 @@ impl Runs for Wired {
                 acting_bot: Some(bot.id.clone()),
                 agent_hop: msg.get("hop").and_then(Value::as_i64),
                 model: choice_for_db(&ctx.db, model.as_ref()),
+                delivery: Some(Delivery { to: bot.clone(), msg: msg.clone(), thread: thread.clone(), held: true }),
                 ..TurnCtx::default()
             };
             let req = AgentRequest { turn, prompt: peer_prompt(&msg, false), thread: stand_in, history };
@@ -293,9 +305,34 @@ impl AgentsHub {
         if !d.to.external() {
             return self.deliver(ctx, d);
         }
+        let Some(d) = self.admit(ctx, d) else { return };
         self.externals.deliver(self, ctx, &d.to, &d.msg);
         let id = d.msg.get("id").cloned().unwrap_or(Value::Null);
         if let Err(e) = ctx.store.write(|s| self.agents.delivered(s, &d.thread, &id, &d.to.id)) {
+            eprintln!("agents: {e}");
+        }
+    }
+
+    /// `d` if its recipient hears it now. If not, it is held once, out of the
+    /// queue so it frees its slot, and comes back through [`route`](Self::route):
+    /// heard by then (an Undo), it goes on and nobody is told; else it is turned
+    /// away. The hold is only here in memory, so after a restart there is none.
+    pub(crate) fn admit(self: &Arc<Self>, ctx: &Arc<HubCtx>, d: Delivery) -> Option<Delivery> {
+        if ctx.store.read(|s| self.agents.heard(s, &d.to, &d.msg)) {
+            return Some(d);
+        }
+        if d.held {
+            self.turn_away(ctx, &d.to, &d.msg);
+            return None;
+        }
+        let (hub, c) = (self.clone(), ctx.clone());
+        ctx.clock.set_timeout(HOLD_MS, Box::new(move || hub.route(&c, Delivery { held: true, ..d })));
+        None
+    }
+
+    /// [`Agents::turned_away`] on the store.
+    pub(crate) fn turn_away(self: &Arc<Self>, ctx: &Arc<HubCtx>, to: &Party, msg: &Value) {
+        if let Err(e) = ctx.store.write(|s| self.agents.turned_away(s, to, msg)) {
             eprintln!("agents: {e}");
         }
     }
@@ -341,7 +378,7 @@ impl AgentsHub {
     }
 
     async fn run(self: &Arc<Self>, ctx: &Arc<HubCtx>, job: Delivery) {
-        let Delivery { to: bot, msg, thread } = job;
+        let Some(Delivery { to: bot, msg, thread, .. }) = self.admit(ctx, job) else { return };
         let msg_id = msg.get("id").cloned().unwrap_or(Value::Null);
         let r: Result<(), String> = async {
             if let Some(d) = msg.get("deadline").filter(|d| js::truthy(d)) {
@@ -351,7 +388,14 @@ impl AgentsHub {
                 }
             }
             if msg.get("expects_reply").is_some_and(js::truthy) {
-                let answer = self.runs.request(ctx.clone(), self.clone(), bot.clone(), msg.clone(), thread.clone()).await?;
+                let answer = self.runs.request(ctx.clone(), self.clone(), bot.clone(), msg.clone(), thread.clone()).await;
+                // stopped, or it got to its end while its Bot stopped listening: no
+                // answer. A stopped run isn't saved by an Undo: it may be half done.
+                if answer.as_ref().err().is_some_and(|e| e == STOPPED) || !ctx.store.read(|s| self.agents.heard(s, &bot, &msg)) {
+                    self.turn_away(ctx, &bot, &msg);
+                    return Ok(());
+                }
+                let answer = answer?;
                 let answer = super::trim(&answer).to_owned();
                 // the sender may have left the conversation's reach since;
                 // the reply is best effort and its refusal (hop limit,
@@ -371,7 +415,7 @@ impl AgentsHub {
                         eprintln!("agents: {}'s reply to {} refused: {}", bot.id, js_str(Some(&msg_id)), e.code);
                     }
                 }
-            } else if msg.get("in_reply_to").is_some_and(js::truthy) && ctx.store.read(|s| self.agents.heard(s, &bot, &msg)) {
+            } else if msg.get("in_reply_to").is_some_and(js::truthy) {
                 self.runs.reply(ctx.clone(), self.clone(), bot.clone(), msg.clone(), thread.clone()).await?;
             }
             Ok(())
@@ -392,8 +436,8 @@ impl AgentsHub {
     }
 
     /// The hub's start (`startAgents`): what a restart left undelivered
-    /// handed to its recipients again, and the outgoing webhooks still
-    /// queued tried again.
+    /// handed to its recipients again, unless they stopped hearing it, and
+    /// the outgoing webhooks still queued tried again.
     pub fn start(self: &Arc<Self>, ctx: &Arc<HubCtx>) {
         for d in ctx.store.read(|s| self.agents.undelivered(s)) {
             self.route(ctx, d);

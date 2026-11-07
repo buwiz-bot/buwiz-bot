@@ -139,6 +139,9 @@ pub struct TurnCtx {
     /// the routine a turn runs for (Node's `job.routine`: a v0 routine's
     /// id, or `<plugin>/<routine>`); its turn gets no routine tools
     pub routine: Option<String>,
+    /// the message a delivery turn answers: the turn stops at its next step
+    /// once its recipient no longer hears the sender (`agent/turn.rs`)
+    pub delivery: Option<crate::hub::agents::Delivery>,
 }
 
 /// A tool's answer as the model gets it (Node's `{content, is_error}`).

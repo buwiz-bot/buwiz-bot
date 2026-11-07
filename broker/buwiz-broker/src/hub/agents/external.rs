@@ -425,6 +425,14 @@ impl Externals {
             if o.state != "queued" {
                 return;
             }
+            // a retry, or a restart's: its endpoint may have stopped hearing it since
+            let msg: Value = serde_json::from_str(&o.msg).unwrap_or(Value::Null);
+            let to = ctx.store.read(|s| hub.agents.party(s, &format!("ext:{}", r.id)).filter(|p| !hub.agents.heard(s, p, &msg)));
+            if let Some(to) = to {
+                let _ = self.db.with(|c| c.execute("UPDATE agent_outbox SET state='dropped' WHERE seq=?", [seq]));
+                hub.turn_away(ctx, &to, &msg);
+                return;
+            }
             let t = ((self.now() / 1000.0).floor() as i64).to_string();
             let headers = vec![("content-type".to_owned(), "application/json".to_owned()), ("x-buwiz-signature".to_owned(), signature(r.out_secret.as_deref().unwrap_or(""), &o.msg, &t))];
             let status = (self.post)(url, o.msg.clone(), headers).await.unwrap_or(0);
