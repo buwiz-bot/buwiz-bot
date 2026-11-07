@@ -97,6 +97,9 @@ pub enum Pick {
     V1Choice(String, &'static str, String, String),
     /// The host's account command of a v1 plugin, `@<short>:<command>`.
     V1Account(String, String),
+    /// A built-in's next words: fills the box with this text and reopens
+    /// the list; with the box already holding it, runs it.
+    Fill(String),
 }
 
 /// A popup row: what it does, its name, a muted hint (a command's args)
@@ -107,13 +110,20 @@ pub struct PopRow {
     pub label: String,
     pub hint: String,
     pub detail: String,
+    /// The Bot it names (its id), for its avatar; "" for any other row.
+    pub bot: String,
 }
 
+/// A built-in's rows and header for what follows the space after its name.
+type Menu = fn(&str) -> (Vec<PopRow>, String);
+
 /// A built-in command; `run` gets what follows its name (`:demo`, ` x`, "").
+/// `menu` is for a command with choices past its name.
 struct Builtin {
     name: &'static str,
     args: &'static str,
     description: &'static str,
+    menu: Option<Menu>,
     run: fn(&str),
 }
 
@@ -122,6 +132,7 @@ const BUILTINS: &[Builtin] = &[
         name: "status",
         args: ":demo | :<state> | :off",
         description: "Play the agent status states",
+        menu: None,
         // `/status` (the demo) and `/status:<state>` (App.tsx:574)
         run: |rest| {
             let arg = rest.strip_prefix(':').map(str::trim).unwrap_or(if rest.trim().is_empty() { "demo" } else { rest.trim() });
@@ -132,14 +143,23 @@ const BUILTINS: &[Builtin] = &[
         name: "avatars",
         args: "list [link] | install [all | <pack> | <name>] [link]",
         description: "List avatar packs, or add avatars from one to Your designs",
+        menu: None,
         run: crate::avatars::run,
     },
     Builtin {
         name: "tools",
         args: "",
         description: "This Bot's (or these chats') tools and this Mac's command rules",
+        menu: None,
         // the sheet, on This Bot for the chat's Bot, on Chats in a plain chat (no model call)
         run: |_| crate::tools::open_sheet(),
+    },
+    Builtin {
+        name: "messages",
+        args: "[<Bot>] | allow all | allow <Bot> | none",
+        description: "Which Bots can message this one",
+        menu: Some(crate::messages::menu),
+        run: crate::messages::run,
     },
 ];
 
@@ -153,6 +173,7 @@ fn builtin_rows(q: &str) -> Vec<PopRow> {
             label: format!("/{}", b.name),
             hint: b.args.to_owned(),
             detail: b.description.to_owned(),
+            bot: String::new(),
         })
         .collect()
 }
@@ -197,10 +218,12 @@ pub(crate) fn boot() {
 
 /// `send`'s first look at the composer text: true when a command, a
 /// message of tokens alone, or tokens and `attach` took it — it never
-/// reaches the model.
-pub(crate) fn dispatch(text: &str) -> bool {
+/// reaches the model. `typed` says the person pressed Enter on it: a
+/// chip's or a card's text (`send_text`) is never `/messages`, whoever
+/// wrote it, and goes on as plain words.
+pub(crate) fn dispatch(text: &str, typed: bool) -> bool {
     let st = store();
-    if text.is_empty() {
+    if text.is_empty() || (!typed && crate::messages::is_command(text)) {
         return false;
     }
     if let Some(cmd) = text.strip_prefix('/') {
@@ -234,7 +257,13 @@ pub(crate) fn dispatch(text: &str) -> bool {
     }
     // the servers' commands aren't known yet: sent again once they are
     if !st.mcp_loaded.get() {
-        load_manifest(|| store().send());
+        // a chip's text, kept: the box holds the person's own draft, which
+        // they haven't sent
+        let sent = (!typed).then(|| text.to_owned());
+        load_manifest(move || match sent {
+            Some(t) => store().send_text(t),
+            None => store().send(),
+        });
         return true;
     }
     if let Some(cmd) = text.strip_prefix('/') {
@@ -506,6 +535,7 @@ async fn resolve_one(server: String, name: String, args: String, slash: bool) ->
             label,
             hint: String::new(),
             detail,
+            bot: String::new(),
         })
         .collect();
     if rows.is_empty() {
@@ -581,9 +611,17 @@ pub(crate) fn rows() -> Vec<PopRow> {
 }
 
 /// `/<q>` being typed (no space yet): the commands starting with it, the
-/// built-ins first. False when `t` is something else.
+/// built-ins first; past the space, a built-in's own `menu`. False when
+/// `t` is something else.
 pub(crate) fn slash_menu(t: &str) -> bool {
     let Some(q) = t.strip_prefix('/') else { return false };
+    if let Some((name, rest)) = q.split_once(char::is_whitespace)
+        && let Some(menu) = BUILTINS.iter().find(|b| b.name == name).and_then(|b| b.menu)
+    {
+        let (rows, head) = menu(rest);
+        show(rows, head);
+        return true;
+    }
     if q.contains(|c: char| c.is_whitespace() || c == ':') {
         return false;
     }
@@ -602,6 +640,7 @@ pub(crate) fn slash_menu(t: &str) -> bool {
                         .filter(|s| !s.is_empty())
                         .collect::<Vec<_>>()
                         .join(" · "),
+                    bot: String::new(),
                 });
             }
         }
@@ -620,6 +659,7 @@ pub(crate) fn slash_menu(t: &str) -> bool {
                 .collect::<Vec<_>>()
                 .join(" · "),
             label,
+            bot: String::new(),
         });
     }
     show(rows, String::new());
@@ -652,6 +692,7 @@ fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::Plugin
             label: format!("@{}", m.id),
             hint: m.title.clone(),
             detail: m.scopes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+            bot: String::new(),
         })
         .collect();
     // v1 plugins with scopes, by their short
@@ -662,7 +703,7 @@ fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::Plugin
             if accounts.contains(&p.short) {
                 names.extend(crate::mini_v1::tokens::ACCOUNT_COMMANDS.iter().map(|c| c.to_string()));
             }
-            rows.push(PopRow { pick: Pick::Server(p.short.clone()), label: format!("@{}", p.short), hint: p.title.clone(), detail: names.join(", ") });
+            rows.push(PopRow { pick: Pick::Server(p.short.clone()), label: format!("@{}", p.short), hint: p.title.clone(), detail: names.join(", "), bot: String::new() });
         }
     }
     rows
@@ -706,6 +747,7 @@ pub(crate) fn token_menu(tail: &str) -> bool {
                 label: format!("@{}:{}", m.id, s.name),
                 hint: String::new(),
                 detail: s.description.clone(),
+                bot: String::new(),
             })
             .collect();
         show(rows, String::new());
@@ -740,6 +782,7 @@ fn v1_scope_rows(p: &crate::mini_v1::load::PluginEntry, q: &str) -> Vec<PopRow> 
             label: format!("@{}:{n}", p.short),
             hint: String::new(),
             detail: d,
+            bot: String::new(),
         })
         .collect()
 }
@@ -755,6 +798,7 @@ fn v1_account_rows(short: &str, q: &str, cmds: &[String]) -> Vec<PopRow> {
             label: format!("@{short}:{c}"),
             hint: String::new(),
             detail: crate::mini_v1::connect::account_command_detail(c).to_owned(),
+            bot: String::new(),
         })
         .collect()
 }
@@ -788,6 +832,7 @@ fn value_rows(server: &str, scope: &str, found: Vec<(String, String, String)>) -
             hint: if label == value { String::new() } else { value },
             label,
             detail,
+            bot: String::new(),
         })
         .collect()
 }
@@ -847,8 +892,13 @@ pub(crate) fn pick(row: &PopRow) {
             st.send();
             return;
         }
-        st.draft.set(format!("/{name} "));
+        let next = format!("/{name} ");
+        st.draft.set(next.clone());
         close();
+        // its choices follow at once
+        if BUILTINS.iter().any(|b| b.name == name && b.menu.is_some()) {
+            crate::composer::draft_changed(&next);
+        }
     };
     match &row.pick {
         Pick::Builtin(name) => command(name),
@@ -896,6 +946,15 @@ pub(crate) fn pick(row: &PopRow) {
             resolve(server.clone(), name.clone(), args.clone(), sent);
         }
         Pick::V1Command(form) => command(form.as_str()),
+        Pick::Fill(text) => {
+            // in the box already: Enter runs it
+            if st.draft.get_untracked() == *text {
+                close();
+                st.send();
+                return;
+            }
+            crate::composer::draft_changed(text);
+        }
         Pick::V1Choice(plugin, kind, name, value) => st.v1_pick(plugin.clone(), kind, name.clone(), value.clone(), row.label.clone()),
     }
 }
@@ -1137,7 +1196,7 @@ mod tests {
     }
 
     fn command_row(name: &str) -> PopRow {
-        PopRow { pick: Pick::V1Command(name.to_owned()), label: format!("/{name}"), hint: String::new(), detail: String::new() }
+        PopRow { pick: Pick::V1Command(name.to_owned()), label: format!("/{name}"), hint: String::new(), detail: String::new(), bot: String::new() }
     }
 
     #[test]

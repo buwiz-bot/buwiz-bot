@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 use super::placeholders::{drop_pending, Stream};
 use super::tool_log;
 use super::user_content::user_content;
+use crate::hub::agents::run::STOPPED;
+use crate::hub::agents::AgentsSeam;
 use crate::hub::model::anthropic::{llm, parse_llm};
 use crate::hub::model::{agent_stream, set_agent_stream, sse};
 use crate::hub::store::{Thread, Turn};
@@ -66,6 +68,12 @@ fn search_refused(m: &str) -> bool {
     ["web_search", "server_tool", "tool_use"].iter().any(|w| l.contains(w))
 }
 
+/// Whether a delivery's turn must stop: its recipient no longer hears the sender.
+fn unheard(run: &Run) -> bool {
+    let (Some(d), Some(seam)) = (&run.turn.delivery, run.ctx.ext.get::<AgentsSeam>()) else { return false };
+    !run.ctx.store.read(|s| seam.0.agents.heard(s, &d.to, &d.msg))
+}
+
 /// `agentTurn(job, prompt, thread)`: the reply's text ("" when the model
 /// answered only with tools). `Err` is Node's thrown `llm-api …`.
 pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Value]) -> Result<String, String> {
@@ -93,6 +101,9 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
     for i in 0..COMPUTER_ROUNDS {
         if i >= rounds {
             break;
+        }
+        if unheard(run) {
+            return Err(STOPPED.to_owned());
         }
         if i == 0 {
             think();
@@ -192,6 +203,10 @@ pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Va
         }
         let mut results = Vec::new();
         for u in uses {
+            if unheard(run) {
+                drop_pending(run);
+                return Err(STOPPED.to_owned());
+            }
             let name = u.get("name").map(js::string_of).unwrap_or_default();
             let (p, d) = activity::tool_activity(ctx, &name, u.get("input").unwrap_or(&json!({})));
             run.set_job(&p, &d);

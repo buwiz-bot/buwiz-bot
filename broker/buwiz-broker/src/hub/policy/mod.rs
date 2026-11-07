@@ -389,7 +389,8 @@ pub enum Change {
     Mode(Mode),
     /// Whom `bot` takes messages from. `to` and `from` are `Bot.accepts` as stored: "all",
     /// "none", a list of ids, or null for never set. Only the host route makes one
-    /// (`routes/agents.rs`), so no Bot can change who reaches it.
+    /// (`routes/agents.rs`), so no Bot can change who reaches it. What it sends as `from` is
+    /// not trusted: [`applied`] reads it in the store step that sets `to`.
     Accepts { bot: String, to: Value, from: Value },
 }
 
@@ -518,10 +519,8 @@ impl Change {
             Change::Mode(m) => {
                 db(ctx, |c| c.execute("INSERT OR REPLACE INTO shell_mode(id, mode, actor, at) VALUES(1,?,?,?)", rusqlite::params![m.as_str(), actor, at]))?;
             }
-            Change::Accepts { bot, to, .. } => {
-                let set = ctx.store.write(|s| s.bot_mut(bot).map(|b| b.accepts = Some(to.clone()).filter(|v| !v.is_null())))?;
-                set.ok_or_else(|| format!("no Bot {bot}"))?;
-            }
+            // each in one store step, what it reads with what it writes
+            Change::Accepts { .. } => return Err("whom a Bot hears changes through `applied` and `undo`".into()),
         }
         Ok(())
     }
@@ -586,6 +585,33 @@ fn same_accepts(a: &Value, b: &Value) -> bool {
     a == b || (open(a) && open(b))
 }
 
+/// Sets whom `bot` hears, reading what it was in the same store step: → the change as it
+/// really was, `None` when it changed nothing.
+fn swap_accepts(ctx: &HubCtx, bot: &str, to: &Value) -> Result<Option<Change>, String> {
+    let swapped = ctx.store.write(|s| {
+        let b = s.bot_mut(bot)?;
+        let from = b.accepts.clone().unwrap_or(Value::Null);
+        if same_accepts(&from, to) {
+            return Some(None);
+        }
+        b.accepts = Some(to.clone()).filter(|v| !v.is_null());
+        Some(Some(Change::Accepts { bot: bot.to_owned(), to: to.clone(), from }))
+    })?;
+    swapped.ok_or_else(|| format!("no Bot {bot}"))
+}
+
+/// An Undo of whom `bot` hears, in one store step: it puts `to` back only if the Bot still
+/// hears what the change left (`from`). That also catches a change whose row isn't written yet.
+fn put_back_accepts(ctx: &HubCtx, bot: &str, to: &Value, from: &Value) -> Result<bool, String> {
+    ctx.store.write(|s| match s.bot_mut(bot) {
+        Some(b) if same_accepts(b.accepts.as_ref().unwrap_or(&Value::Null), from) => {
+            b.accepts = Some(to.clone()).filter(|v| !v.is_null());
+            true
+        }
+        _ => false,
+    })
+}
+
 /// [`Change::Accepts`]'s receipt. One Bot on or off a list is named; any other list is read out.
 fn accepts_receipt(ctx: &HubCtx, bot: &str, to: &Value, from: &Value) -> String {
     let name = bot_name(ctx, bot);
@@ -643,9 +669,14 @@ fn shared_on(ctx: &HubCtx, key: &str) -> bool {
 pub fn commit(ctx: &HubCtx, change: &Change, actor: &str, thread: Option<&str>) -> Result<(String, String), String> {
     let inverse = change.inverse(ctx);
     change.apply(ctx, actor)?;
+    recorded(ctx, change, &inverse, actor, thread)
+}
+
+/// What [`commit`] does once `change` is in effect.
+fn recorded(ctx: &HubCtx, change: &Change, inverse: &Change, actor: &str, thread: Option<&str>) -> Result<(String, String), String> {
     let text = change.receipt(ctx);
     let id = format!("u_{}", uuidv7());
-    record(ctx, &Recorded { id: &id, actor, thread, said: None, undoes: None }, change, &text, Some(&inverse))?;
+    record(ctx, &Recorded { id: &id, actor, thread, said: None, undoes: None }, change, &text, Some(inverse))?;
     settle_moot(ctx);
     Ok((id, text))
 }
@@ -720,10 +751,16 @@ pub fn undo(ctx: &HubCtx, id: &str) -> Result<(), String> {
     }
     let later = db(ctx, |c| c.query_row("SELECT 1 FROM policy_change WHERE target=? AND id>?", [&target, id], |_| Ok(())).optional()).ok().flatten().is_some();
     let Some(inverse) = serde_json::from_str::<Value>(&inv).ok().as_ref().and_then(Change::from_json) else { return stale() };
-    if later || inverse.noop(ctx) {
-        return stale();
+    if let Change::Accepts { bot, to, from } = &inverse {
+        if later || !put_back_accepts(ctx, bot, to, from)? {
+            return stale();
+        }
+    } else {
+        if later || inverse.noop(ctx) {
+            return stale();
+        }
+        inverse.apply(ctx, "human")?;
     }
-    inverse.apply(ctx, "human")?;
     db(ctx, |c| c.execute("UPDATE policy_change SET undo=NULL WHERE id=?", [id]))?;
     let said = format!("Undid a change. {}", inverse.receipt(ctx));
     record(ctx, &Recorded { id: &format!("u_{}", uuidv7()), actor: "human", thread: None, said: Some(&said), undoes: Some(id) }, &inverse, PUT_BACK, None)?;
@@ -1036,6 +1073,12 @@ pub fn answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
 // ---- the person's own edits (the sheet) ----
 
 pub fn applied(ctx: &HubCtx, change: &Change) -> Result<Value, V1Error> {
+    if let Change::Accepts { bot, to, .. } = change {
+        let internal = |e| V1Error::new("internal", e);
+        let Some(done) = swap_accepts(ctx, bot, to).map_err(internal)? else { return Ok(json!({"ok": true, "text": change.receipt(ctx), "undo": Value::Null})) };
+        let (undo, text) = recorded(ctx, &done, &done.inverse(ctx), "human", None).map_err(internal)?;
+        return Ok(json!({"ok": true, "text": text, "undo": undo}));
+    }
     if change.noop(ctx) {
         return Ok(json!({"ok": true, "text": change.receipt(ctx), "undo": Value::Null}));
     }

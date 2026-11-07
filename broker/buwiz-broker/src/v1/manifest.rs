@@ -92,7 +92,7 @@ pub fn limits_json() -> Value {
 // the app's bundle id (com.buwiz.bot), itself and under it
 const RESERVED_ID_PREFIXES: &[&str] = &["buwiz.", "com.buwiz.bot.", "com.buwiz.bot"];
 const RESERVED_SHORTS: &[&str] = &["buwiz", "app", "chat", "mcp", "nsh", "all", "office", "skill", "routine", "bot"];
-const RESERVED_COMMANDS: &[&str] = &["status"];
+const RESERVED_COMMANDS: &[&str] = &["status", "messages"];
 /// The host's account commands under a plugin's `@short:` (`@gws:login`),
 /// added for every plugin whose package declares accounts.
 pub use buwiz_protocol::tokens::ACCOUNT_COMMANDS;
@@ -1195,6 +1195,7 @@ mod tests {
         assert!(RESERVED_ID_PREFIXES.iter().any(|p| "com.buwiz.bot.x".starts_with(p)) && !RESERVED_ID_PREFIXES.iter().any(|p| "app.buwiz.ebirforms".starts_with(p)));
         assert_eq!(refused(|m| m["needs"] = json!(["gmail"])).code, "not_supported");
         assert_eq!(refused(|m| m["commands"][0]["name"] = json!("status")).message, "commands[0].name: /status is a built-in command");
+        assert_eq!(refused(|m| m["commands"][0]["name"] = json!("messages")).message, "commands[0].name: /messages is a built-in command");
         for n in ACCOUNT_COMMANDS {
             assert_eq!(refused(|m| m["scopes"][0]["name"] = json!(n)).message, format!("scopes[0].name: @<short>:{n} is an account command of Buwiz Bot"));
         }

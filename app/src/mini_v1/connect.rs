@@ -438,6 +438,9 @@ pub struct Account {
     /// It's connected, but an update asks for scopes this sign-in doesn't
     /// have: signing in again grants them.
     pub needs_access: bool,
+    /// It's connected, but its refresh has failed for hours: nothing has
+    /// ended the sign-in, and signing in again is the way to end the wait.
+    pub stuck: bool,
 }
 
 impl Account {
@@ -456,6 +459,7 @@ impl Account {
             active: v.get("active").and_then(Value::as_bool).unwrap_or(false),
             pending: v.get("pending").and_then(Value::as_bool).unwrap_or(false),
             needs_access: v.get("needs_access").and_then(Value::as_bool).unwrap_or(false),
+            stuck: v.get("stuck").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 
@@ -1077,6 +1081,11 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    #[test]
+    fn a_row_says_whether_its_refresh_is_stuck() {
+        assert!(Account::of(&json!({"state": "connected", "stuck": true})).stuck);
+        assert!(!Account::of(&json!({"state": "connected"})).stuck);
+    }
     use crate::mini_v1::{links, load::PluginEntry, records::Pin};
 
     const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";

@@ -450,7 +450,8 @@ pub(crate) async fn job_stop(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// `GET /jobs/running`: the runs under way, for an app that wasn't there when they started.
+/// `GET /jobs/running`: the runs under way, for an app that wasn't there when they started. One
+/// of the [`LOCKED_READS`](super::host::LOCKED_READS): it lists every Bot's runs.
 pub(crate) async fn jobs_running(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
     let jobs: Vec<Value> = ctx
         .jobs

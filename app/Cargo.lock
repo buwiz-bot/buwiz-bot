@@ -1979,7 +1979,7 @@ dependencies = [
 [[package]]
 name = "gws-screens"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/google-workspace?rev=1075cf8538a284bb322f38112da6b2f8a04ff0ab#1075cf8538a284bb322f38112da6b2f8a04ff0ab"
+source = "git+https://github.com/buwiz-app/google-workspace?rev=f1c7deaae0dd28569a077512776451a2a93b44f6#f1c7deaae0dd28569a077512776451a2a93b44f6"
 dependencies = [
  "base64 0.22.1",
  "buwiz-app",

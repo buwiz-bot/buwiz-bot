@@ -144,7 +144,7 @@ pub enum Route {
 }
 
 /// The built-in commands (3.1 rule 1).
-pub const BUILTINS: &[&str] = &["status"];
+pub const BUILTINS: &[&str] = &["status", "messages"];
 
 /// The host's account commands under a plugin's `@short:` namespace
 /// (`@gws:login`), for every plugin whose package declares accounts; no
@@ -450,6 +450,13 @@ mod tests {
             enabled,
             commands: names.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    /// A plugin installed before the name was reserved can't take it.
+    #[test]
+    fn messages_is_the_hosts_whatever_a_plugin_declares() {
+        let ps = vec![cmds("app.buwiz.old", "old", true, &["messages"])];
+        assert_eq!(route(&slash("/messages allow all").unwrap(), &ps), Route::Builtin);
     }
 
     #[test]

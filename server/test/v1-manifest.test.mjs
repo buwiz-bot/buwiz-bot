@@ -373,6 +373,7 @@ test("MAN-10 a tool name that does not start with <short>_ is refused", () => {
 
 test("MAN-11 a command named like a built-in (/status) is refused", () => {
   refused((m) => (m.commands[0].name = "status"), "manifest_invalid", /built-in/);
+  refused((m) => (m.commands[0].name = "messages"), "manifest_invalid", /\/messages is a built-in/);
 });
 
 test("MAN-12 routines[].needs is refused as an unknown key", () => {

@@ -667,7 +667,10 @@ fn pop_picker() -> impl IntoElement {
 /// A popup row; `n` its number among the rows shown (⌘n picks it).
 fn pop_row(r: crate::slash::PopRow, selected: bool, n: usize) -> impl IntoElement {
     use crate::slash::Pick;
-    let tile = view()
+    let tile = if !r.bot.is_empty() {
+        crate::chat::peer_avatar(&r.bot, &r.label, 20.0)
+    } else {
+        view()
         .size(px(20.0))
         .rounded(px(5.0))
         .items_center()
@@ -675,7 +678,7 @@ fn pop_row(r: crate::slash::PopRow, selected: bool, n: usize) -> impl IntoElemen
         .bg(tc(0.10))
         .child(
             text(match &r.pick {
-                Pick::Builtin(_) | Pick::Command(..) => "/",
+                Pick::Builtin(_) | Pick::Command(..) | Pick::Fill(_) => "/",
                 Pick::Choice(..) | Pick::Value(..) => "›",
                 _ => "@",
             })
@@ -683,7 +686,8 @@ fn pop_row(r: crate::slash::PopRow, selected: bool, n: usize) -> impl IntoElemen
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(tc(0.54)),
         )
-        .into_element();
+        .into_element()
+    };
     let r2 = r.clone();
     view()
         .flex_row()

@@ -2247,3 +2247,51 @@ async fn no_model_tool_or_card_changes_whom_a_bot_hears() {
     assert_eq!(with("host_undo"), ["hub/policy/mod.rs", "hub/routes/host.rs"]);
     assert!(with("policy::undo").is_empty());
 }
+
+#[tokio::test]
+async fn accepts_reads_what_it_replaces_as_it_applies() {
+    let (b, _) = hearing_bed("accepts-from");
+    accepts(&b.ctx, "hex", json!(["scout"]));
+    // what the route read before someone else's change landed
+    let stale = Change::Accepts { bot: "hex".into(), to: json!("none"), from: json!("all") };
+    let r = applied(&b.ctx, &stale).unwrap();
+    host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap();
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(json!(["scout"])), "what it really replaced");
+    // the receipt reads the same value: one Bot off that list
+    let r = accepts(&b.ctx, "hex", json!([]));
+    assert_eq!(r["text"], "Scout can't message Hex now.");
+}
+
+#[tokio::test]
+async fn an_undo_of_accepts_is_stale_once_the_value_moved_even_before_its_row_is_written() {
+    let (b, _) = hearing_bed("accepts-cas");
+    let r = accepts(&b.ctx, "hex", json!("none"));
+    // a change between its store step and its `policy_change` row
+    b.ctx.store.write(|s| s.bot_mut("hex").unwrap().accepts = Some(json!(["scout"]))).unwrap();
+    assert_eq!(host_undo(&b.ctx, &json!({"undo": r["undo"]})).unwrap_err().code, "stale");
+    assert_eq!(hears_now(&b.ctx, "hex"), Some(json!(["scout"])), "the later change stands");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_and_an_undo_racing_never_lose_the_change() {
+    let (b, _) = hearing_bed("accepts-race");
+    for i in 0..200 {
+        let later = json!([format!("x{i}")]);
+        let r = accepts(&b.ctx, "hex", json!("none"));
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let (c1, c2, g1, g2, undo, to) = (b.ctx.clone(), b.ctx.clone(), gate.clone(), gate, r["undo"].clone(), later.clone());
+        let t1 = std::thread::spawn(move || {
+            g1.wait();
+            accepts(&c1, "hex", to);
+        });
+        let t2 = std::thread::spawn(move || {
+            g2.wait();
+            let _ = host_undo(&c2, &json!({"undo": undo}));
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+        // whichever went first, the change is what's left
+        assert_eq!(hears_now(&b.ctx, "hex"), Some(later), "round {i}");
+        accepts(&b.ctx, "hex", json!("all"));
+    }
+}

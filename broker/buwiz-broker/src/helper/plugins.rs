@@ -95,7 +95,7 @@ pub type Timer = Box<dyn FnOnce() + Send>;
 /// time it is told and fires timers only when asked, oldest first, as
 /// v1-plugins.test.mjs's fake clock does.
 pub enum Clock {
-    System(Mutex<HashMap<u64, tokio::task::AbortHandle>>, AtomicU64),
+    System(Arc<Mutex<HashMap<u64, tokio::task::AbortHandle>>>, AtomicU64),
     Manual(Mutex<Manual>),
 }
 
@@ -107,7 +107,7 @@ pub struct Manual {
 
 impl Clock {
     pub fn system() -> Self {
-        Clock::System(Mutex::new(HashMap::new()), AtomicU64::new(1))
+        Clock::System(Arc::new(Mutex::new(HashMap::new())), AtomicU64::new(1))
     }
 
     pub fn manual() -> Self {
@@ -126,11 +126,15 @@ impl Clock {
         match self {
             Clock::System(timers, next) => {
                 let id = next.fetch_add(1, Ordering::SeqCst);
+                let fired = timers.clone();
+                // held across the spawn, so a timer that fires at once finds its entry to remove
+                let mut held = timers.lock().unwrap_or_else(|e| e.into_inner());
                 let task = tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(ms)).await;
+                    fired.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
                     f();
                 });
-                timers.lock().unwrap_or_else(|e| e.into_inner()).insert(id, task.abort_handle());
+                held.insert(id, task.abort_handle());
                 id
             }
             Clock::Manual(m) => {
@@ -431,7 +435,7 @@ impl Host {
         .unwrap_or_default()
     }
 
-    fn lock_of(&self, id: &str) -> Arc<AsyncMutex<()>> {
+    pub(crate) fn lock_of(&self, id: &str) -> Arc<AsyncMutex<()>> {
         self.locks.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_owned()).or_default().clone()
     }
 
@@ -1580,6 +1584,48 @@ fn once_prefixed(msg: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A routine rearms every minute at most, so a timer's entry has to go when it fires. Callers
+    /// fighting over the map make a timer fire before its entry is in, which it would then leave.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_timer_that_fired_leaves_nothing_behind() {
+        const SETTERS: u64 = 8;
+        const EACH: u64 = 2000;
+        let clock = Arc::new(Clock::system());
+        let fired = Arc::new(AtomicU64::new(0));
+        let setters: Vec<_> = (0..SETTERS)
+            .map(|_| {
+                let (clock, fired, runtime) = (clock.clone(), fired.clone(), tokio::runtime::Handle::current());
+                std::thread::spawn(move || {
+                    let _in_it = runtime.enter();
+                    for _ in 0..EACH {
+                        let f = fired.clone();
+                        clock.set_timeout(0, Box::new(move || {
+                            f.fetch_add(1, Ordering::SeqCst);
+                        }));
+                    }
+                })
+            })
+            .collect();
+        for s in setters {
+            s.join().unwrap();
+        }
+        let waiting = |c: &Clock| if let Clock::System(timers, _) = c { timers.lock().unwrap().len() } else { unreachable!() };
+        for _ in 0..2000 {
+            if fired.load(Ordering::SeqCst) == SETTERS * EACH {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(fired.load(Ordering::SeqCst), SETTERS * EACH);
+        assert_eq!(waiting(&clock), 0);
+
+        // a cancelled one still goes, and a live one stays until it fires
+        let id = clock.set_timeout(60_000, Box::new(|| {}));
+        assert_eq!(waiting(&clock), 1);
+        clock.clear(id);
+        assert_eq!(waiting(&clock), 0);
+    }
 
     fn row_of(id: &str, protocol: &str) -> Row {
         row_with(id, protocol, "[]")
