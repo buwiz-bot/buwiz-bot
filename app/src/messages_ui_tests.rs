@@ -71,13 +71,19 @@ impl Network for Broker {
             HttpBody::Bytes(b) => serde_json::from_slice(b).unwrap_or(Value::Null),
             _ => Value::Null,
         };
-        if path == ROUTE && self.reply["ok"] == true {
+        // a null `reply`: it applies, and the answer never arrives
+        let lost = path == ROUTE && self.reply.is_null();
+        if path == ROUTE && (self.reply["ok"] == true || lost) {
             *self.accepts.lock().unwrap() = body["accepts"].clone();
         }
         if path == "/v1/host/tools/undo" {
             *self.accepts.lock().unwrap() = json!("none");
         }
         self.log.lock().unwrap().push((path.clone(), body));
+        if lost {
+            events(FetchEvent::Failed("the connection broke".to_owned()));
+            return Box::new(Done);
+        }
         let answer = match path.as_str() {
             ROUTE => self.reply.clone(),
             "/threads" => threads(self.accepts.lock().unwrap().clone()),
@@ -354,6 +360,27 @@ fn a_change_answered_after_leaving_its_chat_is_a_toast() {
     settle(&mut app);
     assert!(on(&mut app, || store().local_turns.borrow().is_empty()), "no receipt anywhere");
     assert!(app.texts().iter().any(|t| t.contains(SAID) && t.contains("Undo it in /tools.")), "{:?}", app.texts());
+}
+
+/// No answer doesn't mean nothing changed: the app says it couldn't confirm
+/// and shows what the broker really has.
+#[test]
+fn a_lost_answer_is_unconfirmed_and_the_real_state_comes_back() {
+    if !in_child("a_lost_answer_is_unconfirmed_and_the_real_state_comes_back") {
+        return;
+    }
+    let (mut app, seen) = start(Value::Null);
+    open(&mut app, &seen, "t_nova", json!("all"));
+    let refreshes = heard(&seen, "/threads").len();
+    place(&mut app, "/messages none");
+    send(&mut app);
+    wait_for(&mut app, &seen, ROUTE, 1);
+    wait_for(&mut app, &seen, "/threads", refreshes + 1);
+    settle(&mut app);
+    assert_eq!(accepts_held(&mut app), Some(crate::agents::Accepts::None), "it did apply");
+    assert!(app.texts().iter().any(|t| t.contains("Couldn't confirm")), "{:?}", app.texts());
+    assert!(!app.texts().iter().any(|t| t.contains("nothing changed")), "{:?}", app.texts());
+    assert!(on(&mut app, || store().local_turns.borrow().is_empty()), "no receipt for what isn't known");
 }
 
 /// A line in the box runs on the person's own Enter, and not before.

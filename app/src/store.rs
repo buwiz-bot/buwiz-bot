@@ -3839,9 +3839,10 @@ impl Store {
     }
 
     /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`);
-    /// `answered` gets the broker's answer, None when it can't be reached.
-    /// Shown at once; a refusal puts the old value back here, since the
-    /// `/threads` that follows then changes nothing.
+    /// `answered` gets the broker's answer, None when none came (it may
+    /// have applied it even so). Shown at once. Without a yes the old value
+    /// goes back here, and the `/threads` that follows brings the real one:
+    /// it changes nothing here when nothing changed there.
     pub fn agents_accepts(&'static self, bot: String, accepts: crate::agents::Accepts, answered: impl FnOnce(Option<serde_json::Value>) + 'static) {
         let put = |to: &crate::agents::Accepts| {
             let mut was = None;

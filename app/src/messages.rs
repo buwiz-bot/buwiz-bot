@@ -21,7 +21,8 @@ use crate::store::RoxBot;
 
 const OPEN_A_BOT: &str = "Open a Bot's chat first.";
 const HELPER: &str = "A helper takes messages only from its parent.";
-const NOT_CONNECTED: &str = "Couldn't reach the broker, so nothing changed.";
+/// No answer: the broker may have applied it all the same.
+const UNCONFIRMED: &str = "Couldn't confirm that change. Showing what the broker has now.";
 
 /// Whether `text`, trimmed, is `/messages`: `dispatch`'s reading of a
 /// built-in's name.
@@ -234,8 +235,8 @@ fn answered(bot: &str, chat: &str, r: Option<Value>) {
                 crate::toast::show(away(&v));
             }
         }
-        Some(v) => crate::toast::show(v.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or(NOT_CONNECTED).to_owned()),
-        None => crate::toast::show(NOT_CONNECTED),
+        Some(v) => crate::toast::show(crate::tools::refusal(&v, "")),
+        None => crate::toast::show(UNCONFIRMED),
     }
 }
 
