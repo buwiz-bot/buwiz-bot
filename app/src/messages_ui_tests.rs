@@ -4,6 +4,7 @@
 //!
 //! The store is one per process, so each test runs in a child of its own.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,6 +21,10 @@ use crate::live::store;
 const CHILD: &str = "BUWIZ_MESSAGES_UI_TEST";
 const ROUTE: &str = "/v1/host/agents/accepts";
 const SAID: &str = "Scout can now message Nova.";
+/// Whether the conversation is archived, as `/threads` says.
+static ARCHIVED: AtomicBool = AtomicBool::new(false);
+/// Whether the Stage draws the right pane too.
+static PANE: AtomicBool = AtomicBool::new(false);
 
 fn in_child(name: &str) -> bool {
     if std::env::var_os(CHILD).is_some() {
@@ -44,7 +49,8 @@ fn threads(accepts: Value) -> Value {
     nova["accepts"] = accepts;
     let mut scribe = bot("h1", "Scribe");
     scribe["helper"] = json!({"parent": "ada", "task": "t"});
-    json!({"list": [{"id": "t_nova", "title": "Nova", "bot": bot("nova", "Nova")}, {"id": "t_plain", "title": "Plain"}, {"id": "t_h", "title": "Scribe", "bot": bot("h1", "Scribe")}],
+    let conversation = json!({"conversation": "conv_1", "participants": ["nova", "ada"], "subject": "Tax check", "created_by": "nova", "created_at": 5.0, "paused": 9.0, "archived": ARCHIVED.load(Ordering::SeqCst)});
+    json!({"list": [{"id": "t_nova", "title": "Nova", "bot": bot("nova", "Nova")}, {"id": "t_ada", "title": "Ada", "bot": bot("ada", "Ada")}, {"id": "t_plain", "title": "Plain"}, {"id": "t_h", "title": "Scribe", "bot": bot("h1", "Scribe")}, {"id": "t_conv", "title": "Tax check", "agents": conversation}],
         "bots": [nova, bot("scout", "Scout"), bot("ada", "Ada"), scribe]})
 }
 
@@ -78,6 +84,9 @@ impl Network for Broker {
         let lost = path == ROUTE && self.reply.is_null();
         if path == ROUTE && (self.reply["ok"] == true || lost) {
             *self.accepts.lock().unwrap() = body["accepts"].clone();
+        }
+        if path == "/v1/host/agents/archive" {
+            ARCHIVED.store(body["archived"] == true, Ordering::SeqCst);
         }
         if path == "/v1/host/tools/undo" {
             *self.accepts.lock().unwrap() = json!("none");
@@ -187,6 +196,7 @@ fn Stage() -> impl IntoElement {
             let turns: Vec<_> = store().turns.get().into_iter().filter(|t| t.tools_change.is_some() || t.messages_card.is_some()).collect();
             view().children(turns.into_iter().map(|t| crate::chat::turn_row(t, "t_nova").into_element())).into_element()
         }))
+        .child(if PANE.load(Ordering::SeqCst) { crate::pane::pane().into_element() } else { view().into_element() })
 }
 
 fn labels(app: &mut Headless) -> Vec<String> {
@@ -678,4 +688,93 @@ fn some_on_another_bots_card_leaves_the_box_alone() {
     assert_eq!(wait_for(&mut app, &seen, ROUTE, 1)[0], json!({"bot": "scout", "accepts": []}));
     settle(&mut app);
     assert_eq!(draft(&mut app), "", "`allow` here means Nova, not Scout");
+}
+
+/// The right pane of a Bot's chat: whom it hears and its conversations left
+/// it for the card and the notices. Ada is in a conversation and has a
+/// helper, so everything that went would have something to show.
+#[test]
+fn the_right_pane_keeps_helper_and_routines_and_nothing_of_messages() {
+    if !in_child("the_right_pane_keeps_helper_and_routines_and_nothing_of_messages") {
+        return;
+    }
+    PANE.store(true, Ordering::SeqCst);
+    ARCHIVED.store(true, Ordering::SeqCst);
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_ada", json!("all"));
+    settle(&mut app);
+    for w in ["Helper", "Scribe", "Routines"] {
+        assert!(has(&app, w), "{w}: {:?}", app.texts());
+    }
+    let gone = ["Accept messages from", "All my agents", "Conversations", "Tax check", "Archived", "No conversations yet"];
+    assert!(app.texts().iter().all(|t| gone.iter().all(|g| !t.starts_with(g))), "{:?}", app.texts());
+    assert!(seen.log.lock().unwrap().iter().all(|(p, _)| !p.starts_with("/turns")), "nothing reads a conversation's last message");
+    // with no helper and no conversation: still no line about them
+    open(&mut app, &seen, "t_plain", json!("all"));
+    settle(&mut app);
+    assert!(has(&app, "Routines"), "{:?}", app.texts());
+    assert!(app.texts().iter().all(|t| gone.iter().all(|g| !t.starts_with(g))), "{:?}", app.texts());
+}
+
+/// An open conversation's own pane still archives and resumes it.
+#[test]
+fn an_open_conversation_keeps_archive_and_resume() {
+    if !in_child("an_open_conversation_keeps_archive_and_resume") {
+        return;
+    }
+    PANE.store(true, Ordering::SeqCst);
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_conv", json!("all"));
+    settle(&mut app);
+    assert!(has(&app, "Paused"), "{:?}", app.texts());
+    app.press("Resume the conversation");
+    assert_eq!(wait_for(&mut app, &seen, "/v1/host/agents/resume", 1)[0], json!({"conversation": "conv_1"}));
+    settle(&mut app);
+    assert!(!has(&app, "Resume") && has(&app, "Open"), "{:?}", app.texts());
+    app.press("Archive the conversation");
+    assert_eq!(wait_for(&mut app, &seen, "/v1/host/agents/archive", 1)[0], json!({"conversation": "conv_1", "archived": true}));
+    settle(&mut app);
+    assert!(has(&app, "Archived"), "{:?}", app.texts());
+    app.press("Unarchive the conversation");
+    assert_eq!(wait_for(&mut app, &seen, "/v1/host/agents/archive", 2)[1], json!({"conversation": "conv_1", "archived": false}));
+}
+
+/// A frame in its parent: left, top, right, bottom.
+fn edges(f: nsh_core::geometry::Bounds<nsh_core::geometry::Points>) -> (f32, f32, f32, f32) {
+    (f.origin.x.0, f.origin.y.0, f.origin.x.0 + f.size.width.0, f.origin.y.0 + f.size.height.0)
+}
+
+/// Whether two frames in one parent share any point.
+fn overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// The card is the only control for this, so the name and every control
+/// hold at any width of the chat: one line when wide, the controls under
+/// the name when narrower, stacked when narrower still.
+#[test]
+fn a_cards_name_and_controls_never_overlap_at_any_chat_width() {
+    if !in_child("a_cards_name_and_controls_never_overlap_at_any_chat_width") {
+        return;
+    }
+    use crate::messages::{CONTROLS, WHO};
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("all"));
+    show_card(&mut app, "nova");
+    let mut lines = Vec::new();
+    for w in [1000.0, 620.0, 460.0, 380.0, 320.0, 280.0, 240.0, 200.0] {
+        app.resize(w, 800.0);
+        settle(&mut app);
+        let [who, controls, hears, sends] = [WHO, CONTROLS, "Hears", "Can it start a message"].map(|l| edges(app.frame(l)));
+        let (row, block) = (app.parent_frame(WHO).size.width.0, controls.2 - controls.0);
+        assert!(!overlap(who, controls), "{w}: {who:?} {controls:?}");
+        assert!(!overlap(hears, sends), "{w}: {hears:?} {sends:?}");
+        assert!(who.2 - who.0 > 40.0, "{w}: the name has room: {who:?}");
+        assert!(who.0 >= 0.0 && who.2 <= row && controls.0 >= 0.0 && controls.2 <= row, "{w}: inside the row of {row}: {who:?} {controls:?}");
+        assert!(hears.0 >= 0.0 && hears.2 <= block && sends.0 >= 0.0 && sends.2 <= block, "{w}: inside its block of {block}: {hears:?} {sends:?}");
+        lines.push((controls.1 >= who.3, sends.1 >= hears.3));
+    }
+    assert_eq!(lines.first(), Some(&(false, false)), "wide: one line");
+    assert_eq!(lines.last(), Some(&(true, true)), "narrow: name, then Hears, then Sends");
+    assert!(lines.contains(&(true, false)), "between: the controls together under the name: {lines:?}");
 }

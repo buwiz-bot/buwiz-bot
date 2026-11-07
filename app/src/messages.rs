@@ -324,7 +324,7 @@ fn control(caption: &str, choices: Vec<Choice>) -> impl IntoElement {
                 .child(text(word).text_size(px(12.0)).text_color(if picked { theme::TEXT } else { theme::MUTED })),
         );
     }
-    view().gap(px(3.0)).child(text(caption.to_owned()).text_size(px(11.0)).text_color(theme::MUTED)).child(seg)
+    view().label(caption.to_owned()).gap(px(3.0)).child(text(caption.to_owned()).text_size(px(11.0)).text_color(theme::MUTED)).child(seg)
 }
 
 /// Whom `id` hears from changes, with its receipt and Undo.
@@ -408,6 +408,10 @@ fn allowed_row(b: &RoxBot, who: &str, bots: &[RoxBot], list: &[String]) -> impl 
         )
 }
 
+/// The card's Bot, and its controls beside or under it.
+pub(crate) const WHO: &str = "Whose card";
+pub(crate) const CONTROLS: &str = "Message settings";
+
 /// The card as things are now (tracked: Hears from the Bots held here,
 /// Sends as last read).
 fn card(n: &Notice) -> AnyElement {
@@ -416,14 +420,29 @@ fn card(n: &Notice) -> AnyElement {
         return text(format!("{} is gone.", n.bot_name)).text_size(px(12.0)).text_color(theme::MUTED).into_element();
     };
     let title = format!("Who can message {}?", b.name);
-    let row = view()
+    // One line while it all fits. Narrower, the controls go under the name
+    // as one block, and narrower still they stack. The name keeps its own
+    // width: a zero basis (`flex_1`) would count it as nothing when the row
+    // wraps, and leave it under the controls.
+    let who = view()
+        .label(WHO)
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .flex_grow(1.0)
+        .flex_shrink(1.0)
+        .min_w(px(0.0))
+        .child(crate::chat::peer_avatar(&b.id, &b.name, 28.0))
+        .child(text(b.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1).flex_shrink(1.0).min_w(px(0.0)));
+    let controls = view()
+        .label(CONTROLS)
         .flex_row()
         .flex_wrap()
-        .items_center()
         .gap_3()
-        .child(view().flex_row().items_center().gap_2().flex_1().child(crate::chat::peer_avatar(&b.id, &b.name, 28.0)).child(text(b.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1)))
+        .flex_shrink(1.0)
         .when(b.helper.is_none(), |v| v.child(hears_control(&b)))
         .child(sends_control(&b.id));
+    let row = view().flex_row().flex_wrap().items_center().gap_3().child(who).child(controls);
     let mut c = crate::cards::shell(&format!("messages-card-{}", b.id))
         .label(title.clone())
         .child(text(title).text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT))
