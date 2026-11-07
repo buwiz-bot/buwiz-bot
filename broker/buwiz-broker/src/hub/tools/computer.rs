@@ -43,6 +43,10 @@
 //! What these tools read is outside content (a page on that screen can say anything): it counts as
 //! such for the switches that ask after outside content.
 //!
+//! A job is a command that goes on after its call ([`crate::hub::computer::jobs`]), by the same
+//! rules as `computer_run`: its Bot's user, its Bot's folder, and on a shared computer only while
+//! they're confirmed apart. Its id is the Bot's own to name: another Bot's isn't found.
+//!
 //! A remote computer isn't any of that wall. The tools are the same, and everything the model does
 //! there it does with whatever access a person gave, so the model is told that ([`prompt`]), a
 //! person said yes to it when they added it, and its switch starts at Ask. Nothing can check from outside that its users are
@@ -55,7 +59,7 @@ use buwiz_computer::{Input, Problem, Settled, WaitFor};
 use serde_json::{json, Value};
 
 use super::{Out, Run};
-use crate::hub::computer::{Computers, Ended, Live};
+use crate::hub::computer::{jobs, Computers, Ended, Live};
 use crate::hub::library::botctx;
 use crate::hub::policy::ask::{self as asking, Asking};
 use crate::hub::policy::{self, Pos};
@@ -67,7 +71,7 @@ pub const ROUTINES_KEY: &str = "computer_routines";
 pub const ASK_PERSON: &str = "computer_ask_person";
 /// The card a hand-over asks on: never `computer`, whose "Allow in this chat" would widen the rest.
 pub const ASK_KEY: &str = "computer_takeover";
-pub const NAMES: [&str; 13] = [
+pub const NAMES: [&str; 16] = [
     "computer_screenshot",
     "computer_click",
     "computer_drag",
@@ -80,10 +84,13 @@ pub const NAMES: [&str; 13] = [
     "computer_read_file",
     "computer_write_file",
     "computer_record",
+    "computer_job_start",
+    "computer_job_status",
+    "computer_job_stop",
     ASK_PERSON,
 ];
 /// The ones that don't need a card first. `computer_ask_person` is its own card.
-pub const READS: [&str; 4] = ["computer_screenshot", "computer_wait", "computer_read_file", ASK_PERSON];
+pub const READS: [&str; 5] = ["computer_screenshot", "computer_wait", "computer_read_file", "computer_job_status", ASK_PERSON];
 
 /// How long a person gets, when the model doesn't say, and the most and least it can say.
 const TAKEOVER_S: u64 = 300;
@@ -120,6 +127,9 @@ pub fn defs() -> Vec<Value> {
         json!({"name": "computer_read_file", "description": "Read a text file from your own folder on your computer. A path is relative to that folder.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}),
         json!({"name": "computer_write_file", "description": "Write a text file in your own folder on your computer, making its folders. A path is relative to that folder.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}),
         json!({"name": "computer_record", "description": "Start recording your screen, or stop and keep the MP4 in your folder on your computer. stop needs the id start gave.", "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "stop"]}, "id": {"type": "integer"}}, "required": ["action"]}}),
+        json!({"name": "computer_job_start", "description": "Start a long command on your computer and leave it running after this turn ends, as computer_run's commands run: in your own folder, as your own user, with no display. For anything that can finish within 10 minutes, use computer_run. The computer stays awake for the job until it ends or reaches its time limit, unless a person puts it to sleep, which freezes the job until it's woken. You aren't running meanwhile: look with computer_job_status when you're next here. At most 2 at once. What it prints goes to .jobs/<id>/out in your folder.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "name": {"type": "string", "description": "what it's doing, in a few words, for the person"}, "time_limit_s": {"type": "integer", "description": "stopped after this long: at most 86400; 14400 when left out"}}, "required": ["command"]}}),
+        json!({"name": "computer_job_status", "description": "See how your jobs on your computer stand: with an id, that job and the end of what it printed; without, your latest jobs.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}}}),
+        json!({"name": "computer_job_stop", "description": "Stop a job of yours on your computer, and everything it started.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}),
         json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. Your commands keep running; whatever you left running on the screen's own desktop is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
     ]
 }
@@ -207,7 +217,7 @@ pub async fn prompt(run: &Run) -> String {
     if !seated(run) {
         String::new()
     } else if screenless(run) {
-        format!("{REMOTE_WORDS} It has no screen: computer_run, computer_read_file and computer_write_file work there, and nothing else does.")
+        format!("{REMOTE_WORDS} It has no screen: computer_run, computer_job_start, computer_job_status, computer_job_stop, computer_read_file and computer_write_file work there, and nothing else does.")
     } else if sees(run).await {
         let remote = if remote_at(run).is_some() { REMOTE_WORDS } else { "" };
         let person = if remote.is_empty() { " When a page needs a person, such as a sign-in, use computer_ask_person rather than asking for a password." } else { " When a page needs a person, such as a sign-in, say so in chat rather than asking for a password." };
@@ -238,7 +248,7 @@ pub fn own_path(folder: &str, path: &str) -> Option<String> {
 
 /// `path` in `folder` as the computer resolves it, links followed; `None` when that leaves the
 /// folder.
-async fn inside(live: &Live, path: &str) -> Result<Option<String>, Problem> {
+pub(crate) async fn inside(live: &Live, path: &str) -> Result<Option<String>, Problem> {
     let Some(rel) = own_path(&live.screen.folder, path) else { return Ok(None) };
     let real = live.provider.resolve(&live.machine, &rel).await?;
     Ok(real.starts_with(&format!("/workspace/{}/", live.screen.folder)).then_some(real))
@@ -292,7 +302,7 @@ async fn clear_to_act(run: &Run, computers: &Computers, live: Live, name: &str) 
             // it may have slept or moved while it waited
             live = computers.live(&run.ctx, &live.bot).await?;
         }
-        let looks_alone = matches!(name, "computer_screenshot" | "computer_wait" | "computer_run" | "computer_read_file" | "computer_write_file" | "computer_record" | ASK_PERSON);
+        let looks_alone = matches!(name, "computer_screenshot" | "computer_wait" | "computer_run" | "computer_read_file" | "computer_write_file" | "computer_record" | "computer_job_start" | "computer_job_status" | "computer_job_stop" | ASK_PERSON);
         let since = if looks_alone { None } else { live.provider.mark(&live.machine, &live.screen).await };
         if !computers.person_on(&live.bot) {
             return Ok((live, since));
@@ -426,6 +436,20 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     out
 }
 
+/// Whether a command may go, for `name`. On a shared computer the other Bots are what's at stake,
+/// so this is read from outside for each command: a failed read is a no, and nothing the box says
+/// counts.
+async fn commands_allowed(run: &Run, live: &Live, name: &str) -> Result<(), Out> {
+    let seats = Computers::seats(&run.ctx, &live.computer).map_err(|p| no(&p))?;
+    if seats.len() > 1 {
+        let bots: Vec<String> = seats.into_iter().map(|s| s.bot).collect();
+        if !matches!(live.provider.users_apart(&live.machine, &bots).await, Ok(true)) {
+            return Err(Out::err(format!("{name} is off on a computer several Bots share until they're confirmed apart there, and they aren't now. Use the screen, or ask for a computer of your own.")));
+        }
+    }
+    Ok(())
+}
+
 async fn act(run: &Run, computers: &Computers, live: &Live, name: &str, input: &Value, since: Option<u64>) -> Out {
     let (provider, machine, screen) = (&live.provider, &live.machine, &live.screen);
     let hands = |i: Input| async move { provider.input(machine, screen, &i).await };
@@ -460,17 +484,8 @@ async fn act(run: &Run, computers: &Computers, live: &Live, name: &str, input: &
         }
         "computer_run" => {
             let Some(command) = text(input, "command") else { return Out::err("computer_run needs command".to_owned()) };
-            // on a shared computer the other Bots are what's at stake, so this is read from outside
-            // for each command: a failed read is a no, and nothing the box says counts
-            let seats = match Computers::seats(&run.ctx, &live.computer) {
-                Ok(seats) => seats,
-                Err(p) => return no(&p),
-            };
-            if seats.len() > 1 {
-                let bots: Vec<String> = seats.into_iter().map(|s| s.bot).collect();
-                if !matches!(provider.users_apart(machine, &bots).await, Ok(true)) {
-                    return Out::err("computer_run is off on a computer several Bots share until they're confirmed apart there, and they aren't now. Use the screen, or ask for a computer of your own.".to_owned());
-                }
+            if let Err(refused) = commands_allowed(run, live, name).await {
+                return refused;
             }
             let timeout = input.get("timeout_s").and_then(Value::as_u64).unwrap_or(30).clamp(1, 600);
             match provider.run(machine, screen, command, timeout * 1000).await {
@@ -479,6 +494,29 @@ async fn act(run: &Run, computers: &Computers, live: &Live, name: &str, input: &
                     Out::ok(machine.scrub(&js::stringify(&body)))
                 }
                 Err(p) => no(&p),
+            }
+        }
+        "computer_job_start" => {
+            let Some(command) = text(input, "command").filter(|c| !c.trim().is_empty()) else { return Out::err("computer_job_start needs command".to_owned()) };
+            if let Err(refused) = commands_allowed(run, live, name).await {
+                return refused;
+            }
+            let limit = input.get("time_limit_s").and_then(Value::as_u64).map_or(jobs::LIMIT, std::time::Duration::from_secs).clamp(jobs::MIN_LIMIT, jobs::MAX_LIMIT);
+            let name = jobs::name_of(input);
+            match computers.start_job(&run.ctx, live, &run.thread_id(), &name, command, limit).await {
+                Ok(job) => Out::ok(js::stringify(&json!({"id": job.id, "state": job.state, "time_limit_s": limit.as_secs()}))),
+                Err(why) => Out::err(why),
+            }
+        }
+        "computer_job_status" => match computers.job_status(&run.ctx, live, text(input, "id")).await {
+            Ok(v) => Out::ok(machine.scrub(&js::stringify(&v))),
+            Err(why) => Out::err(why),
+        },
+        "computer_job_stop" => {
+            let Some(id) = text(input, "id") else { return Out::err("computer_job_stop needs id".to_owned()) };
+            match computers.stop_job(&run.ctx, live, id).await {
+                Ok(v) => Out::ok(machine.scrub(&js::stringify(&v))),
+                Err(why) => Out::err(why),
             }
         }
         "computer_open_url" => {

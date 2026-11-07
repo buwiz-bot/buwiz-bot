@@ -22,6 +22,7 @@ pub fn notice_text(n: &Value) -> String {
     match n.get("kind").and_then(Value::as_str) {
         Some("tool_ask") => return s("title"),
         Some("run_ended") => return crate::hub::agent::runs::said(&s("reason")).to_owned(),
+        Some("computer_job") => return crate::hub::computer::jobs::said(&s("name"), &s("state"), n.get("exit").and_then(Value::as_i64)),
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
         Some("app_uninstall") => return format!("Uninstall {}? It removes its {}.", s("title"), buwiz_protocol::ui::uninstall_removes(&s("id"))),
         Some("app_accounts") => {

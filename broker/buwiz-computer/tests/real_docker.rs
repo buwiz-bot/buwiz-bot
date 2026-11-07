@@ -2,13 +2,14 @@
 //! -- --ignored`. Ignored in a plain run, which may have no Docker. Asked for, it never skips: no
 //! Docker or no image is a failure that says so.
 //!
-//! Its containers start with `c2t-`, and the only port on the Mac it tries is one it opened.
+//! Its containers start with `c2t-` or `c2j-`, and the only port on the Mac it tries is one it opened.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 
-use buwiz_computer::{DockerProvider, Gate, Input, Mode, Power, Provider, Screen, Sleep, Spec};
+use buwiz_computer::job::{self, Seen};
+use buwiz_computer::{DockerProvider, Gate, Input, Machine, Mode, Power, Provider, Screen, Sleep, Spec};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -48,6 +49,89 @@ async fn a_real_computer_wakes_walled_off_and_sleeps() {
     let _ = std::process::Command::new("docker").args(["network", "rm", "c2t-net"]).output();
     let _ = std::fs::remove_dir_all(&dir);
     outcome.unwrap();
+}
+
+/// A job goes on past the command that started it, and past the broker that sent that command, as
+/// the Bot's own user. It's frozen by a sleep, and a stop takes all of it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_job_outlives_its_command_as_the_bots_user() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2j-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image.clone(), "c2j");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2job".into(), dir: dir.clone() }).await.unwrap();
+    let outcome = tokio::spawn({
+        let m = m.clone();
+        async move { jobs(&image, &m).await }
+    })
+    .await;
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2j-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn seen(p: &DockerProvider, m: &Machine, s: &Screen, id: &str) -> Option<Seen> {
+    job::read_look(&p.run(m, s, &job::look(id), 20_000).await.unwrap().stdout)
+}
+
+async fn start_job(p: &DockerProvider, m: &Machine, s: &Screen, id: &str, command: &str) {
+    let path = p.resolve(m, &format!("{}/{}", s.folder, job::script_path(id))).await.unwrap();
+    p.write_file(m, &path, job::script(id, command).as_bytes()).await.unwrap();
+    let began = std::time::Instant::now();
+    let out = p.run(m, s, &job::start(id), 20_000).await.unwrap();
+    assert!(out.stdout.trim().parse::<u32>().is_ok(), "{out:?}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(5), "the start waited for the job");
+}
+
+async fn jobs(image: &str, m: &Machine) {
+    let p = DockerProvider::new(image.to_owned(), "c2j");
+    p.wake(m).await.unwrap();
+    let a = p.screen_up(m, "c2j_a").await.unwrap();
+    let mine = p.run(m, &a, "id -u", 20_000).await.unwrap().stdout;
+    assert_ne!(mine.trim(), "0", "commands aren't root");
+
+    start_job(&p, m, &a, "j_one", "id -u > who.txt; sleep 8; echo done > out.txt; exit 7").await;
+    assert_eq!(seen(&p, m, &a, "j_one").await, Some(Seen::Running), "gone with the command that started it");
+
+    // a new provider is a new broker: what it finds is the job, still going
+    let next = DockerProvider::new(image.to_owned(), "c2j");
+    next.guard(m).await.unwrap();
+    assert_eq!(seen(&next, m, &a, "j_one").await, Some(Seen::Running), "gone with the broker");
+    for _ in 0..60 {
+        if seen(&next, m, &a, "j_one").await != Some(Seen::Running) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert_eq!(seen(&next, m, &a, "j_one").await, Some(Seen::Exited(7)));
+    let file = |name: &str| format!("{}/{name}", a.folder);
+    assert_eq!(String::from_utf8_lossy(&next.read_file(m, &next.resolve(m, &file("out.txt")).await.unwrap()).await.unwrap()).trim(), "done");
+    assert_eq!(String::from_utf8_lossy(&next.read_file(m, &next.resolve(m, &file("who.txt")).await.unwrap()).await.unwrap()).trim(), mine.trim(), "as the Bot's user");
+
+    // a sleep freezes it: nothing goes on until it wakes, and then it does
+    start_job(&next, m, &a, "j_two", "sleep 2; echo after > thawed.txt; sleep 300 & wait").await;
+    next.sleep(m, Sleep::Light).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    next.wake(m).await.unwrap();
+    let thawed = next.run(m, &a, "ls thawed.txt 2>/dev/null", 20_000).await.unwrap().stdout;
+    assert_eq!(thawed.trim(), "", "it ran on while asleep");
+    assert_eq!(seen(&next, m, &a, "j_two").await, Some(Seen::Running));
+    for _ in 0..40 {
+        if !next.run(m, &a, "ls thawed.txt 2>/dev/null", 20_000).await.unwrap().stdout.trim().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert_eq!(next.run(m, &a, "cat thawed.txt", 20_000).await.unwrap().stdout.trim(), "after", "woken, it goes on");
+
+    // a stop takes what it started, and leaves no code
+    next.run(m, &a, &job::stop("j_two"), 20_000).await.unwrap();
+    assert_eq!(seen(&next, m, &a, "j_two").await, Some(Seen::Gone));
+    let left = next.run(m, &a, "ps -eo args | grep -c '[s]leep 300'", 20_000).await.unwrap().stdout;
+    assert_eq!(left.trim(), "0", "what it started went with it");
 }
 
 async fn drive(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path::Path) {
