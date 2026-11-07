@@ -65,7 +65,7 @@ use super::routes::host;
 use super::types::{self, HubRequest, HubResponse, Pattern::Exact as X, Pattern::Segments as S, Verb};
 use super::Registry;
 
-pub mod awake;
+mod awake;
 pub mod jobs;
 
 /// The own screens a box runs (`box-screen`'s `BOX_MAX_OWN_SCREENS`).
