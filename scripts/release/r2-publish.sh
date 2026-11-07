@@ -12,6 +12,9 @@
 # for long, and whatever the new build doesn't have is removed. latest.json
 # only ever moves forward: replacing an older version leaves it alone.
 #
+# A failed read of the bucket stops the run before anything is written: it
+# never counts as "nothing there". Only NoSuchKey means latest.json is absent.
+#
 #   scripts/release/r2-publish.sh <files-dir> <out-dir>
 #
 # <files-dir> as for manifest.py, <out-dir> holding its manifest.json and
@@ -60,9 +63,30 @@ put() { # <file>: into the version's folder, then its size is checked
   [ "$remote" = "$size" ] || die "$PREFIX/$name is $remote bytes in R2, the local file is $size"
 }
 
-if [ "$REPLACE" != true ] && [ -n "$(keys "$PREFIX/")" ]; then
+# The version bot/latest.json names, empty only for a real not-found.
+latest_version() {
+  local body errors
+  body="$(mktemp)"
+  errors="$(mktemp)"
+  if ! s3api get-object --bucket "$R2_BUCKET" --key bot/latest.json "$body" > /dev/null 2> "$errors"; then
+    if grep -q 'NoSuchKey' "$errors"; then
+      rm -f "$body" "$errors"
+      return 0
+    fi
+    cat "$errors" >&2
+    rm -f "$body" "$errors"
+    die "could not read bot/latest.json"
+  fi
+  python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$body" 2> /dev/null \
+    || die "bot/latest.json has no version"
+  rm -f "$body" "$errors"
+}
+
+EXISTING="$(keys "$PREFIX/")" || die "could not list $PREFIX/"
+if [ "$REPLACE" != true ] && [ -n "$EXISTING" ]; then
   die "$PREFIX/ already holds files; 'just publish $VERSION' replaces them"
 fi
+CURRENT="$(latest_version)"
 
 WANTED=(manifest.json SHA256SUMS)
 for path in "$FILES"/release-file-*/*; do
@@ -73,15 +97,14 @@ put "$MANIFEST_DIR/manifest.json"
 put "$MANIFEST_DIR/SHA256SUMS"
 
 # what an earlier build of this version left that this one doesn't have
-for key in $(keys "$PREFIX/"); do
+AFTER="$(keys "$PREFIX/")" || die "could not list $PREFIX/"
+for key in $AFTER; do
   name="${key#"$PREFIX/"}"
   printf '%s\n' "${WANTED[@]}" | grep -Fxq -- "$name" && continue
   echo "removing $key, which this build doesn't have"
   s3api delete-object --bucket "$R2_BUCKET" --key "$key"
 done
 
-CURRENT="$(s3cp "s3://$R2_BUCKET/bot/latest.json" - 2>/dev/null |
-  python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true)"
 if [ -n "$CURRENT" ] && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
   echo "bot/latest.json stays at $CURRENT, newer than $VERSION"
 else

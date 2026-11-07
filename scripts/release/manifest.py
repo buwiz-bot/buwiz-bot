@@ -51,7 +51,8 @@ def entry(folder, version):
     if len(found) != 1:
         fail(f"{folder.name} holds {len(found)} files, expected one")
     path = found[0]
-    if not re.fullmatch(r"[A-Za-z0-9._+-]+", path.name) or version not in path.name:
+    carries_version = re.search(rf"(?<![0-9.]){re.escape(version)}(?![0-9]|\.[0-9])", path.name)
+    if not re.fullmatch(r"[A-Za-z0-9._+-]+", path.name) or not carries_version:
         fail(f"{folder.name}: bad file name {path.name!r} (a plain name carrying {version})")
     size = path.stat().st_size
     if size == 0:

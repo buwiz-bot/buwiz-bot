@@ -7,6 +7,8 @@ name: Release
 # A secret left unset degrades, it doesn't fail:
 #   no signing secrets  an unsigned dmg, a GitHub pre-release, nothing on R2
 #   no R2 secrets       a GitHub release, nothing on R2
+# The exception is a replace, which stops if R2 holds the version and this run
+# can't write it, unless keep_r2 says to leave those files live.
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +18,11 @@ on:
         type: string
       replace:
         description: Replace an existing release of this version
+        required: false
+        type: boolean
+        default: false
+      keep_r2:
+        description: On a replace that can't write R2, go ahead and leave R2's files live
         required: false
         type: boolean
         default: false
@@ -40,7 +47,7 @@ jobs:
     name: Check the version
     runs-on: ubuntu-24.04
     outputs:
-      r2: ${{ steps.r2.outputs.ready }}
+      r2: ${{ steps.secrets.outputs.r2 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,31 +76,54 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          exists="$(scripts/release/release-exists.sh "v$VERSION")"
+          if [ "$exists" = yes ]; then
             echo "v$VERSION is already released; 'just publish $VERSION' replaces it" >&2
             exit 1
           fi
 
-      - name: R2 secrets
-        id: r2
+      - name: Publishing secrets
+        id: secrets
         shell: bash
         env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
+          signing=yes
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_KEY_P8; do
+            [ -n "${!name}" ] || signing=no
+          done
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
           missing=""
           for name in R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -z "$missing" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "r2=true" >> "$GITHUB_OUTPUT"
+            echo "r2_ready=yes" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::missing$missing: this release skips R2, so buwiz.com will not offer it"
-            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "r2=false" >> "$GITHUB_OUTPUT"
+            echo "r2_ready=no" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: A replace can replace what is on R2
+        if: inputs.replace == true
+        shell: bash
+        env:
+          SIGNING: ${{ steps.secrets.outputs.signing }}
+          R2: ${{ steps.secrets.outputs.r2_ready }}
+          KEEP: ${{ inputs.keep_r2 && 'yes' || 'no' }}
+        run: scripts/release/override-check.sh "$VERSION" "$SIGNING" "$R2" "$KEEP"
 
   build:
     name: Build ${{ matrix.target }}
@@ -314,14 +344,10 @@ jobs:
       - name: Was every target signed
         id: state
         shell: bash
-        run: |
-          if grep -rqvx true status; then
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "signed=$(scripts/release/signed-state.sh files status)" >> "$GITHUB_OUTPUT"
 
       - name: Upload to R2
+        id: r2
         if: steps.state.outputs.signed == 'true' && needs.preflight.outputs.r2 == 'true'
         env:
           R2_BUCKET: buwiz-releases
@@ -333,45 +359,18 @@ jobs:
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: scripts/release/r2-publish.sh files out
 
+      # After R2: a failure here leaves R2 ahead of GitHub, and the summary
+      # says so. The replace path updates the release in place, never deletes.
       - name: GitHub release
-        shell: bash
+        id: ghrelease
         env:
           SIGNED: ${{ steps.state.outputs.signed }}
-        run: |
-          set -euo pipefail
-          TAG="v$VERSION"
-          ARGS=(--verify-tag --title "Buwiz Bot $VERSION" --generate-notes)
-          if [ "$SIGNED" != true ]; then
-            ARGS+=(--prerelease --notes "Unsigned build: macOS blocks it until you allow it in System Settings.")
-          fi
-          if [ "$REPLACE" = true ] && gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --yes
-          fi
-          gh release create "$TAG" "${ARGS[@]}" files/release-file-*/* out/manifest.json out/SHA256SUMS
+        run: scripts/release/gh-publish.sh files out
 
       - name: Summary
         if: always()
-        shell: bash
         env:
           SIGNED: ${{ steps.state.outputs.signed }}
-        run: |
-          {
-            echo "### Buwiz Bot $VERSION"
-            echo
-            if [ "$SIGNED" = true ]; then
-              echo "- Signed and notarized."
-            else
-              echo "- **Not signed.** A GitHub pre-release only; add the signing secrets and run \`just publish $VERSION\`."
-            fi
-            if [ "$SIGNED" = true ] && [ "$R2_READY" = true ]; then
-              echo "- On R2 under \`bot/releases/v$VERSION/\`."
-            else
-              echo "- **Not on R2**, so buwiz.com doesn't offer it."
-            fi
-            if [ -f out/SHA256SUMS ]; then
-              echo
-              echo '```'
-              cat out/SHA256SUMS
-              echo '```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          R2_OUTCOME: ${{ steps.r2.outcome }}
+          GH_OUTCOME: ${{ steps.ghrelease.outcome }}
+        run: scripts/release/summary.sh >> "$GITHUB_STEP_SUMMARY"

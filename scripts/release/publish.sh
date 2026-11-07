@@ -11,18 +11,23 @@
 #
 #   publish.sh exact X.Y.Z [--dry-run]    `just publish X.Y.Z`
 #       That version. An existing tag and release of it are replaced: it
-#       says what it is replacing and asks first (PUBLISH_YES=1 skips the
-#       question, for a run with no terminal).
+#       says what it is replacing and asks first (with no terminal to ask
+#       on, PUBLISH_YES=1 goes ahead). If the repo's secrets mean R2 can't be
+#       replaced and R2 holds this version, it stops: PUBLISH_KEEP_R2=1 goes
+#       ahead and leaves those files live, not matching the tag.
 #
 # --dry-run prints the version, the tag and whether it would override, and
 # changes nothing.
 #
 #   PUBLISH_GH   the gh command (default gh; the tests use a stand-in)
+#   RELEASE_CURL the curl command, likewise
 set -euo pipefail
 
 REPO=buwiz-bot/buwiz-bot
 WORKFLOW=release.yml
 GH="${PUBLISH_GH:-gh}"
+SIGNING_SECRETS="MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_KEY_P8"
+R2_SECRETS="R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 die() {
@@ -129,6 +134,22 @@ tagged_versions() {
   printf '%s\n' "$refs" | sed -n 's|.*refs/tags/v||p'
 }
 
+# The names of the repo's secrets; never their values.
+secret_names() {
+  "$GH" secret list -R "$REPO" --json name --jq '.[].name' || die "could not list the secrets of $REPO"
+}
+
+has_all() { # <names, one per line> <wanted, space-separated>: yes or no
+  local name
+  for name in $2; do
+    in_list "$name" "$1" || {
+      echo no
+      return 0
+    }
+  done
+  echo yes
+}
+
 # What stops a real run, one line each; a dry run only reports it.
 checkout_problems() {
   local branch
@@ -153,13 +174,15 @@ describe_replaced() {
     commit="$(git ls-remote --tags origin "refs/tags/$tag^{}" "refs/tags/$tag" | tail -1 | cut -f1)"
     echo "  tag $tag: $commit -> $(git rev-parse HEAD)"
   fi
-  echo "  R2: bot/releases/$tag/, and bot/latest.json if $version is the newest"
-  echo "The tag moves now. The release and R2 are replaced at the end of the run, once the new build has passed."
+  echo "  $R2_PLAN"
+  echo "The tag moves now. The rest happens at the end of the run, once the new build has passed; the GitHub release is updated in place."
 }
 
 confirm() {
-  [ "${PUBLISH_YES:-}" = 1 ] && return 0
-  { : < /dev/tty; } 2>/dev/null || die "no terminal to ask on: set PUBLISH_YES=1 to go ahead"
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    [ "${PUBLISH_YES:-}" = 1 ] && return 0
+    die "no terminal to ask on: set PUBLISH_YES=1 to go ahead"
+  fi
   local answer
   printf 'Replace it? [y/N] ' > /dev/tty
   read -r answer < /dev/tty
@@ -220,6 +243,27 @@ main() {
   fi
 
   problems="$(checkout_problems)"
+
+  # What R2 will really get; an exact run replaces, so it can leave R2 behind.
+  local keep_r2=false
+  R2_PLAN="R2: bot/releases/$tag/ replaced, and bot/latest.json if $VERSION is the newest"
+  if [ "$mode" = exact ]; then
+    local names signing r2 keep=no refusal
+    names="$(secret_names)"
+    signing="$(has_all "$names" "$SIGNING_SECRETS")"
+    r2="$(has_all "$names" "$R2_SECRETS")"
+    if [ "${PUBLISH_KEEP_R2:-}" = 1 ]; then
+      keep=yes
+      keep_r2=true
+    fi
+    if [ "$signing" != yes ] || [ "$r2" != yes ]; then
+      R2_PLAN="R2: NOT replaced (signing secrets: $signing, R2 secrets: $r2); whatever it holds for $VERSION stays live and won't match the tag"
+      echo "$R2_PLAN"
+    fi
+    refusal="$("$ROOT/scripts/release/override-check.sh" "$VERSION" "$signing" "$r2" "$keep" 2>&1)" \
+      || problems="${problems:+$problems$'\n'}$refusal"
+  fi
+
   if [ "$dry" = yes ]; then
     if [ "$override" = yes ]; then describe_replaced "$VERSION"; fi
     if [ -n "$problems" ]; then
@@ -248,17 +292,17 @@ main() {
     git push --quiet origin HEAD:main
   fi
 
+  # Straight to origin, with no local tag: this clone also holds nsh upstream's
+  # v* tags, and a failed push then leaves nothing behind to trip over.
   if [ "$override" = yes ]; then
-    git tag -f -a "$tag" -m "Release $tag" >/dev/null
-    git push --quiet --force origin "refs/tags/$tag"
+    git push --quiet --force origin "HEAD:refs/tags/$tag"
   else
-    git tag -a "$tag" -m "Release $tag"
-    git push --quiet origin "refs/tags/$tag"
+    git push --quiet origin "HEAD:refs/tags/$tag"
   fi
 
   local replace=false
   if [ "$mode" = exact ]; then replace=true; fi
-  "$GH" workflow run "$WORKFLOW" -R "$REPO" --ref "$tag" -f version="$VERSION" -f replace="$replace" \
+  "$GH" workflow run "$WORKFLOW" -R "$REPO" --ref "$tag" -f version="$VERSION" -f replace="$replace" -f keep_r2="$keep_r2" \
     || die "$tag is pushed but the release did not start; 'just publish $VERSION' tries again"
   echo
   echo "started the release of $tag: https://github.com/$REPO/actions/workflows/$WORKFLOW"

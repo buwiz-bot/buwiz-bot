@@ -33,10 +33,33 @@ refuses anything but a version's own tag.)
   `app/Cargo.toml`'s version if that is already ahead. It never replaces
   anything: if the tag exists, it stops and says so.
 - **`just publish 0.1.0`** takes that version. If a tag or release of it
-  exists, it lists what will be replaced and asks (`PUBLISH_YES=1` skips the
-  question when there is no terminal). The tag moves to `main`'s head at
-  once. The GitHub release and the files on R2 are replaced at the end of
+  exists, it lists what will be replaced and asks. With no terminal to ask
+  on, `PUBLISH_YES=1` goes ahead; on a terminal it always asks. The tag moves
+  to `main`'s head at once. R2 and the GitHub release change at the end of
   the run, so a failed build leaves the old ones up.
+
+An override needs the signing and R2 secrets to replace what is on R2. If
+either is missing and R2 holds that version, or that can't be told, it stops
+before the tag moves. `PUBLISH_KEEP_R2=1 just publish 0.1.0` goes ahead
+anyway: the public download then stays on the old build and doesn't match the
+tag. The command reads repository secrets by name, and the workflow makes the
+same check, so an organization-level secret is seen only by the workflow.
+
+The last job writes R2 first, then GitHub. Replacing updates the GitHub
+release in place (files over the old ones, then leftovers removed, then the
+title and notes); it is never deleted, so a failure leaves a release up,
+possibly with a mix of old and new files. If R2 fails, GitHub isn't touched.
+If GitHub fails, R2 is ahead of it. The run's summary says which happened,
+and `just publish <version>` tries again.
+
+A failed read is never taken for "nothing there": the workflow stops if it
+can't read the GitHub release, the R2 listing or `bot/latest.json`, and
+only a real not-found counts as missing. A build with no signed status counts
+as unsigned.
+
+The tag is pushed straight to origin and no local tag is made: this repo's
+clones also hold nsh upstream's `v*` tags, and a failed push leaves nothing
+to retry around. A local tag of the same name is ignored.
 
 When the version differs from the Cargo.toml files, the command sets it in
 `app/Cargo.toml`, `broker/buwiz-broker/Cargo.toml` and their lockfiles, and
@@ -84,6 +107,11 @@ the version from the bundle's `Info.plist`, so they follow it.
 | `manifest.py <files-dir> <version> <out-dir>` | `manifest.json` and `SHA256SUMS` for the built files. |
 | `r2-publish.sh <files-dir> <out-dir>` | Uploads the files, then the manifest, then `bot/latest.json`. |
 | `publish.sh` | Behind `just publish`: picks the version, tags it and starts the workflow. |
+| `override-check.sh` | Stops an override that can't replace what is on R2. |
+| `release-exists.sh <tag>` | Whether GitHub has that release; fails if it can't tell. |
+| `signed-state.sh <files-dir> <status-dir>` | Whether every build recorded that it was signed. |
+| `gh-publish.sh <files-dir> <out-dir>` | Creates the GitHub release, or updates it in place. |
+| `summary.sh` | The run's summary, from what each step really did. |
 
 ### Info.plist
 
@@ -194,7 +222,8 @@ needed to run the workflow; each group left out changes what the release is:
 | Any R2 secret | A signed GitHub release, not on R2, so buwiz.com keeps saying there is no release |
 
 The run warns, naming what is missing. Add them and `just publish <version>`
-replaces it.
+replaces it. An override with a group left out is different: it stops if R2
+holds that version (see Publishing).
 
 Signing:
 
