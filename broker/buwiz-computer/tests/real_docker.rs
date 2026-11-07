@@ -111,21 +111,20 @@ async fn jobs(image: &str, m: &Machine) {
     assert_eq!(String::from_utf8_lossy(&next.read_file(m, &next.resolve(m, &file("out.txt")).await.unwrap()).await.unwrap()).trim(), "done");
     assert_eq!(String::from_utf8_lossy(&next.read_file(m, &next.resolve(m, &file("who.txt")).await.unwrap()).await.unwrap()).trim(), mine.trim(), "as the Bot's user");
 
-    // a sleep freezes it: nothing goes on until it wakes, and then it does
-    start_job(&next, m, &a, "j_two", "sleep 2; echo after > thawed.txt; sleep 300 & wait").await;
+    // a sleep freezes it: it writes the time every 200 ms, so the freeze is a gap in what it wrote,
+    // and it goes on after. A timer in it would run out while frozen, so that wouldn't show it
+    start_job(&next, m, &a, "j_two", "sleep 300 & while :; do date +%s >> ticks.txt; sleep 0.2; done").await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     next.sleep(m, Sleep::Light).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     next.wake(m).await.unwrap();
-    let thawed = next.run(m, &a, "ls thawed.txt 2>/dev/null", 20_000).await.unwrap().stdout;
-    assert_eq!(thawed.trim(), "", "it ran on while asleep");
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert_eq!(seen(&next, m, &a, "j_two").await, Some(Seen::Running));
-    for _ in 0..40 {
-        if !next.run(m, &a, "ls thawed.txt 2>/dev/null", 20_000).await.unwrap().stdout.trim().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    assert_eq!(next.run(m, &a, "cat thawed.txt", 20_000).await.unwrap().stdout.trim(), "after", "woken, it goes on");
+    let ticks = next.run(m, &a, "cat ticks.txt", 20_000).await.unwrap().stdout;
+    let times: Vec<u64> = ticks.lines().map(|t| t.parse().unwrap()).collect();
+    let gap = times.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+    assert!(gap >= 4, "it ran on while asleep: the longest gap was {gap}s");
+    assert!(times.last().unwrap() > &(times[0] + 5), "it didn't go on after the wake: {ticks}");
 
     // a stop takes what it started, and leaves no code
     next.run(m, &a, &job::stop("j_two"), 20_000).await.unwrap();
