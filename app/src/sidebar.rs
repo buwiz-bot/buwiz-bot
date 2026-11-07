@@ -2264,8 +2264,6 @@ fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
     })
 }
 
-/// A chat's row; `src` makes it draggable into groups (and says which
-/// group it shows in).
 /// A row's dot: something goes on in that chat, or a card there waits for a person.
 fn work_dot(work: Memo<Work>) -> impl IntoElement {
     let dot = |word: &'static str, color: AdaptiveColor| view().label(word).size(px(8.0)).rounded(px(4.0)).bg(color).into_element();
@@ -2274,6 +2272,8 @@ fn work_dot(work: Memo<Work>) -> impl IntoElement {
         .child(when(move || work.get() == Work::Waiting, move || dot("Waiting for you", theme::ACCENT)))
 }
 
+/// A chat's row; `src` makes it draggable into groups (and says which
+/// group it shows in).
 fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
     let st = store();
     let id = t.get().id.clone();

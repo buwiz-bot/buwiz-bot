@@ -20,6 +20,11 @@
 //!
 //! While a job runs, and isn't frozen, the Mac is kept awake ([`super::awake`]).
 //!
+//! A job can be over on the record and still be on the computer: its Bot left while the computer
+//! slept, or a start's end wasn't heard. Its row owes a cancel ([`Computers::settle_stops`]), by the
+//! Bot's folder and so with no seat needed, paid as a wake finishes and looked at by each sweep
+//! until the computer has said it's done.
+//!
 //! No row holds the command: what's run stays in the computer, and a job's name is the model's words
 //! for a person to read.
 
@@ -27,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use buwiz_computer::job::{self, Seen};
-use buwiz_computer::Problem;
+use buwiz_computer::{Machine, Power, Problem, Provider, Screen};
 use rusqlite::params;
 use serde_json::{json, Value};
 
@@ -148,7 +153,7 @@ impl Computers {
     /// On start: the jobs the last broker left are running here too. Rows long ended go.
     pub fn load_jobs(&self, ctx: &HubCtx) {
         let oldest = policy::now(ctx) - KEPT_MS;
-        if let Err(e) = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE state<>'running' AND turn_owed=0 AND ended_at<?", [oldest])) {
+        if let Err(e) = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE state<>'running' AND turn_owed=0 AND stop_owed=0 AND ended_at<?", [oldest])) {
             eprintln!("buwiz-broker: computer_jobs: {e}");
         }
         let found = running(ctx);
@@ -177,12 +182,12 @@ impl Computers {
         let at = policy::now(ctx);
         let job = Job { id: id.clone(), bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), name: name.to_owned(), started: at, until: at + super::millis(limit), state: "running".to_owned(), exit: None };
         // the row first: a job with no row is one nothing would ever stop
-        let started = match ctx.db.with(|c| c.execute(&format!("INSERT INTO computer_jobs({COLUMNS}) VALUES(?,?,?,?,?,?,?,'running',NULL)"), params![job.id, job.bot, job.computer, job.thread, job.name, job.started, job.until])) {
-            Ok(_) => launch(live, &id, command).await.map_err(|p| p.sentence()),
-            Err(e) => Err(db_problem(e).sentence()),
-        };
-        if let Err(why) = started {
-            let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE id=?", [&id]));
+        if let Err(e) = ctx.db.with(|c| c.execute(&format!("INSERT INTO computer_jobs({COLUMNS}) VALUES(?,?,?,?,?,?,?,'running',NULL)"), params![job.id, job.bot, job.computer, job.thread, job.name, job.started, job.until])) {
+            self.now().jobs.remove(&id);
+            return Err(db_problem(e).sentence());
+        }
+        if let Err(p) = launch(live, &id, command).await {
+            let why = self.abandon(ctx, live, &id, &p.sentence()).await;
             self.now().jobs.remove(&id);
             self.sync_awake();
             return Err(why);
@@ -192,6 +197,44 @@ impl Computers {
         }
         self.sync_awake();
         Ok(job)
+    }
+
+    /// A start that failed, or that nobody heard the end of: what it sent may still run, so `id` is
+    /// cancelled before its row goes. What couldn't be cancelled keeps its row, owing that. →
+    /// what the model is told.
+    async fn abandon(&self, ctx: &HubCtx, live: &Live, id: &str, why: &str) -> String {
+        if cancelled(live.provider.as_ref(), &live.machine, &live.screen, id).await {
+            let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE id=?", [id]));
+            return format!("{why} Nothing of it was left running.");
+        }
+        let at = policy::now(ctx);
+        let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET state='lost', ended_at=?, stop_owed=1 WHERE id=?", params![at, id]));
+        format!("{why} It may have started all the same, and the computer couldn't be reached to stop it. It'll be stopped as soon as it can be, so don't start it again yet.")
+    }
+
+    /// Pays the cancels ended jobs owe, on each computer that's up and can hear them. Each stays
+    /// owed until the computer has answered.
+    pub(super) async fn settle_stops(&self, ctx: &HubCtx) {
+        for j in rows(ctx, "WHERE stop_owed=1 AND state<>?", "running") {
+            {
+                let now = self.now();
+                if now.waking.contains(&j.computer) || now.sleeping.contains(&j.computer) {
+                    continue;
+                }
+            }
+            let Ok(machine) = self.machine(ctx, &j.computer) else { continue };
+            let provider = self.provider_of(&machine);
+            let paid = match provider.look(&machine).await {
+                // the wall comes before anything runs there, as it does for a tool
+                Ok((Power::Awake, machine)) => provider.guard(&machine).await.is_ok() && cancelled(provider.as_ref(), &machine, &folder_of(&j.bot), &j.id).await,
+                // nothing of it is left to stop
+                Ok((Power::Absent, _)) => true,
+                _ => false,
+            };
+            if paid {
+                let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=0 WHERE id=?", [&j.id]));
+            }
+        }
     }
 
     /// `bot`'s jobs, oldest first.
@@ -267,13 +310,18 @@ impl Computers {
                 _ => {}
             }
         }
+        self.settle_stops(ctx).await;
         self.start_owed_turns(ctx);
         self.sync_awake();
     }
 
     /// Asks the computer how `j` stands, and ends it if it has: whether it did. `by_model` is a
-    /// status call, whose turn hears of it there.
+    /// status call, whose turn hears of it there. A job still starting has nothing to see yet, and
+    /// an empty folder isn't an end.
     async fn look_at(&self, ctx: &HubCtx, live: &Live, j: &Job, by_model: bool) -> bool {
+        if self.now().jobs.get(&j.id).is_some_and(|r| r.starting) {
+            return false;
+        }
         let seen = command(live, &job::look(&j.id)).await.ok().and_then(|out| job::read_look(&out));
         let end = match seen {
             Some(Seen::Exited(code)) => End::Exited(code),
@@ -344,14 +392,14 @@ impl Computers {
         }
     }
 
-    /// `bot` left: its jobs end with it. On a computer that stays, `live` stops them first.
-    pub(super) async fn end_jobs_of(&self, ctx: &HubCtx, bot: &str, live: Option<&Live>) {
+    /// `bot` left a computer that stays: nothing would look after its jobs now, so they end, and
+    /// each owes a cancel. One that can't be paid now, on a computer asleep, is paid at its next wake.
+    pub(super) async fn end_jobs_of(&self, ctx: &HubCtx, bot: &str) {
         for j in Self::jobs_of(ctx, bot).into_iter().filter(|j| j.state == "running") {
-            if let Some(live) = live {
-                let _ = command(live, &job::stop(&j.id)).await;
-            }
             self.end_job(ctx, &j, End::Stopped, true);
+            let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=1 WHERE id=?", [&j.id]));
         }
+        self.settle_stops(ctx).await;
     }
 
     /// `computer` is going for good, and what ran on it with it.
@@ -402,6 +450,16 @@ fn facts(ctx: &HubCtx, j: &Job) -> Value {
         out["seconds_left"] = json!((j.until - policy::now(ctx)).max(0) / 1000);
     }
     out
+}
+
+/// A Bot's place by its folder alone, for one with no seat or no screen: commands need no more.
+fn folder_of(bot: &str) -> Screen {
+    Screen { display: String::new(), viewer_port: 0, folder: format!("agents/{bot}"), profile: None }
+}
+
+/// Whether the computer said `id` is cancelled.
+async fn cancelled(provider: &dyn Provider, machine: &Machine, screen: &Screen, id: &str) -> bool {
+    matches!(provider.run(machine, screen, &job::cancel(id), LOOK_MS).await, Ok(out) if out.exit_code == Some(0))
 }
 
 /// Writes `run.sh` and starts it. Its folder is the Bot's own, links followed, as any file's is.

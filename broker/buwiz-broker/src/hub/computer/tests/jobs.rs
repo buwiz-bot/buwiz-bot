@@ -552,3 +552,145 @@ async fn a_program_that_wont_start_doesnt_stop_a_job() {
     awake(&b, &b.ann.0).await;
     started(&b, json!({"command": "x"})).await;
 }
+
+fn owed(b: &Bed, id: &str) -> i64 {
+    b.ctx.db.with(|c| c.query_row("SELECT stop_owed FROM computer_jobs WHERE id=?", [id], |r| r.get(0))).unwrap()
+}
+
+fn cancels(b: &Bed, id: &str) -> usize {
+    b.mock.calls().iter().filter(|c| c.starts_with("run ") && c.contains(&format!("{id}/cancel"))).count()
+}
+
+/// A Bot left a computer that slept: its job is frozen there, and the wake would set it going with
+/// nothing watching it.
+#[tokio::test]
+async fn a_job_left_on_a_sleeping_computer_is_cancelled_at_the_wake() {
+    let b = bed("job-left-asleep");
+    let computer = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &computer).await.unwrap();
+    let id = started(&b, json!({"command": "x"})).await;
+    b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
+    b.computers.leave(&b.ctx, &b.ann.0).await.unwrap();
+    assert_eq!((row_of(&b, &id).0, owed(&b, &id)), ("stopped".to_owned(), 1), "over on the record, and owed");
+    assert_eq!(cancels(&b, &id), 0, "nothing could hear it");
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(owed(&b, &id), 1, "still asleep");
+
+    awake(&b, &b.bea.0).await;
+    until("the wake paid nothing", || cancels(&b, &id) == 1).await;
+    until("still owed", || owed(&b, &id) == 0).await;
+    let calls = b.mock.calls();
+    let paid = calls.iter().position(|c| c.contains(&format!("{id}/cancel"))).unwrap();
+    until("its screen stayed", || b.mock.calls().iter().any(|c| c == "screen_down b_ann")).await;
+    let calls = b.mock.calls();
+    let down = calls.iter().position(|c| c == "screen_down b_ann").unwrap();
+    assert!(paid < down, "its user may go with its screen: {calls:?}");
+}
+
+/// Awake with no screen for it: the stop goes by its folder, and the screen still comes down.
+#[tokio::test]
+async fn a_bot_with_no_screen_that_leaves_an_awake_computer_stops_its_job() {
+    let b = bed("job-left-noscreen");
+    let computer = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &computer).await.unwrap();
+    let id = started(&b, json!({"command": "x"})).await;
+    Computers::set_screen(&b.ctx, &b.ann.0, None);
+    b.computers.leave(&b.ctx, &b.ann.0).await.unwrap();
+    assert_eq!(cancels(&b, &id), 1, "{:?}", b.mock.calls());
+    assert_eq!(owed(&b, &id), 0);
+    assert!(b.mock.calls().iter().any(|c| c == "screen_down b_ann"), "{:?}", b.mock.calls());
+}
+
+#[tokio::test]
+async fn a_stop_that_didnt_land_stays_owed_through_a_restart() {
+    let b = bed("job-owed");
+    let computer = awake(&b, &b.ann.0).await;
+    b.computers.attach(&b.ctx, &b.bea.0, &computer).await.unwrap();
+    let id = started(&b, json!({"command": "x"})).await;
+    b.mock.replies.lock().unwrap().insert(0, ("/cancel".to_owned(), Err(Problem::Failed("no".to_owned()))));
+    b.computers.leave(&b.ctx, &b.ann.0).await.unwrap();
+    assert_eq!(owed(&b, &id), 1);
+    job_is(&b, "gone");
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    fresh.load_jobs(&b.ctx);
+    fresh.sleep_the_idle(&b.ctx).await;
+    assert_eq!(owed(&b, &id), 0);
+}
+
+/// A status can come while a start is on its way, on the same row, with no files there yet.
+#[tokio::test]
+async fn a_look_during_a_start_ends_nothing() {
+    let b = bed("job-starting");
+    awake(&b, &b.ann.0).await;
+    job_is(&b, "gone");
+    *b.mock.hold_run.lock().unwrap() = Some("setsid".to_owned());
+    let start = {
+        let (c, ctx, live) = (b.computers.clone(), b.ctx.clone(), b.computers.live(&b.ctx, &b.ann.0).await.unwrap());
+        let thread = b.ann.1.clone();
+        tokio::spawn(async move { c.start_job(&ctx, &live, &thread, "", "x", LIMIT).await.map(|j| j.id) })
+    };
+    until("the start never got there", || b.mock.calls().iter().any(|c| c.contains("setsid"))).await;
+    let live = b.computers.live(&b.ctx, &b.ann.0).await.unwrap();
+    b.computers.job_status(&b.ctx, &live, None).await.unwrap();
+    *b.mock.hold_run.lock().unwrap() = None;
+    let id = start.await.unwrap().unwrap();
+    assert_eq!(row_of(&b, &id).0, "running");
+    assert!(notices(&b).is_empty());
+}
+
+/// A pid that never came, or a timeout: `run.sh` may run yet, so it's cancelled, and only then does
+/// the row go.
+#[tokio::test]
+async fn a_start_nobody_heard_the_end_of_is_cancelled() {
+    let b = lazy("job-ambiguous");
+    awake(&b, &b.ann.0).await;
+    b.mock.replies.lock().unwrap().push(("setsid".to_owned(), Err(Problem::Failed("timed out".to_owned()))));
+    let r = run(&b, &b.ann.1, None);
+    let o = call(&r, "computer_job_start", json!({"command": "x"})).await;
+    assert!(words(&o).contains("Nothing of it was left running"), "{}", words(&o));
+    assert!(b.mock.calls().iter().any(|c| c.starts_with("run ") && c.contains("/cancel")), "{:?}", b.mock.calls());
+    assert!(Computers::jobs_of(&b.ctx, &b.ann.0).is_empty());
+
+    // a pid that isn't one is the same
+    b.mock.replies.lock().unwrap().clear();
+    b.mock.replies.lock().unwrap().push(("setsid".to_owned(), Ok(String::new())));
+    let o = call(&r, "computer_job_start", json!({"command": "x"})).await;
+    assert!(words(&o).contains("Nothing of it was left running"), "{}", words(&o));
+    assert_eq!(b.mock.calls().iter().filter(|c| c.starts_with("run ") && c.contains("/cancel")).count(), 2);
+}
+
+#[tokio::test]
+async fn a_cancel_that_couldnt_reach_the_box_says_so_and_stays_owed() {
+    let b = lazy("job-unreached");
+    awake(&b, &b.ann.0).await;
+    {
+        let mut replies = b.mock.replies.lock().unwrap();
+        replies.push(("setsid".to_owned(), Err(Problem::Failed("timed out".to_owned()))));
+        replies.push(("/cancel".to_owned(), Err(Problem::Failed("gone quiet".to_owned()))));
+    }
+    let r = run(&b, &b.ann.1, None);
+    let o = call(&r, "computer_job_start", json!({"command": "x"})).await;
+    assert_eq!(o.is_error, Some(true));
+    assert!(words(&o).contains("may have started") && words(&o).contains("couldn't be reached"), "{}", words(&o));
+    let job = Computers::jobs_of(&b.ctx, &b.ann.0).pop().expect("the row is all that knows of it");
+    assert_eq!(owed(&b, &job.id), 1);
+    assert!(b.computers.now().jobs.is_empty(), "it doesn't count as running, or hold the computer");
+    over(&b, &r);
+    drop(r);
+    b.mock.replies.lock().unwrap().clear();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(owed(&b, &job.id), 0, "paid at the next look that reaches it");
+}
+
+/// The box answered, and said no: the mark isn't there, so nothing says the job won't run.
+#[tokio::test]
+async fn a_cancel_the_box_refused_isnt_a_cancel() {
+    let b = bed("job-refused");
+    awake(&b, &b.ann.0).await;
+    b.mock.replies.lock().unwrap().push(("setsid".to_owned(), Err(Problem::Failed("timed out".to_owned()))));
+    *b.mock.fails.lock().unwrap() = Some("/cancel".to_owned());
+    let r = run(&b, &b.ann.1, None);
+    let o = call(&r, "computer_job_start", json!({"command": "x"})).await;
+    assert!(words(&o).contains("may have started"), "{}", words(&o));
+    assert_eq!(owed(&b, &Computers::jobs_of(&b.ctx, &b.ann.0).pop().unwrap().id), 1);
+}

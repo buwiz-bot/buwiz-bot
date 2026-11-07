@@ -615,6 +615,8 @@ impl Computers {
     /// A Bot that left while it slept has its screen and slot taken down: after the wake, which
     /// nobody should wait on for this.
     async fn clear_empty_screens(&self, ctx: &HubCtx, id: &str) {
+        // what such a Bot left running is back with the wake
+        self.settle_stops(ctx).await;
         let Ok(machine) = self.machine(ctx, id) else { return };
         let provider = self.provider_of(&machine);
         let Ok((_, machine)) = provider.look(&machine).await else { return };
@@ -854,17 +856,13 @@ impl Computers {
         }
         // asleep, its screen comes down at the next wake (`clear_empty_screens`)
         if let Some(seat) = seat {
-            let mut live = None;
+            // first, while its user is there. Its screen or none, and awake or not
+            self.end_jobs_of(ctx, bot).await;
             if let Ok(machine) = self.machine(ctx, &seat.computer) {
                 let provider = self.provider_of(&machine);
-                if let (Ok((Power::Awake, machine)), Some(screen)) = (provider.look(&machine).await, seat.screen.clone()) {
-                    live = Some(Live { provider, machine, computer: seat.computer.clone(), bot: bot.to_owned(), screen });
+                if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
+                    let _ = provider.screen_down(&machine, bot).await;
                 }
-            }
-            // its jobs go with it: nothing would look after them now
-            self.end_jobs_of(ctx, bot, live.as_ref()).await;
-            if let Some(live) = live {
-                let _ = live.provider.screen_down(&live.machine, bot).await;
             }
         }
         Ok(())

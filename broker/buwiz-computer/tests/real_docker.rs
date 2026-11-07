@@ -126,6 +126,21 @@ async fn jobs(image: &str, m: &Machine) {
     assert!(gap >= 4, "it ran on while asleep: the longest gap was {gap}s");
     assert!(times.last().unwrap() > &(times[0] + 5), "it didn't go on after the wake: {ticks}");
 
+    // a Bot left while it slept: the words its stop owed reach the job after a wake, by the folder
+    // alone, and a start nobody knows the end of comes to nothing even if it runs after them
+    start_job(&next, m, &a, "j_left", "sleep 300").await;
+    next.sleep(m, Sleep::Light).await.unwrap();
+    next.wake(m).await.unwrap();
+    assert_eq!(seen(&next, m, &a, "j_left").await, Some(Seen::Running), "it came back with the wake");
+    let left = Screen { display: String::new(), viewer_port: 0, folder: a.folder.clone(), profile: None };
+    assert_eq!(next.run(m, &left, &job::cancel("j_left"), 20_000).await.unwrap().exit_code, Some(0));
+    assert_eq!(seen(&next, m, &a, "j_left").await, Some(Seen::Gone));
+    assert_eq!(next.run(m, &left, &job::cancel("j_late"), 20_000).await.unwrap().exit_code, Some(0));
+    start_job(&next, m, &a, "j_late", "echo ran > late.txt").await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert_eq!(next.run(m, &a, "ls late.txt 2>/dev/null", 20_000).await.unwrap().stdout.trim(), "", "it ran after its cancel");
+    assert_eq!(seen(&next, m, &a, "j_late").await, Some(Seen::Gone));
+
     // a stop takes what it started, and leaves no code
     next.run(m, &a, &job::stop("j_two"), 20_000).await.unwrap();
     assert_eq!(seen(&next, m, &a, "j_two").await, Some(Seen::Gone));

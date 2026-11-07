@@ -21,6 +21,10 @@ pub struct MockProvider {
     pub stdout: Mutex<String>,
     /// what `run` answers instead for a command holding the first word; `Err` fails it
     pub replies: Mutex<Vec<(String, Result<String>)>>,
+    /// `run` exits 1 for a command holding this word
+    pub fails: Mutex<Option<String>>,
+    /// `run` waits here until released, for a command holding this word
+    pub hold_run: Mutex<Option<String>>,
     /// `wake` waits here until released, when set
     pub hold: AtomicBool,
     /// asleep lightly: a wake resumes it
@@ -65,7 +69,7 @@ pub struct MockProvider {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None) }
     }
 }
 
@@ -268,12 +272,16 @@ impl Provider for MockProvider {
     async fn run(&self, _: &Machine, screen: &Screen, command: &str, _: u64) -> Result<CommandOutput> {
         self.awake()?;
         self.note(format!("run {} {command}", screen.display));
+        while self.hold_run.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|word| command.contains(word.as_str())) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         let reply = self.replies.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(word, _)| command.contains(word.as_str())).map(|(_, said)| said.clone());
         let stdout = match reply {
             Some(said) => said?,
             None => self.stdout.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
-        Ok(CommandOutput { exit_code: Some(0), stdout, ..CommandOutput::default() })
+        let failed = self.fails.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|word| command.contains(word.as_str()));
+        Ok(CommandOutput { exit_code: Some(i32::from(failed)), stdout, ..CommandOutput::default() })
     }
 
     async fn open_url(&self, _: &Machine, screen: &Screen, url: &str) -> Result<()> {

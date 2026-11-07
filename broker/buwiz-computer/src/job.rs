@@ -24,10 +24,11 @@ fn quoted(text: &str) -> String {
 }
 
 /// What `run.sh` holds. The command gets a shell of its own, so nothing it says can reach the lines
-/// that record how it ended. `exit` appears whole or not at all.
+/// that record how it ended. `exit` appears whole or not at all. Its pid is written before it looks
+/// for a `cancel` mark: a [`cancel`] either finds that pid or leaves a mark this finds.
 pub fn script(id: &str, command: &str) -> String {
     let (dir, command) = (format!("{FOLDER}/{id}"), quoted(command));
-    format!("#!/bin/sh\necho $$ > {dir}/pid\n/bin/sh -c {command} > {dir}/out 2>&1 < /dev/null\ncode=$?\necho \"$code\" > {dir}/exit.new && mv {dir}/exit.new {dir}/exit\n")
+    format!("#!/bin/sh\necho $$ > {dir}/pid\n[ -e {dir}/cancel ] && exit 0\n/bin/sh -c {command} > {dir}/out 2>&1 < /dev/null\ncode=$?\necho \"$code\" > {dir}/exit.new && mv {dir}/exit.new {dir}/exit\n")
 }
 
 /// Starts `run.sh` and answers with its pid once it has written one. A host with no `setsid`, as a
@@ -89,6 +90,14 @@ pub fn stop(id: &str) -> String {
          kill -KILL \"-$p\" 2>/dev/null\n\
          exit 0"
     )
+}
+
+/// Ends the job for good, started or not: a `run.sh` that hasn't run yet finds the mark and does
+/// nothing. For a start nobody knows the end of, and a job its Bot left. A zero exit code is
+/// the only word that the mark is there.
+pub fn cancel(id: &str) -> String {
+    let dir = format!("{FOLDER}/{id}");
+    format!("mkdir -p {dir} && : > {dir}/cancel || exit 1\n{}", stop(id))
 }
 
 /// The last `bytes` of what it printed.
@@ -162,6 +171,34 @@ mod tests {
         assert_eq!(sh(&dir, &stop(ID)).status.code(), Some(0));
         assert_eq!(seen(&dir), Some(Seen::Gone), "killed, it leaves no code");
         assert!(!sh(&dir, &format!("ps -o pid= -p {}", child.trim())).status.success(), "its child went with it");
+    }
+
+    /// A start that timed out can still run: what comes after the mark runs nothing.
+    #[test]
+    fn a_cancelled_job_that_starts_late_runs_nothing() {
+        let dir = folder("late", "echo ran > ran.txt");
+        assert_eq!(sh(&dir, &cancel(ID)).status.code(), Some(0));
+        started(&dir);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!dir.join("ran.txt").exists());
+        assert_eq!(seen(&dir), Some(Seen::Gone));
+    }
+
+    #[test]
+    fn a_cancel_ends_a_job_already_going() {
+        let dir = folder("cancel", "sleep 300");
+        started(&dir);
+        until(&dir, Seen::Running);
+        assert_eq!(sh(&dir, &cancel(ID)).status.code(), Some(0));
+        assert_eq!(seen(&dir), Some(Seen::Gone));
+    }
+
+    #[test]
+    fn a_cancel_that_cant_leave_its_mark_says_so() {
+        let dir = folder("nomark", "true");
+        std::fs::remove_dir_all(dir.join(FOLDER)).unwrap();
+        std::fs::write(dir.join(FOLDER), "a file where the folder goes").unwrap();
+        assert_ne!(sh(&dir, &cancel(ID)).status.code(), Some(0));
     }
 
     #[test]
