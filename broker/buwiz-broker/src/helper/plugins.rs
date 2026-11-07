@@ -1585,25 +1585,39 @@ fn once_prefixed(msg: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// A routine rearms every minute at most, so a timer's entry has to go when it fires.
+    /// A routine rearms every minute at most, so a timer's entry has to go when it fires. Callers
+    /// fighting over the map make a timer fire before its entry is in, which it would then leave.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_timer_that_fired_leaves_nothing_behind() {
-        let clock = Clock::system();
+        const SETTERS: u64 = 8;
+        const EACH: u64 = 2000;
+        let clock = Arc::new(Clock::system());
         let fired = Arc::new(AtomicU64::new(0));
-        for _ in 0..2000 {
-            let f = fired.clone();
-            clock.set_timeout(0, Box::new(move || {
-                f.fetch_add(1, Ordering::SeqCst);
-            }));
+        let setters: Vec<_> = (0..SETTERS)
+            .map(|_| {
+                let (clock, fired, runtime) = (clock.clone(), fired.clone(), tokio::runtime::Handle::current());
+                std::thread::spawn(move || {
+                    let _in_it = runtime.enter();
+                    for _ in 0..EACH {
+                        let f = fired.clone();
+                        clock.set_timeout(0, Box::new(move || {
+                            f.fetch_add(1, Ordering::SeqCst);
+                        }));
+                    }
+                })
+            })
+            .collect();
+        for s in setters {
+            s.join().unwrap();
         }
         let waiting = |c: &Clock| if let Clock::System(timers, _) = c { timers.lock().unwrap().len() } else { unreachable!() };
-        for _ in 0..1000 {
-            if fired.load(Ordering::SeqCst) == 2000 {
+        for _ in 0..2000 {
+            if fired.load(Ordering::SeqCst) == SETTERS * EACH {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(fired.load(Ordering::SeqCst), 2000);
+        assert_eq!(fired.load(Ordering::SeqCst), SETTERS * EACH);
         assert_eq!(waiting(&clock), 0);
 
         // a cancelled one still goes, and a live one stays until it fires
