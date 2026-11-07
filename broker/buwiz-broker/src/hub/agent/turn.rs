@@ -336,6 +336,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_messages_card_never_reaches_the_model() {
+        let said = |role: &str, text: &str| Turn { role: role.into(), text: Some(text.into()), ..Default::default() };
+        let card = crate::hub::routines::threads::notice_text(&json!({"kind": "messages", "botName": "Nova"}));
+        assert_eq!(card, "Who can message Nova?");
+        let t = Thread { turns: vec![said("user", "hello"), Turn::notice(&card, json!({"kind": "messages", "bot": "nova", "botName": "Nova", "said": "/messages"})), said("ai", "hi")], ..Default::default() };
+        let read = history(Some(&t));
+        assert_eq!(read.len(), 2);
+        let all = serde_json::to_string(&read).unwrap();
+        assert!(!all.contains("Who can message") && !all.contains("/messages"), "{all}");
+    }
+
+    #[test]
     fn a_turn_keeps_only_its_latest_screens() {
         let shot = |n: u32| json!({"role": "user", "content": [{"type": "tool_result", "content": [{"type": "text", "text": n.to_string()}, {"type": "image", "source": {"data": n}}]}]});
         let person = json!({"role": "user", "content": [{"type": "image", "source": {"data": "mine"}}]});
