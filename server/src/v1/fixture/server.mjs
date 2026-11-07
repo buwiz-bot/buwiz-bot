@@ -143,8 +143,14 @@ function uninstall() {
   return ok({ ok: true });
 }
 
+let accountSetFailed = false;
+
 function accountSet(args) {
   if (misbehave("no-accounts")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.account.set is not implemented");
+  if (misbehave("account-set-fails-once") && !accountSetFailed) {
+    accountSetFailed = true;
+    throw new McpError(ErrorCode.InternalError, "buwiz.account.set failed");
+  }
 
   if (!isString(args?.account) || !isString(args?.label) || !isString(args?.access_token)) return fail("invalid_args", "send {account, label, access_token, …}");
   accountPushes.push({ push: "set", label: args.label, accounts: args.accounts });

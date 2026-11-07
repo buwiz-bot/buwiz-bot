@@ -3742,6 +3742,8 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
         ("Signing in…", ink3())
     } else if a.connected() && a.needs_access {
         ("Needs more access", warn_ink())
+    } else if a.connected() && a.stuck {
+        ("Can't refresh this sign-in", warn_ink())
     } else if a.connected() && a.active {
         // the one the plugin gets
         ("Active", ok_ink())
@@ -3756,7 +3758,7 @@ fn v1_account_row(plugin: &str, a: crate::mini_v1::connect::Account) -> AnyEleme
     let button = if signing {
         let k = key.clone();
         sm_btn(Btn::Ghost, || "Cancel".into(), move || store().v1_signin_cancel(&k)).label(format!("Stop signing in to {name}"))
-    } else if a.connected() && a.needs_access {
+    } else if a.connected() && (a.needs_access || a.stuck) {
         sm_btn(Btn::Secondary, || "Sign in again".into(), move || store().v1_account(&p, &acc, &l, AccountAction::SignIn))
             .label(format!("Sign in to {name} again"))
     } else if a.connected() {
