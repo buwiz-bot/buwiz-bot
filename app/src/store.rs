@@ -1437,6 +1437,8 @@ pub struct Turn {
     pub ui_refused: Option<String>,
     /// A `notice` turn's sentence: why a run ended early (a Stop, a restart).
     pub run_ended: Option<String>,
+    /// That run failed: a person has something to do about it.
+    pub run_failed: bool,
     /// An item's instruction in a routine's thread (the user turn's
     /// `routine` mark): the routine's name, its caption ("" otherwise).
     pub instruction_from: String,
@@ -2612,6 +2614,7 @@ impl Turn {
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
             run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "run_ended")).then(|| s(v, "text")),
+            run_failed: s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "run_ended" && s(n, "reason") == "failed"),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -9134,6 +9137,16 @@ mod tests {
         let t = "tkt_0123456789ABCDEFGHJKMNPQRS";
         let attached = Turn { text: format!("Attached @bir:taxprofile:{t}"), ..Default::default() };
         assert!(reply_label(&attached).contains(t));
+    }
+
+    #[test]
+    fn a_failed_run_keeps_its_sentence_and_a_stopped_one_isnt_a_failure() {
+        use super::Turn;
+        let turn = |reason: &str| Turn::of(&serde_json::json!({"role": "notice", "text": "Said.", "notice": {"kind": "run_ended", "reason": reason}}));
+        let failed = turn("failed");
+        assert_eq!((failed.run_ended.as_deref(), failed.run_failed), (Some("Said."), true));
+        let stopped = turn("stopped");
+        assert_eq!((stopped.run_ended.as_deref(), stopped.run_failed), (Some("Said."), false));
     }
 
     #[test]

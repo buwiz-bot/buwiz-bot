@@ -187,7 +187,8 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
         assert_eq!(json!(phases), want["phases"], "{prompt}: the job's phases");
         assert_eq!(st["detail"], want["detail"], "{prompt}: the job's detail");
         let thread = thread.as_str().unwrap().to_owned();
-        let turns: Vec<Value> = hub.ctx().store.read(|s| s.thread(&thread).unwrap().turns.iter().map(|u| json!([u.role, u.text, u.label, u.name, u.v, u.reaction])).collect());
+        // a failed run's notice is Rust's own: Node's chat stays silent
+        let turns: Vec<Value> = hub.ctx().store.read(|s| s.thread(&thread).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_none_or(|n| n["reason"] != "failed")).map(|u| json!([u.role, u.text, u.label, u.name, u.v, u.reaction])).collect());
         assert_eq!(json!(turns), want["turns"], "{prompt}: the thread's turns");
     }
 }

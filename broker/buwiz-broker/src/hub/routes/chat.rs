@@ -184,7 +184,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
 
 // ————— the routes —————
 
-/// Runs a queued job's turn; a failure ends the job as Node's crash does.
+/// Runs a queued job's turn; a failure ends the job as Node's crash does, and the chat says so.
 fn start(ctx: Arc<HubCtx>, id: JobId, chat_turn: ChatTurn) {
     tokio::spawn(async move {
         let runner = ctx.turns.clone();
@@ -193,14 +193,12 @@ fn start(ctx: Arc<HubCtx>, id: JobId, chat_turn: ChatTurn) {
             None => Err("not ported".to_owned()),
         };
         if let Err(e) = r {
-            eprintln!("✗ job {id} crashed: {e}");
-            ctx.jobs.with(id, |j| j.done = true);
-            ctx.jobs.set(&ctx.store, id, "done", &format!("generator error — {e}"));
+            crate::hub::agent::runs::failed(&ctx, id, &e);
         }
     });
 }
 
-async fn chat(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+pub(crate) async fn chat(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     ready!(ctx);
     let b = match parse(&req.body) {
         Ok(b) => b,

@@ -672,7 +672,7 @@ mod tests {
         let (ctx, bodies, thread) = scripted_hub(vec![message(json!([]), "refusal"), message(json!([]), "refusal")]);
         let turn = crate::hub::types::TurnCtx { thread: thread.clone(), ..Default::default() };
         let run = crate::hub::tools::Run::new(ctx.clone(), turn, ctx.jobs.create(&thread, Value::Null, None, false), std::sync::Arc::new(crate::hub::model::Settings::from(|_| None)));
-        super::super::generate::background_turn(&run, "Daily check", "Run the daily check", &json!({})).await.unwrap();
+        super::super::generate::background_turn(&run, "Daily check", "Run the daily check", &json!({}), false).await.unwrap();
         assert_eq!(last_turn(&ctx, &thread).0.text.as_deref(), Some(DECLINED));
         // an agent's request after it: the answer is the refusal line (the
         // second in a row), one call, no loop

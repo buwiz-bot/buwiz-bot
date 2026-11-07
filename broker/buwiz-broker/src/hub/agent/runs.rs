@@ -13,20 +13,25 @@
 //! after every run the last broker had, not only the ones it left a row for.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
+use regex_lite::Regex;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::hub::ctx::HubCtx;
 use crate::hub::jobs::JobId;
+use crate::hub::model::anthropic::parse_llm;
 use crate::hub::tools::miniapps::post_in;
+use crate::js;
 
 /// A stopped run's job detail, and its notice's reason.
 pub const STOPPED: &str = "stopped";
 /// A notice's reason: a restart ended the run.
 pub const RESTART: &str = "restart";
+/// A notice's reason: the run failed. Its words ride the notice (`text`).
+pub const FAILED: &str = "failed";
 
 /// What a `run_ended` notice says. The model never reads it: notices stay out of its history.
 pub fn said(reason: &str) -> &'static str {
@@ -40,6 +45,63 @@ pub fn said(reason: &str) -> &'static str {
 /// The `run_ended` notice.
 pub fn notice(reason: &str) -> Value {
     json!({"kind": "run_ended", "reason": reason})
+}
+
+/// What of a provider's message a failed run's notice keeps.
+const SAID: usize = 160;
+
+/// What can't go in a chat: a credential a provider or a proxy echoes back, whole or masked.
+static SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\b(?:bearer|basic)\s+[^\s"',;)]+|\b(?:sk|pk|rk|xai|gsk|ghp|gho|ghs|github_pat|tkt)[-_][^\s"',;)]+|\b(?:AIza|eyJ)[^\s"',;)]+|[\w.-]*(?:key|token|secret|password)["']?\s*[=:]\s*["']?[^\s"',;&)]+|[\w+/=*.-]{24,}"#).unwrap()
+});
+
+/// A provider's message as one short line: its JSON's own words, no markup, no credential.
+fn provider_said(m: &str) -> String {
+    let body = m.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
+    if body.starts_with('<') {
+        return String::new();
+    }
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let said = parsed.as_ref().and_then(|v| ["/error/message", "/message", "/error"].iter().find_map(|p| v.pointer(p)?.as_str())).unwrap_or(body);
+    // before the cut, which could leave half a key the pattern no longer knows
+    let said = js::squeeze(&SECRET.replace_all(said, "[hidden]"));
+    let said = said.trim_end_matches('.');
+    if said.chars().count() > SAID {
+        return said.chars().take(SAID).collect::<String>() + "…";
+    }
+    said.to_owned()
+}
+
+/// What a person reads for a run that failed with `e`.
+pub fn failed_said(e: &str) -> String {
+    let model = e.starts_with("llm-api");
+    let (status, m) = parse_llm(e);
+    if matches!(status, Some(401 | 403)) {
+        return "The model rejected its API key, so this message wasn't answered. Check the key, or pick another model.".to_owned();
+    }
+    let lead = if model { "The model call failed" } else { "Something went wrong" };
+    let said = provider_said(m);
+    let why = if said.is_empty() { String::new() } else { format!(" ({said})") };
+    format!("{lead}, so this message wasn't answered{why}. Try again, or pick another model.")
+}
+
+/// The `run_ended` notice of a run that failed with `e`.
+pub fn failed_notice(e: &str) -> Value {
+    json!({"kind": "run_ended", "reason": FAILED, "text": failed_said(e)})
+}
+
+/// The end of job `job`, whose runner gave `e`: for whoever started the job and got that `Err`.
+/// The chat has its notice before the job reads as done, since an app stops reading at done. A
+/// run a person stopped has had its end already: `stopped` can't always name a turn, and then
+/// the runner's `Err` is only that.
+pub fn failed(ctx: &HubCtx, job: JobId, e: &str) {
+    let Some((thread, stopped)) = ctx.jobs.with(job, |j| (j.thread.clone(), j.result.as_deref() == Some(STOPPED))) else { return };
+    if stopped {
+        return;
+    }
+    eprintln!("✗ job {job} crashed: {e}");
+    post_in(ctx, &thread, &failed_notice(e));
+    ctx.jobs.finish(&ctx.store, job, &format!("generator error — {e}"), None);
 }
 
 /// What a task that's gone can't clear up itself.
@@ -129,7 +191,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::hub::agent::Agent;
     use crate::hub::model::Settings;
-    use crate::hub::routes::chat::{job_stop, jobs_running};
+    use crate::hub::routes::chat::{chat as post_chat, job_stop, jobs_running};
     use crate::hub::routes::host;
     use crate::hub::store::Bot;
     use crate::hub::traits::{ChatTurn, Clock, ModelApi, TurnRequest, TurnRunner};
@@ -142,6 +204,8 @@ pub(crate) mod tests {
         pub calls: AtomicUsize,
         /// each request's body
         pub bodies: Mutex<Vec<Value>>,
+        /// what every call fails with, while set
+        pub fails: Mutex<Option<String>>,
     }
 
     impl Script {
@@ -163,8 +227,12 @@ pub(crate) mod tests {
 
     impl ModelApi for Script {
         fn create(&self, _: &TurnCtx, body: Value) -> BoxFuture<'static, Result<Value, String>> {
+            let failure = self.fails.lock().unwrap().clone();
             let m = self.next(body);
             Box::pin(async move {
+                if let Some(e) = failure {
+                    return Err(e);
+                }
                 match m {
                     Some(m) => Ok(m),
                     None => std::future::pending().await,
@@ -173,10 +241,19 @@ pub(crate) mod tests {
         }
 
         fn stream(&self, _: &TurnCtx, body: Value) -> BoxFuture<'static, Result<mpsc::Receiver<Result<Value, String>>, String>> {
+            let failure = self.fails.lock().unwrap().clone();
             let m = self.next(body);
             Box::pin(async move {
-                let Some(m) = m else { return std::future::pending().await };
                 let (tx, rx) = mpsc::channel(8);
+                // an event first: a stream that fails before any turns streaming off for the
+                // whole process, and tests share it
+                if let Some(e) = failure {
+                    let start = json!({"id": "msg", "type": "message", "role": "assistant", "model": "m", "content": [], "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}});
+                    let _ = tx.send(Ok(json!({"type": "message_start", "message": start}))).await;
+                    let _ = tx.send(Err(e)).await;
+                    return Ok(rx);
+                }
+                let Some(m) = m else { return std::future::pending().await };
                 let mut start = m.clone();
                 start["stop_reason"] = Value::Null;
                 for e in [json!({"type": "message_start", "message": start}), json!({"type": "message_delta", "delta": {"stop_reason": m["stop_reason"]}, "usage": {"output_tokens": 1}}), json!({"type": "message_stop"})] {
@@ -237,6 +314,7 @@ pub(crate) mod tests {
         ctx.store.load().unwrap();
         ctx.local = Some(Arc::new(crate::hub::model::testkit::Local::default()));
         ctx.model = script.map(|s| s as Arc<dyn ModelApi>);
+        ctx.turns = Some(Arc::new(agent()));
         let thread = ctx.store.read(|s| s.bots.first().and_then(|b| b.thread_id.clone()));
         let thread = thread.unwrap_or_else(|| {
             ctx.store
@@ -363,6 +441,139 @@ pub(crate) mod tests {
         assert_eq!(ctx.store.read(|s| s.thread(&thread).unwrap().turns[done.seq].text.clone()).as_deref(), Some("Routine · Mail"));
         assert_eq!(ctx.jobs.json(job as f64)["detail"], STOPPED);
         assert_eq!(rows(&ctx), 0);
+    }
+
+    const KEY: &str = "sk-xxxxxxxxxxxxxxxxxxxx";
+    const REJECTED_SAID: &str = "The model rejected its API key, so this message wasn't answered. Check the key, or pick another model.";
+
+    fn rejected() -> String {
+        let body = json!({"type": "error", "error": {"type": "authentication_error", "message": format!("invalid x-api-key {KEY}")}});
+        format!("llm-api 401: 401 {body}")
+    }
+
+    /// What a person's message sends; → its job, once it has ended.
+    async fn said_in(ctx: &Arc<HubCtx>, thread: &str, prompt: &str) -> JobId {
+        let body = Bytes::from(json!({"prompt": prompt, "thread": thread}).to_string());
+        let res = post_chat(ctx.clone(), HubRequest { method: Method::POST, url: "/chat".to_owned(), headers: HeaderMap::new(), body, params: Vec::new() }).await;
+        let v: Value = serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let job = v["id"].as_u64().unwrap();
+        until("the turn never ended", || ctx.jobs.json(job as f64)["done"] == true).await;
+        job
+    }
+
+    fn turns_of(ctx: &HubCtx, thread: &str) -> Vec<(String, String)> {
+        ctx.store.read(|s| s.thread(thread).unwrap().turns.iter().map(|u| (u.role.clone(), u.text.clone().unwrap_or_default())).collect())
+    }
+
+    fn failures(ctx: &HubCtx, thread: &str) -> usize {
+        ended(ctx, thread).iter().filter(|(reason, _)| reason == FAILED).count()
+    }
+
+    fn pair(role: &str, text: &str) -> (String, String) {
+        (role.to_owned(), text.to_owned())
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_leaves_one_notice_with_no_key_and_it_outlasts_a_restart() {
+        let dir = temp("rejected");
+        let script = Arc::new(Script::default());
+        *script.fails.lock().unwrap() = Some(rejected());
+        let (ctx, thread) = hub_on(&dir, Some(script));
+        let job = said_in(&ctx, &thread, "hi").await;
+        let want = [pair("user", "hi"), pair("notice", REJECTED_SAID)];
+        assert_eq!(turns_of(&ctx, &thread), want);
+        assert_eq!(ended(&ctx, &thread), [(FAILED.to_owned(), REJECTED_SAID.to_owned())]);
+        let detail = ctx.jobs.json(job as f64)["detail"].clone();
+        assert!(detail.as_str().unwrap().starts_with("generator error — llm-api 401"), "the app reads this as failed: {detail}");
+        let stored = ctx.store.read(|s| format!("{:?}", s.thread(&thread).unwrap().turns));
+        assert!(!stored.contains("sk-x"), "{stored}");
+        drop(ctx);
+        let (again, thread) = hub_on(&dir, None);
+        assert_eq!(turns_of(&again, &thread), want);
+        assert_eq!(failures(&again, &thread), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failure_notice_stays_out_of_the_next_prompt() {
+        let script = Arc::new(Script::default());
+        *script.fails.lock().unwrap() = Some(rejected());
+        let (ctx, thread) = hub_on(&temp("prompt"), Some(script.clone()));
+        said_in(&ctx, &thread, "hi").await;
+        assert_eq!(failures(&ctx, &thread), 1);
+        *script.fails.lock().unwrap() = None;
+        script.say("Hello.");
+        said_in(&ctx, &thread, "still there?").await;
+        let last = script.bodies.lock().unwrap().last().unwrap()["messages"].to_string();
+        assert!(last.contains("still there?") && last.contains("hi"), "{last}");
+        assert!(!last.contains("rejected") && !last.contains("answered"), "{last}");
+        assert_eq!(failures(&ctx, &thread), 1, "a turn that worked adds none");
+    }
+
+    #[tokio::test]
+    async fn a_stop_is_no_failure_whether_or_not_it_could_name_a_turn() {
+        let (ctx, thread) = hub_on(&temp("stop-chat"), Some(Arc::new(Script::default())));
+        let (job, done) = chat(&ctx, &thread);
+        until("the run never started", || !ctx.jobs.running().is_empty()).await;
+        assert_eq!(stop(&ctx, job).await.status(), 200);
+        done.await.unwrap().unwrap();
+        assert_eq!(failures(&ctx, &thread), 0);
+        // what `Agent::run` gives when `stopped` found no turn to name
+        let job = ctx.jobs.create(&thread, Value::Null, None, false);
+        ctx.jobs.finish(&ctx.store, job, STOPPED, Some(STOPPED));
+        failed(&ctx, job, "stopped");
+        assert_eq!(failures(&ctx, &thread), 0);
+        assert_eq!(ctx.jobs.json(job as f64)["detail"], STOPPED);
+    }
+
+    /// A job its caller made stays open for `failed`, or an app stops reading before the notice;
+    /// a routine's has no such caller, tells its own failures, and must still end.
+    #[tokio::test]
+    async fn a_failed_background_turn_leaves_its_job_to_whoever_made_it() {
+        let script = Arc::new(Script::default());
+        *script.fails.lock().unwrap() = Some(rejected());
+        let (ctx, thread) = hub_on(&temp("background-failed"), Some(script));
+        let req = |job| TurnRequest { turn: TurnCtx { thread: thread.clone(), job, ..TurnCtx::default() }, shown: "Yes: go".to_owned(), prompt: "go".to_owned(), mark: None };
+        let job = ctx.jobs.create(&thread, Value::Null, None, false);
+        let e = agent().run(ctx.clone(), req(Some(job))).await.err().unwrap();
+        assert_eq!(ctx.jobs.json(job as f64)["done"], false, "not done until the chat has the notice");
+        failed(&ctx, job, &e);
+        assert_eq!((ctx.jobs.json(job as f64)["done"].clone(), failures(&ctx, &thread)), (json!(true), 1));
+        agent().run(ctx.clone(), req(None)).await.err().unwrap();
+        assert!(!ctx.jobs.busy(&thread), "a routine's job ends with its turn");
+        assert_eq!(failures(&ctx, &thread), 1, "a routine's failure is its own to tell");
+    }
+
+    #[test]
+    fn a_failure_reads_in_plain_words_and_never_holds_a_credential() {
+        assert_eq!(failed_said("llm-api 403: forbidden"), REJECTED_SAID);
+        assert_eq!(failed_said(&rejected()), REJECTED_SAID);
+        let plain = |why: &str| format!("The model call failed, so this message wasn't answered ({why}). Try again, or pick another model.");
+        assert_eq!(failed_said(r#"llm-api 500: 500 {"type":"error","error":{"type":"api_error","message":"upstream exploded"}}"#), plain("upstream exploded"));
+        assert_eq!(failed_said(r#"llm-api 500: {"error":{"message":"down"}}"#), plain("down"));
+        assert_eq!(failed_said("llm-api 503: 503 busy"), plain("busy"));
+        assert_eq!(failed_said("llm-api : Connection error."), plain("Connection error"));
+        assert_eq!(failed_said("llm-api 502: 502 <html><body>Bad gateway</body></html>"), "The model call failed, so this message wasn't answered. Try again, or pick another model.");
+        assert_eq!(failed_said("not ported"), "Something went wrong, so this message wasn't answered (not ported). Try again, or pick another model.");
+        let long = failed_said(&format!("llm-api 400: {}", "too long ".repeat(100)));
+        assert!(long.contains('…') && long.chars().count() < 260, "{long}");
+        let wide = failed_said(&format!("llm-api 400: {}", "é ".repeat(200)));
+        assert!(wide.contains('…'), "{wide}");
+        for (leak, secret) in [
+            (format!("llm-api 400: bad key {KEY} given"), "xxxxxxxx"),
+            ("llm-api 400: Incorrect API key provided: sk-abc1***xyz9".to_owned(), "abc1"),
+            ("llm-api 429: header Authorization: Bearer abcd1234 was refused".to_owned(), "abcd1234"),
+            ("llm-api 400: GET https://x.test/v1?api_key=hush42&y=1 failed".to_owned(), "hush42"),
+            ("llm-api 400: x-api-key: hush42 is invalid".to_owned(), "hush42"),
+            ("llm-api 400: token tkt_abc123 expired".to_owned(), "abc123"),
+            ("llm-api 400: bad AIzaSyAbc123 here".to_owned(), "SyAbc123"),
+            ("llm-api 400: opaque Qm9yZWQtaGVyZS1hLWxvbmctb3BhcXVlLXZhbHVl".to_owned(), "Qm9yZWQ"),
+            // a key that runs past the cut goes whole, not in half
+            (format!("llm-api 400: {} {KEY}", "x ".repeat(70)), "sk-x"),
+        ] {
+            let said = failed_said(&leak);
+            assert!(!said.contains(secret), "{said}");
+        }
+        assert!(failed_said("llm-api 400: max_tokens: 99999 is too large").contains("max_tokens: 99999"), "not every number is a secret");
     }
 
     #[test]

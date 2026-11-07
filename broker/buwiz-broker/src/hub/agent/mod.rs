@@ -68,6 +68,7 @@ impl TurnRunner for Agent {
         let settings = self.settings.clone();
         Box::pin(async move {
             let mut turn = req.turn;
+            let told = turn.job.is_some();
             let job = match turn.job {
                 Some(j) => j,
                 None => ctx.jobs.create(&turn.thread, Value::Null, None, false),
@@ -78,7 +79,7 @@ impl TurnRunner for Agent {
             let extra = req.mark.unwrap_or_else(|| json!({}));
             let thread = turn.thread.clone();
             let run = Run::new(ctx.clone(), turn, job, settings);
-            match runs::under_way(&ctx, job, &thread, generate::background_turn(&run, &req.shown, &req.prompt, &extra)).await {
+            match runs::under_way(&ctx, job, &thread, generate::background_turn(&run, &req.shown, &req.prompt, &extra, told)).await {
                 Some(done) => done,
                 // a person's stop is no failure: a routine doesn't count it towards its backoff
                 None => generate::stopped(&run).ok_or_else(|| "stopped".to_owned()),
