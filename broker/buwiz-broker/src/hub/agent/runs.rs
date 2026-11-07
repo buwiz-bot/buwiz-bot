@@ -121,6 +121,8 @@ pub(crate) mod tests {
     pub(crate) struct Script {
         pub answers: Mutex<VecDeque<Value>>,
         pub calls: AtomicUsize,
+        /// each request's body
+        pub bodies: Mutex<Vec<Value>>,
     }
 
     impl Script {
@@ -129,15 +131,20 @@ pub(crate) mod tests {
             self.answers.lock().unwrap().push_back(json!({"id": "msg", "type": "message", "role": "assistant", "model": "m", "content": call, "stop_reason": "tool_use", "usage": {"input_tokens": 1, "output_tokens": 1}}));
         }
 
-        fn next(&self) -> Option<Value> {
+        pub(crate) fn say(&self, text: &str) {
+            self.answers.lock().unwrap().push_back(json!({"id": "msg", "type": "message", "role": "assistant", "model": "m", "content": [{"type": "text", "text": text}], "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}}));
+        }
+
+        fn next(&self, body: Value) -> Option<Value> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.bodies.lock().unwrap().push(body);
             self.answers.lock().unwrap().pop_front()
         }
     }
 
     impl ModelApi for Script {
-        fn create(&self, _: &TurnCtx, _: Value) -> BoxFuture<'static, Result<Value, String>> {
-            let m = self.next();
+        fn create(&self, _: &TurnCtx, body: Value) -> BoxFuture<'static, Result<Value, String>> {
+            let m = self.next(body);
             Box::pin(async move {
                 match m {
                     Some(m) => Ok(m),
@@ -146,8 +153,8 @@ pub(crate) mod tests {
             })
         }
 
-        fn stream(&self, _: &TurnCtx, _: Value) -> BoxFuture<'static, Result<mpsc::Receiver<Result<Value, String>>, String>> {
-            let m = self.next();
+        fn stream(&self, _: &TurnCtx, body: Value) -> BoxFuture<'static, Result<mpsc::Receiver<Result<Value, String>>, String>> {
+            let m = self.next(body);
             Box::pin(async move {
                 let Some(m) = m else { return std::future::pending().await };
                 let (tx, rx) = mpsc::channel(8);

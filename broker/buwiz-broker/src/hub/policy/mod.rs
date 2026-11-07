@@ -24,6 +24,8 @@ pub mod sandbox;
 pub mod shell;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod waiting_tests;
 
 use std::collections::HashSet;
 

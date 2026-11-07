@@ -15,7 +15,8 @@
 //!
 //! A routine is different, because no one is there to click: its turn has these tools only when
 //! a person turned `computer_routines` on, which starts off and which only a person can widen. It
-//! may then wake the computer. At Ask it is refused, since nobody can answer the card.
+//! may then wake the computer. At Ask its call doesn't run: the card waits for a person
+//! (`policy::ask`), and so does the routine.
 //!
 //! Pictures are what these tools run on, so a model that can't see gets none of them, and is told
 //! why ([`prompt`]). They go as JPEG, and a turn keeps only the latest few (`agent/turn.rs`).
@@ -322,6 +323,11 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
         return Out::err("This computer's commands can't be confirmed walled off from its screen right now, so nothing was handed over.".to_owned());
     }
     let name = run.ctx.store.read(|s| s.bot(&live.bot).map(|b| b.name.clone())).unwrap_or_default();
+    // a hand-over is for a person who's there to take it: a turn that has none never waits for one
+    if !asking::present(&run.turn) {
+        policy::log_ask(&run.ctx, Some(&live.bot), &format!("Take over {name}'s computer?"), ASK_PERSON, "needs_ok");
+        return Out::err(asking::NOBODY.to_owned());
+    }
     let asked = Asking { bot: live.bot.clone(), key: ASK_KEY.to_owned(), tool: ASK_PERSON.to_owned(), title: format!("Take over {name}'s computer?"), lines: vec![reason.clone(), TAKEOVER_NOTE.to_owned()], ..Asking::default() };
     if let Err(no_answer) = asking::ask(run, asked).await {
         return Out::err(no_answer);

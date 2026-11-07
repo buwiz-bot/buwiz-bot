@@ -8,9 +8,10 @@
 //! and posts its receipt card; a widen only ever posts a pending card (`policy::propose`)
 //! that a person answers. No input applies a widen.
 //!
-//! [`ask_first`] (and [`shell_run`] for the shell) parks a call that changes something or
-//! reaches someone while its switch is at Ask, or after the turn read outside content, until
-//! the user answers its `tool_ask` card (`policy::ask`).
+//! [`ask_first`] (and [`shell_run`] for the shell) stops a call that changes something or
+//! reaches someone while its switch is at Ask, or after the turn read outside content, at a
+//! `tool_ask` card (`policy::ask`): parked for the user's answer when they're there, else left
+//! waiting with the model told it hasn't run.
 
 use std::collections::HashSet;
 
@@ -190,8 +191,8 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
         return None;
     }
     let ctx = &run.ctx;
-    // a routine's Ask stays Ask on the computer: the person turned routines on for it, and a card
-    // nobody can answer refuses
+    // a routine's Ask stays Ask on the computer: the person turned routines on for it, and its
+    // card waits for them
     let state = policy::tool_state(ctx, &profile(run), &key);
     let pos = if key == computer::KEY { state } else { effective(run, state) };
     if pos == Pos::Off || reads(run, name, &key).await {
@@ -205,7 +206,7 @@ pub async fn ask_first(run: &Run, name: &str, input: &Value) -> Option<Out> {
     if key == computer::KEY {
         lines.extend(computer::card_note(run));
     }
-    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), title, lines, preview, external, prefix: None };
+    let a = Asking { bot: acting(run).map(|b| b.0).unwrap_or_default(), key, tool: name.to_owned(), input: Some(input.clone()), title, lines, preview, external, prefix: None };
     asking::ask(run, a).await.err().map(Out::err)
 }
 
@@ -548,6 +549,7 @@ pub async fn shell_run(run: &Run, input: &Value) -> Out {
             bot: bot.clone().unwrap_or_default(),
             key: "shell".into(),
             tool: "shell_run".into(),
+            input: Some(input.clone()),
             title: format!("Run `{}` on this Mac?", gate::clip(&shown, 80)),
             lines,
             preview: gate::clip(line, 2000),

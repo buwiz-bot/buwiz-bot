@@ -131,6 +131,7 @@ const TRIED: &[&str] = &[
     // person allowed for the rest of one chat, and the tool of an asked call in Activity
     "ALTER TABLE bot_tools ADD COLUMN state TEXT",
     "CREATE TABLE IF NOT EXISTS ask_grant(thread TEXT, key TEXT, at INTEGER, PRIMARY KEY(thread, key))",
+    "CREATE TABLE IF NOT EXISTS ask_waiting(id TEXT PRIMARY KEY, chat TEXT NOT NULL, tool TEXT NOT NULL, input TEXT, routine TEXT, at INTEGER NOT NULL)",
     "ALTER TABLE shell_activity ADD COLUMN tool TEXT",
     // a computer is its own record; a Bot sits at one, with a screen of its own (`hub/computer.rs`)
     "CREATE TABLE IF NOT EXISTS computers(

@@ -6863,25 +6863,34 @@ impl Store {
                 if self.run_jobs.with_untracked(|m| m.contains_key(&run.thread)) {
                     continue;
                 }
-                let RunningRun { job, thread, bot, phase, detail } = run;
-                self.run_jobs.update(|m| {
-                    m.insert(thread.clone(), job.clone());
-                });
-                self.sending.update(|s| {
-                    s.insert(thread.clone());
-                });
-                let state = phase_state(&phase).to_owned();
-                let label = if detail.is_empty() { crate::statusfx::status_label(&state) } else { detail };
-                self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
-                self.in_store(|| spawn(async move {
-                    self.watch_run(job, thread.clone(), bot).await;
-                    self.sending.update(|s| {
-                        s.remove(&thread);
-                    });
-                    self.emph_bot.set(String::new());
-                    self.refresh_turns();
-                }));
+                self.follow(run);
             }
+        }));
+    }
+
+    /// Follows the run a person's yes on a waiting card started.
+    pub fn follow_run(&'static self, job: String, thread: String, bot: Option<String>) {
+        self.follow(RunningRun { job, thread, bot, phase: "queued".to_owned(), detail: String::new() });
+    }
+
+    fn follow(&'static self, run: RunningRun) {
+        let RunningRun { job, thread, bot, phase, detail } = run;
+        self.run_jobs.update(|m| {
+            m.insert(thread.clone(), job.clone());
+        });
+        self.sending.update(|s| {
+            s.insert(thread.clone());
+        });
+        let state = phase_state(&phase).to_owned();
+        let label = if detail.is_empty() { crate::statusfx::status_label(&state) } else { detail };
+        self.agent_set(thread.clone(), bot.clone(), Some((state, label)));
+        self.in_store(|| spawn(async move {
+            self.watch_run(job, thread.clone(), bot).await;
+            self.sending.update(|s| {
+                s.remove(&thread);
+            });
+            self.emph_bot.set(String::new());
+            self.refresh_turns();
         }));
     }
 

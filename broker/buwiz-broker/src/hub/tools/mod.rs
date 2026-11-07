@@ -103,6 +103,8 @@ pub struct RunState {
     pub beyond_screens: bool,
     /// the screen this run touched first: its own until the run ends
     pub screen_hold: Option<crate::hub::computer::Hold>,
+    /// the yes this turn was started with, until the call it covers comes (`policy::ask`)
+    pub yes: Option<crate::hub::types::Yes>,
 }
 
 /// One turn's run (Node's job, `modelCtx` and `actingBot`).
@@ -118,7 +120,8 @@ pub struct Run {
 impl Run {
     pub fn new(ctx: Arc<HubCtx>, mut turn: TurnCtx, job: JobId, settings: Arc<Settings>) -> Self {
         turn.job = Some(job);
-        Self { ctx, turn, job, settings, st: Mutex::new(RunState::default()) }
+        let yes = turn.yes.take();
+        Self { ctx, turn, job, settings, st: Mutex::new(RunState { yes, ..RunState::default() }) }
     }
 
     pub fn state(&self) -> MutexGuard<'_, RunState> {
