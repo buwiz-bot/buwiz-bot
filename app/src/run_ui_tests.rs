@@ -64,7 +64,7 @@ fn Row() -> impl IntoElement {
         .child(crate::composer::stop_run())
         .child(text(|| {
             let run = store().agent().map(|r| r.label).unwrap_or_else(|| "none".to_owned());
-            format!("probe ready=1 run={run} busy={}", store().sending.get().contains("t7"))
+            format!("probe ready=1 run={run} busy={} mark={}", store().sending.get().contains("t7"), store().bot_st("b1"))
         }))
 }
 
@@ -84,6 +84,7 @@ fn a_relaunched_app_follows_a_run_under_way() {
         return;
     }
     assert!(crate::client::is_host_route("/job/stop"), "the app must send the host token with a Stop");
+    assert!(crate::client::is_host_route("/jobs/running"), "and with its look at the runs, or a relaunch follows none");
     let mut config = EngineConfig::new(App::Rust(Root::new::<Row>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(900.0), px(300.0));
     let mut app = run(config);
@@ -95,7 +96,7 @@ fn a_relaunched_app_follows_a_run_under_way() {
     assert!(HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=7")), "it isn't polling: {:?}", HEARD.lock().unwrap());
 
     app.press("Stop this run");
-    assert!(shows(&mut app, "run=none busy=false"), "the row stayed: {:?}", app.texts());
+    assert!(shows(&mut app, "run=none busy=false mark=idle"), "the row stayed, or the mark settled as if it ended: {:?}", app.texts());
     assert!(HEARD.lock().unwrap().iter().any(|l| l.starts_with("POST /job/stop") && l.ends_with(r#"{"id":7}"#)), "{:?}", HEARD.lock().unwrap());
     assert!(!app.texts().contains(&"Stop"), "the Stop went with the run: {:?}", app.texts());
 }

@@ -6994,6 +6994,8 @@ impl Store {
                 //   ? "failed" : "finished")`.
                 // `unknown`: the broker that had the run is gone
                 let ok = !(status.starts_with("failed") || status.starts_with("generator error") || phase == "unknown");
+                // a person's Stop did what they asked: it neither finished nor failed
+                let stopped = status == "stopped";
                 // A new app's icon is drawn after the turn ends.
                 self.watch_app_icons();
                 // the files, images and Drive links the reply made join
@@ -7001,6 +7003,9 @@ impl Store {
                 self.refresh_thread_apps();
                 self.agent_set(thread.clone(), bot.clone(), None);
                 self.emph_bot.set(String::new());
+                if stopped {
+                    break;
+                }
                 self.settled.set(Some(Settle {
                     name: s(&v, "name"),
                     ok,

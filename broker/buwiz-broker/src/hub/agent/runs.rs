@@ -5,13 +5,17 @@
 //! `Hold` lives in the `Run`, which the entry point drops as it returns.
 //!
 //! The row goes when the run ends, and only then: a broker shutting down drops its tasks, which
-//! isn't an end, and one that's killed drops nothing. So a row found at the next start
-//! ([`cut_off`]) is a run a restart ended, and the chat is told.
+//! isn't an end, and one that's killed drops nothing. A panic is an end: it unwinds through
+//! [`Marks`], which takes the row. So a row found at the next start ([`cut_off`]) is a run a
+//! restart ended, and the chat is told.
+//!
+//! Each run also raises `job_mark`, kept when its row goes, so the next start's job ids go on
+//! after every run the last broker had, not only the ones it left a row for.
 
 use std::future::Future;
 use std::sync::Arc;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
@@ -49,15 +53,27 @@ impl Drop for Marks<'_> {
         // a panic ends a task with its job unfinished, and an app would follow that for ever
         if std::thread::panicking() {
             self.ctx.jobs.finish(&self.ctx.store, self.job, "failed — the run crashed", None);
+            forget(self.ctx, self.job);
         }
         self.ctx.jobs.with(self.job, |j| j.abort = None);
+    }
+}
+
+/// The run has ended: its row goes.
+fn forget(ctx: &HubCtx, job: JobId) {
+    if let Err(e) = ctx.db.with(|c| c.execute("DELETE FROM runs WHERE job=?", [job as i64])) {
+        eprintln!("buwiz-broker: runs: {e}");
     }
 }
 
 /// Runs `turn` as job `job` on `thread`: `None` when a person stopped it, its future dropped.
 pub async fn under_way<T>(ctx: &HubCtx, job: JobId, thread: &str, turn: impl Future<Output = T>) -> Option<T> {
     let at = ctx.clock.now() as i64;
-    if let Err(e) = ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO runs(job, thread, at) VALUES(?,?,?)", params![job as i64, thread, at])) {
+    let row = ctx.db.with(|c| {
+        c.execute("INSERT INTO job_mark(id, high) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET high=max(high, excluded.high)", [job as i64])?;
+        c.execute("INSERT OR REPLACE INTO runs(job, thread, at) VALUES(?,?,?)", params![job as i64, thread, at])
+    });
+    if let Err(e) = row {
         eprintln!("buwiz-broker: runs: {e}");
     }
     let _marks = Marks { ctx, job };
@@ -68,14 +84,17 @@ pub async fn under_way<T>(ctx: &HubCtx, job: JobId, thread: &str, turn: impl Fut
         () = abort.notified() => None,
         done = turn => Some(done),
     };
-    if let Err(e) = ctx.db.with(|c| c.execute("DELETE FROM runs WHERE job=?", [job as i64])) {
-        eprintln!("buwiz-broker: runs: {e}");
-    }
+    forget(ctx, job);
     ended
 }
 
 /// On start: each run the last broker left behind gets its notice, and job ids go on after them.
 pub fn cut_off(ctx: &HubCtx) {
+    match ctx.db.with(|c| c.query_row("SELECT high FROM job_mark", [], |r| r.get::<_, i64>(0)).optional()) {
+        Ok(Some(high)) => ctx.jobs.start_after(high as JobId),
+        Ok(None) => {}
+        Err(e) => eprintln!("buwiz-broker: runs: {e}"),
+    }
     let rows = ctx.db.with(|c| {
         let mut st = c.prepare("SELECT job, thread FROM runs ORDER BY job")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
@@ -254,6 +273,46 @@ pub(crate) mod tests {
         assert!(next.jobs.create(&thread, Value::Null, None, true) > job);
     }
 
+    /// A crash loses the jobs table, and a run that ended has no row to say how far ids got.
+    #[tokio::test]
+    async fn job_ids_go_on_after_a_run_that_left_no_row() {
+        let dir = temp("mark");
+        let script = Arc::new(Script::default());
+        script.answers.lock().unwrap().push_back(json!({"id": "m", "type": "message", "role": "assistant", "model": "m", "content": [{"type": "text", "text": "Done."}], "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}}));
+        let (first, thread) = hub_on(&dir, Some(script));
+        first.jobs.start_after(40);
+        let (job, done) = chat(&first, &thread);
+        done.await.unwrap().unwrap();
+        assert_eq!(rows(&first), 0);
+
+        let (next, _) = hub_on(&dir, None);
+        cut_off(&next);
+        assert_eq!(next.jobs.json(job as f64)["phase"], "unknown", "an app following the old job never reads a new one");
+        assert!(next.jobs.create(&thread, Value::Null, None, true) > job);
+
+        // a lower job can't lower the mark
+        let (later, _) = hub_on(&dir, None);
+        under_way(&later, 3, &thread, async {}).await;
+        let (last, _) = hub_on(&dir, None);
+        cut_off(&last);
+        assert!(last.jobs.create(&thread, Value::Null, None, true) > job);
+    }
+
+    /// A panic ended the run: no restart did, whatever the next start finds.
+    #[tokio::test]
+    async fn a_run_that_panicked_is_not_called_cut_off_by_a_restart() {
+        let dir = temp("panic");
+        let (ctx, thread) = hub_on(&dir, None);
+        let job = ctx.jobs.create(&thread, Value::Null, None, true);
+        let (c, t) = (ctx.clone(), thread.clone());
+        let done = tokio::spawn(async move { under_way(&c, job, &t, async { panic!("a turn's bug") }).await });
+        assert!(done.await.unwrap_err().is_panic());
+        assert_eq!(rows(&ctx), 0, "a panic ended it");
+        assert_eq!(ctx.jobs.json(job as f64)["detail"], "failed — the run crashed");
+        cut_off(&ctx);
+        assert!(ended(&ctx, &thread).is_empty());
+    }
+
     #[tokio::test]
     async fn a_run_that_ended_leaves_no_notice_at_the_next_start() {
         let dir = temp("clean");
@@ -330,6 +389,11 @@ pub(crate) mod tests {
         let mut token = HeaderMap::new();
         token.insert("x-buwiz-host", host::TEST_TOKEN.parse().unwrap());
         assert!(!host::locked_out(&post, "/job/stop", &token));
+
+        let get = Method::GET;
+        assert!(host::locked_out(&get, "/jobs/running", &HeaderMap::new()), "a Bot's shell would read every run");
+        assert!(!host::locked_out(&get, "/jobs/running", &token));
+        assert!(!host::locked_out(&get, "/job/stop", &HeaderMap::new()) && !host::locked_out(&get, "/skills", &HeaderMap::new()), "a locked POST's GET stays as it was");
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut all = Vec::new();
