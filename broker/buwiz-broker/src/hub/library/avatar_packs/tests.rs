@@ -364,9 +364,15 @@ fn a_design_an_install_would_refuse_is_named_with_why() {
     assert_eq!(found[0]["name"], fox()["name"]);
     assert_eq!(found[0]["why"], json!(clean_design(&bad).unwrap_err()));
     assert!(refusals(&[fox()]).unwrap().is_empty());
+    // named as an install would name it, however it's written
+    let mut long = bad;
+    long["name"] = json!(format!("  Fox\n{}", "x".repeat(NAME_MAX * 2)));
+    let mut read = Found::default();
+    parse_pack(json!({"designs": [long]}).to_string().as_bytes(), &mut read).unwrap();
+    assert_eq!(refusals(std::slice::from_ref(&long)).unwrap()[0]["name"], read.refused[0]["name"]);
 }
 
 #[test]
 fn too_many_designs_are_refused_whole() {
-    assert_eq!(refusals(&vec![fox(); DESIGNS_MAX + 1]).unwrap_err(), TOO_MANY);
+    assert_eq!(refusals(&vec![fox(); DESIGNS_MAX + 1]).unwrap_err(), TOO_MANY_TO_CHECK);
 }

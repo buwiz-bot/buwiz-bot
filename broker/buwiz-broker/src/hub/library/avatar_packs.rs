@@ -40,6 +40,7 @@ const READ_WAIT: Duration = Duration::from_secs(45);
 const READ_BYTES: usize = 16 * 1024 * 1024;
 const TOO_BIG: &str = "those packs are too big";
 const TOO_MANY: &str = "those packs hold too many designs";
+const TOO_MANY_TO_CHECK: &str = "too many designs to check at once";
 
 /// What one read may still take in bytes. Counted as they arrive, so a file cut off just short
 /// of its cap costs as much as one that got there.
@@ -228,10 +229,14 @@ fn pack_url(index: &Url, file: &str) -> Option<Url> {
 /// nothing.
 pub fn refusals(designs: &[Value]) -> Result<Vec<Value>, String> {
     if designs.len() > DESIGNS_MAX {
-        return Err(TOO_MANY.to_owned());
+        return Err(TOO_MANY_TO_CHECK.to_owned());
     }
-    let name = |d: &Value| d.get("name").cloned().unwrap_or(Value::Null);
-    Ok(designs.iter().filter_map(|d| clean_design(d).err().map(|why| json!({"name": name(d), "why": why}))).collect())
+    Ok(designs.iter().filter_map(|d| clean_design(d).err().map(|why| refusal(d, why))).collect())
+}
+
+/// A refused design as an install reports it.
+fn refusal(d: &Value, why: String) -> Value {
+    json!({"name": line(d.get("name"), NAME_MAX), "why": why})
 }
 
 /// The packs in `index.json`. One with a bad entry isn't read; the others are.
@@ -312,7 +317,7 @@ pub fn parse_pack(bytes: &[u8], found: &mut Found) -> Result<(), String> {
         }
         match clean_design(d) {
             Ok(design) => found.designs.push(design),
-            Err(why) => found.refused.push(json!({"name": line(d.get("name"), NAME_MAX), "why": why})),
+            Err(why) => found.refused.push(refusal(d, why)),
         }
     }
     Ok(())
