@@ -316,22 +316,29 @@ impl Computers {
     fn start_owed_turns(&self, ctx: &Arc<HubCtx>) {
         for j in rows(ctx, "WHERE turn_owed=1 AND state<>?", "running") {
             let on = policy::tool_state(ctx, &j.bot, ROUTINES_KEY) == Pos::On;
-            if on && ctx.jobs.busy(&j.thread) {
+            // the chat is this turn's from here: a person's message or a yes can't start beside it
+            let job = if on { ctx.jobs.create_if_idle(&j.thread) } else { None };
+            if on && job.is_none() {
                 continue;
             }
             // two can get here at once: the one that clears it starts the turn
-            if !matches!(ctx.db.with(|c| c.execute("UPDATE computer_jobs SET turn_owed=0 WHERE id=? AND turn_owed=1", [&j.id])), Ok(1)) || !on {
+            let won = matches!(ctx.db.with(|c| c.execute("UPDATE computer_jobs SET turn_owed=0 WHERE id=? AND turn_owed=1", [&j.id])), Ok(1));
+            let (Some(job), Some(runner), true) = (job, ctx.turns.clone(), won) else {
+                if let Some(job) = job {
+                    ctx.jobs.with(job, |r| r.done = true);
+                }
                 continue;
-            }
-            let Some(runner) = ctx.turns.clone() else { continue };
-            let turn = TurnCtx { thread: j.thread.clone(), routine: Some(format!("job:{}", j.id)), ..TurnCtx::default() };
+            };
+            let turn = TurnCtx { thread: j.thread.clone(), job: Some(job), routine: Some(format!("job:{}", j.id)), ..TurnCtx::default() };
             let ended = said(&j.name, &j.state, j.exit.map(i64::from));
             let prompt = format!("(A job you left running on your computer ended, and the user isn't waiting on this message: {ended} Its id is {}. Read how it went with computer_job_status, do what it was for, and report briefly.)", j.id);
             let req = TurnRequest { turn, shown: format!("Job · {ended}"), prompt, mark: None };
             let ctx = ctx.clone();
             tokio::spawn(async move {
-                if let Err(e) = runner.run(ctx, req).await {
-                    eprintln!("✗ a job's turn: {e}");
+                if let Err(e) = runner.run(ctx.clone(), req).await {
+                    eprintln!("✗ job {job} crashed: {e}");
+                    ctx.jobs.with(job, |r| r.done = true);
+                    ctx.jobs.set(&ctx.store, job, "done", &format!("generator error — {e}"));
                 }
             });
         }
