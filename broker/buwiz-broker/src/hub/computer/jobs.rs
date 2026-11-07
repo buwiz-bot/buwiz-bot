@@ -11,7 +11,8 @@
 //! - A person's Sleep still wins: it freezes the job, and waking the computer lets it go on. The
 //!   tab's button says so. A job doesn't count as running while it's frozen.
 //! - Past its limit a job is stopped at the next look that can reach it. One frozen past its limit
-//!   stops holding the computer up, so the deep sleep can still take it.
+//!   stays frozen on the record and stops holding the computer up, so the deep sleep can still take
+//!   it.
 //! - The end of a job is one `UPDATE ... WHERE state='running'`: the sweep and a model's status call
 //!   can meet there, and only one posts the notice. A notice is free. A model turn follows only with
 //!   `computer_routines` On, at most one, and it waits for a run under way in that chat. It's owed in
@@ -22,8 +23,14 @@
 //!
 //! A job can be over on the record and still be on the computer: its Bot left while the computer
 //! slept, or a start's end wasn't heard. Its row owes a cancel ([`Computers::settle_stops`]), by the
-//! Bot's folder and so with no seat needed, paid as a wake finishes and looked at by each sweep
-//! until the computer has said it's done.
+//! Bot's folder and so with no seat needed, paid for that computer as a wake finishes or a Bot
+//! leaves, and for all of them by each sweep, until the computer has said it's done. A computer that
+//! was up and didn't take it [`STOP_TRIES`] times is given up on, and a person told. So is a remote
+//! computer that goes with a cancel unpaid: nothing there is destroyed with it. A computer that
+//! sleeps isn't a failure: what's frozen waits for its wake.
+//!
+//! What a model named a job stays out of the unattended turn it starts: it may have copied it from
+//! a page, and nobody is there. Only a person's notice shows it.
 //!
 //! No row holds the command: what's run stays in the computer, and a job's name is the model's words
 //! for a person to read.
@@ -51,6 +58,8 @@ pub const MAX_LIMIT: Duration = Duration::from_secs(24 * 60 * 60);
 pub const MIN_LIMIT: Duration = Duration::from_secs(60);
 /// How many a Bot may have running at once.
 pub const PER_BOT: usize = 2;
+/// How many cancels a computer that's up can fail before a person is told instead.
+const STOP_TRIES: i64 = 20;
 /// How long an ended job's row stays, for its status.
 const KEPT_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// A look at a job or a start of one: long enough for a busy box, short enough for the sweep.
@@ -62,6 +71,8 @@ const LISTED: usize = 10;
 const OUT_BYTES: usize = 20_000;
 
 const NOTICE: &str = "computer_job";
+/// What a notice's `state` is for a job nothing could stop.
+const UNSTOPPED: &str = "unstopped";
 const TOO_MANY: &str = "Two jobs are running on this Bot's computer already, and that's the most it can have. Wait for one to end, or stop one with computer_job_stop.";
 
 /// A running job, as [`super::Now`] holds it.
@@ -74,6 +85,8 @@ pub(super) struct Running {
     starting: bool,
     /// its computer sleeps, so it's stopped where it was
     pub(super) frozen: bool,
+    /// its limit passed while nothing could reach it: it no longer holds the computer up
+    pub(super) past: bool,
 }
 
 /// A `computer_jobs` row.
@@ -98,6 +111,8 @@ pub(super) enum End {
     Limit,
     /// nothing says how, and the computer may have restarted under it
     Lost,
+    /// its Bot left the computer, and a cancel is owed
+    Left,
 }
 
 impl End {
@@ -107,6 +122,7 @@ impl End {
             Self::Stopped => "stopped",
             Self::Limit => "limit",
             Self::Lost => "lost",
+            Self::Left => "left",
         }
     }
 }
@@ -119,6 +135,8 @@ pub fn said(name: &str, state: &str, exit: Option<i64>) -> String {
         ("done", Some(code)) => format!("{what} failed with exit code {code}."),
         ("stopped", _) => format!("{what} was stopped."),
         ("limit", _) => format!("{what} reached its time limit and was stopped."),
+        ("left", _) => format!("{what} is being stopped: its Bot left that computer."),
+        (UNSTOPPED, _) => format!("{what} couldn't be stopped, so it may still be running on that computer."),
         _ => format!("{what} ended and left no exit code. Its computer may have restarted."),
     }
 }
@@ -159,7 +177,7 @@ impl Computers {
         let found = running(ctx);
         let mut now = self.now();
         for j in found {
-            now.jobs.insert(j.id, Running { bot: j.bot, computer: j.computer, thread: j.thread, starting: false, frozen: false });
+            now.jobs.insert(j.id, Running { bot: j.bot, computer: j.computer, thread: j.thread, starting: false, frozen: false, past: false });
         }
         drop(now);
         self.sync_awake();
@@ -177,7 +195,7 @@ impl Computers {
             if now.jobs.values().filter(|j| j.bot == live.bot).count() >= PER_BOT {
                 return Err(TOO_MANY.to_owned());
             }
-            now.jobs.insert(id.clone(), Running { bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), starting: true, frozen: false });
+            now.jobs.insert(id.clone(), Running { bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), starting: true, frozen: false, past: false });
         }
         let at = policy::now(ctx);
         let job = Job { id: id.clone(), bot: live.bot.clone(), computer: live.computer.clone(), thread: thread.to_owned(), name: name.to_owned(), started: at, until: at + super::millis(limit), state: "running".to_owned(), exit: None };
@@ -212,10 +230,15 @@ impl Computers {
         format!("{why} It may have started all the same, and the computer couldn't be reached to stop it. It'll be stopped as soon as it can be, so don't start it again yet.")
     }
 
-    /// Pays the cancels ended jobs owe, on each computer that's up and can hear them. Each stays
-    /// owed until the computer has answered.
-    pub(super) async fn settle_stops(&self, ctx: &HubCtx) {
-        for j in rows(ctx, "WHERE stop_owed=1 AND state<>?", "running") {
+    /// Pays the cancels ended jobs owe, on `computer` or, from the sweep, on every one that's up
+    /// and can hear them. A person's click waits on this, so it's only ever the computer they
+    /// clicked. Each stays owed until the computer has answered, or [`STOP_TRIES`] times it hasn't.
+    pub(super) async fn settle_stops(&self, ctx: &HubCtx, computer: Option<&str>) {
+        let owed = match computer {
+            Some(id) => rows(ctx, "WHERE stop_owed=1 AND computer_id=?", id),
+            None => rows(ctx, "WHERE stop_owed=1 AND state<>?", "running"),
+        };
+        for j in owed {
             {
                 let now = self.now();
                 if now.waking.contains(&j.computer) || now.sleeping.contains(&j.computer) {
@@ -229,10 +252,31 @@ impl Computers {
                 Ok((Power::Awake, machine)) => provider.guard(&machine).await.is_ok() && cancelled(provider.as_ref(), &machine, &folder_of(&j.bot), &j.id).await,
                 // nothing of it is left to stop
                 Ok((Power::Absent, _)) => true,
-                _ => false,
+                // asleep, or not there to ask: no try was made
+                _ => continue,
             };
             if paid {
                 let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=0 WHERE id=?", [&j.id]));
+                continue;
+            }
+            let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_tries=stop_tries+1 WHERE id=?", [&j.id]));
+            if matches!(ctx.db.with(|c| c.query_row("SELECT stop_tries FROM computer_jobs WHERE id=?", [&j.id], |r| r.get::<_, i64>(0))), Ok(n) if n >= STOP_TRIES) {
+                give_up_on(ctx, &j);
+            }
+        }
+    }
+
+    /// `computer` is going for good. What ran on a box goes with it, but a remote one's far end
+    /// stays: nothing there is destroyed, so whatever still owes a cancel is told of now, once.
+    pub(super) async fn retire_jobs(&self, ctx: &HubCtx, computer: &str, remote: bool) {
+        let at = policy::now(ctx);
+        let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET state='lost', ended_at=?, stop_owed=1 WHERE state='running' AND computer_id=?", params![at, computer]));
+        self.now().jobs.retain(|_, j| j.computer != computer);
+        self.sync_awake();
+        self.settle_stops(ctx, Some(computer)).await;
+        if remote {
+            for j in rows(ctx, "WHERE stop_owed=1 AND computer_id=?", computer) {
+                give_up_on(ctx, &j);
             }
         }
     }
@@ -303,14 +347,22 @@ impl Computers {
                 }
                 // nothing it ran is left
                 Err(Problem::Gone) => self.end_job(ctx, &j, End::Lost, false),
+                // a limit is for what can be reached: frozen it stays, and lets the computer go
+                Err(Problem::Asleep) => {
+                    self.set_frozen(&j.id, true);
+                    if over {
+                        if let Some(r) = self.now().jobs.get_mut(&j.id) {
+                            r.past = true;
+                        }
+                    }
+                }
                 _ if over => {
                     self.now().jobs.remove(&j.id);
                 }
-                Err(Problem::Asleep) => self.set_frozen(&j.id, true),
                 _ => {}
             }
         }
-        self.settle_stops(ctx).await;
+        self.settle_stops(ctx, None).await;
         self.start_owed_turns(ctx);
         self.sync_awake();
     }
@@ -378,7 +430,8 @@ impl Computers {
                 continue;
             };
             let turn = TurnCtx { thread: j.thread.clone(), job: Some(job), routine: Some(format!("job:{}", j.id)), ..TurnCtx::default() };
-            let ended = said(&j.name, &j.state, j.exit.map(i64::from));
+            // its name is the model's, perhaps from a page: nobody is there to read this turn
+            let ended = said("", &j.state, j.exit.map(i64::from));
             let prompt = format!("(A job you left running on your computer ended, and the user isn't waiting on this message: {ended} Its id is {}. Read how it went with computer_job_status, do what it was for, and report briefly.)", j.id);
             let req = TurnRequest { turn, shown: format!("Job · {ended}"), prompt, mark: None };
             let ctx = ctx.clone();
@@ -392,21 +445,19 @@ impl Computers {
         }
     }
 
-    /// `bot` left a computer that stays: nothing would look after its jobs now, so they end, and
-    /// each owes a cancel. One that can't be paid now, on a computer asleep, is paid at its next wake.
-    pub(super) async fn end_jobs_of(&self, ctx: &HubCtx, bot: &str) {
+    /// `bot` left `computer`: nothing would look after its jobs now, so they end, and each owes a
+    /// cancel. One that can't be paid now, on a computer asleep, is paid at its next wake.
+    pub(super) async fn end_jobs_of(&self, ctx: &HubCtx, bot: &str, computer: &str) {
         for j in Self::jobs_of(ctx, bot).into_iter().filter(|j| j.state == "running") {
-            self.end_job(ctx, &j, End::Stopped, true);
+            self.end_job(ctx, &j, End::Left, true);
             let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=1 WHERE id=?", [&j.id]));
         }
-        self.settle_stops(ctx).await;
+        self.settle_stops(ctx, Some(computer)).await;
     }
 
-    /// `computer` is going for good, and what ran on it with it.
-    pub(super) fn forget_jobs(&self, ctx: &HubCtx, computer: &str) {
+    /// `computer` has gone: its rows go with it.
+    pub(super) fn forget_jobs(ctx: &HubCtx, computer: &str) {
         let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE computer_id=?", [computer]));
-        self.now().jobs.retain(|_, j| j.computer != computer);
-        self.sync_awake();
     }
 
     /// The jobs on `computer`, for the Computer tab: running, or frozen while it sleeps.
@@ -434,6 +485,18 @@ impl Computers {
     /// The chats a job is running for right now, for `GET /threads`. A frozen one isn't running.
     pub fn job_threads(&self) -> Vec<String> {
         self.now().jobs.values().filter(|j| !j.frozen).map(|j| j.thread.clone()).collect()
+    }
+}
+
+/// `j`'s cancel won't be paid, and a person hears so once: in its chat, or if that went with its
+/// Bot, in Activity.
+fn give_up_on(ctx: &HubCtx, j: &Job) {
+    if !matches!(ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_owed=0 WHERE id=? AND stop_owed=1", [&j.id])), Ok(1)) {
+        return;
+    }
+    let n = json!({"kind": NOTICE, "id": j.id, "bot": j.bot, "name": j.name, "state": UNSTOPPED, "exit": Value::Null});
+    if !post_in(ctx, &j.thread, &n) {
+        policy::log_activity(ctx, None, &said(&j.name, UNSTOPPED, None), "", UNSTOPPED, false);
     }
 }
 

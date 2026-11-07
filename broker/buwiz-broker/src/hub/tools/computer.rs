@@ -44,8 +44,11 @@
 //! such for the switches that ask after outside content.
 //!
 //! A job is a command that goes on after its call ([`crate::hub::computer::jobs`]), by the same
-//! rules as `computer_run`: its Bot's user, its Bot's folder, and on a shared computer only while
-//! they're confirmed apart. Its id is the Bot's own to name: another Bot's isn't found.
+//! rules as `computer_run`: its Bot's user, its Bot's folder, and on a shared computer it starts
+//! only while they're confirmed apart. `computer_job_status` and `computer_job_stop` are exempt from
+//! that check: a Bot must always be able to stop its own job, and what they run is fixed words, tied
+//! to its own rows, with nothing of the model's in them. Its id is the Bot's own to name: another
+//! Bot's isn't found.
 //!
 //! A remote computer isn't any of that wall. The tools are the same, and everything the model does
 //! there it does with whatever access a person gave, so the model is told that ([`prompt`]), a

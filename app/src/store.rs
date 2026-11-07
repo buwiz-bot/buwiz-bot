@@ -7054,7 +7054,7 @@ impl Store {
         const HOLD: std::time::Duration = std::time::Duration::from_millis(800);
         // polls the broker can miss, 30 seconds of them: long enough for it to restart, and a run
         // it lost then reads `unknown`
-        const MISSES: u32 = 120;
+        const MISSES: u32 = if cfg!(test) { 8 } else { 120 };
         self.run_jobs.update(|m| {
             m.insert(thread.clone(), job.clone());
         });
@@ -7069,7 +7069,9 @@ impl Store {
             let Some(v) = run_get(&format!("/status?id={job}")).await else {
                 missed += 1;
                 if missed >= MISSES {
-                    self.agent_set(thread.clone(), bot.clone(), None);
+                    if self.run_jobs.with_untracked(|m| m.get(&thread) == Some(&job)) {
+                        self.agent_set(thread.clone(), bot.clone(), None);
+                    }
                     break;
                 }
                 timer(std::time::Duration::from_millis(250)).await;
@@ -7182,9 +7184,12 @@ impl Store {
             }
             timer(std::time::Duration::from_millis(250)).await;
         }
-        self.run_jobs.update(|m| {
-            m.remove(&thread);
-        });
+        // a watch that gave up may have been replaced as it did: that run's entry stays
+        if self.run_jobs.with_untracked(|m| m.get(&thread) == Some(&job)) {
+            self.run_jobs.update(|m| {
+                m.remove(&thread);
+            });
+        }
     }
 
     /// `POST /thread/new` — a fresh chat.

@@ -152,6 +152,8 @@ const TRIED: &[&str] = &[
     started_at INTEGER NOT NULL, until_at INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'running', exit_code INTEGER, ended_at INTEGER, turn_owed INTEGER NOT NULL DEFAULT 0)",
     // it's over on the record, and what ran may still be there: the computer is owed a cancel
     "ALTER TABLE computer_jobs ADD COLUMN stop_owed INTEGER NOT NULL DEFAULT 0",
+    // how many cancels a computer that was up didn't take: past a few a person is told
+    "ALTER TABLE computer_jobs ADD COLUMN stop_tries INTEGER NOT NULL DEFAULT 0",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

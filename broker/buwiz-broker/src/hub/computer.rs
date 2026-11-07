@@ -161,7 +161,7 @@ impl Now {
     /// Whether a run or a person has a screen on `computer`, or a job needs it. From what's here,
     /// not the seats: this has no read to fail.
     fn in_use(&self, computer: &str) -> bool {
-        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer) || self.jobs.values().any(|j| j.computer == computer)
+        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer) || self.jobs.values().any(|j| j.computer == computer && !j.past)
     }
 }
 
@@ -616,7 +616,7 @@ impl Computers {
     /// nobody should wait on for this.
     async fn clear_empty_screens(&self, ctx: &HubCtx, id: &str) {
         // what such a Bot left running is back with the wake
-        self.settle_stops(ctx).await;
+        self.settle_stops(ctx, Some(id)).await;
         let Ok(machine) = self.machine(ctx, id) else { return };
         let provider = self.provider_of(&machine);
         let Ok((_, machine)) = provider.look(&machine).await else { return };
@@ -849,15 +849,17 @@ impl Computers {
             now.end_handover(bot, Ended::Gone);
             now.recordings.remove(bot);
             drop(now);
-            (!last).then_some(seat)
+            (seat, last)
         };
+        let (seat, last) = seat;
         if let Some(gate) = self.gate().await {
             gate.close(bot);
         }
+        // first, while its user is there. Its screen or none, awake or not, and last or not: a remote
+        // computer's far end doesn't go with the record
+        self.end_jobs_of(ctx, bot, &seat.computer).await;
         // asleep, its screen comes down at the next wake (`clear_empty_screens`)
-        if let Some(seat) = seat {
-            // first, while its user is there. Its screen or none, and awake or not
-            self.end_jobs_of(ctx, bot).await;
+        if !last {
             if let Ok(machine) = self.machine(ctx, &seat.computer) {
                 let provider = self.provider_of(&machine);
                 if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
@@ -873,12 +875,12 @@ impl Computers {
         let at = policy::now(ctx);
         let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=?", rusqlite::params![at, id]));
         let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
-        self.forget_jobs(ctx, id);
     }
 
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
         // read while the row is there. Not knowing is a try next time: the row is what finds the key
         let Ok(remote) = Self::is_remote(ctx, id) else { return };
+        self.retire_jobs(ctx, id, remote).await;
         let removed = match self.machine(ctx, id) {
             Ok(m) => self.provider_of(&m).destroy(&m).await,
             Err(_) => match (Self::is_remote(ctx, id), Self::reach_of(ctx, id)) {
@@ -895,6 +897,7 @@ impl Computers {
                 return;
             }
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
+            Self::forget_jobs(ctx, id);
             self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
             self.now().problems.remove(id);
             if valid_id(id) {
