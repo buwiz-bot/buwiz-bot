@@ -61,6 +61,7 @@ fn Row() -> impl IntoElement {
             store().active_id.set("t7".to_owned());
             store().resume_runs();
         }))
+        .child(view().label("yes-turn").w(px(40.0)).h(px(20.0)).on_press(|| store().follow_run("9".to_owned(), "t7".to_owned(), None)))
         .child(crate::composer::stop_run())
         .child(text(|| {
             let run = store().agent().map(|r| r.label).unwrap_or_else(|| "none".to_owned());
@@ -94,6 +95,12 @@ fn a_relaunched_app_follows_a_run_under_way() {
     assert!(shows(&mut app, "run=Reading the mail busy=true"), "nothing shows the run: {:?} {:?}", app.texts(), HEARD.lock().unwrap());
     assert!(shows(&mut app, "Stop"), "it can't be stopped: {:?}", app.texts());
     assert!(HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=7")), "it isn't polling: {:?}", HEARD.lock().unwrap());
+
+    // a chat followed already keeps its one run, and a yes's turn doesn't take its place
+    app.press("yes-turn");
+    app.pump(Duration::from_millis(600));
+    assert!(!HEARD.lock().unwrap().iter().any(|l| l.contains("/status?id=9")), "it followed a second run: {:?}", HEARD.lock().unwrap());
+    assert_eq!(store().run_jobs.with_untracked(|m| m.get("t7").cloned()).as_deref(), Some("7"));
 
     app.press("Stop this run");
     assert!(shows(&mut app, "run=none busy=false mark=idle"), "the row stayed, or the mark settled as if it ended: {:?}", app.texts());

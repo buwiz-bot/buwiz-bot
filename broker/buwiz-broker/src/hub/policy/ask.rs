@@ -19,15 +19,17 @@
 //!
 //! - A waiting card is answered `once` or `no`, and a yes grants nothing that lasts. `no` starts
 //!   nothing. `once` starts a new turn in that chat, the person's own, with a [`Yes`] on it: that
-//!   tool with that exact input, once, kept in that turn alone and nowhere a model can reach. The
-//!   call still goes through every switch and the shell's gate, so a yes passes a card and no
-//!   more. `computer_ask_person` is bound by the tool alone: the hand-over's own checks run
-//!   fresh when the model calls it.
+//!   tool with that exact input, once, kept in that turn alone and nowhere a model can reach. It
+//!   goes on the first call it covers, whichever way that call goes. The call still goes through
+//!   every switch and the shell's gate, so a yes passes a card and no more.
+//!   `computer_ask_person` is bound by the tool alone, and the hand-over uses the reason and time
+//!   limit the person read, whatever the model sends: its other checks run fresh.
 //! - The call itself is in `ask_waiting`, with the routine that made it. It survives a restart
 //!   and expires after [`KEEP`]. A call holding a secret ([`tool_log::holds_secret`]) isn't
 //!   kept: it's refused as before.
 //! - A routine with a waiting card doesn't run ([`routine_waits`]): a 60-second one would stack
-//!   up cards and spend.
+//!   up cards and spend. It has one such card at a time: a later call in that turn is told so
+//!   ([`ONE_CARD`]).
 //! - An agent's request never waits: its call is refused and kept in Activity as `needs_ok`. A
 //!   yes runs as the person, and the request came from someone else, perhaps outside the Bot.
 
@@ -43,9 +45,10 @@ use super::{db, gate, log_ask, now, shell, Change, DAY};
 use crate::hub::agent::tool_log;
 use crate::hub::ctx::HubCtx;
 use crate::hub::store::uuidv7;
+use crate::hub::tools::computer::ASK_PERSON;
 use crate::hub::tools::Run;
 use crate::hub::traits::TurnRequest;
-use crate::hub::types::{TurnCtx, Yes};
+use crate::hub::types::TurnCtx;
 use crate::js;
 use crate::v1::V1Error;
 
@@ -66,6 +69,8 @@ pub const NOBODY: &str = "This needs the user's OK, and they weren't there.";
 pub const WAITING: &str = "Waiting for you";
 /// What the model is told of a call left on a waiting card.
 pub const WAITS: &str = "This hasn't run. It's waiting on a card in this chat for the user's OK, and they may not answer for a long time. Don't call it again. Finish what you can without it, then say what's waiting.";
+/// What the model is told of a routine's call when a card of that routine's already waits.
+pub const ONE_CARD: &str = "This hasn't run, and no card was made for it: a card from this routine is already waiting for the user's OK. Don't call it again. Finish what you can without it, then say what's waiting.";
 const WAITING_ANSWERS: &str = "a waiting card is answered \"once\" or \"no\"";
 const BUSY: &str = "This chat is still working. Answer again when it's done.";
 
@@ -123,7 +128,7 @@ pub struct Asking {
     pub bot: String,
     pub key: String,
     pub tool: String,
-    /// the call's exact input, what a yes on a waiting card is bound to; none binds the tool alone
+    /// the call's exact input, what a yes on a waiting card is bound to
     pub input: Option<Value>,
     /// what will happen: "Send a message to Sam?"
     pub title: String,
@@ -244,11 +249,79 @@ fn routine_of(turn: &TurnCtx) -> Option<String> {
     turn.surface.as_ref().and_then(|s| s["instance"].as_str()).map(str::to_owned).or_else(|| turn.routine.clone())
 }
 
-/// Keeps card `id`'s call for its answer: false when it can't be.
-fn keep(run: &Run, a: &Asking, chat: &str, id: &str) -> bool {
-    if a.input.as_ref().is_some_and(tool_log::holds_secret) {
-        return false;
+/// What a person's yes on a waiting card covers: that tool with exactly that input, once. A
+/// hand-over's is bound by the tool alone, and its input is what its card said.
+///
+/// Nothing outside this module can make one. Not by its fields:
+///
+/// ```compile_fail
+/// let _ = buwiz_broker::hub::policy::ask::Yes { tool: String::new(), input: None };
+/// ```
+///
+/// and not by its constructor:
+///
+/// ```compile_fail
+/// let _ = buwiz_broker::hub::policy::ask::Yes::new(String::new(), None);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct Yes {
+    tool: String,
+    input: Option<Value>,
+}
+
+impl Yes {
+    fn new(tool: String, input: Option<Value>) -> Yes {
+        Yes { tool, input }
     }
+
+    fn covers(&self, tool: &str, input: Option<&Value>) -> bool {
+        self.tool == tool && (tool == ASK_PERSON || self.input.as_ref() == input)
+    }
+}
+
+/// A test's yes, as if a person had answered.
+#[cfg(test)]
+pub(crate) fn yes_for_test(tool: &str, input: Value) -> Yes {
+    Yes::new(tool.to_owned(), Some(input))
+}
+
+/// Between two steps that have to hold together (tests), in `ctx.ext`: it runs as if another
+/// thread got in right there.
+#[cfg(test)]
+pub struct Between(pub Arc<dyn Fn(&Arc<HubCtx>) + Send + Sync>);
+
+#[cfg(test)]
+fn between(ctx: &Arc<HubCtx>) {
+    if let Some(b) = ctx.ext.get::<Between>() {
+        (b.0)(ctx);
+    }
+}
+
+#[cfg(not(test))]
+fn between(_: &Arc<HubCtx>) {}
+
+/// The call `tool` with `input` is starting: the yes it's covered by goes now, whatever becomes
+/// of the call. It's in hand until the call ends.
+pub fn spend(run: &Run, tool: &str, input: &Value) {
+    let mut state = run.state();
+    if state.yes.as_ref().is_some_and(|y| y.covers(tool, Some(input))) {
+        state.yes_in_hand = state.yes.take();
+    }
+}
+
+/// What the card this call's yes answered asked for.
+pub fn yes_terms(run: &Run) -> Option<Value> {
+    run.state().yes_in_hand.as_ref().and_then(|y| y.input.clone())
+}
+
+/// Whether a card's call can be kept for its answer.
+fn keepable(a: &Asking) -> bool {
+    !a.input.as_ref().is_some_and(tool_log::holds_secret)
+}
+
+/// Keeps card `id`'s call for its answer, the card being there already: a row with no waiting
+/// card is one [`expire_waiting`] clears. → false when it can't be kept.
+fn keep(run: &Run, a: &Asking, chat: &str, id: &str) -> bool {
     let input = a.input.as_ref().map(crate::js::stringify);
     let at = now(&run.ctx);
     let row = db(&run.ctx, |c| c.execute("INSERT INTO ask_waiting(id, chat, tool, input, routine, at) VALUES(?,?,?,?,?,?)", rusqlite::params![id, chat, a.tool, input, routine_of(&run.turn), at]));
@@ -291,21 +364,29 @@ fn wait(run: &Run, a: &Asking) -> String {
     let bot = a.bot.as_str();
     let bot = (!bot.is_empty()).then_some(bot);
     // the same call again isn't another question
-    if kept(ctx, "WHERE chat=?", &chat).iter().any(|k| k.tool == a.tool && k.input == a.input && find(ctx, &chat, &k.id).is_some_and(|n| n["state"] == "waiting")) {
+    let same = |k: &Kept| k.tool == a.tool && (a.tool == ASK_PERSON || k.input == a.input);
+    if kept(ctx, "WHERE chat=?", &chat).iter().any(|k| same(k) && find(ctx, &chat, &k.id).is_some_and(|n| n["state"] == "waiting")) {
         return WAITS.to_owned();
     }
-    let (id, n) = card(ctx, a, &chat, "waiting");
     let what = shown(&a.tool, &a.title, &a.preview);
-    if !keep(run, a, &chat, &id) {
-        log_ask(ctx, bot, what, &a.tool, "needs_ok");
-        return NOBODY.to_owned();
-    }
-    if !crate::hub::tools::miniapps::post_in(ctx, &chat, &n) {
-        forget(ctx, &id);
-        log_ask(ctx, bot, what, &a.tool, "needs_ok");
-        return NOBODY.to_owned();
-    }
     log_ask(ctx, bot, what, &a.tool, "needs_ok");
+    if routine_of(&run.turn).is_some_and(|r| routine_waits(ctx, &r)) {
+        return ONE_CARD.to_owned();
+    }
+    if !keepable(a) {
+        return NOBODY.to_owned();
+    }
+    let (id, n) = card(ctx, a, &chat, "waiting");
+    // an answer waits for this lock, so it finds the card and its row together
+    let _together = waiting();
+    if !crate::hub::tools::miniapps::post_in(ctx, &chat, &n) {
+        return NOBODY.to_owned();
+    }
+    between(ctx);
+    if !keep(run, a, &chat, &id) {
+        settle(ctx, &chat, &id, "expired", None);
+        return NOBODY.to_owned();
+    }
     WAITS.to_owned()
 }
 
@@ -325,14 +406,9 @@ fn card(ctx: &HubCtx, a: &Asking, chat: &str, state: &str) -> (String, Value) {
     (id, n)
 }
 
-/// Whether this turn's yes covers this call. It's spent if so.
+/// Whether the yes in hand covers this card. One card takes it.
 fn covered(run: &Run, a: &Asking) -> bool {
-    let mut state = run.state();
-    let hit = state.yes.as_ref().is_some_and(|y| y.tool == a.tool && (y.input.is_none() || y.input == a.input));
-    if hit {
-        state.yes = None;
-    }
-    hit
+    run.state().yes_in_hand.take().is_some_and(|y| y.covers(&a.tool, a.input.as_ref()))
 }
 
 /// A parked call's card: on drop (a timeout, a stopped turn) one nobody answered expires.
@@ -421,11 +497,16 @@ fn leave_waiting(run: &Run, a: &Asking, chat: &str, id: &str) -> Left {
     if !parked.contains_key(id) {
         return Left::Answered;
     }
+    if !keepable(a) {
+        return Left::Expires;
+    }
+    // the card first: a row with no waiting card is one a sweep clears
+    settle(&run.ctx, chat, id, "waiting", None);
+    between(&run.ctx);
     if !keep(run, a, chat, id) {
         return Left::Expires;
     }
     parked.remove(id);
-    settle(&run.ctx, chat, id, "waiting", None);
     log_ask(&run.ctx, (!a.bot.is_empty()).then_some(a.bot.as_str()), shown(&a.tool, &a.title, &a.preview), &a.tool, "needs_ok");
     Left::Waiting
 }
@@ -452,17 +533,17 @@ pub fn prefix_of(ctx: &HubCtx, line: &str) -> Option<String> {
 
 /// What the model reads in the turn a yes starts.
 fn yes_prompt(tool: &str, input: Option<&Value>) -> String {
-    match input {
-        Some(i) => format!("(The user answered a waiting card in this chat: yes to one call, which hasn't run. Call {tool} now, with exactly this input, changing nothing:\n{}\nThat yes covers that one call, once. Anything else still asks. Then finish what it was for, and say what happened.)", crate::js::stringify(i)),
-        None => format!("(The user answered a waiting card in this chat: yes, they'll take over your screen. Get the screen ready, then call {tool} once, saying what you need them to do. Then finish what it was for, and say what happened.)"),
+    if tool == ASK_PERSON {
+        return format!("(The user answered a waiting card in this chat: yes, they'll take over your screen for what the card asked, and for as long as it said. Get the screen ready, then call {tool} once. What you pass it doesn't change that. Then finish what it was for, and say what happened.)");
     }
+    let input = input.map(crate::js::stringify).unwrap_or_default();
+    format!("(The user answered a waiting card in this chat: yes to one call, which hasn't run. Call {tool} now, with exactly this input, changing nothing:\n{input}\nThat yes covers that one call, once. Anything else still asks. Then finish what it was for, and say what happened.)")
 }
 
-/// Starts the turn a yes on card `n` asks for: the person's own, in `thread`. → its job.
-fn start_yes(ctx: &Arc<HubCtx>, runner: Arc<dyn crate::hub::traits::TurnRunner>, thread: &str, n: &Value, k: Kept) -> u64 {
-    let job = ctx.jobs.create(thread, Value::Null, None, true);
+/// Starts the turn a yes on card `n` asks for as job `job`: the person's own, in `thread`.
+fn start_yes(ctx: &Arc<HubCtx>, runner: Arc<dyn crate::hub::traits::TurnRunner>, job: u64, thread: &str, n: &Value, k: Kept) {
     let prompt = yes_prompt(&k.tool, k.input.as_ref());
-    let yes = Yes { tool: k.tool, input: k.input };
+    let yes = Yes::new(k.tool, k.input);
     let turn = TurnCtx { thread: thread.to_owned(), job: Some(job), yes: Some(yes), ..TurnCtx::default() };
     let req = TurnRequest { turn, shown: format!("Yes: {}", js::string_of(&n["title"])), prompt, mark: None };
     let ctx = ctx.clone();
@@ -473,7 +554,6 @@ fn start_yes(ctx: &Arc<HubCtx>, runner: Arc<dyn crate::hub::traits::TurnRunner>,
             ctx.jobs.set(&ctx.store, job, "done", &format!("generator error — {e}"));
         }
     });
-    job
 }
 
 /// The answer on a waiting card. Its run is gone: `no` is the end of it, and a yes starts one.
@@ -481,19 +561,20 @@ fn answer_waiting(ctx: &Arc<HubCtx>, chat: &str, id: &str, answer: Answer) -> Re
     if !matches!(answer, Answer::Once | Answer::No) {
         return V1Error::err("invalid_args", WAITING_ANSWERS);
     }
+    // a card just left waiting has its row by the time this lock is free
+    drop(waiting());
     expire_waiting(ctx);
     let stale = || V1Error::new("stale", NO_ANSWER).with_details(json!({"notice": find(ctx, chat, id)}));
     let Some(k) = kept(ctx, "WHERE id=?", id).pop() else { return Err(stale()) };
     let thread = k.chat.clone();
-    let runner = if answer == Answer::Once {
+    let turn = if answer == Answer::Once {
         let Some(runner) = ctx.turns.clone() else { return Err(V1Error::new("internal", "no turn runner")) };
-        if ctx.jobs.busy(&thread) {
-            return Err(V1Error::new("busy", BUSY));
-        }
-        Some(runner)
+        let Some(job) = ctx.jobs.create_if_idle(&thread) else { return Err(V1Error::new("busy", BUSY)) };
+        Some((runner, job))
     } else {
         None
     };
+    between(ctx);
     // two answers can cross: only the one that finds it still waiting counts
     let at = now(ctx);
     let state = if answer == Answer::No { "declined" } else { "allowed" };
@@ -503,18 +584,21 @@ fn answer_waiting(ctx: &Arc<HubCtx>, chat: &str, id: &str, answer: Answer) -> Re
         n["answer"] = json!(answer.as_str());
     });
     if won == 0 {
+        if let Some((_, job)) = turn {
+            ctx.jobs.with(job, |j| j.done = true);
+        }
         return Err(stale());
     }
     forget(ctx, id);
     let n = find(ctx, chat, id).unwrap_or(Value::Null);
     let title = js::string_of(&n["title"]);
     log_ask(ctx, n["bot"].as_str().filter(|b| !b.is_empty()), shown(&k.tool, &title, &js::string_of(&n["preview"])), &k.tool, answer.outcome());
-    let Some(runner) = runner else {
+    let Some((runner, job)) = turn else {
         // it starts nothing: the model hears of it on its next turn in this chat
         super::note(ctx, &thread, &format!("The user chose Not now on the waiting card \"{title}\", so that call never ran. Don't retry it; ask them in words if you still need it."));
         return Ok(json!({"ok": true, "notice": n}));
     };
-    let job = start_yes(ctx, runner, &thread, &n, k);
+    start_yes(ctx, runner, job, &thread, &n, k);
     Ok(json!({"ok": true, "notice": n, "job": job, "thread": thread}))
 }
 

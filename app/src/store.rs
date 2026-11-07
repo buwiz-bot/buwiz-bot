@@ -6983,6 +6983,10 @@ impl Store {
 
     /// Follows the run a person's yes on a waiting card started.
     pub fn follow_run(&'static self, job: String, thread: String, bot: Option<String>) {
+        // one row a chat, as `resume_runs`
+        if self.run_jobs.with_untracked(|m| m.contains_key(&thread)) {
+            return;
+        }
         self.follow(RunningRun { job, thread, bot, phase: "queued".to_owned(), detail: String::new() });
     }
 
