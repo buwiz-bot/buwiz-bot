@@ -2075,6 +2075,22 @@ fn hears_now(ctx: &HubCtx, bot: &str) -> Option<Value> {
 }
 
 #[tokio::test]
+async fn a_card_is_posted_in_the_chat_it_was_asked_in_and_carries_no_state() {
+    let (b, _) = hearing_bed("accepts-card");
+    let card = |body: Value| crate::hub::routes::agents::host_card(&b.ctx, &body);
+    let chat = b.ctx.store.read(|s| s.list[0].id.clone());
+    assert_eq!(card(json!({"chat": chat, "bot": "hex", "said": "/messages hex"})).unwrap(), json!({"ok": true}));
+    let (text, notice) = b.ctx.store.read(|s| {
+        let u = s.thread(&chat).unwrap().turns.last().unwrap();
+        (u.text.clone(), u.notice.clone().unwrap())
+    });
+    assert_eq!(text.as_deref(), Some("Who can message Hex?"));
+    assert_eq!(notice, json!({"kind": "messages", "bot": "hex", "botName": "Hex", "said": "/messages hex"}), "whom it hears is read when drawn");
+    assert_eq!(card(json!({"chat": chat, "bot": "nobody"})).unwrap_err().0, "invalid_args");
+    assert_eq!(card(json!({"chat": "gone", "bot": "hex"})).unwrap_err().0, "not_found");
+}
+
+#[tokio::test]
 async fn an_undo_of_accepts_restores_the_exact_earlier_value() {
     let (b, _) = hearing_bed("accepts-undo");
     let list = json!(["scout", "ada", "nova"]);
