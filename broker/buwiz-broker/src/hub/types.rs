@@ -140,18 +140,10 @@ pub struct TurnCtx {
     /// id, or `<plugin>/<routine>`); its turn gets no routine tools
     pub routine: Option<String>,
     /// a person's yes on a waiting card, for the one turn it starts (`policy::ask`)
-    pub yes: Option<Yes>,
+    pub yes: Option<crate::hub::policy::ask::Yes>,
     /// the message a delivery turn answers, or a wake-up reads: the turn stops at its next step
     /// once its recipient no longer hears the sender (`agent/turn.rs`)
     pub delivery: Option<crate::hub::agents::Delivery>,
-}
-
-/// What a person's yes on a waiting card covers: `tool` with exactly `input`, once. No `input`
-/// binds the tool alone (a hand-over). Only `policy::ask::host_answer` makes one.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Yes {
-    pub tool: String,
-    pub input: Option<serde_json::Value>,
 }
 
 /// A tool's answer as the model gets it (Node's `{content, is_error}`).

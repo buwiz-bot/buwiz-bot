@@ -31,6 +31,8 @@ use crate::live::store;
 use crate::store::{ToolAskNotice, ToolsChangeNotice};
 use crate::theme;
 
+/// The switch of a Bot's agent tools: whether it can start a message.
+const AGENTS: &str = "agents";
 /// How long an applied change's receipt shows.
 pub(crate) const RECEIPT_MS: i64 = 8_000;
 /// How long "Put back." shows after an Undo.
@@ -332,6 +334,11 @@ pub struct Tools {
     pub(crate) seen: std::cell::RefCell<HashMap<String, i64>>,
     /// Now (ms), ticking while a receipt shows.
     pub(crate) clock: Signal<i64>,
+    /// The `agents` switch of each Bot a `/messages` card shows: `on`,
+    /// `ask` or `off`, as last read.
+    pub(crate) sends: Signal<HashMap<String, String>>,
+    /// Goes up when a switch may have moved: those cards read again.
+    pub(crate) sends_moved: Signal<u64>,
 }
 
 impl Tools {
@@ -354,6 +361,8 @@ impl Tools {
             asks: signal(HashMap::new()),
             seen: std::cell::RefCell::new(HashMap::new()),
             clock: signal(0),
+            sends: signal(HashMap::new()),
+            sends_moved: signal(0),
         }
     }
 }
@@ -514,9 +523,56 @@ fn load() {
             Ok(d) => {
                 t.data.set(Some(d));
                 t.error.set(String::new());
+                sends_moved();
             }
             Err(e) => t.error.set(e),
         }
+    });
+}
+
+/// The `agents` switch in `v`, the tools route's answer.
+pub(crate) fn sends_in(v: &Value) -> Option<String> {
+    Data::of(v).ok()?.tools.into_iter().find(|t| t.key == AGENTS).map(|t| t.state)
+}
+
+/// `bot`'s `agents` switch as last read ("" before the first; tracked).
+pub(crate) fn sends_of(bot: &str) -> String {
+    tools().sends.with(|m| m.get(bot).cloned()).unwrap_or_default()
+}
+
+/// Reads it again (`GET /v1/host/tools?bot=`).
+pub(crate) fn load_sends(bot: String) {
+    crate::store::spawn_detached(async move {
+        let path = format!("/v1/host/tools?bot={}", crate::client::urlenc(&bot));
+        if let Some(state) = crate::client::get_any(&path).await.as_ref().and_then(sends_in) {
+            tools().sends.update(|m| {
+                m.insert(bot, state);
+            });
+        }
+    });
+}
+
+/// A switch may have moved: the cards showing one read it again (tracked
+/// by [`sends_watch`]).
+pub(crate) fn sends_moved() {
+    tools().sends_moved.update(|n| *n += 1);
+}
+
+/// The count [`sends_moved`] raises (tracked).
+pub(crate) fn sends_watch() -> u64 {
+    tools().sends_moved.get()
+}
+
+/// Sets `bot`'s `agents` switch as `/tools` does, then reads it again;
+/// `answered` gets the broker's answer.
+pub(crate) fn set_sends(bot: String, state: &'static str, answered: impl FnOnce(Option<Value>) + 'static) {
+    tools().sends.update(|m| {
+        m.insert(bot.clone(), state.to_owned());
+    });
+    crate::store::spawn_detached(async move {
+        let r = crate::client::post_any("/v1/host/tools/set", json!({"bot": bot, "key": AGENTS, "state": state})).await;
+        answered(r);
+        sends_moved();
     });
 }
 
@@ -1121,6 +1177,7 @@ fn answer(chat: &str, base: &ToolsChangeNotice, answer: &'static str) {
                     l.busy = false;
                     l.settled = Some(n);
                 });
+                sends_moved();
             }
             Err(e) => card_local(&id, |l| {
                 l.busy = false;
@@ -1156,6 +1213,7 @@ fn card_undo(id: &str, undo: &str) {
         if tools().open.get_untracked().is_some() {
             load();
         }
+        sends_moved();
         bots_again().await;
     });
 }

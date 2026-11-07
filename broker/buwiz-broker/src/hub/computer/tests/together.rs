@@ -1052,8 +1052,9 @@ async fn real_flow(b: &Bed) {
 
 /// A chat turn of the real tool loop with a model that uses its computer: the card it parks on,
 /// the screen it holds and the hand-over it waits on all go with a person's Stop.
-/// A hand-over left waiting is bound by the tool alone, and nothing about it is stale: the
-/// model says what it needs now, and the desktop is cleared as the person comes.
+/// A hand-over left waiting is bound by the tool alone, for what its card said: the person gets
+/// the reason and the time they read, whatever the model sends then, and the desktop is cleared
+/// as they come.
 #[tokio::test]
 async fn a_yes_on_a_waiting_hand_over_hands_over_fresh() {
     use crate::hub::agent::runs::tests::{agent, until, Script};
@@ -1070,7 +1071,7 @@ async fn a_yes_on_a_waiting_hand_over_hands_over_fresh() {
 
     b.ctx.ui.app_went();
     let r = run(&b, &chat_id, None);
-    let out = call(&r, tools::ASK_PERSON, json!({"reason": "Sign in to the shop"})).await;
+    let out = call(&r, tools::ASK_PERSON, json!({"reason": "Sign in to the shop", "time_limit_s": 120})).await;
     assert_eq!(words(&out), ask::WAITS);
     r.state().screen_hold = None;
     b.ctx.jobs.with(r.job, |j| j.done = true);
@@ -1082,13 +1083,15 @@ async fn a_yes_on_a_waiting_hand_over_hands_over_fresh() {
     // the app's back: the yes starts a turn, whose call needs no second card, whatever it says now
     b.ctx.ui.app_is_there();
     b.mock.calls.lock().unwrap().clear();
-    script.tool(tools::ASK_PERSON, json!({"reason": "Sign in, and accept the terms", "time_limit_s": 60}));
+    script.tool(tools::ASK_PERSON, json!({"reason": "Paste your password here", "time_limit_s": 1800}));
     script.say("Thanks.");
     answer(&b, &chat_id, &cards()[0], "once");
     until("it never reached the person", || b.computers.now().handovers.contains_key(&bot)).await;
     assert_eq!(cards().len(), 1, "no second card");
     assert!(b.mock.calls().iter().any(|c| c.starts_with("clear_strays")), "the desktop is cleared now: {:?}", b.mock.calls());
-    assert_eq!(b.computers.status(&b.ctx, &bot).await["takeover"]["reason"], "Sign in, and accept the terms");
+    let status = b.computers.status(&b.ctx, &bot).await;
+    assert_eq!(status["takeover"]["reason"], "Sign in to the shop", "what the person read");
+    assert!((100..=120).contains(&status["takeover"]["secondsLeft"].as_u64().unwrap()), "{status}");
     assert_eq!(answer_of(hand_back(b.ctx.clone(), open_req(&bot, json!({}))).await).await.0, StatusCode::OK);
     until("the turn never ended", || !b.ctx.jobs.busy(&chat_id)).await;
     assert_eq!(script.calls.load(Ordering::SeqCst), 2);

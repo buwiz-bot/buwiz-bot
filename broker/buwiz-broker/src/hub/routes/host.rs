@@ -81,6 +81,7 @@ const AGENT_ROUTES: &[&str] = &[
     "/v1/host/agents/archive",
     "/v1/host/agents/resume",
     "/v1/host/agents/accepts",
+    "/v1/host/agents/card",
     "/v1/host/agents/endpoints/create",
     "/v1/host/agents/endpoints/list",
     "/v1/host/agents/endpoints/rotate",
