@@ -722,6 +722,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
                         })),
                         gaze: Some(gaze2.clone()),
                         shown: Some(shown.clone()),
+                        give_way: true,
                         ..crate::avatar::BotAvatarProps::bot(&bv, 44.0)
                     })
                     .into_element()
@@ -2423,6 +2424,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
                                 })),
                                 gaze: Some(gaze2.clone()),
                                 shown: Some(shown.clone()),
+                                give_way: true,
                                 ..crate::avatar::BotAvatarProps::bot(&bv, 44.0)
                             })
                             .into_element()
@@ -2591,6 +2593,7 @@ fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
                         })),
                         gaze: Some(gaze2.clone()),
                         shown: Some(shown.clone()),
+                        give_way: true,
                         ..crate::avatar::BotAvatarProps::bot(&bv, 72.0)
                     })
                     .into_element()
