@@ -90,7 +90,7 @@ fn free_port() -> std::io::Result<u16> {
 /// front door's own origins. Node allows its own port's origins by itself,
 /// and behind the front door its port is a private one.
 pub fn allowed_origins(env: Option<&str>, public_port: u16) -> String {
-    let mut out: Vec<String> = env.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
+    let mut out = crate::guard::extra_origins(env);
     for origin in [format!("http://127.0.0.1:{public_port}"), format!("http://localhost:{public_port}")] {
         if !out.contains(&origin) {
             out.push(origin);
@@ -217,5 +217,10 @@ mod tests {
             allowed_origins(Some("https://rox.example, http://127.0.0.1:8787"), 8787),
             "https://rox.example,http://127.0.0.1:8787,http://localhost:8787"
         );
+    }
+
+    #[test]
+    fn node_isnt_told_to_allow_null() {
+        assert_eq!(allowed_origins(Some("null,https://rox.example"), 8787), "https://rox.example,http://127.0.0.1:8787,http://localhost:8787");
     }
 }

@@ -18,6 +18,8 @@ before(async () => {
   writeFileSync(join(GEN, "files", "t1", "doc.PDF"), BYTES);
   writeFileSync(join(GEN, "files", "t1", "notes.txt"), "plain");
   writeFileSync(join(GEN, "files", "t1", "empty.png"), "");
+  writeFileSync(join(GEN, "files", "t1", "page.constructor"), "x");
+  writeFileSync(join(GEN, "files", "t1", "page.__proto__"), "x");
   mkdirSync(join(GEN, "files", "my dir"), { recursive: true });
   writeFileSync(join(GEN, "files", "my dir", "é.mp4"), "video");
   const vdir = join(GEN, "files", ".versions", "t1", "a.docx");
@@ -32,6 +34,10 @@ before(async () => {
   mkdirSync(join(GEN, "assets"), { recursive: true });
   writeFileSync(join(GEN, "assets", "img.webp"), "webp");
   writeFileSync(join(GEN, "assets", "noext"), "raw");
+  for (const dir of ["attachments", "avatars", "assets"]) {
+    writeFileSync(join(GEN, dir, "page.constructor"), "x");
+    writeFileSync(join(GEN, dir, "page.__proto__"), "x");
+  }
 });
 
 after(async () => {
@@ -114,6 +120,16 @@ test("FILE-04 attachments and avatars, by bare file name", async () => {
   assert.equal((await range("/files/attachments/a1.JPG", "bytes=1-2")).text, "pe");
   assert.equal((await request("GET", "/files/attachments/none.png")).status, 404);
   assert.equal((await request("GET", "/files/other/a1.JPG")).status, 404);
+});
+
+test("FILE-06 a file's type comes from the tables' own keys", async () => {
+  for (const route of ["/file/raw/t1", "/file/preview/t1", "/files/attachments", "/files/avatars", "/asset/generated/assets"]) {
+    for (const name of ["page.constructor", "page.__proto__"]) {
+      const r = await request("GET", `${route}/${name}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.headers["content-type"], "application/octet-stream", `${route} ${name}`);
+    }
+  }
 });
 
 test("FILE-05 generated assets", async () => {

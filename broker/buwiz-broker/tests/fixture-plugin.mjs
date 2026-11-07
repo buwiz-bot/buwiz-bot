@@ -1,7 +1,9 @@
 // A mini app plugin for the broker's tests, with nothing to install: MCP over
 // stdio, buwiz.provision and buwiz.session.open, the manifest FX_MANIFEST names.
+// While the file FX_HOLD names is there, provisioning waits, after writing
+// <FX_HOLD>.seen: a test's way to act during a restart.
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const text = readFileSync(process.env.FX_MANIFEST, "utf8");
@@ -22,6 +24,12 @@ const signed = (cert) => {
 const ok = (structuredContent) => ({ content: [{ type: "text", text: JSON.stringify(structuredContent) }], structuredContent });
 const tools = {
   "buwiz.provision": (a) => {
+    const hold = process.env.FX_HOLD;
+
+    if (hold && existsSync(hold)) {
+      writeFileSync(`${hold}.seen`, "");
+      while (existsSync(hold)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
     seed = a.key.seed;
 
     return ok({ ok: true, manifest_sha256: createHash("sha256").update(jcs(manifest)).digest("hex") });
