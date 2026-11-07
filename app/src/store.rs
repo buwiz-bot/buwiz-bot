@@ -1427,6 +1427,8 @@ pub struct Turn {
     pub account_required: Option<AccountRequiredNotice>,
     pub app_setup: Option<AppSetupNotice>,
     pub app_accounts: Option<AppAccountsNotice>,
+    /// A `/messages` card (`messages.rs`).
+    pub messages_card: Option<crate::messages::Notice>,
     /// A `notice` turn about a Bot's tools or this Mac's rules.
     pub tools_change: Option<ToolsChangeNotice>,
     /// A `notice` turn asking the user's OK for one call.
@@ -2171,6 +2173,8 @@ pub struct PaletteItem {
 #[derive(Clone, PartialEq)]
 pub enum PaletteAct {
     BotModal,
+    /// This Bot's `/messages` card.
+    Messages,
     /// The current bot's details: view (false) or edit (true).
     BotDetails(bool),
     Settings,
@@ -2560,6 +2564,7 @@ impl Turn {
             account_required: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AccountRequiredNotice::of(n, s(v, "text")))).flatten(),
             app_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppSetupNotice::of(n, s(v, "text")))).flatten(),
             app_accounts: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| AppAccountsNotice::of(n, s(v, "text")))).flatten(),
+            messages_card: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::messages::Notice::of)).flatten(),
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
@@ -4328,6 +4333,9 @@ impl Store {
             items.push(action("Bot Details (current)", &b.name, "panel", false, PaletteAct::BotDetails(false)));
             items.push(action("Edit Bot Details (current)", &b.name, "edit", false, PaletteAct::BotDetails(true)));
         }
+        if let Some(b) = self.active_bot() {
+            items.push(action("Messages…", &b.name, "settings", false, PaletteAct::Messages));
+        }
         let bot = self.active_bot().map(|b| b.name).unwrap_or_else(|| "This Mac".to_owned());
         items.push(action("Bot tools…", &bot, "settings", false, PaletteAct::Tools));
         items.push(action("Settings", "Keyboard shortcuts", "settings", false, PaletteAct::Settings));
@@ -4365,6 +4373,7 @@ impl Store {
             PaletteAct::BotDetails(edit) => crate::botdetails::open_current(edit),
             PaletteAct::Settings => crate::settings::toggle(),
             PaletteAct::Tools => crate::tools::open_sheet(),
+            PaletteAct::Messages => crate::messages::open_card(),
             PaletteAct::NewChat => self.new_thread(),
             PaletteAct::Theme(t) => self.set_theme(t),
             PaletteAct::App(app) => self.popout(&app),
