@@ -368,8 +368,35 @@ fn a_chip_before_the_manifest_never_sends_the_box() {
     assert_eq!(draft(&mut app), "/messages none", "still the person's to send");
 }
 
-/// No typed form reaches the model, a plugin's token in the line included:
-/// `v1_send` runs first and would otherwise rewrite and send it.
+/// A plugin's token in the line, with a file waiting: `v1_send` runs before
+/// `dispatch`, and would rewrite the token and send the line to the model.
+#[test]
+fn a_line_with_a_token_and_a_file_stays_out_of_chat() {
+    if !in_child("a_line_with_a_token_and_a_file_stays_out_of_chat") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("all"));
+    on(&mut app, || {
+        store().v1.entries.set(vec![crate::mini_v1::load::PluginEntry {
+            id: "app.buwiz.books".to_owned(),
+            short: "books".to_owned(),
+            enabled: true,
+            scopes: vec![json!({"name": "person"})],
+            ..Default::default()
+        }]);
+        store().attachments.set(vec![crate::store::Attach { name: "a.txt".to_owned(), ..Default::default() }]);
+    });
+    place(&mut app, "/messages allow @books:person:x");
+    send(&mut app);
+    for _ in 0..4 {
+        settle(&mut app);
+    }
+    assert!(heard(&seen, "/chat").is_empty(), "{:?}", seen.log.lock().unwrap());
+    assert_eq!(draft(&mut app), "");
+}
+
+/// No typed form reaches the model, a plugin's token in the line included.
 #[test]
 fn no_typed_form_reaches_chat() {
     if !in_child("no_typed_form_reaches_chat") {
