@@ -352,3 +352,21 @@ async fn this_mac_is_never_read() {
     assert_eq!(get_public(url("http://127.0.0.1:8787/state/x"), 10, &Budget::default()).await.unwrap_err(), "a pack link must be https");
     assert_eq!(get_public(url("https://127.0.0.1/x"), 10, &Budget::default()).await.unwrap_err(), "a pack link must name a public host");
 }
+
+/// An author hears what an install would refuse: the same check, with its reason, and nothing
+/// about the designs that pass.
+#[test]
+fn a_design_an_install_would_refuse_is_named_with_why() {
+    let mut bad = fox();
+    bad["outline"] = json!("M50 50 L51 50 L51 51 Z");
+    let found = refusals(&[fox(), bad.clone()]).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["name"], fox()["name"]);
+    assert_eq!(found[0]["why"], json!(clean_design(&bad).unwrap_err()));
+    assert!(refusals(&[fox()]).unwrap().is_empty());
+}
+
+#[test]
+fn too_many_designs_are_refused_whole() {
+    assert_eq!(refusals(&vec![fox(); DESIGNS_MAX + 1]).unwrap_err(), TOO_MANY);
+}

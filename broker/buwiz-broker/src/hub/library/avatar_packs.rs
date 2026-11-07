@@ -223,6 +223,17 @@ fn pack_url(index: &Url, file: &str) -> Option<Url> {
     (url.origin() == index.origin() && url.path().starts_with(folder)).then_some(url)
 }
 
+/// What an install would refuse of these designs, and why: for a pack's author, before it's
+/// published. It runs the same check an install does, so the two can't disagree, and reads
+/// nothing.
+pub fn refusals(designs: &[Value]) -> Result<Vec<Value>, String> {
+    if designs.len() > DESIGNS_MAX {
+        return Err(TOO_MANY.to_owned());
+    }
+    let name = |d: &Value| d.get("name").cloned().unwrap_or(Value::Null);
+    Ok(designs.iter().filter_map(|d| clean_design(d).err().map(|why| json!({"name": name(d), "why": why}))).collect())
+}
+
 /// The packs in `index.json`. One with a bad entry isn't read; the others are.
 pub fn parse_index(bytes: &[u8], index: &Url) -> Result<Vec<Pack>, String> {
     let v: Value = serde_json::from_slice(bytes).map_err(|_| "that index isn't JSON".to_owned())?;
