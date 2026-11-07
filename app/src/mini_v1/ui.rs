@@ -1028,6 +1028,7 @@ impl Store {
                                 label: c.label,
                                 hint: String::new(),
                                 detail: c.detail,
+                                bot: String::new(),
                             })
                             .collect();
                         crate::slash::show_rows(rows);
@@ -1045,16 +1046,23 @@ impl Store {
                             crate::toast::show(if title.is_empty() { "Resolved".to_owned() } else { title });
                         }
                     }
-                    tokens::Answer::Prompt(text) if kind == "command" => {
-                        let draft = tokens::prompt_draft(&self.draft.get_untracked(), &text);
-                        self.draft.set(draft);
-                        crate::composer::focus();
-                    }
+                    tokens::Answer::Prompt(text) if kind == "command" => self.v1_place_prompt(&text),
                     tokens::Answer::Prompt(_) => crate::toast::show("The plugin's answer could not be read."),
                     tokens::Answer::Error(m) => crate::toast::show(m),
                 }
             })
         });
+    }
+
+    /// A command's `prompt` answer, placed in the box for the person to
+    /// send. Never a `/messages` line: who can reach a Bot is the person's
+    /// to type, not a plugin's to stage one Enter away.
+    pub(crate) fn v1_place_prompt(&'static self, text: &str) {
+        if crate::messages::is_command(text.trim()) {
+            return crate::toast::show("A plugin can't put /messages in the box.");
+        }
+        self.draft.set(tokens::prompt_draft(&self.draft.get_untracked(), text));
+        crate::composer::focus();
     }
 
     /// A resolve's choice was picked in the popup: its value resolves as
@@ -1115,6 +1123,7 @@ impl Store {
                             label: c.label,
                             hint: String::new(),
                             detail: c.detail,
+                            bot: String::new(),
                         })
                         .collect(),
                     _ => Vec::new(),

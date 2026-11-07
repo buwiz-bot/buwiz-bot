@@ -29,6 +29,15 @@ pub(crate) struct ListWindow {
     pub height: f32,
 }
 
+/// Asks for a tick in a round that make a crowd (more than this), and that end
+/// one: one for each live avatar, and one more for any repainted within it.
+const CROWD_JOINED: u32 = 10;
+const CROWD_LEFT: u32 = 8;
+/// How many turns a crowd's avatars take. A crowd ticks twice as fast, so each
+/// avatar still paints every other full tick, and a frame carries a quarter of
+/// them: two lanes on full ticks left about 15 in a frame, and that went red.
+const FRAME_LANES: usize = 4;
+
 /// A row of `GET /threads` — the sidebar's chat list.
 #[derive(Clone, PartialEq, Default)]
 pub struct ThreadMeta {
@@ -1191,8 +1200,8 @@ pub struct RoxBot {
     pub purpose: String,
     /// A temporary helper's parent and task (`helper`): no sidebar row.
     pub helper: Option<crate::agents::HelperOf>,
-    /// Whom it takes messages from: `all`, `none` or `some` (a list).
-    pub accepts: String,
+    /// Whom it takes messages from.
+    pub accepts: crate::agents::Accepts,
 }
 
 impl RoxBot {
@@ -3143,6 +3152,18 @@ pub struct Store {
     pub(crate) side_asked: [std::cell::Cell<u32>; 2],
     /// Passes in a row that couldn't see everything.
     pub(crate) side_retries: [std::cell::Cell<u32>; 2],
+    /// Clocks that take turns, for the avatars that give way in a crowd
+    /// ([`Self::tick_giving_way`]).
+    frame_lanes: [Signal<f64>; FRAME_LANES],
+    /// How many avatars asked for a tick since the last round of the lanes.
+    frame_asked: std::cell::Cell<u32>,
+    /// Many avatars are live, so those that can give way do.
+    frame_crowd: std::cell::Cell<bool>,
+    /// How many crowds there have been: a lane only holds for the crowd it was
+    /// taken in.
+    pub(crate) frame_crowds: std::cell::Cell<u32>,
+    /// The next lane of this crowd to give out.
+    frame_next_lane: std::cell::Cell<usize>,
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3433,6 +3454,11 @@ impl Store {
             side_settled: [signal(false), signal(false)],
             side_asked: Default::default(),
             side_retries: Default::default(),
+            frame_lanes: std::array::from_fn(|_| signal(0.0)),
+            frame_asked: std::cell::Cell::new(0),
+            frame_crowd: std::cell::Cell::new(false),
+            frame_crowds: std::cell::Cell::new(0),
+            frame_next_lane: std::cell::Cell::new(0),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
@@ -3568,13 +3594,54 @@ impl Store {
                     // and a restart never jumps.
                     let base = clock.get_untracked();
                     let epoch = std::time::Instant::now();
+                    let full = std::time::Duration::from_millis(33);
+                    let mut next = epoch;
+                    let mut turn = 0;
+                    let mut quiet = 0;
                     loop {
-                        timer(std::time::Duration::from_millis(33)).await;
-                        if !st.frame_want.replace(false) {
+                        let mut crowd = st.frame_crowd.get();
+                        // Paced to deadlines: a tick's work comes out of the
+                        // period, not on top of it, which held many avatars
+                        // to 22 fps. Behind, it waits rather than bursts.
+                        let now = std::time::Instant::now();
+                        next = (next + if crowd { full / 2 } else { full }).max(now);
+                        timer(next - now).await;
+                        quiet = if st.frame_want.replace(false) { 0 } else { quiet + 1 };
+                        // a lane can stand empty, so in a crowd only a whole
+                        // round of nothing means nothing's moving
+                        if quiet >= if crowd { FRAME_LANES } else { 1 } {
                             break;
                         }
-                        clock.set(base + epoch.elapsed().as_secs_f64());
+                        // a round is over, so each live avatar has asked once.
+                        // Settled before any lane moves: one that moved first
+                        // could be joined again by a crowd that's just ended,
+                        // and nothing would move it after that.
+                        if turn == 0 {
+                            let asked = st.frame_asked.replace(0);
+                            let crowded = asked > if crowd { CROWD_LEFT } else { CROWD_JOINED };
+                            if crowded && !crowd {
+                                st.frame_crowds.set(st.frame_crowds.get().wrapping_add(1));
+                                st.frame_next_lane.set(0);
+                            }
+                            crowd = crowded;
+                            st.frame_crowd.set(crowd);
+                        }
+                        let t = base + epoch.elapsed().as_secs_f64();
+                        if crowd {
+                            turn = (turn + 1) % FRAME_LANES;
+                            st.frame_lanes[turn].set(t);
+                        } else {
+                            // nobody's on them but those a crowd left there,
+                            // and a crowd that forms starts from now
+                            st.frame_lanes.iter().for_each(|lane| lane.set(t));
+                        }
+                        // what can't give way keeps its full rate
+                        if turn % 2 == 0 {
+                            clock.set(t);
+                        }
                     }
+                    st.frame_crowd.set(false);
+                    st.frame_asked.set(0);
                     st.frame_started.set(false);
                 })
             });
@@ -3583,6 +3650,29 @@ impl Store {
             }
         }
         self.frame_clock.get()
+    }
+
+    /// [`Self::tick`] for an avatar that can give way. With many live, each
+    /// frame repainting all of them runs over its budget, so these take turns.
+    /// Motion follows real time, so it isn't slower, only updated about half as
+    /// often. Each takes the next lane as it first asks in a crowd, so the lanes
+    /// fill evenly with whoever's live, however the avatars were built. `lane`
+    /// is the avatar's own: the crowd it last asked in and its lane there.
+    pub(crate) fn tick_giving_way(&'static self, lane: &std::cell::Cell<(u32, usize)>) -> f64 {
+        self.frame_asked.set(self.frame_asked.get() + 1);
+        if !self.frame_crowd.get() {
+            return self.tick();
+        }
+        // keeps the clock running through the ticks this one sits out
+        let _ = untracked(|| self.tick());
+        let crowd = self.frame_crowds.get();
+        let (mut taken_in, mut at) = lane.get();
+        if taken_in != crowd {
+            taken_in = crowd;
+            at = self.frame_next_lane.replace((self.frame_next_lane.get() + 1) % FRAME_LANES);
+            lane.set((taken_in, at));
+        }
+        self.frame_lanes[at].get()
     }
 
     /// `setTheme` (App.tsx:765) — the pref and the POST.
@@ -3887,19 +3977,33 @@ impl Store {
             })
     }
 
-    /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`):
-    /// `all` or `none`.
-    pub fn agents_accepts(&'static self, bot: String, accepts: &'static str) {
-        self.bots.update(|bs| {
-            if let Some(b) = bs.iter_mut().find(|b| b.id == bot) {
-                b.accepts = accepts.to_owned();
-            }
-        });
+    /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`);
+    /// `answered` gets the broker's answer, None when none came (it may
+    /// have applied it even so). Shown at once. Without a yes the old value
+    /// goes back here, and the `/threads` that follows brings the real one:
+    /// it changes nothing here when nothing changed there.
+    pub fn agents_accepts(&'static self, bot: String, accepts: crate::agents::Accepts, answered: impl FnOnce(Option<serde_json::Value>) + 'static) {
+        let put = |to: &crate::agents::Accepts| {
+            let mut was = None;
+            self.bots.update(|bs| {
+                if let Some(b) = bs.iter_mut().find(|b| b.id == bot) {
+                    was = Some(std::mem::replace(&mut b.accepts, to.clone()));
+                }
+            });
+            was
+        };
+        let was = put(&accepts);
         spawn_detached(async move {
-            let r = client::post_any("/v1/host/agents/accepts", serde_json::json!({"bot": bot, "accepts": accepts})).await;
+            let r = client::post_any("/v1/host/agents/accepts", serde_json::json!({"bot": bot, "accepts": accepts.to_json()})).await;
             if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
                 log::warn!("agents accepts {bot}: {r:?}");
+                self.bots.update(|bs| {
+                    if let (Some(b), Some(was)) = (bs.iter_mut().find(|b| b.id == bot), was) {
+                        b.accepts = was;
+                    }
+                });
             }
+            answered(r);
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
@@ -6503,8 +6607,15 @@ impl Store {
         }
     }
 
-    /// `POST /chat` with the composer contents, then follow the run.
+    /// `POST /chat` with the composer contents, then follow the run: the
+    /// person's own Enter or Send.
     pub fn send(&'static self) {
+        self.send_as(true);
+    }
+
+    /// [`Self::send`]; `typed` false for text a tap sends on someone's
+    /// words (`send_text`): it never runs `/messages`.
+    fn send_as(&'static self, typed: bool) {
         // an agents' conversation is read-only (the broker refuses it too)
         if untracked(|| self.active_agents().is_some()) {
             return;
@@ -6514,12 +6625,13 @@ impl Store {
         // canonical ones before anything is sent; tokens or a command alone
         // never reach the model (mini_v1::ui).
         let resolved = self.v1_resolved.replace(false);
-        if !resolved && !text.starts_with("/status") && self.v1_send(&text) {
+        let own_command = text.starts_with("/status") || (typed && crate::messages::is_command(&text));
+        if !resolved && !own_command && self.v1_send(&text) {
             return;
         }
         // Commands (`/status`, a server's) and a message of `@` tokens
         // alone run here — they never reach the model (slash.rs).
-        if !resolved && crate::slash::dispatch(&text) {
+        if !resolved && crate::slash::dispatch(&text, typed) {
             return;
         }
         let reply_to = self.reply_to.get_untracked();
@@ -6638,7 +6750,8 @@ impl Store {
 
     /// Sends `text` as the next message, as the composer would, leaving the
     /// composer's own draft, files and reply as they were (a choice card's
-    /// answer, a plugin-needs card's Send again).
+    /// answer, a plugin's chip, a plugin-needs card's Send again). The words
+    /// may be a model's or a plugin's, so they don't count as typed.
     pub fn send_text(&'static self, text: String) {
         let kept = (
             self.draft.get_untracked(),
@@ -6650,7 +6763,7 @@ impl Store {
             self.attachments.set(Vec::new());
             self.reply_to.set(None);
         });
-        self.send();
+        self.send_as(false);
         batch(|| {
             self.draft.set(kept.0);
             self.attachments.set(kept.1);

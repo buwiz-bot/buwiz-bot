@@ -568,7 +568,16 @@ fn undo_in_sheet(undo: String) {
         tools().receipt.set(Some(Receipt { text, undo: String::new(), at: now - (RECEIPT_MS - PUT_BACK_MS), error }));
         watch(now + PUT_BACK_MS);
         load();
+        bots_again().await;
     });
+}
+
+/// The Bots again after an Undo: it may have put back whom one hears,
+/// which `/messages` reads from them.
+async fn bots_again() {
+    if let Some(v) = crate::client::get("/threads").await {
+        crate::live::store().set_threads(v);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1156,7 @@ fn card_undo(id: &str, undo: &str) {
         if tools().open.get_untracked().is_some() {
             load();
         }
+        bots_again().await;
     });
 }
 

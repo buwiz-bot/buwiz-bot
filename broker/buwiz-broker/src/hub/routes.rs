@@ -131,6 +131,7 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/avatar/design"), Hub(Chat)),
     e(Post, X("/avatar/picture"), Hub(Chat)),
     e(Post, X("/avatar/packs"), Hub(Chat)),
+    e(Post, X("/avatar/check"), Hub(Chat)),
     e(Post, X("/attach/pick"), Hub(Chat)),
     e(Get, X("/groups"), Hub(Chat)),
     e(Post, X("/group/new"), Hub(Chat)),
@@ -364,7 +365,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 128);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 129);
         assert_eq!(count(&|o| o == Rust), 33);
     }
 }

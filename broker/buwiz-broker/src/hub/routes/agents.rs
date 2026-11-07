@@ -82,7 +82,7 @@ fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> H
         "endpoints/create" => done(x.create(&b, |bot| ctx.store.read(|s| a.party(s, bot).is_some()))),
         "endpoints/list" => done(x.list(b.get("bot")).map(|l| Map::from_iter([("endpoints".to_owned(), l)]))),
         "endpoints/rotate" => done(x.rotate(b.get("id"))),
-        _ => done(x.remove(b.get("id")).map(|_| Map::new())),
+        _ => done(hub.remove_endpoint(&ctx, b.get("id")).map(|_| Map::new())),
     };
     match out {
         Ok(v) => types::json(StatusCode::OK, &v),
@@ -100,13 +100,16 @@ fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> H
 /// place a [`Change::Accepts`] is made: a person's, through this token-locked route.
 pub(crate) fn host_accepts(ctx: &HubCtx, b: &Value) -> Result<Value, (String, String)> {
     let bot = str_or_empty(b.get("bot"));
-    let Some(from) = ctx.store.read(|s| s.bot(&bot).map(|x| x.accepts.clone().unwrap_or(Value::Null))) else { return Err(("invalid_args".into(), "no such agent".into())) };
+    if ctx.store.read(|s| s.bot(&bot).is_none()) {
+        return Err(("invalid_args".into(), "no such agent".into()));
+    }
     let to = match b.get("accepts") {
         Some(Value::String(a)) if a == "all" || a == "none" => b["accepts"].clone(),
         Some(Value::Array(a)) if a.iter().all(Value::is_string) => b["accepts"].clone(),
         _ => return Err(("invalid_args".into(), "accepts is \"all\", \"none\" or a list of agent ids".into())),
     };
-    policy::applied(ctx, &Change::Accepts { bot, to, from }).map_err(|e| (e.code, e.message))
+    // `from` is read as it applies
+    policy::applied(ctx, &Change::Accepts { bot, to, from: Value::Null }).map_err(|e| (e.code, e.message))
 }
 
 /// `auth.replace(/^Bearer\s+/i, "")`.

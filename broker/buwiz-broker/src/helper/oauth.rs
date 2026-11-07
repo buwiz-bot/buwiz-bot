@@ -60,10 +60,27 @@ pub enum Kind {
     InvalidClient,
     UnauthorizedClient,
     InvalidGrant,
-    /// `server_error`, an unknown code, or a body that isn't an OAuth error.
+    /// `server_error`, or a 5xx or a 429 whose body isn't an OAuth error.
     Server,
+    /// `temporarily_unavailable` or `too_many_requests`.
+    Busy,
+    /// A code OAuth doesn't list. It reads as no all the same.
+    Unknown,
+    /// Not an OAuth answer at all: some other server's page, such as a proxy's.
+    Stray,
     /// Any other code in OAUTH_ERRORS.
     Other,
+}
+
+/// What a failed token request says about the sign-in behind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Verdict {
+    /// The provider said no, or the request could never have worked.
+    Refused,
+    /// Nobody answered: no connection, a timeout, or a provider down or busy.
+    Unanswered,
+    /// Something answered, and it wasn't the provider.
+    Stray,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,21 +88,35 @@ pub enum AuthError {
     /// `name`: the SDK's class (`InvalidGrantError`), what Node printed
     /// when the server gave no description.
     OAuth { kind: Kind, name: String, message: String },
-    /// Not an OAuth error (network, metadata, schema).
+    /// Not an OAuth error (metadata, schema, local setup).
     Plain(String),
+    /// The request got no answer.
+    Unreached(String),
 }
 
 impl AuthError {
     pub fn message(&self) -> String {
         match self {
             AuthError::OAuth { name, message, .. } if message.is_empty() => name.clone(),
-            AuthError::OAuth { message, .. } | AuthError::Plain(message) => message.clone(),
+            AuthError::OAuth { message, .. } | AuthError::Plain(message) | AuthError::Unreached(message) => message.clone(),
+        }
+    }
+
+    pub fn verdict(&self) -> Verdict {
+        match self {
+            AuthError::Unreached(_) | AuthError::OAuth { kind: Kind::Server | Kind::Busy, .. } => Verdict::Unanswered,
+            AuthError::OAuth { kind: Kind::Stray, .. } => Verdict::Stray,
+            AuthError::OAuth { .. } | AuthError::Plain(_) => Verdict::Refused,
         }
     }
 }
 
 fn plain(m: impl Into<String>) -> AuthError {
     AuthError::Plain(m.into())
+}
+
+fn stray(m: impl Into<String>) -> AuthError {
+    AuthError::OAuth { kind: Kind::Stray, name: "ServerError".into(), message: m.into() }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -486,7 +517,11 @@ pub fn challenge_of(verifier: &str) -> String {
 async fn error_of(res: http::Resp) -> AuthError {
     let status = res.status;
     let redirect = http::redirect_target(&res);
-    let body = res.text().await.unwrap_or_default();
+    // an answer cut off partway is no answer, not a stray page
+    let body = match res.text().await {
+        Ok(body) => body,
+        Err(e) => return AuthError::Unreached(e),
+    };
     let parsed: Option<Value> = serde_json::from_str(&body).ok();
     let o = parsed.as_ref().and_then(Value::as_object);
     let valid = o.is_some_and(|o| {
@@ -498,14 +533,16 @@ async fn error_of(res: http::Resp) -> AuthError {
             "invalid_client" => Kind::InvalidClient,
             "unauthorized_client" => Kind::UnauthorizedClient,
             "invalid_grant" => Kind::InvalidGrant,
-            "invalid_request" | "unsupported_grant_type" | "invalid_scope" | "access_denied" | "temporarily_unavailable" | "unsupported_response_type"
-            | "unsupported_token_type" | "invalid_token" | "method_not_allowed" | "too_many_requests" | "invalid_client_metadata" | "insufficient_scope"
+            "server_error" => Kind::Server,
+            "temporarily_unavailable" | "too_many_requests" => Kind::Busy,
+            "invalid_request" | "unsupported_grant_type" | "invalid_scope" | "access_denied" | "unsupported_response_type"
+            | "unsupported_token_type" | "invalid_token" | "method_not_allowed" | "invalid_client_metadata" | "insufficient_scope"
             | "invalid_target" => Kind::Other,
-            _ => Kind::Server,
+            _ => Kind::Unknown,
         };
         let message = o.get("error_description").and_then(Value::as_str).unwrap_or_default().to_owned();
         let name = match kind {
-            Kind::Server => "ServerError".to_owned(),
+            Kind::Server | Kind::Unknown => "ServerError".to_owned(),
             _ => code.split('_').map(|w| w[..1].to_uppercase() + &w[1..]).collect::<String>() + "Error",
         };
         return AuthError::OAuth { kind, name, message };
@@ -514,7 +551,8 @@ async fn error_of(res: http::Resp) -> AuthError {
         Some(t) => format!("Redirect to {} not followed", t.as_str()),
         None => format!("Invalid OAuth error response: {}. Raw body: {body}", if parsed.is_some() { "ZodError" } else { "SyntaxError" }),
     };
-    AuthError::OAuth { kind: Kind::Server, name: "ServerError".into(), message: format!("HTTP {status}: {text}") }
+    let kind = if status >= 500 || status == 429 { Kind::Server } else { Kind::Stray };
+    AuthError::OAuth { kind, name: "ServerError".into(), message: format!("HTTP {status}: {text}") }
 }
 
 /// A token response, as OAuthTokensSchema keeps it (its fields, in order;
@@ -621,12 +659,14 @@ pub(crate) async fn token_request(
         }
     }
     req.body = Some(form(&params));
-    let res = f.fetch(req).await.map_err(plain)?;
+    let res = f.fetch(req).await.map_err(AuthError::Unreached)?;
     if !res.ok() {
         return Err(error_of(res).await);
     }
-    let v: Value = serde_json::from_str(&res.text().await.map_err(plain)?).map_err(|e| plain(e.to_string()))?;
-    tokens_of(&v)
+    let body = res.text().await.map_err(AuthError::Unreached)?;
+    // a 200 that isn't a token is a captive portal's page or the like
+    let v: Value = serde_json::from_str(&body).map_err(|e| stray(e.to_string()))?;
+    tokens_of(&v).map_err(|e| stray(e.message()))
 }
 
 /// `registerClient`.
@@ -768,7 +808,7 @@ async fn auth_internal(p: &Provider<'_>, o: &AuthOpts) -> Result<Outcome, AuthEr
                 return Ok(Outcome::Authorized);
             }
             // a server error or no OAuth error at all: go on to sign in
-            Err(AuthError::Plain(_)) | Err(AuthError::OAuth { kind: Kind::Server, .. }) => {}
+            Err(AuthError::Plain(_) | AuthError::Unreached(_)) | Err(AuthError::OAuth { kind: Kind::Server | Kind::Unknown | Kind::Stray, .. }) => {}
             Err(e) => return Err(e),
         }
     }
@@ -941,6 +981,23 @@ impl OAuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 403 that promises a body and drops the connection before sending it.
+    #[tokio::test]
+    async fn an_error_answer_cut_off_partway_is_no_answer() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/token", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // the request read, or closing resets the connection before the headers land
+            let _ = stream.read(&mut [0; 4096]).await;
+            stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 500\r\n\r\n<html>").await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        let e = token_request(&Fetcher::default(), &url, None, Vec::new(), None, None).await.unwrap_err();
+        assert_eq!(e.verdict(), Verdict::Unanswered, "{e:?}");
+    }
 
     #[test]
     fn discovery_urls_follow_the_sdk_order() {

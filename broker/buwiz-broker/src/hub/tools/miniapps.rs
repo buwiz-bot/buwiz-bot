@@ -737,6 +737,7 @@ mod tests {
             google_authorize: "https://accounts.example.test/auth".into(),
             google_token: format!("{}/token", b.base),
             open: Arc::new(move |u: &str| o.lock().unwrap().push(u.to_owned())),
+            ..AccountsConfig::default()
         });
     }
 
@@ -1333,6 +1334,357 @@ mod tests {
         let work = json!([{"account": "google", "label": "work", "active": true}]);
         assert_eq!(account_pushes(&b).await.last().unwrap(), &json!({"push": "clear", "label": "default", "accounts": work}));
         assert_eq!(pushed_labels(&b).await, ["google/work"]);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A token endpoint that takes each connection and drops it, as a network
+    /// that's gone does; → its address and how many connections it dropped.
+    async fn dropping_token_endpoint() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = dropped.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        (url, dropped)
+    }
+
+    fn token_endpoint(b: &Bed, url: String) {
+        token_endpoint_waiting(b, url, std::time::Duration::from_secs(20));
+    }
+
+    fn token_endpoint_waiting(b: &Bed, url: String, token_wait: std::time::Duration) {
+        b.host.set_accounts_config(AccountsConfig { port: 8787, google_authorize: "https://accounts.example.test/auth".into(), google_token: url, open: Arc::new(|_: &str| {}), token_wait });
+    }
+
+    /// A token endpoint that takes each connection and says nothing until
+    /// `release`, then answers with a token; → its address, `release` and how
+    /// many it has taken.
+    async fn stalled_token_endpoint() -> (String, Arc<tokio::sync::Notify>, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let (release, taken) = (Arc::new(tokio::sync::Notify::new()), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        let (go, count) = (release.clone(), taken.clone());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let go = go.clone();
+                tokio::spawn(async move {
+                    go.notified().await;
+                    let body = json!({"access_token": "late", "expires_in": 3600, "token_type": "Bearer"}).to_string();
+                    let answer = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let _ = stream.write_all(answer.as_bytes()).await;
+                });
+            }
+        });
+        (url, release, taken)
+    }
+
+    fn state_of(b: &Bed, label: &str) -> String {
+        b.host.account_rows(FX).iter().find(|r| r.label == label).unwrap().state.clone()
+    }
+
+    /// A network gone at refresh time says nothing about the sign-in: no clear
+    /// reaches the plugin, which would drop that account's mail, and the refresh
+    /// tries again. Only the provider's own no ends it.
+    #[tokio::test]
+    async fn a_dropped_connection_during_a_refresh_keeps_the_sign_in_and_tries_again() {
+        let b = accounts_bed("acctdrop", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let online = format!("{}/token", b.base);
+        let (offline, dropped) = dropping_token_endpoint().await;
+        let pushes = account_pushes(&b).await.len();
+        token_endpoint(&b, offline);
+
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "the refresh");
+        for tries in 1..=2 {
+            until("the dropped refresh", async || dropped.load(std::sync::atomic::Ordering::SeqCst) >= tries).await;
+            if tries == 1 {
+                until("the next try", async || b.host.clock.manual_step(None, true)).await;
+            }
+        }
+        // a timer waits for the next try, and nothing else happened
+        assert_eq!(state_of(&b, "default"), "connected");
+        assert_eq!(account_pushes(&b).await.len(), pushes, "the plugin hears nothing");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+
+        // the network's back
+        token_endpoint(&b, online);
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        until("the next try", async || b.host.clock.manual_step(None, true)).await;
+        until("the new token", async || account_pushes(&b).await.len() > pushes).await;
+        assert_eq!(account_pushes(&b).await.last().unwrap()["push"], "set");
+        assert_eq!(state_of(&b, "default"), "connected");
+
+        // the provider's no still ends it
+        token_answer(&b.files, 400, json!({"error": "invalid_grant"}));
+        assert!(b.host.clock.manual_step(Some(6_600_000.0), true));
+        until("the clear", async || pushed(&b.host).await == json!({})).await;
+        assert_eq!(state_of(&b, "default"), "expired");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A busy provider answers, but says nothing of the sign-in either.
+    #[tokio::test]
+    async fn a_provider_that_cant_answer_now_keeps_the_sign_in() {
+        let b = accounts_bed("acctbusy", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let pushes = account_pushes(&b).await.len();
+        let answers = [(503, json!({"error": "temporarily_unavailable"})), (429, json!({"error": "too_many_requests"})), (500, json!({"oops": true}))];
+        b.host.clock.manual_step(Some(3_300_000.0), false);
+        let asked = async || b.log.lock().unwrap().iter().filter(|(r, _)| r == "POST /token").count();
+        for (status, body) in answers {
+            token_answer(&b.files, status, body);
+            let before = asked().await;
+            until("the next try", async || b.host.clock.manual_step(None, true)).await;
+            until("its answer", async || asked().await > before).await;
+            assert_eq!(state_of(&b, "default"), "connected", "{status}");
+            assert_eq!(account_pushes(&b).await.len(), pushes, "{status}");
+        }
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A token request has a deadline, and past it nobody answered.
+    #[tokio::test]
+    async fn a_provider_that_stalls_runs_out_of_time_and_the_refresh_tries_again() {
+        let b = accounts_bed("acctstall", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let (stalled, _release, _) = stalled_token_endpoint().await;
+        token_endpoint_waiting(&b, stalled, std::time::Duration::from_millis(200));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "the refresh");
+        until("the next try", async || b.host.clock.manual_step(None, true)).await;
+        assert_eq!(state_of(&b, "default"), "connected");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// The wait for the provider holds no lock, so a person isn't kept waiting.
+    #[tokio::test]
+    async fn a_refresh_waiting_on_the_provider_doesnt_hold_up_a_sign_out() {
+        let b = accounts_bed("acctstallout", HostClock::manual()).await;
+        connect_as(&b, "first", "at-1", "a@example.com").await;
+        connect_as(&b, "second", "at-2", "b@example.com").await;
+        connect_as(&b, "third", "at-3", "c@example.com").await;
+        let (stalled, _release, taken) = stalled_token_endpoint().await;
+        token_endpoint_waiting(&b, stalled, std::time::Duration::from_secs(20));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "first's refresh");
+        until("the refresh asks", async || taken.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
+        let second = json!({"label": "second"});
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), b.host.account_signout(FX, "google", &second)).await;
+        assert_eq!(out.expect("it isn't held up").unwrap()["state"], "none");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// With no lock held a sign-out can come first. The answer that follows is
+    /// for a sign-in that's over, so it must not bring that sign-in back.
+    #[tokio::test]
+    async fn a_sign_out_during_a_refresh_stays_signed_out() {
+        let b = accounts_bed("acctstalllate", HostClock::manual()).await;
+        connect_as(&b, "first", "at-1", "a@example.com").await;
+        connect_as(&b, "second", "at-2", "b@example.com").await;
+        let (stalled, release, taken) = stalled_token_endpoint().await;
+        token_endpoint_waiting(&b, stalled, std::time::Duration::from_secs(20));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "first's refresh");
+        until("the refresh asks", async || taken.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
+        b.host.account_signout(FX, "google", &json!({"label": "first"})).await.unwrap();
+        release.notify_waiters();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        assert_eq!(keys.get_token(&format!("{FX}/google/first")).unwrap(), None);
+        assert_eq!(state_of(&b, "first"), "none");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// Only a provider that can't answer now retries. A code nobody knows is
+    /// still a no.
+    #[tokio::test]
+    async fn an_oauth_code_nobody_knows_ends_the_sign_in() {
+        let b = accounts_bed("acctunknown", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        token_answer(&b.files, 400, json!({"error": "account_closed"}));
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true));
+        until("it expires", async || state_of(&b, "default") == "expired").await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A proxy's page isn't the provider's answer, so the sign-in stands. After
+    /// hours of it the row says so, and a refresh that works takes that back.
+    #[tokio::test]
+    async fn someone_elses_page_keeps_the_sign_in_and_the_row_says_so_after_hours() {
+        let b = accounts_bed("acctstray", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let page = |b: &Bed, status: u16| {
+            b.files.lock().unwrap().insert("/token".into(), (status, String::new(), b"<html>Sign in to this network</html>".to_vec()));
+        };
+        let asked = async || b.log.lock().unwrap().iter().filter(|(r, _)| r == "POST /token").count();
+        let stuck = || b.host.accounts_view(FX)[0].get("stuck") == Some(&json!(true));
+        let hours = |n: f64| 3_300_000.0 + n * 3_600_000.0;
+        for (status, at) in [(403, 0.0), (200, 1.0), (403, 5.0)] {
+            page(&b, status);
+            let before = asked().await;
+            b.host.clock.manual_step(Some(hours(at)), false);
+            until("the next try", async || b.host.clock.manual_step(None, true)).await;
+            until("its answer", async || asked().await > before).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert_eq!(state_of(&b, "default"), "connected", "{status}");
+            assert!(!stuck(), "not yet");
+        }
+        page(&b, 403);
+        b.host.clock.manual_step(Some(hours(6.0)), false);
+        until("the next try", async || b.host.clock.manual_step(None, true)).await;
+        until("the row says so", async || stuck()).await;
+
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        until("the next try", async || b.host.clock.manual_step(None, true)).await;
+        until("the row clears", async || !stuck()).await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A start's push can fail with the plugin running, which leaves it no token
+    /// and nothing else due to send one.
+    #[tokio::test]
+    async fn a_failed_push_at_a_start_tries_again() {
+        let b = bed_in("acctpushfail", HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |p| p["mcpServers"]["fx"]["args"] = json!(["--misbehave=account-set-fails-once"]));
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        b.host.disable(FX).await.unwrap();
+        while b.host.clock.manual_step(None, true) {}
+        b.host.enable(FX).await.unwrap();
+        assert_eq!(pushed_labels(&b).await, Vec::<String>::new(), "the push failed");
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        assert!(b.host.clock.manual_step(None, true), "a try is waiting");
+        until("the token", async || pushed_labels(&b).await == ["google/default"]).await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A refresh writes its tokens holding the plugin's lock, having checked them
+    /// under it. A sign-out or a new sign-in touching them without that lock
+    /// could land between the two, so each waits for it: the test holds the lock
+    /// as that refresh would, and neither gets to the tokens until it's let go.
+    #[tokio::test]
+    async fn a_sign_out_and_a_sign_in_wait_for_a_refresh_writing_its_tokens() {
+        let b = accounts_bed("acctlockwrite", HostClock::manual()).await;
+        connect_as(&b, "first", "at-1", "a@example.com").await;
+        connect_as(&b, "second", "at-2", "b@example.com").await;
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        let token = |label: &str| keys.get_token(&format!("{FX}/google/{label}")).unwrap();
+        let wait = || tokio::time::sleep(std::time::Duration::from_millis(200));
+
+        let lock = b.host.lock_of(FX);
+        let held = lock.lock().await;
+        let host = b.host.clone();
+        let out = tokio::spawn(async move { host.account_signout(FX, "google", &json!({"label": "first"})).await });
+        wait().await;
+        assert!(token("first").is_some(), "it waits for the refresh");
+        drop(held);
+        assert_eq!(out.await.unwrap().unwrap()["state"], "none");
+        assert_eq!(token("first"), None);
+
+        let r = b.host.account_signin(FX, "google", &json!({"open": false, "label": "third"})).await.unwrap();
+        let u = url::Url::parse(r["url"].as_str().unwrap()).unwrap();
+        let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let flow = js::decode_uri_component(q["redirect_uri"].strip_prefix("http://127.0.0.1:8787/oauth/callback/").unwrap()).unwrap();
+        token_answer(&b.files, 200, json!({"access_token": "at-3", "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer"}));
+        let held = lock.lock().await;
+        let host = b.host.clone();
+        let state = q["state"].clone();
+        let signed_in = tokio::spawn(async move { host.account_callback(&flow, Some("c"), Some(&state), None).await });
+        wait().await;
+        assert_eq!(token("third"), None, "it waits for the refresh");
+        drop(held);
+        assert_eq!(signed_in.await.unwrap().0, "connected");
+        assert!(token("third").is_some());
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// The fixture takes `works` tokens and then refuses every push.
+    async fn pushes_fail_after(label: &str, works: u32) -> Bed {
+        let b = bed_in(label, HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |p| p["mcpServers"]["fx"]["args"] = json!([format!("--misbehave=account-set-fails-after:{works}")]));
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        b
+    }
+
+    /// Only a retry counts toward the row's hours, so the row saying so shows
+    /// the first failed push armed one.
+    #[tokio::test]
+    async fn a_failed_push_after_a_good_refresh_tries_again() {
+        let b = pushes_fail_after("acctpushtick", 1).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        let asked = async || b.log.lock().unwrap().iter().filter(|(r, _)| r == "POST /token").count();
+        let before = asked().await;
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true));
+        until("the refresh", async || asked().await > before).await;
+        let before = asked().await;
+        until("the next try", async || b.host.clock.manual_step(Some(3_300_000.0 + 6.0 * 3_600_000.0), true)).await;
+        until("its refresh", async || asked().await > before).await;
+        until("the row says so", async || b.host.accounts_view(FX)[0].get("stuck") == Some(&json!(true))).await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_push_at_a_switch_tries_again() {
+        let b = pushes_fail_after("acctpushuse", 2).await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        let later = 6.0 * 3_600_000.0;
+        // a working retry arms the next one, so this fires a set number
+        for _ in 0..3 {
+            b.host.clock.manual_step(Some(later), true);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let row = |label: &str| b.host.accounts_view(FX).as_array().unwrap().iter().find(|r| r["label"] == label).cloned().unwrap();
+        until("the row says so", async || row("default").get("stuck") == Some(&json!(true))).await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A switch and a restart both refresh a token that's due. With the network
+    /// gone each still goes ahead on what it holds, and the refresh tries again.
+    #[tokio::test]
+    async fn a_switch_and_a_restart_with_the_network_gone_keep_the_sign_in() {
+        let b = accounts_bed("acctdropuse", HostClock::manual()).await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        let (offline, dropped) = dropping_token_endpoint().await;
+        token_endpoint(&b, offline);
+        b.host.clock.manual_step(Some(3_400_000.0), false);
+
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst) >= 1, "it tried");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        assert_eq!((state_of(&b, "default"), state_of(&b, "work")), ("connected".to_owned(), "connected".to_owned()));
+        assert_eq!(b.host.active_label(FX, "google").as_deref(), Some("default"));
+
+        let tried = dropped.load(std::sync::atomic::Ordering::SeqCst);
+        b.host.disable(FX).await.unwrap();
+        b.host.enable(FX).await.unwrap();
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst) > tried, "it tried");
+        assert_eq!(state_of(&b, "default"), "connected");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     }

@@ -521,7 +521,7 @@ fn agents_sections(b: crate::store::RoxBot) -> impl IntoElement {
     view()
         .pb(px(14.0))
         // a helper takes messages from its parent only: no setting
-        .when(b.helper.is_none(), |v| v.child(pane_label("Accept messages from".into())).child(accepts_card(b.id.clone(), b.accepts.clone())))
+        .when(b.helper.is_none(), |v| v.child(pane_label("Accept messages from".into())).child(accepts_card(b.id.clone(), b.accepts.word().to_owned())))
         .child(view().pt(px(14.0)).child(pane_label("Conversations".into())))
         .child(if open.is_empty() && archived.is_empty() {
             pane_note(format!("No conversations yet. Ask {name} in chat to hand a task to another agent."))
@@ -645,10 +645,11 @@ fn helper_row(b: crate::store::RoxBot) -> AnyElement {
         .into_element()
 }
 
-/// Accept messages from: All my agents / None (`some`, a list an agent
-/// set, shows as such until one is picked).
+/// Accept messages from: All my agents / None (`some`, a list, shows as
+/// such until one is picked).
 fn accepts_card(bot: String, now: String) -> impl IntoElement {
-    let choice = |word: &'static str, value: &'static str, on: bool, bot: String| {
+    use crate::agents::Accepts;
+    let choice = |word: &'static str, value: Accepts, on: bool, bot: String| {
         let hov = signal(false);
         view()
             .flex_row()
@@ -662,7 +663,7 @@ fn accepts_card(bot: String, now: String) -> impl IntoElement {
             .label(format!("Accept messages from {}", word.to_lowercase()))
             .on_press(move || {
                 if !on {
-                    store().agents_accepts(bot.clone(), value)
+                    store().agents_accepts(bot.clone(), value.clone(), |_| {})
                 }
             })
             .child(text(word).text_size(px(13.0)).text_color(theme::TEXT).flex_1())
@@ -670,8 +671,8 @@ fn accepts_card(bot: String, now: String) -> impl IntoElement {
             .into_element()
     };
     pane_card()
-        .child(choice("All my agents", "all", now == "all", bot.clone()))
-        .child(choice("None", "none", now == "none", bot))
+        .child(choice("All my agents", Accepts::All, now == "all", bot.clone()))
+        .child(choice("None", Accepts::None, now == "none", bot))
         .when(now == "some", |v| {
             v.child(text("Now: some agents only").text_size(px(12.0)).text_color(theme::MUTED).px(px(10.0)).pb(px(6.0)))
         })
