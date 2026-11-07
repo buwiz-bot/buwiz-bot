@@ -12,6 +12,8 @@ import { officeCaps, officePkgRoot } from "../office.mjs";
 
 const RAW_TYPES = { pdf: "application/pdf", html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4", mov: "video/quicktime", m4v: "video/mp4", m4a: "audio/mp4", mp3: "audio/mpeg", wav: "audio/wav", aac: "audio/aac" };
 const PAGE_TYPES = { js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json", wasm: "application/wasm", woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon", webm: "video/webm", ogv: "video/ogg", ogg: "audio/ogg", flac: "audio/flac" };
+// By own key: a file's extension can be `constructor` or `__proto__`.
+const ownType = (types, ext) => (Object.hasOwn(types, ext) ? types[ext] : undefined);
 
 export default async function handle(req, res) {
   // Image avatars (Grok's Generate / Upload tabs): files land in
@@ -106,7 +108,7 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (p.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = RAW_TYPES[ext] || "application/octet-stream";
+    const type = ownType(RAW_TYPES, ext) || "application/octet-stream";
     return sendRanged(req, res, p, type);
   }
   // The viewer's HTML preview: the same files, script on, at no origin.
@@ -117,7 +119,7 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (p.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = PAGE_TYPES[ext] || RAW_TYPES[ext] || "application/octet-stream";
+    const type = ownType(PAGE_TYPES, ext) || ownType(RAW_TYPES, ext) || "application/octet-stream";
     return sendRanged(req, res, p, type, "sandbox allow-scripts");
   }
   // Download: the native save panel, then a copy
@@ -200,7 +202,7 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (path.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mov: "video/quicktime", mp4: "video/mp4" }[ext] || "application/octet-stream";
+    const type = ownType({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mov: "video/quicktime", mp4: "video/mp4" }, ext) || "application/octet-stream";
     res.setHeader("cache-control", "max-age=86400");
     return sendRanged(req, res, path, type);
   }
@@ -215,7 +217,7 @@ export default async function handle(req, res) {
       return res.end();
     }
     const ext = (name.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
-    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4" }[ext] || "application/octet-stream";
+    const type = ownType({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4" }, ext) || "application/octet-stream";
     res.setHeader("cache-control", "max-age=86400");
     return sendRanged(req, res, path, type);
   }

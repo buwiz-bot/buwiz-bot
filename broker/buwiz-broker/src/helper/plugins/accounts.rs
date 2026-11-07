@@ -20,6 +20,14 @@
 //! `…/accounts/<account>/use {label}` switches; signing out the active one
 //! makes another connected label active.
 //!
+//! A first-party plugin also learns the whole list: every push to it carries
+//! `accounts`, each signed-in label as `{account, label, active}`
+//! ([`Host::signed_in`]). Never a token or a subject, and a label that is an
+//! address stays out of it, because a plugin's titles reach the model: if that
+//! label is the active one its row stays, with no label. Its
+//! tool asks for a switch with `_meta["buwiz/account_use"]`, on a person's
+//! call only (`helper::sessions`); the Bot then calls `use`.
+//!
 //! Setup (`setup_view`, `save_setup`): what a provider needs before its
 //! sign-in can start, as fields the user fills in. `google` needs the shared
 //! client (`hub::market::catalog::google_fields`, saved in `@google` where
@@ -70,6 +78,7 @@ pub(super) fn migrate(db: &rusqlite::Connection) -> rusqlite::Result<()> {
 pub const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
 use crate::hub::market::catalog::{google_fields, GOOGLE_GROUP};
+use crate::hub::routines::plugins::first_party;
 pub const DEFAULT_LABEL: &str = "default";
 pub const NEEDS_GOOGLE_CLIENT: &str = "Add your Google client in Setup";
 pub const GOOGLE_REFUSED_CLIENT: &str = "Google refused this client. Check the Client ID and Secret.";
@@ -409,6 +418,36 @@ impl Host {
         pick.map(|r| r.label.clone())
     }
 
+    /// Whether `row` is an approved plugin of the first-party publisher.
+    pub fn first_party(&self, row: &Row) -> bool {
+        first_party(row, &self.trust())
+    }
+
+    /// Whether `plugin` is one told the list, so a label leaving it has news
+    /// for the plugin even if no token of that label was out.
+    fn told_the_list(&self, plugin: &str) -> bool {
+        self.row(plugin).is_some_and(|r| self.first_party(&r))
+    }
+
+    /// `plugin`'s signed-in labels, `[{account, label, active}]`: what a push
+    /// tells a first-party plugin. A label may be typed as an address, and
+    /// this list is for titles, which reach the model, so that one is left
+    /// out: the Bot's own account page still switches to it, and no plugin
+    /// can ask to. When it's the active one its row stays with no label, so
+    /// the list never says nobody is active while a token is out.
+    fn signed_in(&self, plugin: &str) -> Value {
+        let rows = self.account_rows(plugin).into_iter().filter(|r| r.state == "connected");
+        let view = |r: AccountRow| {
+            let active = self.active_label(plugin, &r.account).as_deref() == Some(r.label.as_str());
+            match (r.label.contains('@'), active) {
+                (false, _) => Some(json!({"account": r.account, "label": r.label, "active": active})),
+                (true, true) => Some(json!({"account": r.account, "active": true})),
+                (true, false) => None,
+            }
+        };
+        json!(rows.filter_map(view).collect::<Vec<_>>())
+    }
+
     /// Marks `label` the active one of `plugin`'s `account` (the others not).
     fn set_active(&self, plugin: &str, account: &str, label: &str) {
         let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET active=(label=?) WHERE plugin=? AND account=?", [label, plugin, account]));
@@ -419,14 +458,14 @@ impl Host {
     /// failed (it is `expired` then). The caller holds the plugin's lock.
     async fn push_label(&self, r: &AccountRow) -> bool {
         let Some(mut t) = self.tokens(&r.token_ref).await else {
-            self.set_account_state(r, "expired");
+            self.expire_label(r).await;
             return false;
         };
         if self.due(&t) {
             match self.refresh_account(r).await {
                 Ok(fresh) => t = fresh,
                 Err(_) => {
-                    self.set_account_state(r, "expired");
+                    self.expire_label(r).await;
                     return false;
                 }
             }
@@ -434,6 +473,16 @@ impl Host {
         self.push_live(&r.plugin, SET, set_args(r, &t)).await;
         self.schedule_refresh(r, &t);
         true
+    }
+
+    /// `r` can't be pushed: it is `expired`, and a first-party plugin's list
+    /// loses it, though no token of it was out. Any other plugin never had
+    /// this label, so it hears nothing. The caller holds the lock.
+    async fn expire_label(&self, r: &AccountRow) {
+        self.set_account_state(r, "expired");
+        if self.told_the_list(&r.plugin) {
+            self.push_live(&r.plugin, CLEAR, json!({"account": r.account, "label": r.label})).await;
+        }
     }
 
     /// The active label of `plugin`'s `account` is gone (signed out,
@@ -998,8 +1047,12 @@ impl Host {
     }
 
     /// A reserved account call; -32601 is `plugin_invalid` (the plugin
-    /// declares accounts, so it must answer both).
-    async fn push(&self, conn: &Conn, plugin: &str, name: &str, args: Value) -> Result<(), Fail> {
+    /// declares accounts, so it must answer both). A first-party plugin's
+    /// carries `accounts`, as the rows are by now ([`Host::signed_in`]).
+    async fn push(&self, conn: &Conn, plugin: &str, name: &str, mut args: Value) -> Result<(), Fail> {
+        if self.told_the_list(plugin) {
+            args["accounts"] = self.signed_in(plugin);
+        }
         match self.reserved(conn, name, args, self.timeouts.reserved).await {
             Ok(_) => Ok(()),
             Err(Fail::Rpc(e)) if e.code == mcp::METHOD_NOT_FOUND => refuse("plugin_invalid", format!("{plugin} does not implement {name}")),
@@ -1108,9 +1161,12 @@ impl Host {
                 eprintln!("  v1 {}: account {}/{}: refresh failed: {}", r.plugin, r.account, r.label, js::slice_utf16(&why, 200));
                 let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET state='expired' WHERE plugin=? AND account=? AND label=?", [&r.plugin, &r.account, &r.label]));
                 self.account_changed(&r.plugin, &r.account, &r.label, "expired");
-                // the active one expired: cleared, and the next connected one pushed
-                if active {
+                // the active one's token was out. One that wasn't has news only
+                // for a first-party plugin, whose list loses it
+                if active || self.told_the_list(&r.plugin) {
                     self.push_live(&r.plugin, CLEAR, json!({"account": r.account, "label": r.label})).await;
+                }
+                if active {
                     self.promote_next(&r.plugin, &r.account).await;
                 }
             }

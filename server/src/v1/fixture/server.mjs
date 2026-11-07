@@ -23,7 +23,10 @@
 //
 // buwiz.account.set/clear keep the pushed accounts in
 // memory; fx_stats shows each one's subject, expiry and the first 12 hex
-// of its token's sha256, never the token.
+// of its token's sha256, never the token, and `account_pushes`: each push's
+// method, label and `accounts` list (a first-party plugin's).
+//
+// fx_echo and fx_search answer `args.result_meta` as the result's `_meta`.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,6 +55,7 @@ const tickets = new Map(); // ticket → subject
 const bySubject = new Map(); // subject → ticket
 const calls = {};
 const accounts = new Map(); // `${account}/${label}` → what buwiz.account.set pushed
+const accountPushes = []; // {push, label, accounts?}, in the order they came
 const origins = {}; // tool → the last caller's origin (16.1)
 let cancelled = 0;
 let served = 0;
@@ -143,6 +147,7 @@ function accountSet(args) {
   if (misbehave("no-accounts")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.account.set is not implemented");
 
   if (!isString(args?.account) || !isString(args?.label) || !isString(args?.access_token)) return fail("invalid_args", "send {account, label, access_token, …}");
+  accountPushes.push({ push: "set", label: args.label, accounts: args.accounts });
   accounts.set(`${args.account}/${args.label}`, { subject: args.subject ?? "", expires_at: args.expires_at ?? null, token: sha256hex(args.access_token).slice(0, 12), sets: (accounts.get(`${args.account}/${args.label}`)?.sets || 0) + 1 });
 
   return ok({ ok: true });
@@ -151,6 +156,7 @@ function accountSet(args) {
 function accountClear(args) {
   if (misbehave("no-accounts")) throw new McpError(ErrorCode.MethodNotFound, "buwiz.account.clear is not implemented");
   accounts.delete(`${args?.account}/${args?.label}`);
+  accountPushes.push({ push: "clear", label: args?.label, accounts: args?.accounts });
 
   return ok({ ok: true });
 }
@@ -218,8 +224,11 @@ function resolveScope(args) {
   return { result: "token", ticket: ticketFor(value), title: `Item ${value}` };
 }
 
+// a tool result with the `_meta` a test asked for
+const withMeta = (r, args) => (isObject(args.result_meta) ? { ...r, _meta: args.result_meta } : r);
+
 const TOOLS = [
-  { name: "fx_echo", description: "Echo the arguments and the caller.", inputSchema: { type: "object" }, run: (args, meta) => ok({ args, caller: meta?.["buwiz/caller"] ?? null }) },
+  { name: "fx_echo", description: "Echo the arguments and the caller.", inputSchema: { type: "object" }, run: (args, meta) => withMeta(ok({ args, caller: meta?.["buwiz/caller"] ?? null }), args) },
   {
     name: "fx_slow", description: "Sleep for ms milliseconds, then answer.", inputSchema: { type: "object", properties: { ms: { type: "integer" } } },
     run: async (args, _meta, extra) => (await sleep(Number(args.ms) || 0, extra.signal), ok({ slept: Number(args.ms) || 0 })),
@@ -265,7 +274,7 @@ const TOOLS = [
   },
   {
     name: "fx_search", description: "Search fixture items (read only).", inputSchema: { type: "object", properties: { query: { type: "string" } } }, annotations: { readOnlyHint: true },
-    run: (args) => ok({ items: [{ id: String(args.query || "all") }] }),
+    run: (args) => withMeta(ok({ items: [{ id: String(args.query || "all") }] }), args),
   },
   {
     name: "fx_query", description: "A routine's search text: {query} from args.q.", inputSchema: { type: "object", properties: { q: { type: "string" } } },
@@ -273,7 +282,7 @@ const TOOLS = [
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
   { name: "fx_app_only", description: "A tool for apps only (16.4 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
-  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts) }) },
+  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts), account_pushes: accountPushes }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
     run: async () => (await server.sendResourceListChanged(), ok({ ok: true })),

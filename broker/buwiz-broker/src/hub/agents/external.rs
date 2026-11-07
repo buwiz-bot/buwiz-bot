@@ -347,7 +347,13 @@ impl Externals {
         }
         let sent = hub.write(ctx, |s, out| hub.agents.send_from(s, &r.id, &Value::Object(input), env.get("id").cloned(), out));
         let answer = match sent {
-            Ok(sent) => json!({"id": sent["id"], "conversation": sent["conversation"]}),
+            Ok(sent) => {
+                let mut answer = json!({"id": sent["id"], "conversation": sent["conversation"]});
+                if let Some(n) = sent.get("not_taken_by") {
+                    answer["not_taken_by"] = n.clone();
+                }
+                answer
+            }
             Err(e) if e.code == "internal" => return Err(Self::internal(e.message)),
             Err(e) => return refuse(if e.code == "rate_limited" { 429 } else { 400 }, &e.code, e.message),
         };

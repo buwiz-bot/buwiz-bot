@@ -807,7 +807,7 @@ export function createViews({ db, runtime, trust }) {
       plugin_pub: row.plugin_pub,
       // 16.2: an approved plugin of the first-party publisher: its inline
       // answer cards mount at once in Rox
-      first_party: m.publisher?.id === FIRST_PARTY && isApproved(trust(), row.id, row.publisher_key_id),
+      first_party: firstParty(row),
       manifest_sha256: row.manifest_sha256,
       apps: (m.apps || []).map((a) => ({ ...a, perms_sha256: permsDigest(a.permissions) })),
       commands: m.commands || [],
@@ -815,6 +815,11 @@ export function createViews({ db, runtime, trust }) {
       routines: (m.routines || []).map((r) => ({ ...r, reads_status: readsStatus(r), ...routineInfo(row.id, r) })),
       tools: tools.map((t) => ({ name: t.name, description: t.description || "", disabled: off.has(t.name), readOnly: (t.annotations?.readOnlyHint ?? t.readOnly) === true })),
     };
+  }
+
+  /** An approved plugin of the first-party publisher. */
+  function firstParty(row) {
+    return !!row && manifestOf(row).publisher?.id === FIRST_PARTY && isApproved(trust(), row.id, row.publisher_key_id);
   }
 
   // 6.7: a routine reads only approved plugins' readOnlyHint tools
@@ -837,7 +842,7 @@ export function createViews({ db, runtime, trust }) {
   }
 
   return {
-    rowOf, rows, manifestOf, disabledOf, describe, readsStatus,
+    rowOf, rows, manifestOf, disabledOf, describe, readsStatus, firstParty,
     useRoutineInfo: (f) => (routineInfo = f),
     list: () => rows().map(describe),
   };

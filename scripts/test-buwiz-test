@@ -49,6 +49,7 @@ printf '#!/bin/bash\necho "$2" > "$STATE/front"; echo "open $2" >> "$STATE/log"\
 chmod +x "$T"/bin/*
 cat > "$T/bot" <<FAKE
 #!/bin/bash
+env > "\$STATE/env"
 echo \$\$ > "\$STATE/app.pid"
 [ "\$LIST_AFTER" = never ] || { sleep "\$LIST_AFTER"; touch "\$STATE/listed"; } &
 sleep 30
@@ -118,4 +119,24 @@ pgrep -f "$S/inst" >/dev/null && alive=yes || alive=no
 kill "$(cat "$S/app.pid")" 2>/dev/null; sleep 0.3
 if [ "$alive" = yes ] && ! pgrep -f "$S/inst" >/dev/null; then echo "ok   the watcher ends with the Bot"
 else echo "FAIL watcher: alive with the Bot $alive, left after: $(pgrep -f "$S/inst" | wc -l)"; fails=1; fi
+# what the Bot is given: a caller's model settings stop here, unless named
+launch_with_caller_models() { # the state dir, then VAR=value arguments
+  local S="$1"; shift
+  mkdir -p "$S/inst"; echo 1 > "$S/workspace"; echo com.example.owner > "$S/front"; echo 100 > "$S/window"; echo 9000000000 > "$S/idle"
+  STATE="$S" LIST_AFTER=0.1 BUWIZ_TEST_TICK=0.02 PATH="$T/bin:$PATH" MOCK= \
+    ANTHROPIC_API_KEY=caller ANTHROPIC_AUTH_TOKEN=caller ANTHROPIC_BASE_URL=http://caller ANTHROPIC_MODEL=caller \
+    OPENROUTER_API_KEY=caller OPENAI_API_KEY=caller XAI_API_KEY=caller OPENCODEX_URL=http://caller GEN_BASE_URL=http://caller \
+    "$ROOT/scripts/buwiz-test" --name t "$T/bot" "$S/inst" 17999 "$@" >/dev/null 2>&1
+  kill "$(cat "$S/app.pid")" 2>/dev/null
+}
+has() { grep -qx "$2" "$1/env"; }
+S="$T/s-models"; launch_with_caller_models "$S"
+dead=http://127.0.0.1:1
+if ! grep -q caller "$S/env" && has "$S" MOCK=1 && has "$S" "OPENCODEX_URL=$dead" && has "$S" "ANTHROPIC_BASE_URL=$dead" && has "$S" "GEN_BASE_URL=$dead"
+then echo "ok   no real model and no key reach it by default"
+else echo "FAIL the caller's model settings: $(grep -c caller "$S/env") reached it, MOCK is '$(sed -n 's/^MOCK=//p' "$S/env")'"; fails=1; fi
+S="$T/s-named"; launch_with_caller_models "$S" MOCK= OPENCODEX_URL=http://named ANTHROPIC_API_KEY=named
+if has "$S" MOCK= && has "$S" OPENCODEX_URL=http://named && has "$S" ANTHROPIC_API_KEY=named && has "$S" "ANTHROPIC_BASE_URL=$dead" && ! grep -q caller "$S/env"
+then echo "ok   a real model comes by name, and only what's named"
+else echo "FAIL naming a real model"; fails=1; fi
 exit "$fails"
