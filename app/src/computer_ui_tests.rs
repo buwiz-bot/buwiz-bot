@@ -93,7 +93,9 @@ fn Tab() -> impl IntoElement {
         .child(view().label("a job").w(px(40.0)).h(px(20.0)).on_press(move || on.update(|s| s.jobs = vec![job(false)])))
         .child(view().label("asleep").w(px(40.0)).h(px(20.0)).on_press(move || on.set(Status { state: "asleep".to_owned(), jobs: vec![job(true)], ..Status::default() })))
         .child(view().label("over").w(px(40.0)).h(px(20.0)).on_press(move || on.set(Status { state: "awake".to_owned(), ..Status::default() })))
+        .child(view().label("close menu").w(px(40.0)).h(px(20.0)).on_press(|| crate::live::store().ctx.set(None)))
         .child(dynamic(move || crate::computer::body_of(on.get()).into_element()))
+        .child(crate::ctx::layer())
         .child(text("probe ready=1").text_size(px(8.0)))
 }
 
@@ -105,11 +107,15 @@ fn the_tab_says_how_a_job_stands_and_sleep_says_what_it_does() {
     let mut config = EngineConfig::new(App::Rust(Root::new::<Tab>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(900.0), px(600.0));
     let mut app = run(config);
+    app.right_click("Open computer", 20.0, 20.0);
     assert!(shows(&mut app, "Sleep") && !shows(&mut app, "'s job"), "{:?}", app.texts());
+    app.press("close menu");
 
     app.press("a job");
     assert!(shows(&mut app, "Ann's job \"the build\" is running · 3 h 59 min left"), "{:?}", app.texts());
+    app.right_click("Open computer", 20.0, 20.0);
     assert!(shows(&mut app, "Sleep, and freeze its job"), "{:?}", app.texts());
+    app.press("close menu");
     // pick 1B: a job's state and nothing of what the Bot can be counted on for
     for promise in ["always", "keeps working", "while this Mac", "isn't a server"] {
         assert!(!app.texts().iter().any(|t| t.to_lowercase().contains(promise)), "{promise}: {:?}", app.texts());
@@ -119,7 +125,193 @@ fn the_tab_says_how_a_job_stands_and_sleep_says_what_it_does() {
     assert!(shows(&mut app, "frozen while this computer sleeps"), "{:?}", app.texts());
 
     app.press("over");
-    assert!(!shows(&mut app, "'s job") && !shows(&mut app, "freeze"), "{:?}", app.texts());
+    app.right_click("Open computer", 20.0, 20.0);
+    assert!(!shows(&mut app, "'s job") && !shows(&mut app, "freeze") && shows(&mut app, "Sleep"), "{:?}", app.texts());
+}
+
+/// A Bot, what a poll says of it, and the screen's picture.
+type Said = (String, Status, Option<String>);
+/// What the `say` button puts on the pane, and the row the `pick` button picks.
+static NEXT: std::sync::Mutex<(Option<Said>, String)> = std::sync::Mutex::new((None, String::new()));
+
+const PICTURE: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+#[component]
+fn Live() -> impl IntoElement {
+    let st = crate::live::store();
+    view()
+        .size_full()
+        .child(view().label("on b1").w(px(40.0)).h(px(20.0)).on_press(|| crate::computer::pane_for("b1")))
+        .child(view().label("on b2").w(px(40.0)).h(px(20.0)).on_press(|| crate::computer::pane_for("b2")))
+        .child(view().label("say").w(px(40.0)).h(px(20.0)).on_press(|| {
+            if let Some((bot, status, tile)) = NEXT.lock().unwrap().0.take() {
+                crate::computer::pane_says(&bot, status, tile);
+            }
+        }))
+        .child(view().label("pick").w(px(40.0)).h(px(20.0)).on_press(move || {
+            let label = NEXT.lock().unwrap().1.clone();
+            if let Some(i) = st.ctx.get_untracked().and_then(|m| m.items.into_iter().find(|i| i.label == label)) {
+                crate::ctx::act(&i);
+            }
+        }))
+        .child(view().label("close menu").w(px(40.0)).h(px(20.0)).on_press(move || st.ctx.set(None)))
+        .child(view().label("back").w(px(40.0)).h(px(20.0)).on_press(move || st.mini_full.set(Vec::new())))
+        .child(dynamic(|| crate::computer::pane_body().into_element()))
+        .child(crate::ctx::layer())
+        .child(text(move || {
+            let rows = st.ctx.with(|m| m.as_ref().map(|m| m.items.iter().map(|i| i.label.clone()).collect::<Vec<_>>().join("+")));
+            let open = st.mini_full.with(|v| v.iter().map(|m| format!("{} {}", m.key, m.title)).collect::<Vec<_>>().join("+"));
+            format!("probe ready=1 menu=[{}] open=[{open}]", rows.unwrap_or_else(|| "shut".to_owned()))
+        }).text_size(px(8.0)))
+}
+
+fn on_the_tab() -> Headless {
+    let mut config = EngineConfig::new(App::Rust(Root::new::<Live>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(600.0));
+    let mut app = run(config);
+    app.press("on b1");
+    app
+}
+
+fn put(app: &mut Headless, bot: &str, status: Status, tile: Option<&str>) {
+    NEXT.lock().unwrap().0 = Some((bot.to_owned(), status, tile.map(str::to_owned)));
+    app.press("say");
+    app.pump(Duration::from_millis(60));
+}
+
+fn pick(app: &mut Headless, row: &str) {
+    NEXT.lock().unwrap().1 = row.to_owned();
+    app.press("pick");
+    app.pump(Duration::from_millis(60));
+}
+
+fn in_state(state: &str) -> Status {
+    Status { state: state.to_owned(), ..Status::default() }
+}
+
+fn sent() -> Vec<String> {
+    std::mem::take(&mut crate::computer::CANNED.lock().unwrap().1).into_iter().map(|(path, _)| path).collect()
+}
+
+#[test]
+fn the_tab_has_no_open_or_sleep_button_and_a_right_click_has_them() {
+    if !in_child("the_tab_has_no_open_or_sleep_button_and_a_right_click_has_them") {
+        return;
+    }
+    let mut app = on_the_tab();
+    put(&mut app, "b1", in_state("awake"), Some(PICTURE));
+    assert!(shows(&mut app, "menu=[shut]"), "{:?}", app.texts());
+    assert!(!app.has("Open") && !app.has("Sleep"), "the buttons are gone");
+    assert!(!app.texts().iter().any(|t| *t == "Open" || t.starts_with("Sleep")), "{:?}", app.texts());
+
+    app.right_click("Open computer", 20.0, 20.0);
+    assert!(shows(&mut app, "menu=[Open+Sleep]"), "{:?}", app.texts());
+    assert!(app.texts().contains(&"Open") && app.texts().contains(&"Sleep"), "the card draws them: {:?}", app.texts());
+    pick(&mut app, "Open");
+    assert!(shows(&mut app, "open=[computer:b1 Ann's computer]") && shows(&mut app, "menu=[shut]"), "{:?}", app.texts());
+
+    app.right_click("Open computer", 20.0, 20.0);
+    pick(&mut app, "Sleep");
+    assert!(shows(&mut app, "menu=[shut]"), "{:?}", app.texts());
+    wait_until_sent(&mut app);
+    assert_eq!(sent(), ["/v1/host/computer/bot/b1/sleep"]);
+}
+
+fn wait_until_sent(app: &mut Headless) {
+    for _ in 0..100 {
+        if !crate::computer::CANNED.lock().unwrap().1.is_empty() {
+            return;
+        }
+        app.pump(Duration::from_millis(20));
+    }
+    panic!("nothing reached the broker");
+}
+
+#[test]
+fn the_menu_offers_what_the_state_allows() {
+    if !in_child("the_menu_offers_what_the_state_allows") {
+        return;
+    }
+    let mut app = on_the_tab();
+    let remote = |screen, state: &str| Status { remote: Some(crate::computer::Remote { screen, place: "me@h".to_owned() }), ..in_state(state) };
+
+    // an SSH host has no screen to open, and a remote's sleep is its disconnect
+    put(&mut app, "b1", remote(false, "awake"), None);
+    app.right_click("Wake computer", 20.0, 20.0);
+    assert!(shows(&mut app, "menu=[Disconnect]"), "{:?}", app.texts());
+    app.press("close menu");
+
+    // what sits beside the pair stays
+    let shared = Status { bots: vec![("b1".to_owned(), "Ann".to_owned()), ("b2".to_owned(), "Bea".to_owned())], ..remote(true, "awake") };
+    put(&mut app, "b1", shared, None);
+    assert!(shows(&mut app, "Leave this computer") && shows(&mut app, "Remove"), "{:?}", app.texts());
+
+    for state in ["asleep", "absent", "error"] {
+        put(&mut app, "b1", in_state(state), None);
+        app.right_click("Wake computer", 20.0, 20.0);
+        assert!(shows(&mut app, "menu=[Wake computer]"), "{state}: {:?}", app.texts());
+        pick(&mut app, "Wake computer");
+        wait_until_sent(&mut app);
+        assert_eq!(sent(), ["/v1/host/computer/bot/b1/wake"], "{state}");
+    }
+
+    // nothing to ask of a computer that's coming up, or of one not heard from yet
+    for state in ["waking", ""] {
+        put(&mut app, "b1", in_state(state), None);
+        app.right_click("Wake computer", 20.0, 20.0);
+        assert!(shows(&mut app, "menu=[shut]"), "{state}: {:?}", app.texts());
+    }
+}
+
+#[test]
+fn a_left_click_on_the_computer_opens_it() {
+    if !in_child("a_left_click_on_the_computer_opens_it") {
+        return;
+    }
+    let mut app = on_the_tab();
+    put(&mut app, "b1", in_state("awake"), Some(PICTURE));
+    app.press("Open computer");
+    assert!(shows(&mut app, "open=[computer:b1 Ann's computer]"), "{:?}", app.texts());
+
+    // with Open gone, the tile is what opens a computer whose first picture hasn't come
+    app.press("back");
+    put(&mut app, "b1", in_state("awake"), None);
+    assert!(shows(&mut app, "open=[]"), "{:?}", app.texts());
+    app.press("Open computer");
+    assert!(shows(&mut app, "open=[computer:b1 Ann's computer]"), "{:?}", app.texts());
+}
+
+#[test]
+fn woke_in_goes_ten_seconds_after_it_shows_and_a_new_wake_shows_it_again() {
+    if !in_child("woke_in_goes_ten_seconds_after_it_shows_and_a_new_wake_shows_it_again") {
+        return;
+    }
+    let woke = |ms| Status { wake_ms: Some(ms), ..in_state("awake") };
+    let mut app = on_the_tab();
+    put(&mut app, "b1", woke(1200), None);
+    assert!(shows(&mut app, "Woke in 1.2 s"), "{:?}", app.texts());
+
+    // a poll says the same thing again, and that's no new wake
+    app.pump(Duration::from_secs(5));
+    put(&mut app, "b1", woke(1200), None);
+    app.pump(Duration::from_millis(4000));
+    assert!(shows(&mut app, "Woke in 1.2 s"), "still there at 9 seconds: {:?}", app.texts());
+    app.pump(Duration::from_millis(1200));
+    assert!(!shows(&mut app, "Woke in"), "gone at 10: {:?}", app.texts());
+    put(&mut app, "b1", woke(1200), None);
+    assert!(!shows(&mut app, "Woke in"), "the broker still says it, and it stays gone: {:?}", app.texts());
+
+    // moving to another Bot and back is no new wake either
+    app.press("on b2");
+    app.pump(Duration::from_millis(60));
+    app.press("on b1");
+    put(&mut app, "b1", woke(1200), None);
+    assert!(!shows(&mut app, "Woke in"), "{:?}", app.texts());
+
+    // a sleep and a wake that took just as long is
+    put(&mut app, "b1", in_state("asleep"), None);
+    put(&mut app, "b1", woke(1200), None);
+    assert!(shows(&mut app, "Woke in 1.2 s"), "{:?}", app.texts());
 }
 
 #[component]
