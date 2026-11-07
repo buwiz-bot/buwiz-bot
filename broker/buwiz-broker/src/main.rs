@@ -207,6 +207,9 @@ async fn main() {
         line.mcp().stop_all().await;
     }
     if let Some(ctx) = &hub_ctx {
+        if let Some(computers) = buwiz_broker::hub::computer::Computers::of(ctx) {
+            computers.let_the_mac_sleep();
+        }
         if let Some(host) = &ctx.plugins {
             host.stop_all().await;
         }

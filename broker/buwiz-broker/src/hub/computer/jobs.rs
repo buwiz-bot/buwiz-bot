@@ -18,6 +18,8 @@
 //!   the row, so a restart doesn't lose it, and it's checked again as it starts, so a person
 //!   who turned routines off in between isn't charged for it.
 //!
+//! While a job runs, and isn't frozen, the Mac is kept awake ([`super::awake`]).
+//!
 //! No row holds the command: what's run stays in the computer, and a job's name is the model's words
 //! for a person to read.
 
@@ -154,6 +156,8 @@ impl Computers {
         for j in found {
             now.jobs.insert(j.id, Running { bot: j.bot, computer: j.computer, thread: j.thread, starting: false, frozen: false });
         }
+        drop(now);
+        self.sync_awake();
     }
 
     /// `live`'s Bot starts `command`, for `limit` at most: the job's row, or what the model is told.
@@ -180,11 +184,13 @@ impl Computers {
         if let Err(why) = started {
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE id=?", [&id]));
             self.now().jobs.remove(&id);
+            self.sync_awake();
             return Err(why);
         }
         if let Some(j) = self.now().jobs.get_mut(&id) {
             j.starting = false;
         }
+        self.sync_awake();
         Ok(job)
     }
 
@@ -262,6 +268,7 @@ impl Computers {
             }
         }
         self.start_owed_turns(ctx);
+        self.sync_awake();
     }
 
     /// Asks the computer how `j` stands, and ends it if it has: whether it did. `by_model` is a
@@ -286,6 +293,7 @@ impl Computers {
     /// The computer slept or woke: its jobs stopped where they were, or go on.
     pub(super) fn freeze_jobs(&self, computer: &str, frozen: bool) {
         self.now().jobs.values_mut().filter(|j| j.computer == computer).for_each(|j| j.frozen = frozen);
+        self.sync_awake();
     }
 
     /// `j` is over. Only the first to say so posts. Its computer gets the time an idle one gets, for
@@ -301,6 +309,7 @@ impl Computers {
             post_in(ctx, &j.thread, &n);
         }
         self.now().jobs.remove(&j.id);
+        self.sync_awake();
     }
 
     /// The turns ended jobs owe, one each, in chats that aren't busy. Off, it's forgotten.
@@ -342,6 +351,7 @@ impl Computers {
     pub(super) fn forget_jobs(&self, ctx: &HubCtx, computer: &str) {
         let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_jobs WHERE computer_id=?", [computer]));
         self.now().jobs.retain(|_, j| j.computer != computer);
+        self.sync_awake();
     }
 
     /// The jobs on `computer`, for the Computer tab: running, or frozen while it sleeps.
@@ -353,6 +363,17 @@ impl Computers {
             found.into_iter().filter_map(|j| now.jobs.get(&j.id).filter(|r| !r.starting).map(|r| r.frozen).map(|frozen| (j, frozen))).collect()
         };
         shown.iter().map(|(j, frozen)| json!({"name": j.name, "bot": super::bot_name(ctx, &j.bot), "frozen": frozen, "secondsLeft": (j.until - at).max(0) / 1000})).collect()
+    }
+
+    /// What holds the Mac up follows the jobs: on while one runs, off when none does.
+    fn sync_awake(&self) {
+        let wanted = self.now().jobs.values().any(|j| !j.frozen);
+        self.keep_awake.set(wanted);
+    }
+
+    /// This broker is on its way out: nothing of it stays.
+    pub fn let_the_mac_sleep(&self) {
+        self.keep_awake.set(false);
     }
 
     /// The chats a job is running for right now, for `GET /threads`. A frozen one isn't running.

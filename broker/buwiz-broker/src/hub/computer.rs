@@ -65,6 +65,7 @@ use super::routes::host;
 use super::types::{self, HubRequest, HubResponse, Pattern::Exact as X, Pattern::Segments as S, Verb};
 use super::Registry;
 
+pub mod awake;
 pub mod jobs;
 
 /// The own screens a box runs (`box-screen`'s `BOX_MAX_OWN_SCREENS`).
@@ -284,6 +285,8 @@ pub struct Computers {
     seating: tokio::sync::Mutex<()>,
     /// which models see images, as opencodex says, and when it said
     sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
+    /// held while a job runs
+    keep_awake: awake::KeepAwake,
 }
 
 /// What a tool acts with: the computer, and the screen of the Bot it was found for.
@@ -305,7 +308,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).unwrap_or_default(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default() }
+        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).unwrap_or_default(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
     }
 
     /// With this remote provider (tests).

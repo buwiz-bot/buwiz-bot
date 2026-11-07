@@ -435,3 +435,106 @@ async fn a_run_under_way_marks_its_row_for_an_app_that_wasnt_there() {
     b.ctx.jobs.with(job, |j| j.abort = Some(Arc::new(tokio::sync::Notify::new())));
     assert_eq!(marks(&b)[0].0, json!(true));
 }
+
+/// A stand-in for `caffeinate`: it writes down how it was called and its pid, and waits.
+fn fake_caffeinate(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("buwiz-awake-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (program, log) = (dir.join("caffeinate"), dir.join("log"));
+    std::fs::write(&program, format!("#!/bin/sh\necho \"$$ $*\" >> '{}'\nexec sleep 300\n", log.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (program, log)
+}
+
+fn awake_bed(label: &str) -> (Bed, std::path::PathBuf) {
+    let (program, log) = fake_caffeinate(label);
+    (bed_with(label, |p| Computers { idle: Duration::ZERO, deep: Duration::ZERO, keep_awake: awake::KeepAwake::with(program), ..Computers::new(p) }), log)
+}
+
+fn calls_of(log: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_owned).collect()
+}
+
+async fn held(log: &std::path::Path, times: usize) -> String {
+    until("it was never held", || calls_of(log).len() == times).await;
+    calls_of(log).last().unwrap().clone()
+}
+
+fn running(line: &str) -> bool {
+    let pid = line.split(' ').next().unwrap();
+    std::process::Command::new("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().unwrap().success()
+}
+
+#[tokio::test]
+async fn the_mac_is_kept_awake_for_a_job_by_this_brokers_pid_and_let_go_after() {
+    let (b, log) = awake_bed("hold");
+    awake(&b, &b.ann.0).await;
+    assert!(calls_of(&log).is_empty(), "a computer awake isn't a job");
+    let id = started(&b, json!({"command": "x"})).await;
+    let line = held(&log, 1).await;
+    assert!(line.ends_with(&format!(" -s -w {}", std::process::id())), "{line}");
+    assert!(running(&line));
+
+    // a second job, and a look, take nothing more
+    started(&b, json!({"command": "y"})).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(calls_of(&log).len(), 1, "held once");
+
+    let r = run(&b, &b.ann.1, None);
+    assert_eq!(call(&r, "computer_job_stop", json!({"id": id})).await.is_error, None);
+    assert!(running(&line), "one job still runs");
+    over(&b, &r);
+    job_is(&b, "exit 0");
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(!running(&line), "no job runs, so nothing holds the Mac");
+}
+
+#[tokio::test]
+async fn a_frozen_job_doesnt_keep_the_mac_awake() {
+    let (b, log) = awake_bed("frozen");
+    let computer = awake(&b, &b.ann.0).await;
+    started(&b, json!({"command": "x"})).await;
+    let line = held(&log, 1).await;
+    b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
+    assert!(!running(&line), "nothing runs");
+    awake(&b, &b.ann.0).await;
+    let line = held(&log, 2).await;
+    assert!(running(&line), "it runs again");
+}
+
+#[tokio::test]
+async fn a_restart_holds_the_mac_for_a_job_it_found_and_one_that_died_is_held_again() {
+    let (b, log) = awake_bed("restart");
+    awake(&b, &b.ann.0).await;
+    started(&b, json!({"command": "x"})).await;
+    let first = held(&log, 1).await;
+    let (program, next_log) = fake_caffeinate("restart-next");
+    let fresh = Arc::new(Computers { idle: Duration::ZERO, deep: Duration::ZERO, keep_awake: awake::KeepAwake::with(program), ..Computers::new(b.mock.clone()) });
+    fresh.load_jobs(&b.ctx);
+    let line = held(&next_log, 1).await;
+    assert!(running(&line));
+    let pid = line.split(' ').next().unwrap();
+    std::process::Command::new("kill").arg(pid).status().unwrap();
+    // killed, it's unreaped until a look finds it gone, and then it's started again
+    for _ in 0..200 {
+        fresh.sleep_the_idle(&b.ctx).await;
+        if calls_of(&next_log).len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(running(&held(&next_log, 2).await));
+    fresh.let_the_mac_sleep();
+    assert!(!running(calls_of(&next_log).last().unwrap()), "a broker on its way out lets go");
+    b.computers.let_the_mac_sleep();
+    assert!(!running(&first));
+}
+
+#[tokio::test]
+async fn a_program_that_wont_start_doesnt_stop_a_job() {
+    let b = bed_with("no-caffeinate", |p| Computers { keep_awake: awake::KeepAwake::with("/nonexistent/caffeinate".into()), ..Computers::new(p) });
+    awake(&b, &b.ann.0).await;
+    started(&b, json!({"command": "x"})).await;
+}
