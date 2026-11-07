@@ -42,8 +42,10 @@ fn threads(accepts: Value) -> Value {
     let bot = |id: &str, name: &str| json!({"id": id, "name": name, "shape": "blob", "color": "#1884FC"});
     let mut nova = bot("nova", "Nova");
     nova["accepts"] = accepts;
-    json!({"list": [{"id": "t_nova", "title": "Nova", "bot": bot("nova", "Nova")}, {"id": "t_plain", "title": "Plain"}],
-        "bots": [nova, bot("scout", "Scout"), bot("ada", "Ada")]})
+    let mut scribe = bot("h1", "Scribe");
+    scribe["helper"] = json!({"parent": "ada", "task": "t"});
+    json!({"list": [{"id": "t_nova", "title": "Nova", "bot": bot("nova", "Nova")}, {"id": "t_plain", "title": "Plain"}, {"id": "t_h", "title": "Scribe", "bot": bot("h1", "Scribe")}],
+        "bots": [nova, bot("scout", "Scout"), bot("ada", "Ada"), scribe]})
 }
 
 /// A stand-in broker behind the engine's network: every request's
@@ -53,6 +55,7 @@ struct Broker {
     log: Mutex<Vec<(String, Value)>>,
     reply: Value,
     accepts: Mutex<Value>,
+    sends: Mutex<Value>,
 }
 
 struct Done;
@@ -78,9 +81,14 @@ impl Network for Broker {
             *self.accepts.lock().unwrap() = json!("none");
         }
         self.log.lock().unwrap().push((path.clone(), body));
+        if path == "/v1/host/tools/set" {
+            *self.sends.lock().unwrap() = self.log.lock().unwrap().last().map(|(_, b)| b["state"].clone()).unwrap_or_default();
+        }
         let answer = match path.as_str() {
             ROUTE => self.reply.clone(),
             "/threads" => threads(self.accepts.lock().unwrap().clone()),
+            "/v1/host/tools/set" => json!({"ok": true, "text": "Nova can't start a message now.", "undo": "u_2"}),
+            p if p.starts_with("/v1/host/tools?") => json!({"ok": true, "tools": [{"key": "agents", "state": self.sends.lock().unwrap().clone()}]}),
             _ => json!({"ok": true}),
         };
         events(FetchEvent::Head(HttpHead { status: 200, ..Default::default() }));
@@ -91,7 +99,7 @@ impl Network for Broker {
 }
 
 fn start(reply: Value) -> (Headless, Arc<Broker>) {
-    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), reply, accepts: Mutex::new(json!("none")) });
+    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), reply, accepts: Mutex::new(json!("none")), sends: Mutex::new(json!("on")) });
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1000.0), px(800.0));
     config.network = Some(seen.clone());
@@ -169,7 +177,7 @@ fn Stage() -> impl IntoElement {
         }))
         .child(crate::mini_v1::ui::suggest_chips(vec![("See more".to_owned(), "/messages allow all".to_owned()), ("Plain".to_owned(), "/nosuch thing".to_owned())]))
         .child(dynamic(|| {
-            let turns: Vec<_> = store().turns.get().into_iter().filter(|t| t.tools_change.is_some()).collect();
+            let turns: Vec<_> = store().turns.get().into_iter().filter(|t| t.tools_change.is_some() || t.messages_card.is_some()).collect();
             view().children(turns.into_iter().map(|t| crate::chat::turn_row(t, "t_nova").into_element())).into_element()
         }))
 }
@@ -448,4 +456,151 @@ fn a_plain_chat_and_a_refusal_change_nothing() {
     settle(&mut app);
     assert_eq!(accepts_held(&mut app), Some(crate::agents::Accepts::All), "put back");
     assert!(on(&mut app, || store().turns.with_untracked(|t| t.iter().all(|t| t.tools_change.is_none()))), "no receipt");
+}
+
+/// The card as the broker's notice brings it, in the open chat.
+fn show_card(app: &mut Headless, bot: &'static str) {
+    on(app, move || {
+        let t = crate::store::Turn::of(&json!({"i": 1, "role": "notice", "text": "x", "notice": {"kind": "messages", "bot": bot, "botName": bot, "said": "/messages"}}));
+        store().turns.update(|l| l.push(t));
+    });
+    settle(app);
+}
+
+fn has(app: &Headless, word: &str) -> bool {
+    app.texts().iter().any(|t| *t == word)
+}
+
+/// `/messages` asks the broker for the card and sends nothing to the model.
+#[test]
+fn the_command_and_the_palette_row_post_the_card() {
+    if !in_child("the_command_and_the_palette_row_post_the_card") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("all"));
+    place(&mut app, "/messages");
+    send(&mut app);
+    place(&mut app, "/messages scout");
+    send(&mut app);
+    let cards = wait_for(&mut app, &seen, "/v1/host/agents/card", 2);
+    assert_eq!(cards[0], json!({"chat": "t_nova", "bot": "nova", "said": "/messages"}));
+    assert_eq!(cards[1], json!({"chat": "t_nova", "bot": "scout", "said": "/messages scout"}));
+    let i = on(&mut app, || {
+        let st = store();
+        st.toggle_palette();
+        st.palette_results().iter().position(|r| r.title == "Messages…").expect("the row")
+    });
+    assert!(on(&mut app, move || store().palette_results()[i + 1].title == "Bot tools…"), "beside it");
+    on(&mut app, move || store().palette_run_at(i));
+    let cards = wait_for(&mut app, &seen, "/v1/host/agents/card", 3);
+    assert_eq!(cards[2], json!({"chat": "t_nova", "bot": "nova", "said": ""}));
+    assert!(heard(&seen, "/chat").is_empty());
+    // no Bot here: no row
+    open(&mut app, &seen, "t_plain", json!("all"));
+    assert!(on(&mut app, || store().palette_results().iter().all(|r| r.title != "Messages…")));
+}
+
+/// Title, one row, the state as it is; and a change elsewhere reaches a
+/// card already drawn: Hears from the Bots, Sends read again.
+#[test]
+fn a_card_draws_one_row_and_follows_what_is_true_now() {
+    if !in_child("a_card_draws_one_row_and_follows_what_is_true_now") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!(["scout"]));
+    show_card(&mut app, "nova");
+    for w in ["Who can message Nova?", "Nova", "Hears", "All", "Some", "None", "Can it start a message", "On", "Ask", "Off", "Scout", "/messages"] {
+        assert!(has(&app, w), "{w}: {:?}", app.texts());
+    }
+    wait_for(&mut app, &seen, "/v1/host/tools?bot=nova", 1);
+    // moved somewhere else: `/tools`, or another card
+    *seen.accepts.lock().unwrap() = json!("none");
+    *seen.sends.lock().unwrap() = json!("off");
+    on(&mut app, || {
+        store().set_threads(threads(json!("none")));
+        crate::tools::sends_moved();
+    });
+    settle(&mut app);
+    assert!(!has(&app, "Scout"), "off the card with the list: {:?}", app.texts());
+    assert_eq!(on(&mut app, || crate::tools::sends_of("nova")), "off");
+}
+
+/// A helper's card: no Hears, and it says why.
+#[test]
+fn a_helpers_card_shows_no_hears() {
+    if !in_child("a_helpers_card_shows_no_hears") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_h", json!("all"));
+    show_card(&mut app, "h1");
+    assert!(has(&app, "Who can message Scribe?") && has(&app, "Can it start a message"), "{:?}", app.texts());
+    assert!(!has(&app, "Hears") && !has(&app, "None"), "{:?}", app.texts());
+    assert!(has(&app, "A helper takes messages only from its parent."));
+}
+
+/// Sends through `/tools`'s own route, with a receipt; Hears through the
+/// accepts route; a ✕ takes one Bot off.
+#[test]
+fn the_controls_call_the_routes_and_leave_a_receipt() {
+    if !in_child("the_controls_call_the_routes_and_leave_a_receipt") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!(["scout", "ada"]));
+    show_card(&mut app, "nova");
+    app.press("Can it start a message: Off");
+    assert_eq!(wait_for(&mut app, &seen, "/v1/host/tools/set", 1)[0], json!({"bot": "nova", "key": "agents", "state": "off"}));
+    settle(&mut app);
+    assert!(has(&app, "Undo"), "{:?}", app.texts());
+    app.press("Take Scout off the list");
+    assert_eq!(wait_for(&mut app, &seen, ROUTE, 1)[0], json!({"bot": "nova", "accepts": ["ada"]}));
+    settle(&mut app);
+    assert_eq!(app.texts().iter().filter(|t| **t == "✕").count(), 1, "Ada's alone: {:?}", app.texts());
+    app.press("Hears: None");
+    assert_eq!(wait_for(&mut app, &seen, ROUTE, 2)[1], json!({"bot": "nova", "accepts": "none"}));
+    assert!(heard(&seen, "/chat").is_empty());
+}
+
+/// Some: an empty list, and the box ready for a name in this Bot's chat;
+/// not over the person's words, and not on another Bot's card.
+#[test]
+fn some_starts_an_empty_list_and_opens_allow() {
+    if !in_child("some_starts_an_empty_list_and_opens_allow") {
+        return;
+    }
+    let (mut app, seen) = start(json!({"ok": true, "text": "No Bot is on Nova's list now.", "undo": "u_1"}));
+    open(&mut app, &seen, "t_nova", json!("all"));
+    show_card(&mut app, "nova");
+    app.press("Hears: Some");
+    assert_eq!(wait_for(&mut app, &seen, ROUTE, 1)[0], json!({"bot": "nova", "accepts": []}));
+    settle(&mut app);
+    assert_eq!(draft(&mut app), "/messages allow ");
+    assert_eq!(labels(&mut app), ["all", "Scout", "Ada"]);
+    assert!(has(&app, "Undo"), "{:?}", app.texts());
+    type_in(&mut app, "");
+    app.press("Hears: All");
+    wait_for(&mut app, &seen, ROUTE, 2);
+    settle(&mut app);
+    type_in(&mut app, "my own words");
+    app.press("Hears: Some");
+    wait_for(&mut app, &seen, ROUTE, 3);
+    settle(&mut app);
+    assert_eq!(draft(&mut app), "my own words", "kept");
+}
+
+#[test]
+fn some_on_another_bots_card_leaves_the_box_alone() {
+    if !in_child("some_on_another_bots_card_leaves_the_box_alone") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("all"));
+    show_card(&mut app, "scout");
+    app.press("Hears: Some");
+    assert_eq!(wait_for(&mut app, &seen, ROUTE, 1)[0], json!({"bot": "scout", "accepts": []}));
+    settle(&mut app);
+    assert_eq!(draft(&mut app), "", "`allow` here means Nova, not Scout");
 }

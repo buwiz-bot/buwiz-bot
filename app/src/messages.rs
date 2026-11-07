@@ -3,24 +3,29 @@
 //! Bots the app already holds, nothing here reaches the model, and a pick
 //! only fills the box, so Enter on a complete line is what changes anything.
 //!
-//! - `/messages`, `/messages nova`: whom a Bot hears now (plain words until
-//!   the card comes).
+//! - `/messages`, `/messages nova`, ⌘K's "Messages…": the card, a `messages`
+//!   notice the broker posts in the open chat. It carries only whose card it
+//!   is: what it draws is read now, so one in the scrollback is never wrong.
 //! - `/messages allow all`, `/messages allow scout`, `/messages none`: a
 //!   change to the open chat's Bot through `/v1/host/agents/accepts`.
 //!
 //! Only the person's own Enter runs these: `store::send_text` (a chip, a
 //! choice card) sends the same words on to the AI as plain text.
 
+use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use crate::agents::{Accepts, listed_bot, name_of};
 use crate::live::store;
 use crate::slash::{Pick, PopRow};
 use crate::store::RoxBot;
+use crate::theme;
 
 const OPEN_A_BOT: &str = "Open a Bot's chat first.";
 const HELPER: &str = "A helper takes messages only from its parent.";
 const NOT_CONNECTED: &str = "Couldn't reach the broker, so nothing changed.";
+/// What pressing Some leaves in the box: the list opens for the first name.
+const ALLOW: &str = "/messages allow ";
 
 /// Whether `text`, trimmed, is `/messages`: `dispatch`'s reading of a
 /// built-in's name.
@@ -31,14 +36,14 @@ pub(crate) fn is_command(text: &str) -> bool {
 /// The chat a command was typed in.
 enum Here {
     Plain,
-    Helper,
+    Helper(Box<RoxBot>),
     Bot(Box<RoxBot>),
 }
 
 fn here() -> Here {
     match store().active_bot_untracked() {
         None => Here::Plain,
-        Some(b) if b.helper.is_some() => Here::Helper,
+        Some(b) if b.helper.is_some() => Here::Helper(Box::new(b)),
         Some(b) => Here::Bot(Box::new(b)),
     }
 }
@@ -85,6 +90,7 @@ fn parse(rest: &str) -> Line<'_> {
 #[derive(PartialEq, Debug)]
 enum Outcome {
     Say(String),
+    Card(String),
     Set { bot: String, accepts: Accepts },
 }
 
@@ -96,16 +102,6 @@ fn named<'a>(who: &str, bots: &'a [RoxBot]) -> Result<&'a RoxBot, String> {
         (Some(b), None) => Ok(b),
         (Some(_), Some(_)) => Err(format!("More than one Bot is called {who}.")),
         _ => Err(format!("No Bot is called {who}.")),
-    }
-}
-
-/// Whom `b` hears from, in words.
-fn hears(b: &RoxBot, bots: &[RoxBot]) -> String {
-    match &b.accepts {
-        Accepts::All => format!("Every Bot can message {}.", b.name),
-        Accepts::None => format!("{} hears from nobody.", b.name),
-        Accepts::List(l) if l.is_empty() => format!("No Bot is on {}'s list.", b.name),
-        Accepts::List(l) => format!("{} hears only from {}.", b.name, l.iter().map(|id| name_of(id, bots)).collect::<Vec<_>>().join(", ")),
     }
 }
 
@@ -134,15 +130,14 @@ fn outcome(line: &Line, here: &Here, bots: &[RoxBot]) -> Outcome {
     match (line, here) {
         (Line::NotACommand(s), _) => say(s),
         (Line::Open, Here::Plain) => say("Open a Bot's chat, or name one: /messages <Bot>"),
-        (Line::Open, Here::Helper) => say(HELPER),
-        (Line::Open, Here::Bot(b)) => Outcome::Say(hears(b, bots)),
+        (Line::Open, Here::Helper(b) | Here::Bot(b)) => Outcome::Card(b.id.clone()),
         (Line::Named(who), _) => match named(who, bots) {
-            Ok(b) => Outcome::Say(hears(b, bots)),
+            Ok(b) => Outcome::Card(b.id.clone()),
             Err(_) if who.eq_ignore_ascii_case("allow") => say("Allow whom? /messages allow <Bot>"),
             Err(why) => Outcome::Say(why),
         },
         (_, Here::Plain) => say(OPEN_A_BOT),
-        (_, Here::Helper) => say(HELPER),
+        (_, Here::Helper(_)) => say(HELPER),
         (Line::None, Here::Bot(b)) => Outcome::Set { bot: b.id.clone(), accepts: Accepts::None },
         (Line::AllowAll, Here::Bot(b)) => Outcome::Set { bot: b.id.clone(), accepts: Accepts::All },
         (Line::Allow(who), Here::Bot(b)) => allowing(b, who, bots),
@@ -195,7 +190,7 @@ fn rows(rest: &str, here: &Here, bots: &[RoxBot]) -> (Vec<PopRow>, String) {
     );
     let head = match here {
         Here::Plain => OPEN_A_BOT.to_owned(),
-        Here::Helper => HELPER.to_owned(),
+        Here::Helper(_) => HELPER.to_owned(),
         Here::Bot(b) if b.accepts == Accepts::All => format!("Every Bot can already message {}.", b.name),
         Here::Bot(_) => String::new(),
     };
@@ -209,27 +204,58 @@ pub(crate) fn menu(rest: &str) -> (Vec<PopRow>, String) {
 
 /// [`crate::slash`]'s `run`: `rest` is what follows `/messages`.
 pub(crate) fn run(rest: &str) {
+    run_as(rest, format!("/messages{rest}"));
+}
+
+/// ⌘K's "Messages…": `/messages` with no line typed.
+pub(crate) fn open_card() {
+    run_as("", String::new());
+}
+
+fn run_as(rest: &str, said: String) {
     let st = store();
     match outcome(&parse(rest), &here(), &st.bots.get_untracked()) {
         Outcome::Say(s) => crate::toast::show(s),
+        Outcome::Card(bot) => post_card(bot, said),
         Outcome::Set { bot, accepts } => {
             let id = bot.clone();
-            st.agents_accepts(bot, accepts, move |r| answered(&id, r));
+            st.agents_accepts(bot, accepts, move |r| {
+                answered(&id, r);
+            });
         }
     }
 }
 
+/// Asks the broker for `bot`'s card in the open chat, `said` the line typed.
+fn post_card(bot: String, said: String) {
+    let st = store();
+    let chat = st.active_id.get_untracked();
+    if chat.is_empty() {
+        return crate::toast::show("Open a chat first.");
+    }
+    crate::store::spawn_detached(async move {
+        match crate::client::post_any("/v1/host/agents/card", json!({"chat": chat, "bot": bot, "said": said.trim()})).await {
+            Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => store().refresh_turns(),
+            Some(v) => crate::toast::show(crate::tools::refusal(&v, "")),
+            None => crate::toast::show(NOT_CONNECTED),
+        }
+    });
+}
+
 /// The route's answer: `{ok, text, undo}` is the receipt, a refusal a toast.
-fn answered(bot: &str, r: Option<Value>) {
+/// True when it went through.
+fn answered(bot: &str, r: Option<Value>) -> bool {
     let st = store();
     match r {
         Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => {
             let name = st.bots.with_untracked(|b| name_of(bot, b));
             st.add_local_wire_turn(&receipt(bot, &name, &v, crate::tools::now_ms()));
+            return true;
         }
-        Some(v) => crate::toast::show(v.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or(NOT_CONNECTED).to_owned()),
+        Some(v) => crate::toast::show(crate::tools::refusal(&v, "")),
         None => crate::toast::show(NOT_CONNECTED),
     }
+    false
 }
 
 /// The route's answer as an applied `tools_change` turn, the receipt a
@@ -242,6 +268,180 @@ fn receipt(bot: &str, name: &str, answer: &Value, at: i64) -> Value {
         "kind": "tools_change", "id": format!("p_messages_{at}"), "bot": bot, "botName": name, "op": "accepts",
         "state": "applied", "at": at, "undo": answer.get("undo"), "text": text,
     }})
+}
+
+/// A `messages` notice: whose card it is, its name when posted (for a Bot
+/// since gone) and the line that asked for it.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct Notice {
+    pub bot: String,
+    pub bot_name: String,
+    pub said: String,
+}
+
+impl Notice {
+    pub(crate) fn of(v: &Value) -> Option<Self> {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+        (s("kind") == "messages" && !s("bot").is_empty()).then(|| Self { bot: s("bot"), bot_name: s("botName"), said: s("said") })
+    }
+}
+
+/// One choice of a control: its word, whether it holds now, and its press.
+type Choice = (&'static str, bool, Box<dyn Fn()>);
+
+/// A caption over its choices, each button named "Hears: All".
+fn control(caption: &str, choices: Vec<Choice>) -> impl IntoElement {
+    let mut seg = view().flex_row().gap(px(2.0)).p(px(2.0)).rounded(px(8.0)).bg(theme::HOVER);
+    for (word, picked, on) in choices {
+        let hov = signal(false);
+        seg = seg.child(
+            view()
+                .label(crate::tools::position_name(caption, word))
+                .px(px(9.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .bg(move || if picked { theme::MAIN } else if hov.get() { theme::ACTIVE } else { AdaptiveColor::TRANSPARENT })
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                .on_press(move || {
+                    if !picked {
+                        on()
+                    }
+                })
+                .child(text(word).text_size(px(12.0)).text_color(if picked { theme::TEXT } else { theme::MUTED })),
+        );
+    }
+    view().gap(px(3.0)).child(text(caption.to_owned()).text_size(px(11.0)).text_color(theme::MUTED)).child(seg)
+}
+
+/// Whom `id` hears from changes, with its receipt and Undo.
+fn change(id: &str, to: Accepts) {
+    let bot = id.to_owned();
+    store().agents_accepts(id.to_owned(), to, move |r| {
+        answered(&bot, r);
+    });
+}
+
+/// Some: an empty list, said with Undo, then the box ready for the first
+/// name. Only in that Bot's own chat, where `allow` means it, and never
+/// over words the person is writing.
+fn some(id: &str) {
+    let bot = id.to_owned();
+    store().agents_accepts(id.to_owned(), Accepts::List(Vec::new()), move |r| {
+        let st = store();
+        let here = st.active_bot_untracked().is_some_and(|b| b.id == bot);
+        if answered(&bot, r) && here && st.draft.get_untracked().trim().is_empty() {
+            crate::composer::draft_changed(ALLOW);
+            crate::composer::focus();
+        }
+    });
+}
+
+/// Hears: All, Some or None, as it is now.
+fn hears_control(b: &RoxBot) -> impl IntoElement {
+    let (id1, id2, id3) = (b.id.clone(), b.id.clone(), b.id.clone());
+    control(
+        "Hears",
+        vec![
+            ("All", b.accepts == Accepts::All, Box::new(move || change(&id1, Accepts::All))),
+            ("Some", matches!(b.accepts, Accepts::List(_)), Box::new(move || some(&id2))),
+            ("None", b.accepts == Accepts::None, Box::new(move || change(&id3, Accepts::None))),
+        ],
+    )
+}
+
+/// Sends: the `agents` switch, as `/tools` sets it.
+fn sends_control(id: &str) -> impl IntoElement {
+    let now = crate::tools::sends_of(id);
+    let choice = |word: &'static str, state: &'static str| -> Choice {
+        let bot = id.to_owned();
+        (
+            word,
+            now == state,
+            Box::new(move || {
+                let b = bot.clone();
+                crate::tools::set_sends(bot.clone(), state, move |r| {
+                    answered(&b, r);
+                });
+            }),
+        )
+    };
+    control("Can it start a message", vec![choice("On", "on"), choice("Ask", "ask"), choice("Off", "off")])
+}
+
+/// A Bot on the list, with its ✕: off at once, with Undo.
+fn allowed_row(b: &RoxBot, who: &str, bots: &[RoxBot], list: &[String]) -> impl IntoElement {
+    let name = name_of(who, bots);
+    let (id, left) = (b.id.clone(), list.iter().filter(|x| x.as_str() != who).cloned().collect::<Vec<_>>());
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .pl(px(8.0))
+        .pr(px(4.0))
+        .py(px(2.0))
+        .rounded(px(8.0))
+        .bg(theme::HOVER)
+        .child(crate::chat::peer_avatar(who, &name, 16.0))
+        .child(text(name.clone()).text_size(px(12.0)).text_color(theme::TEXT).number_of_lines(1))
+        .child(
+            view()
+                .label(format!("Take {name} off the list"))
+                .size(px(18.0))
+                .items_center()
+                .justify_center()
+                .on_press(move || change(&id, Accepts::List(left.clone())))
+                .child(text("✕").text_size(px(10.0)).text_color(theme::MUTED)),
+        )
+}
+
+/// The card as things are now (tracked: Hears from the Bots held here,
+/// Sends as last read).
+fn card(n: &Notice) -> AnyElement {
+    let bots = store().bots.get();
+    let Some(b) = bots.iter().find(|b| b.id == n.bot).cloned() else {
+        return text(format!("{} is gone.", n.bot_name)).text_size(px(12.0)).text_color(theme::MUTED).into_element();
+    };
+    let title = format!("Who can message {}?", b.name);
+    let row = view()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_3()
+        .child(view().flex_row().items_center().gap_2().flex_1().child(crate::chat::peer_avatar(&b.id, &b.name, 28.0)).child(text(b.name.clone()).text_size(px(13.0)).text_color(theme::TEXT).number_of_lines(1)))
+        .when(b.helper.is_none(), |v| v.child(hears_control(&b)))
+        .child(sends_control(&b.id));
+    let mut c = crate::cards::shell(&format!("messages-card-{}", b.id))
+        .label(title.clone())
+        .child(text(title).text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT))
+        .child(row);
+    if b.helper.is_some() {
+        c = c.child(text(HELPER).text_size(px(12.0)).text_color(theme::MUTED));
+    } else if let Accepts::List(list) = &b.accepts {
+        c = if list.is_empty() {
+            c.child(text("No Bot is on the list yet.").text_size(px(12.0)).text_color(theme::MUTED))
+        } else {
+            c.child(view().flex_row().flex_wrap().gap(px(6.0)).children(list.iter().map(|who| allowed_row(&b, who, &bots, list))))
+        };
+    }
+    c.into_element()
+}
+
+/// The `messages` notice's row: the line that asked for it, then the card.
+pub(crate) fn card_row(n: Notice) -> impl IntoElement {
+    let bot = n.bot.clone();
+    // a Bot's own switch, or a card answered in this chat, moves Sends too
+    effect(move || {
+        store().turns.with(|t| t.len());
+        crate::tools::sends_watch();
+        crate::tools::load_sends(bot.clone());
+    });
+    let said = n.said.clone();
+    view()
+        .w_full()
+        .gap(px(6.0))
+        .when(!said.is_empty(), |v| v.child(view().flex_row().justify_end().child(text(said).text_size(px(13.0)).text_color(theme::MUTED))))
+        .child(view().flex_row().w_full().justify_center().child(dynamic(move || card(&n))))
 }
 
 #[cfg(test)]
@@ -376,22 +576,33 @@ mod tests {
     fn plain_and_helper_chats_refuse_a_change_but_can_read() {
         for line in ["none", "allow all", "allow scout"] {
             assert_eq!(run_line(line, &Here::Plain), says("Open a Bot's chat first."), "{line}");
-            assert_eq!(run_line(line, &Here::Helper), says("A helper takes messages only from its parent."), "{line}");
+            assert_eq!(run_line(line, &Here::Helper(Box::new(bot("h1", "Scribe", Accepts::All)))), says("A helper takes messages only from its parent."), "{line}");
         }
-        assert_eq!(run_line("", &Here::Helper), says("A helper takes messages only from its parent."));
+        let helper = || Here::Helper(Box::new(bot("h1", "Scribe", Accepts::All)));
+        assert_eq!(run_line("", &helper()), Outcome::Card("h1".to_owned()), "its own card, which shows no Hears");
         assert_eq!(run_line("", &Here::Plain), says("Open a Bot's chat, or name one: /messages <Bot>"));
-        assert_eq!(run_line("scout", &Here::Plain), says("Every Bot can message Scout."));
+        assert_eq!(run_line("scout", &Here::Plain), Outcome::Card("scout".to_owned()));
         assert_eq!(rows("allow ", &Here::Plain, &bots()).1, "Open a Bot's chat first.");
-        assert_eq!(rows("allow ", &Here::Helper, &bots()).1, "A helper takes messages only from its parent.");
+        assert_eq!(rows("allow ", &Here::Helper(Box::new(bot("h1", "Scribe", Accepts::All))), &bots()).1, "A helper takes messages only from its parent.");
     }
 
     #[test]
-    fn reading_a_bot_says_whom_it_hears_and_never_changes_it() {
-        let b = vec![bot("nova", "Nova", Accepts::List(vec!["scout".to_owned(), "ada".to_owned()])), bot("scout", "Scout", Accepts::None), bot("ada", "Ada", Accepts::List(Vec::new()))];
-        assert_eq!(run_on("", &Here::Bot(Box::new(b[0].clone())), &b), says("Nova hears only from Scout, Ada."));
-        assert_eq!(run_on("SCOUT", &Here::Bot(Box::new(b[0].clone())), &b), says("Scout hears from nobody."));
-        assert_eq!(run_on("ada", &Here::Bot(Box::new(b[0].clone())), &b), says("No Bot is on Ada's list."));
-        assert_eq!(run_on("allow", &Here::Bot(Box::new(b[0].clone())), &b), says("Allow whom? /messages allow <Bot>"));
+    fn reading_a_bot_is_its_card_and_never_a_change() {
+        let h = at(Accepts::None);
+        assert_eq!(run_line("", &h), Outcome::Card("nova".to_owned()));
+        assert_eq!(run_line("SCOUT", &h), Outcome::Card("scout".to_owned()), "this chat, another Bot's card");
+        assert_eq!(run_line("allow", &h), says("Allow whom? /messages allow <Bot>"));
+    }
+
+    #[test]
+    fn a_notice_is_only_whose_card_it_is() {
+        let n = Notice::of(&json!({"kind": "messages", "bot": "nova", "botName": "Nova", "said": "/messages"})).expect("a card");
+        assert_eq!((n.bot.as_str(), n.bot_name.as_str(), n.said.as_str()), ("nova", "Nova", "/messages"));
+        assert!(Notice::of(&json!({"kind": "messages"})).is_none(), "no Bot, no card");
+        assert!(Notice::of(&json!({"kind": "tools_change", "bot": "nova"})).is_none());
+        let t = Turn::of(&json!({"role": "notice", "text": "Who can message Nova?", "notice": {"kind": "messages", "bot": "nova"}}));
+        assert!(t.messages_card.is_some() && t.tools_change.is_none());
+        assert!(Turn::of(&json!({"role": "user", "notice": {"kind": "messages", "bot": "nova"}})).messages_card.is_none());
     }
 
     #[test]

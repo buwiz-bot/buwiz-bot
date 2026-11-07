@@ -1,6 +1,6 @@
 //! The agents' HTTP side (v1/routes.mjs; plan 5.6, track E):
 //!
-//! - `POST /v1/host/agents/archive|resume|accepts` and
+//! - `POST /v1/host/agents/archive|resume|accepts|card` and
 //!   `/v1/host/agents/endpoints/create|list|rotate|delete`: the host
 //!   token first, then a JSON object body, then `{ok: true, …}` or the
 //!   refusal with the host routes' status map. Other methods on them fall
@@ -20,6 +20,7 @@ use crate::hub::agents::{str_or_empty, AgentError, AgentsHub};
 use crate::hub::ctx::HubCtx;
 use crate::hub::policy::{self, Change};
 use crate::hub::routes::host::{authorized, read_body, status_of};
+use crate::hub::tools::miniapps::post_in;
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
@@ -29,6 +30,7 @@ const HOST: &[&str] = &[
     "/v1/host/agents/archive",
     "/v1/host/agents/resume",
     "/v1/host/agents/accepts",
+    "/v1/host/agents/card",
     "/v1/host/agents/endpoints/create",
     "/v1/host/agents/endpoints/list",
     "/v1/host/agents/endpoints/rotate",
@@ -79,6 +81,7 @@ fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> H
         "archive" => agents(hub.write(&ctx, |s, _| a.archive(s, b.get("conversation"), b.get("archived") != Some(&Value::Bool(false))))),
         "resume" => agents(hub.write(&ctx, |s, _| a.resume(s, b.get("conversation")))),
         "accepts" => host_accepts(&ctx, &b),
+        "card" => host_card(&ctx, &b),
         "endpoints/create" => done(x.create(&b, |bot| ctx.store.read(|s| a.party(s, bot).is_some()))),
         "endpoints/list" => done(x.list(b.get("bot")).map(|l| Map::from_iter([("endpoints".to_owned(), l)]))),
         "endpoints/rotate" => done(x.rotate(b.get("id"))),
@@ -110,6 +113,21 @@ pub(crate) fn host_accepts(ctx: &HubCtx, b: &Value) -> Result<Value, (String, St
     };
     // `from` is read as it applies
     policy::applied(ctx, &Change::Accepts { bot, to, from: Value::Null }).map_err(|e| (e.code, e.message))
+}
+
+/// `POST /v1/host/agents/card {chat, bot, said?}`: a `messages` notice for `bot` in `chat`,
+/// `said` the typed line it answers. The card holds no state: the app draws it from what is
+/// true now, so an old one in the scrollback is never wrong.
+pub(crate) fn host_card(ctx: &HubCtx, b: &Value) -> Result<Value, (String, String)> {
+    let (chat, bot) = (str_or_empty(b.get("chat")), str_or_empty(b.get("bot")));
+    let Some(name) = ctx.store.read(|s| s.bot(&bot).map(|b| b.name.clone())) else {
+        return Err(("invalid_args".into(), "no such agent".into()));
+    };
+    let said = js::slice_utf16(&str_or_empty(b.get("said")), 200);
+    if !post_in(ctx, &chat, &json!({"kind": "messages", "bot": bot, "botName": name, "said": said})) {
+        return Err(("not_found".into(), "no such chat".into()));
+    }
+    Ok(json!({"ok": true}))
 }
 
 /// `auth.replace(/^Bearer\s+/i, "")`.

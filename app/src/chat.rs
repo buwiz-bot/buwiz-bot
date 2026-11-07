@@ -648,6 +648,8 @@ pub(crate) fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
     } else if let Some(n) = t.app_accounts.clone() {
         let (chat, i, plugin) = (chat.to_owned(), t.i, n.plugin.clone());
         crate::mini_v1::ui::while_there(&plugin, move || app_accounts_row(n.clone(), chat.clone(), i).into_element()).into_element()
+    } else if let Some(n) = t.messages_card.clone() {
+        crate::messages::card_row(n).into_element()
     } else if let Some(n) = t.tools_change.clone() {
         crate::tools::notice_row(n, chat.to_owned()).into_element()
     } else if let Some(n) = t.tool_ask.clone() {
