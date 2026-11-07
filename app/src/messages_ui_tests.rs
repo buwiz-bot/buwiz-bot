@@ -333,6 +333,29 @@ fn a_choice_press_does_not_run_it() {
     assert!(heard(&seen, ROUTE).is_empty(), "{:?}", seen.log.lock().unwrap());
 }
 
+/// The receipt belongs to the chat the line was typed in: gone from there
+/// before the answer, it is a toast saying where Undo is, not a line in
+/// whichever chat is open.
+#[test]
+fn a_change_answered_after_leaving_its_chat_is_a_toast() {
+    if !in_child("a_change_answered_after_leaving_its_chat_is_a_toast") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("none"));
+    place(&mut app, "/messages allow scout");
+    on(&mut app, || {
+        let st = store();
+        st.send();
+        st.active_id.set("t_plain".to_owned());
+        st.turns_of.set("t_plain".to_owned());
+    });
+    wait_for(&mut app, &seen, ROUTE, 1);
+    settle(&mut app);
+    assert!(on(&mut app, || store().local_turns.borrow().is_empty()), "no receipt anywhere");
+    assert!(app.texts().iter().any(|t| t.contains(SAID) && t.contains("Undo it in /tools.")), "{:?}", app.texts());
+}
+
 /// A line in the box runs on the person's own Enter, and not before.
 #[test]
 fn a_line_in_the_box_runs_on_the_persons_enter() {

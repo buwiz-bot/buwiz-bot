@@ -214,23 +214,35 @@ pub(crate) fn run(rest: &str) {
     match outcome(&parse(rest), &here(), &st.bots.get_untracked()) {
         Outcome::Say(s) => crate::toast::show(s),
         Outcome::Set { bot, accepts } => {
-            let id = bot.clone();
-            st.agents_accepts(bot, accepts, move |r| answered(&id, r));
+            let (id, chat) = (bot.clone(), st.active_id.get_untracked());
+            st.agents_accepts(bot, accepts, move |r| answered(&id, &chat, r));
         }
     }
 }
 
-/// The route's answer: `{ok, text, undo}` is the receipt, a refusal a toast.
-fn answered(bot: &str, r: Option<Value>) {
+/// The route's answer to a change typed in `chat`: `{ok, text, undo}` is the
+/// receipt there. With another chat open by then it is a toast, the Undo
+/// staying in `/tools`; a refusal is a toast.
+fn answered(bot: &str, chat: &str, r: Option<Value>) {
     let st = store();
     match r {
         Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => {
-            let name = st.bots.with_untracked(|b| name_of(bot, b));
-            st.add_local_wire_turn(&receipt(bot, &name, &v, crate::tools::now_ms()));
+            if st.active_id.get_untracked() == chat {
+                let name = st.bots.with_untracked(|b| name_of(bot, b));
+                st.add_local_wire_turn(&receipt(bot, &name, &v, crate::tools::now_ms()));
+            } else {
+                crate::toast::show(away(&v));
+            }
         }
         Some(v) => crate::toast::show(v.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or(NOT_CONNECTED).to_owned()),
         None => crate::toast::show(NOT_CONNECTED),
     }
+}
+
+/// What a change says with its chat no longer open.
+fn away(answer: &Value) -> String {
+    let text = answer.get("text").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("Changed.");
+    if answer.get("undo").and_then(Value::as_str).is_some_and(|u| !u.is_empty()) { format!("{text} Undo it in /tools.") } else { text.to_owned() }
 }
 
 /// The route's answer as an applied `tools_change` turn, the receipt a
@@ -407,6 +419,13 @@ mod tests {
 
     fn notice(answer: Value) -> crate::store::ToolsChangeNotice {
         Turn::of(&receipt("nova", "Nova", &answer, 5)).tools_change.expect("a tools_change notice")
+    }
+
+    #[test]
+    fn with_its_chat_gone_a_change_says_where_undo_is_while_it_has_one() {
+        assert_eq!(away(&json!({"ok": true, "text": "Nova hears from nobody now.", "undo": "u_1"})), "Nova hears from nobody now. Undo it in /tools.");
+        assert_eq!(away(&json!({"ok": true, "text": "x", "undo": null})), "x");
+        assert_eq!(away(&json!({"ok": true})), "Changed.");
     }
 
     #[test]
