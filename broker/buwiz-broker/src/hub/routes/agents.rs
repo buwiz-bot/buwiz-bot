@@ -16,8 +16,9 @@ use hyper::{Method, StatusCode};
 use serde_json::{json, Map, Value};
 
 use crate::hub::agents::external::{ExternalError, BODY_MAX};
-use crate::hub::agents::{AgentError, AgentsHub};
+use crate::hub::agents::{str_or_empty, AgentError, AgentsHub};
 use crate::hub::ctx::HubCtx;
+use crate::hub::policy::{self, Change};
 use crate::hub::routes::host::{authorized, read_body, status_of};
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
@@ -77,7 +78,7 @@ fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> H
     let out = match path.strip_prefix("/v1/host/agents/").unwrap_or("") {
         "archive" => agents(hub.write(&ctx, |s, _| a.archive(s, b.get("conversation"), b.get("archived") != Some(&Value::Bool(false))))),
         "resume" => agents(hub.write(&ctx, |s, _| a.resume(s, b.get("conversation")))),
-        "accepts" => agents(hub.write(&ctx, |s, _| a.set_accepts(s, b.get("bot"), b.get("accepts")))),
+        "accepts" => host_accepts(&ctx, &b),
         "endpoints/create" => done(x.create(&b, |bot| ctx.store.read(|s| a.party(s, bot).is_some()))),
         "endpoints/list" => done(x.list(b.get("bot")).map(|l| Map::from_iter([("endpoints".to_owned(), l)]))),
         "endpoints/rotate" => done(x.rotate(b.get("id"))),
@@ -92,6 +93,20 @@ fn host(hub: Arc<AgentsHub>, ctx: Arc<HubCtx>, req: HubRequest, path: &str) -> H
             refusal(&code, message)
         }
     }
+}
+
+/// `POST /v1/host/agents/accepts {bot, accepts}`, "Accept messages from": "all", "none", or
+/// a list of agent ids; → `{ok, text, undo}` (`undo` null when it changed nothing). The one
+/// place a [`Change::Accepts`] is made: a person's, through this token-locked route.
+pub(crate) fn host_accepts(ctx: &HubCtx, b: &Value) -> Result<Value, (String, String)> {
+    let bot = str_or_empty(b.get("bot"));
+    let Some(from) = ctx.store.read(|s| s.bot(&bot).map(|x| x.accepts.clone().unwrap_or(Value::Null))) else { return Err(("invalid_args".into(), "no such agent".into())) };
+    let to = match b.get("accepts") {
+        Some(Value::String(a)) if a == "all" || a == "none" => b["accepts"].clone(),
+        Some(Value::Array(a)) if a.iter().all(Value::is_string) => b["accepts"].clone(),
+        _ => return Err(("invalid_args".into(), "accepts is \"all\", \"none\" or a list of agent ids".into())),
+    };
+    policy::applied(ctx, &Change::Accepts { bot, to, from }).map_err(|e| (e.code, e.message))
 }
 
 /// `auth.replace(/^Bearer\s+/i, "")`.

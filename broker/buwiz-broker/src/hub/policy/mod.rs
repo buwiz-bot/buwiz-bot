@@ -11,6 +11,7 @@
 //! - A [`Change`] tightens or widens. A model tool applies a tighten at once and only ever
 //!   proposes a widen: a `tools_change` notice in the chat that a person answers through
 //!   `POST /v1/host/tools/answer`. Nothing a model tool calls applies a widen.
+//!   [`Change::Accepts`] is the person's alone: no model tool or card makes one.
 //! - The gate (`gate.rs`, its shell reader `shell.rs`) and the sandbox (`sandbox.rs`) judge
 //!   and run `shell_run`; `keys.rs` maps each tool to the switch it belongs to and says
 //!   whether a call only reads; `ask.rs` parks a call on a switch at Ask until the user
@@ -375,7 +376,7 @@ fn unseen_changes(ctx: &HubCtx, thread: &str, bot: Option<&str>, told: &HashSet<
 
 // ---- changes ----
 
-/// One change to a Bot's tools or the Mac's shell rules.
+/// One change to a Bot's tools, whom it hears, or the Mac's shell rules.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
     /// `bot` a Bot's id or [`CHATS`]; empty: only the switch every Bot shares (a skill's or
@@ -384,6 +385,10 @@ pub enum Change {
     RuleAdd { kind: String, pattern: String, risk: Option<String>, path: Option<String> },
     RuleRemove { kind: String, pattern: String },
     Mode(Mode),
+    /// Whom `bot` takes messages from. `to` and `from` are `Bot.accepts` as stored: "all",
+    /// "none", a list of ids, or null for never set. Only the host route makes one
+    /// (`routes/agents.rs`), so no Bot can change who reaches it.
+    Accepts { bot: String, to: Value, from: Value },
 }
 
 impl Change {
@@ -393,6 +398,7 @@ impl Change {
             Change::RuleAdd { kind, pattern, risk, path } => json!({"op": "rule_add", "kind": kind, "pattern": pattern, "risk": risk, "path": path}),
             Change::RuleRemove { kind, pattern } => json!({"op": "rule_remove", "kind": kind, "pattern": pattern}),
             Change::Mode(m) => json!({"op": "mode", "mode": m.as_str()}),
+            Change::Accepts { bot, to, from } => json!({"op": "accepts", "bot": bot, "to": to, "from": from}),
         }
     }
 
@@ -412,16 +418,18 @@ impl Change {
             "rule_add" => Change::RuleAdd { kind: s("kind")?, pattern: s("pattern")?, risk: s("risk"), path: s("path") },
             "rule_remove" => Change::RuleRemove { kind: s("kind")?, pattern: s("pattern")? },
             "mode" => Change::Mode(Mode::from_stored(&s("mode")?)),
+            "accepts" => Change::Accepts { bot: s("bot")?, to: v.get("to")?.clone(), from: v.get("from")?.clone() },
             _ => return None,
         })
     }
 
-    /// What it changes: one switch, one rule, or the mode.
+    /// What it changes: one switch, one rule, the mode, or whom one Bot hears.
     pub fn target(&self) -> String {
         match self {
             Change::Tool { bot, key, .. } => format!("tool:{bot}:{key}"),
             Change::RuleAdd { kind, pattern, .. } | Change::RuleRemove { kind, pattern } => format!("rule:{kind}:{pattern}"),
             Change::Mode(_) => "mode".into(),
+            Change::Accepts { bot, .. } => format!("accepts:{bot}"),
         }
     }
 
@@ -446,10 +454,12 @@ impl Change {
             Change::RuleAdd { kind, .. } => kind == "allow",
             Change::RuleRemove { kind, .. } => kind == "block",
             Change::Mode(m) => *m == Mode::Bypass,
+            // never a tighten a model tool could apply, whichever way it moves
+            Change::Accepts { .. } => true,
         }
     }
 
-    /// Whether it is in effect already.
+    /// Whether it is in effect already (a Bot that is gone: nothing to change).
     pub fn noop(&self, ctx: &HubCtx) -> bool {
         match self {
             Change::Tool { bot, key, state, .. } => {
@@ -459,6 +469,7 @@ impl Change {
             Change::RuleAdd { kind, pattern, .. } => rule(ctx, kind, pattern).is_some(),
             Change::RuleRemove { kind, pattern } => rule(ctx, kind, pattern).is_none(),
             Change::Mode(m) => mode(ctx) == *m,
+            Change::Accepts { bot, to, .. } => ctx.store.read(|s| s.bot(bot).is_none_or(|b| same_accepts(b.accepts.as_ref().unwrap_or(&Value::Null), to))),
         }
     }
 
@@ -472,6 +483,7 @@ impl Change {
                 Change::RuleAdd { kind: kind.clone(), pattern: pattern.clone(), risk: r.as_ref().and_then(|r| r.risk.clone()), path: r.and_then(|r| r.path) }
             }
             Change::Mode(_) => Change::Mode(mode(ctx)),
+            Change::Accepts { bot, to, from } => Change::Accepts { bot: bot.clone(), to: from.clone(), from: to.clone() },
         }
     }
 
@@ -504,6 +516,10 @@ impl Change {
             Change::Mode(m) => {
                 db(ctx, |c| c.execute("INSERT OR REPLACE INTO shell_mode(id, mode, actor, at) VALUES(1,?,?,?)", rusqlite::params![m.as_str(), actor, at]))?;
             }
+            Change::Accepts { bot, to, .. } => {
+                let set = ctx.store.write(|s| s.bot_mut(bot).map(|b| b.accepts = Some(to.clone()).filter(|v| !v.is_null())))?;
+                set.ok_or_else(|| format!("no Bot {bot}"))?;
+            }
         }
         Ok(())
     }
@@ -530,6 +546,7 @@ impl Change {
             Change::RuleRemove { pattern, .. } => format!("Stopped blocking `{pattern}` on this Mac."),
             Change::Mode(Mode::Only) => "Mode: Only allowed commands. Unlisted commands are refused.".into(),
             Change::Mode(Mode::Bypass) => "Mode: Bypass. Every command runs without asking. Blocks still apply.".into(),
+            Change::Accepts { bot, to, from } => accepts_receipt(ctx, bot, to, from),
         }
     }
 
@@ -559,6 +576,34 @@ impl Change {
             (c, _) => format!("The user made this change: {}", c.receipt(ctx)),
         }
     }
+}
+
+/// Whether two `Bot.accepts` say the same: never set is All.
+fn same_accepts(a: &Value, b: &Value) -> bool {
+    let open = |v: &Value| v.is_null() || v == "all";
+    a == b || (open(a) && open(b))
+}
+
+/// [`Change::Accepts`]'s receipt. One Bot on or off a list is named; any other list is read out.
+fn accepts_receipt(ctx: &HubCtx, bot: &str, to: &Value, from: &Value) -> String {
+    let name = bot_name(ctx, bot);
+    let Some(list) = to.as_array() else {
+        return if to == "none" { format!("{name} hears from nobody now.") } else { format!("Every Bot can message {name} now.") };
+    };
+    if let Some(was) = from.as_array() {
+        let (added, gone): (Vec<&Value>, Vec<&Value>) = (list.iter().filter(|x| !was.contains(x)).collect(), was.iter().filter(|x| !list.contains(x)).collect());
+        let who = |v: &Value| bot_name(ctx, v.as_str().unwrap_or_default());
+        match (added.as_slice(), gone.as_slice()) {
+            ([one], []) => return format!("{} can now message {name}.", who(one)),
+            ([], [one]) => return format!("{} can't message {name} now.", who(one)),
+            _ => {}
+        }
+    }
+    if list.is_empty() {
+        return format!("No Bot is on {name}'s list now.");
+    }
+    let names: Vec<String> = list.iter().map(|v| bot_name(ctx, v.as_str().unwrap_or_default())).collect();
+    format!("{name} hears only from {} now.", names.join(", "))
 }
 
 /// Switches mini app `id` on for every Bot: it starts and is verified again (in a task: the
@@ -615,7 +660,7 @@ fn settle_moot(ctx: &HubCtx) {
 
 fn bot_of_change(c: &Change) -> Option<&str> {
     match c {
-        Change::Tool { bot, .. } if !bot.is_empty() => Some(bot),
+        Change::Tool { bot, .. } | Change::Accepts { bot, .. } if !bot.is_empty() => Some(bot),
         _ => None,
     }
 }
@@ -731,10 +776,12 @@ fn op_of(c: &Change) -> &'static str {
         Change::RuleAdd { .. } => "rule_add",
         Change::RuleRemove { .. } => "rule_remove",
         Change::Mode(_) => "mode",
+        Change::Accepts { .. } => "accepts",
     }
 }
 
-/// The change a `tools_change` notice carries.
+/// The change a `tools_change` notice carries. Never a [`Change::Accepts`]: a card is what a
+/// model tool proposes.
 pub fn change_of(n: &Value) -> Option<Change> {
     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     let rule = n.get("rule").cloned().unwrap_or(Value::Null);
@@ -797,6 +844,8 @@ fn notice_of(ctx: &HubCtx, change: &Change, bot: &str, state: &str) -> Value {
                 steps = 2;
             }
         }
+        // no card proposes it (`change_of`)
+        Change::Accepts { .. } => {}
     }
     n["steps"] = json!(steps);
     n["state"] = json!(state);
@@ -815,6 +864,7 @@ fn title_of(ctx: &HubCtx, change: &Change, bot: &str) -> String {
         Change::RuleAdd { pattern, .. } => format!("Always allow `{pattern}` on this Mac?"),
         Change::RuleRemove { pattern, .. } => format!("Stop blocking `{pattern}` on this Mac?"),
         Change::Mode(_) => format!("Let {who} run every command on this Mac without asking?"),
+        Change::Accepts { .. } => change.receipt(ctx),
     }
 }
 
@@ -983,7 +1033,7 @@ pub fn answer(ctx: &HubCtx, b: &Value) -> Result<Value, V1Error> {
 
 // ---- the person's own edits (the sheet) ----
 
-fn applied(ctx: &HubCtx, change: &Change) -> Result<Value, V1Error> {
+pub fn applied(ctx: &HubCtx, change: &Change) -> Result<Value, V1Error> {
     if change.noop(ctx) {
         return Ok(json!({"ok": true, "text": change.receipt(ctx), "undo": Value::Null}));
     }
