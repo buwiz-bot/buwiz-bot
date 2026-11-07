@@ -314,6 +314,20 @@ async fn a_status_tells_the_model_and_owes_no_turn() {
     assert_eq!(script.calls.load(Ordering::SeqCst), 0, "the model read it already");
 }
 
+/// The sweep and a status call can both have read it as running: the second to say it ended says
+/// nothing, and owes nothing.
+#[tokio::test]
+async fn two_looks_at_one_end_post_one_notice() {
+    let b = bed("job-twice");
+    awake(&b, &b.ann.0).await;
+    let id = started(&b, json!({"command": "x"})).await;
+    let job = Computers::jobs_of(&b.ctx, &b.ann.0).pop().unwrap();
+    b.computers.end_job(&b.ctx, &job, jobs::End::Exited(0), false);
+    b.computers.end_job(&b.ctx, &job, jobs::End::Lost, false);
+    assert_eq!(notices(&b).len(), 1);
+    assert_eq!(row_of(&b, &id), ("done".to_owned(), Some(0)), "the first word stands");
+}
+
 #[tokio::test]
 async fn a_job_gone_without_a_word_says_so() {
     let b = bed("job-lost");

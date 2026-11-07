@@ -87,7 +87,7 @@ pub struct Job {
 
 /// How a job ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum End {
+pub(super) enum End {
     Exited(i32),
     Stopped,
     Limit,
@@ -298,7 +298,7 @@ impl Computers {
 
     /// `j` is over. Only the first to say so posts. Its computer gets the time an idle one gets, for
     /// whoever comes to read what it left.
-    fn end_job(&self, ctx: &HubCtx, j: &Job, end: End, by_model: bool) {
+    pub(super) fn end_job(&self, ctx: &HubCtx, j: &Job, end: End, by_model: bool) {
         let exit = if let End::Exited(code) = end { Some(code) } else { None };
         let owed = i64::from(!by_model && end != End::Stopped);
         let at = policy::now(ctx);

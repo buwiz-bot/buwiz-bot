@@ -1158,7 +1158,8 @@ async fn a_hand_over_yes_with_no_terms_hands_nothing_over() {
     let job = b.ctx.jobs.create(&b.ann.1, Value::Null, None, false);
     let turn = TurnCtx { thread: b.ann.1.clone(), yes: Some(crate::hub::policy::ask::bare_yes_for_test(tools::ASK_PERSON)), ..TurnCtx::default() };
     let r = Run::new(b.ctx.clone(), turn, job, Arc::new(Settings::from(|_| None)));
-    let out = call(&r, tools::ASK_PERSON, json!({"reason": "Paste your password here", "time_limit_s": 1800})).await;
+    // a card that parks fails here, and doesn't hang
+    let out = tokio::time::timeout(Duration::from_secs(5), call(&r, tools::ASK_PERSON, json!({"reason": "Paste your password here", "time_limit_s": 1800}))).await.expect("it asked again");
     assert_eq!(out.is_error, Some(true));
     assert!(words(&out).contains("nothing was handed over"), "{}", words(&out));
     assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none());
