@@ -57,6 +57,9 @@ const FIT_WIDTH: f64 = 3.53;
 const FIT_REACH: f64 = 2.1;
 /// The largest a custom figure draws.
 const MAX_SIZE: f64 = 2.4;
+/// How big a head is drawn, as the side of a square of its area. Headgear
+/// that can't fit around a head this big draws a smaller one.
+const HEAD_SPAN: f64 = 2.3;
 /// The name prefix of every custom body.
 const PREFIX: &str = "custom:";
 /// The name prefix of every rich body.
@@ -860,7 +863,8 @@ fn build(path: &str) -> Result<CustomBody, String> {
     if poly.len() < 3 || poly_area < 1e-3 {
         return Err("the outline encloses no area".to_owned());
     }
-    let size = fit_size(poly.iter().map(|p| [p[0], p[1], 0.0]));
+    let points = || poly.iter().map(|p| [p[0], p[1], 0.0]);
+    let size = head_size(points(), fit_size(points()));
     let circle = inscribed_circle(&poly);
     let (eyes, eye_x) = place_eyes(&poly, size, circle);
     let depth = loft_depth(circle.1);
@@ -1154,6 +1158,22 @@ fn fit_size(points: impl Iterator<Item = V3>) -> f64 {
     (FIT_HEIGHT / (y1 - y0)).min(FIT_WIDTH / (x1 - x0)).min(MAX_SIZE).min(FIT_REACH / far)
 }
 
+/// How wide and tall these points stand.
+fn extent(points: impl Iterator<Item = V3>) -> (f64, f64) {
+    let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        (x0, x1, y0, y1) = (x0.min(p[0]), x1.max(p[0]), y0.min(p[1]), y1.max(p[1]));
+    }
+    (x1 - x0, y1 - y0)
+}
+
+/// The size that draws this head like every other head, within `fit`: what a
+/// figure wears on its head doesn't change how big the head is.
+fn head_size(head: impl Iterator<Item = V3>, fit: f64) -> f64 {
+    let (w, h) = extent(head);
+    fit.min(HEAD_SPAN / (w * h).sqrt())
+}
+
 /// A solid mark's path (M/L/C/Q/Z, in its chart) as closed loops, sampled
 /// every [`solids::MARK_STEP`]. Every coordinate is checked first: sampling
 /// spends points by length.
@@ -1181,7 +1201,7 @@ fn chart_loops(path: &str) -> Result<Vec<Vec<V2>>, String> {
 
 /// A multi-part recipe's main geometry and extra parts: one frame from
 /// the bounding box of every outline (the `Hv` fit of the whole figure),
-/// one body size for all of them ([`fit_size`], solids included), each part
+/// one body size for all of them ([`head_size`], solids included), each part
 /// its own loft at its place in the frame.
 fn multi_part(
     main: &str,
@@ -1253,7 +1273,8 @@ fn multi_part(
     let scene = specs.map(|s| solids::Solids::build(&s, &solids::Head::new(&probe.loft_points, probe.depth), unit, front.center));
     let c = front.center;
     let flat = main_pts.iter().chain(part_pts.iter().flatten()).map(|p| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0]);
-    let size = fit_size(flat.chain(scene.iter().flat_map(|s| s.shown_points())));
+    let head = main_pts.iter().map(|p| [(p[0] - c[0]) * unit, -(p[1] - c[1]) * unit, 0.0]);
+    let size = head_size(head, fit_size(flat.chain(scene.iter().flat_map(|s| s.shown_points()))));
     let base = Rc::new(part_body(&main_pts, &front, size, true, None)?);
     let mut parts = Vec::with_capacity(list.len());
     let mut layout = vec![Place {
@@ -1838,7 +1859,7 @@ mod tests {
             }
             got.push(h);
         }
-        let want: [u64; 2] = [0x3674b535ad3db32b, 0xb4b2c0d29848d22d];
+        let want: [u64; 2] = [0x8cd334a454bf9de6, 0x23eb8f9c84e183a6];
         assert_eq!(got, want.to_vec());
     }
 
@@ -2209,20 +2230,40 @@ mod tests {
         near(fit_size([[0.0, -1.0, 0.0], [0.0, 1.0, 6.0]].into_iter()), FIT_REACH / 1.0f64.hypot(6.0));
     }
 
-    /// However the box of a recipe is filled, a figure stands as tall as the next.
+    /// A head draws the same size whatever it wears, until what it wears wouldn't fit around it.
     #[test]
-    fn plain_outlines_of_any_shape_stand_as_tall() {
-        let size = |o: &str| {
-            let name = custom_body(o).unwrap();
-            BODIES.with(|b| b.borrow()[name].size)
+    fn a_head_draws_the_same_size_whatever_it_wears() {
+        let head = |tip: [f64; 3]| {
+            let name = rich_body(&spike(tip)).unwrap();
+            // `spike`'s head is 60 across and 60 tall
+            BODIES.with(|b| {
+                let body = &b.borrow()[name];
+                60.0 * body.front.scale / X * body.size
+            })
         };
-        let tall = size("M30 10 L70 10 L70 90 L30 90 Z");
-        let diamond = size("M50 10 L90 50 L50 90 L10 50 Z");
-        assert!((tall - diamond).abs() < 0.02, "{tall} against {diamond}");
-        // a square's corners swing out as it turns: the frame holds it back
-        assert!(size("M10 10 L90 10 L90 90 L10 90 Z") < tall);
-        let wide = size("M5 35 L95 35 L95 65 L5 65 Z");
-        assert!(wide < tall + (FIT_WIDTH - FIT_HEIGHT), "a wide one stops at its width: {wide}");
+        let bare = head([50.0, 50.0, 0.0]);
+        assert!((bare - HEAD_SPAN).abs() < 1e-9, "{bare}");
+        let hat = head([50.0, 10.0, 0.0]);
+        assert!((hat - bare).abs() < 1e-9, "a hat that fits changes nothing: {hat} against {bare}");
+        let tower = head([50.0, -60.0, 0.0]);
+        assert!(tower < bare * 0.9, "a tower doesn't fit around that head: {tower} against {bare}");
+    }
+
+    /// Plain outlines are heads too, whatever their shape, until the frame holds one back.
+    #[test]
+    fn plain_outlines_of_any_shape_draw_as_big() {
+        let span = |o: &str| {
+            let name = custom_body(o).unwrap();
+            BODIES.with(|b| {
+                let body = &b.borrow()[name];
+                let (w, h) = extent(body_polygon(&body.outline.path).iter().map(|p| [p[0], p[1], 0.0]));
+                (w * h).sqrt() * body.size
+            })
+        };
+        for o in ["M30 10 L70 10 L70 90 L30 90 Z", "M50 10 L90 50 L50 90 L10 50 Z"] {
+            assert!((span(o) - HEAD_SPAN).abs() < 1e-6, "{o}: {}", span(o));
+        }
+        assert!(span("M5 35 L95 35 L95 65 L5 65 Z") < HEAD_SPAN, "a wide one stops at the frame");
     }
 
     #[test]
@@ -3106,7 +3147,7 @@ mod tests {
             }
             got.push(h);
         }
-        assert_eq!(got, vec![0x46dcdb07f206087c, 0x37fe198591baa045, 0x3c4a15bc7ced765b]);
+        assert_eq!(got, vec![0x00f7058365a273f0, 0xc25d5d604b63cba9, 0x799e08debc4f6b4d]);
     }
 
     /// The two eye centroids at the front pose in a 255px sprite.
