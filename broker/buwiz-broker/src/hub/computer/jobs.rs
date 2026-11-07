@@ -13,7 +13,8 @@
 //! - Past its limit a job is stopped at the next look that can reach it. Until that works it stays
 //!   a job: on the tab, in the count, and holding its computer up. One frozen past its limit, or one
 //!   whose stop failed [`STOP_TRIES`] times (a person is told, once), stays on the record and lets
-//!   the computer and the Mac go, and each look still tries.
+//!   the computer and the Mac go, and each look still tries. A deep sleep that takes it is its end,
+//!   by its limit.
 //! - The end of a job is one `UPDATE ... WHERE state='running'`: the sweep and a model's status call
 //!   can meet there, and only one posts the notice. A notice is free. A model turn follows only with
 //!   `computer_routines` On, at most one, and it waits for a run under way in that chat. It's owed in
@@ -346,8 +347,9 @@ impl Computers {
                         self.stop_failed(ctx, &j);
                     }
                 }
-                // nothing it ran is left
-                Err(Problem::Gone) => self.end_job(ctx, &j, End::Lost, false),
+                // nothing it ran is left. A record that can't be read says Gone too, and says
+                // nothing of the box: that's for the next look
+                Err(Problem::Gone) if self.machine(ctx, &j.computer).is_ok() => self.end_job(ctx, &j, End::Lost, false),
                 // a limit is for what can be reached: frozen it stays, and lets the computer go
                 Err(Problem::Asleep) => {
                     self.set_frozen(&j.id, true);
@@ -366,11 +368,24 @@ impl Computers {
         self.sync_awake();
     }
 
+    /// `computer` was stopped for good: what was past its limit there ended with it, and that's what
+    /// a person hears, not that it went missing. A remote one only hung up: what's there runs on.
+    pub(super) fn deep_sleep_ended(&self, ctx: &HubCtx, computer: &str) {
+        if !matches!(Self::is_remote(ctx, computer), Ok(false)) {
+            return;
+        }
+        let at = policy::now(ctx);
+        for j in rows(ctx, "WHERE state='running' AND computer_id=?", computer).into_iter().filter(|j| at >= j.until) {
+            self.end_job(ctx, &j, End::Limit, false);
+        }
+    }
+
     /// `j` is past its limit and still there. It stays a job, and the next look tries again. Past
     /// [`STOP_TRIES`] of these it stops holding anything up, and a person hears, once.
-    fn stop_failed(&self, ctx: &HubCtx, j: &Job) {
+    pub(super) fn stop_failed(&self, ctx: &HubCtx, j: &Job) {
         let _ = ctx.db.with(|c| c.execute("UPDATE computer_jobs SET stop_tries=stop_tries+1 WHERE id=?", [&j.id]));
-        let tries = ctx.db.with(|c| c.query_row("SELECT stop_tries FROM computer_jobs WHERE id=?", [&j.id], |r| r.get::<_, i64>(0))).unwrap_or(STOP_TRIES);
+        // not knowing how many isn't having had enough: it stays as it is until the next look
+        let Ok(tries) = ctx.db.with(|c| c.query_row("SELECT stop_tries FROM computer_jobs WHERE id=?", [&j.id], |r| r.get::<_, i64>(0))) else { return };
         if let Some(r) = self.now().jobs.get_mut(&j.id) {
             r.past = tries >= STOP_TRIES;
         }
@@ -482,7 +497,8 @@ impl Computers {
         shown.iter().map(|(j, frozen)| json!({"name": j.name, "bot": super::bot_name(ctx, &j.bot), "frozen": frozen, "secondsLeft": (j.until - at).max(0) / 1000})).collect()
     }
 
-    /// What holds the Mac up follows the jobs: on while one runs, off when none does.
+    /// What holds the Mac up follows the jobs: on while one runs, off when none does. Two of these
+    /// can land out of order: the sweep's, each tick, puts that right.
     fn sync_awake(&self) {
         let wanted = self.now().jobs.values().any(|j| !j.frozen && !j.past);
         self.keep_awake.set(wanted);

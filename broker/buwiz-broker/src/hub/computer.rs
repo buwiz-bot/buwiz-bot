@@ -730,6 +730,9 @@ impl Computers {
             }
         }
         provider.sleep(&machine, depth).await?;
+        if depth == Sleep::Deep {
+            self.deep_sleep_ended(ctx, id);
+        }
         self.freeze_jobs(id, true);
         if let Some(gate) = self.gate().await {
             gate.close_computer(&machine.viewer_password);
