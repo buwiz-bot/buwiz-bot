@@ -162,6 +162,7 @@ fn Stage() -> impl IntoElement {
     view()
         .size_full()
         .child(text("probe ready=1"))
+        .child(crate::toast::layer())
         .child(view().label("job").w(px(40.0)).h(px(24.0)).on_press(|| {
             if let Some(job) = JOB.lock().unwrap().take() {
                 job();
@@ -332,11 +333,10 @@ fn a_choice_press_does_not_run_it() {
     assert!(heard(&seen, ROUTE).is_empty(), "{:?}", seen.log.lock().unwrap());
 }
 
-/// A plugin's `prompt` answer places the line in the box: it runs on the
-/// person's own Enter, and not before.
+/// A line in the box runs on the person's own Enter, and not before.
 #[test]
-fn text_placed_in_the_box_runs_on_the_persons_enter() {
-    if !in_child("text_placed_in_the_box_runs_on_the_persons_enter") {
+fn a_line_in_the_box_runs_on_the_persons_enter() {
+    if !in_child("a_line_in_the_box_runs_on_the_persons_enter") {
         return;
     }
     let (mut app, seen) = start(ok_reply());
@@ -347,6 +347,31 @@ fn text_placed_in_the_box_runs_on_the_persons_enter() {
     send(&mut app);
     assert_eq!(wait_for(&mut app, &seen, ROUTE, 1)[0], json!({"bot": "nova", "accepts": "none"}));
     assert!(heard(&seen, "/chat").is_empty());
+}
+
+/// A plugin's `prompt` answer can't stage the command, however it is
+/// dressed: the box keeps what it held, and the person is told.
+#[test]
+fn a_plugins_prompt_cannot_place_the_command_in_the_box() {
+    if !in_child("a_plugins_prompt_cannot_place_the_command_in_the_box") {
+        return;
+    }
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("none"));
+    for line in ["/messages allow all", "  /messages none\n", "/messages", "/messages:none"] {
+        on(&mut app, move || store().v1_place_prompt(line));
+        assert_eq!(draft(&mut app), "", "{line:?}");
+    }
+    app.pump(Duration::from_millis(100));
+    assert!(app.texts().iter().any(|t| t.contains("can't put /messages in the box")), "{:?}", app.texts());
+    place(&mut app, "my own words");
+    on(&mut app, || store().v1_place_prompt("/messages allow all"));
+    assert_eq!(draft(&mut app), "my own words", "kept");
+    // any other prompt still lands
+    place(&mut app, "");
+    on(&mut app, || store().v1_place_prompt("Tell me about /messages"));
+    assert_eq!(draft(&mut app), "Tell me about /messages");
+    assert!(heard(&seen, ROUTE).is_empty() && heard(&seen, "/chat").is_empty());
 }
 
 /// Before the servers' commands are known a chip's send waits for them.

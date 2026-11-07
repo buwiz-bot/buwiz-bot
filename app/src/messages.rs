@@ -9,7 +9,8 @@
 //!   change to the open chat's Bot through `/v1/host/agents/accepts`.
 //!
 //! Only the person's own Enter runs these: `store::send_text` (a chip, a
-//! choice card) sends the same words on to the AI as plain text.
+//! choice card) sends the same words on to the AI as plain text, and a
+//! plugin's `prompt` answer can't place them in the box.
 
 use serde_json::{Value, json};
 
