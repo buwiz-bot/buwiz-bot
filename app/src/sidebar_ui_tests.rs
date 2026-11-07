@@ -999,18 +999,21 @@ fn many_bots_cost_what_fits_on_screen() {
     assert!(many <= few + 2, "{MANY} Bots paint {many} rows against {few} for {BOTS}");
 }
 
-/// Each of `n` Bots running, then paints per avatar over two seconds.
-fn paints_each(app: &mut Headless, button: &str, n: usize) -> f64 {
-    let paints = || crate::avatar::PAINTS.load(Ordering::Relaxed);
+/// How many avatars usually paint on a tick with `button` pressed. Ticks, not
+/// seconds: a slow machine paints less often, but the same avatars together.
+fn usual_tick(app: &mut Headless, button: &str) -> usize {
+    let ticked = || crate::avatar::TICKED.lock().unwrap();
     app.press(button);
     app.pump(Duration::from_millis(1500));
-    let at = paints();
-    app.pump(Duration::from_millis(2000));
-    (paints() - at) as f64 / n as f64
+    ticked().clear();
+    pump_until(app, "enough ticks", |_| ticked().len() >= 40);
+    let mut sizes: Vec<usize> = ticked().values().copied().collect();
+    sizes.sort_unstable();
+    sizes[sizes.len() / 2]
 }
 
-/// In a crowd sidebar avatars take turns, so no frame repaints them all; a
-/// few keep the full rate.
+/// In a crowd sidebar avatars take turns, so a tick repaints a quarter of them;
+/// a few all move on every tick.
 #[test]
 fn sidebar_avatars_take_turns_in_a_crowd() {
     if !in_child("sidebar_avatars_take_turns_in_a_crowd") {
@@ -1019,23 +1022,53 @@ fn sidebar_avatars_take_turns_in_a_crowd() {
     let mut app = start();
     app.press("seed");
     app.pump(Duration::from_millis(400));
-    let few = paints_each(&mut app, "run 6", 6);
-    let crowd = paints_each(&mut app, "run all", BOTS);
-    println!("paints per avatar in 2 s: {few:.1} with 6 live, {crowd:.1} with {BOTS}");
-    assert!(few > 40.0, "a few keep the full rate: {few:.1}");
-    assert!(crowd < 0.7 * few, "a crowd takes turns: {crowd:.1} against {few:.1}");
-    assert!(crowd > 0.3 * few, "and doesn't stall: {crowd:.1} against {few:.1}");
-    let mut frames: Vec<usize> = Vec::new();
-    for _ in 0..300 {
-        let at = crate::avatar::PAINTS.load(Ordering::Relaxed);
-        app.pump(Duration::from_millis(4));
-        frames.push(crate::avatar::PAINTS.load(Ordering::Relaxed) - at);
+    let few = usual_tick(&mut app, "run 6");
+    let crowd = usual_tick(&mut app, "run all");
+    println!("a tick usually paints {few} of 6, {crowd} of {BOTS}");
+    assert_eq!(few, 6, "a few all move on a tick");
+    assert!((2..=BOTS.div_ceil(4) + 1).contains(&crowd), "a tick carries a quarter of the crowd, not {crowd}");
+}
+
+/// A crowd of avatars with others that can't give way built between them.
+#[allow(non_snake_case)]
+#[component]
+fn Mixed() -> impl IntoElement {
+    Owner::detached().run(|| {
+        let _ = store();
+    });
+    let blob = |give_way: bool| {
+        crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+            shape: "blob".to_owned(),
+            color: "#1884FC".to_owned(),
+            size: 10.0,
+            state: "thinking",
+            give_way,
+            ..Default::default()
+        })
+        .into_element()
+    };
+    view().size_full().child(text("probe ready=1")).children((0..48).map(move |i| blob(i % 4 == 0)))
+}
+
+/// The lanes fill with whoever's live, however the avatars around them were
+/// built: in the order they're made, every one of these would share a lane.
+#[test]
+fn a_crowd_shares_the_lanes_however_it_was_built() {
+    if !in_child("a_crowd_shares_the_lanes_however_it_was_built") {
+        return;
     }
-    frames.retain(|&n| n > 0);
-    frames.sort_unstable();
-    let usual = frames[frames.len() / 2];
-    println!("a frame usually paints {usual} of {BOTS}");
-    assert!(usual <= BOTS.div_ceil(4) + 2, "a frame carries a quarter of the crowd, not {usual}");
+    let mut config = EngineConfig::new(App::Rust(Root::new::<Mixed>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(400.0), px(800.0));
+    let mut app = run(config);
+    let ticked = || crate::avatar::TICKED.lock().unwrap();
+    app.pump(Duration::from_millis(1500));
+    ticked().clear();
+    pump_until(&mut app, "enough ticks", |_| ticked().len() >= 40);
+    let mut sizes: Vec<usize> = ticked().values().copied().collect();
+    sizes.sort_unstable();
+    let usual = sizes[sizes.len() / 2];
+    println!("a tick usually paints {usual} of 12");
+    assert!((2..=4).contains(&usual), "a tick carries a quarter of the crowd, not {usual}");
 }
 
 static LANE_PAINTS: AtomicUsize = AtomicUsize::new(0);
@@ -1051,8 +1084,11 @@ fn OneLane() -> impl IntoElement {
         .size_full()
         .child(text("probe ready=1"))
         .children((0..12).map(|_| {
-            canvas(|| {
-                store().tick_giving_way(0);
+            let lane = std::cell::Cell::new((0, 0));
+            canvas(move || {
+                // every one in the first lane of whatever crowd this is
+                lane.set((store().frame_crowds.get(), 0));
+                store().tick_giving_way(&lane);
                 LANE_PAINTS.fetch_add(1, Ordering::Relaxed);
                 Painter::new()
             })
@@ -1061,8 +1097,8 @@ fn OneLane() -> impl IntoElement {
         }))
 }
 
-/// Which avatars are live is anyone's guess, so a crowd can leave lanes empty.
-/// The clock has to keep going through them, or everything stops where it is.
+/// Avatars that come to rest can leave a crowd's lanes empty. The clock has to
+/// keep going through them, or everything stops where it is.
 #[test]
 fn a_crowd_in_one_lane_keeps_moving() {
     if !in_child("a_crowd_in_one_lane_keeps_moving") {

@@ -29,7 +29,8 @@ pub(crate) struct ListWindow {
     pub height: f32,
 }
 
-/// Live avatars that make a crowd (more than this), and that end one.
+/// Asks for a tick in a round that make a crowd (more than this), and that end
+/// one: one for each live avatar, and one more for any repainted within it.
 const CROWD_JOINED: u32 = 10;
 const CROWD_LEFT: u32 = 8;
 /// How many turns a crowd's avatars take. A crowd ticks twice as fast, so each
@@ -3111,6 +3112,11 @@ pub struct Store {
     frame_asked: std::cell::Cell<u32>,
     /// Many avatars are live, so those that can give way do.
     frame_crowd: std::cell::Cell<bool>,
+    /// How many crowds there have been: a lane only holds for the crowd it was
+    /// taken in.
+    pub(crate) frame_crowds: std::cell::Cell<u32>,
+    /// The next lane of this crowd to give out.
+    frame_next_lane: std::cell::Cell<usize>,
     /// The detached root the ticker runs under — no component owns it,
     /// so unmounting the avatar that started it cannot stop it.
     frame_owner: std::cell::Cell<Option<Owner>>,
@@ -3403,6 +3409,8 @@ impl Store {
             frame_lanes: std::array::from_fn(|_| signal(0.0)),
             frame_asked: std::cell::Cell::new(0),
             frame_crowd: std::cell::Cell::new(false),
+            frame_crowds: std::cell::Cell::new(0),
+            frame_next_lane: std::cell::Cell::new(0),
             frame_owner: std::cell::Cell::new(None),
             turns_json: std::cell::RefCell::new(String::new()),
             threads_list_json: std::cell::RefCell::new(String::new()),
@@ -3561,7 +3569,12 @@ impl Store {
                         // and nothing would move it after that.
                         if turn == 0 {
                             let asked = st.frame_asked.replace(0);
-                            crowd = asked > if crowd { CROWD_LEFT } else { CROWD_JOINED };
+                            let crowded = asked > if crowd { CROWD_LEFT } else { CROWD_JOINED };
+                            if crowded && !crowd {
+                                st.frame_crowds.set(st.frame_crowds.get().wrapping_add(1));
+                                st.frame_next_lane.set(0);
+                            }
+                            crowd = crowded;
                             st.frame_crowd.set(crowd);
                         }
                         let t = base + epoch.elapsed().as_secs_f64();
@@ -3591,17 +3604,26 @@ impl Store {
     }
 
     /// [`Self::tick`] for an avatar that can give way. With many live, each
-    /// frame repainting all of them runs over its budget, so these take turns
-    /// by `lane`. Motion follows real time, so it isn't slower, only updated
-    /// about half as often.
-    pub(crate) fn tick_giving_way(&'static self, lane: usize) -> f64 {
+    /// frame repainting all of them runs over its budget, so these take turns.
+    /// Motion follows real time, so it isn't slower, only updated about half as
+    /// often. Each takes the next lane as it first asks in a crowd, so the lanes
+    /// fill evenly with whoever's live, however the avatars were built. `lane`
+    /// is the avatar's own: the crowd it last asked in and its lane there.
+    pub(crate) fn tick_giving_way(&'static self, lane: &std::cell::Cell<(u32, usize)>) -> f64 {
         self.frame_asked.set(self.frame_asked.get() + 1);
         if !self.frame_crowd.get() {
             return self.tick();
         }
         // keeps the clock running through the ticks this one sits out
         let _ = untracked(|| self.tick());
-        self.frame_lanes[lane % FRAME_LANES].get()
+        let crowd = self.frame_crowds.get();
+        let (mut taken_in, mut at) = lane.get();
+        if taken_in != crowd {
+            taken_in = crowd;
+            at = self.frame_next_lane.replace((self.frame_next_lane.get() + 1) % FRAME_LANES);
+            lane.set((taken_in, at));
+        }
+        self.frame_lanes[at].get()
     }
 
     /// `setTheme` (App.tsx:765) — the pref and the POST.

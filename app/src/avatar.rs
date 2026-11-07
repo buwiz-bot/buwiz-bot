@@ -528,9 +528,10 @@ pub(crate) static PAINTS: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 pub(crate) static PAINTED: std::sync::Mutex<std::collections::BTreeMap<String, &'static str>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-thread_local! {
-    static NEXT_LANE: Cell<usize> = const { Cell::new(0) };
-}
+/// How many sidebar avatars painted on each tick of the clock.
+#[cfg(test)]
+pub(crate) static TICKED: std::sync::Mutex<std::collections::BTreeMap<u64, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// `BotBlob` — a `size`-cell `View` with a `size*1.5` canvas overhanging it.
 pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
@@ -538,8 +539,7 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
     let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
-    // in turn, so the lanes hold the same number of avatars
-    let lane = NEXT_LANE.with(|n| n.replace(n.get().wrapping_add(1)));
+    let lane = Cell::new((0, 0));
     let props = Rc::new(props);
     view()
         .size(px(size))
@@ -564,7 +564,7 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
                 // not-live branch), so resting avatars cost no frames.
                 let t = if live {
                     let st = crate::live::store();
-                    if props.give_way { st.tick_giving_way(lane) } else { st.tick() }
+                    if props.give_way { st.tick_giving_way(&lane) } else { st.tick() }
                 } else {
                     if let Some(g) = &props.gaze {
                         g.wake.arm();
@@ -577,6 +577,10 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
                     }
                     0.0
                 };
+                #[cfg(test)]
+                if live && props.give_way {
+                    *TICKED.lock().unwrap().entry(t.to_bits()).or_default() += 1;
+                }
                 st.advance(props, t, resting, live);
                 st.paint(Painter::new(), props, resting)
             })
