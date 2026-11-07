@@ -1573,6 +1573,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(&b.dir);
     }
 
+    /// A refresh writes its tokens holding the plugin's lock, having checked them
+    /// under it. A sign-out or a new sign-in touching them without that lock
+    /// could land between the two, so each waits for it: the test holds the lock
+    /// as that refresh would, and neither gets to the tokens until it's let go.
+    #[tokio::test]
+    async fn a_sign_out_and_a_sign_in_wait_for_a_refresh_writing_its_tokens() {
+        let b = accounts_bed("acctlockwrite", HostClock::manual()).await;
+        connect_as(&b, "first", "at-1", "a@example.com").await;
+        connect_as(&b, "second", "at-2", "b@example.com").await;
+        let keys = Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap();
+        let token = |label: &str| keys.get_token(&format!("{FX}/google/{label}")).unwrap();
+        let wait = || tokio::time::sleep(std::time::Duration::from_millis(200));
+
+        let lock = b.host.lock_of(FX);
+        let held = lock.lock().await;
+        let host = b.host.clone();
+        let out = tokio::spawn(async move { host.account_signout(FX, "google", &json!({"label": "first"})).await });
+        wait().await;
+        assert!(token("first").is_some(), "it waits for the refresh");
+        drop(held);
+        assert_eq!(out.await.unwrap().unwrap()["state"], "none");
+        assert_eq!(token("first"), None);
+
+        let r = b.host.account_signin(FX, "google", &json!({"open": false, "label": "third"})).await.unwrap();
+        let u = url::Url::parse(r["url"].as_str().unwrap()).unwrap();
+        let q: HashMap<String, String> = u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let flow = js::decode_uri_component(q["redirect_uri"].strip_prefix("http://127.0.0.1:8787/oauth/callback/").unwrap()).unwrap();
+        token_answer(&b.files, 200, json!({"access_token": "at-3", "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer"}));
+        let held = lock.lock().await;
+        let host = b.host.clone();
+        let state = q["state"].clone();
+        let signed_in = tokio::spawn(async move { host.account_callback(&flow, Some("c"), Some(&state), None).await });
+        wait().await;
+        assert_eq!(token("third"), None, "it waits for the refresh");
+        drop(held);
+        assert_eq!(signed_in.await.unwrap().0, "connected");
+        assert!(token("third").is_some());
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// The fixture takes `works` tokens and then refuses every push.
+    async fn pushes_fail_after(label: &str, works: u32) -> Bed {
+        let b = bed_in(label, HostClock::manual()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |p| p["mcpServers"]["fx"]["args"] = json!([format!("--misbehave=account-set-fails-after:{works}")]));
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        google_client(&b);
+        install_pkg(&b, "v1.0.0").await;
+        b
+    }
+
+    /// Only a retry counts toward the row's hours, so the row saying so shows
+    /// the first failed push armed one.
+    #[tokio::test]
+    async fn a_failed_push_after_a_good_refresh_tries_again() {
+        let b = pushes_fail_after("acctpushtick", 1).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        let asked = async || b.log.lock().unwrap().iter().filter(|(r, _)| r == "POST /token").count();
+        let before = asked().await;
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true));
+        until("the refresh", async || asked().await > before).await;
+        let before = asked().await;
+        until("the next try", async || b.host.clock.manual_step(Some(3_300_000.0 + 6.0 * 3_600_000.0), true)).await;
+        until("its refresh", async || asked().await > before).await;
+        until("the row says so", async || b.host.accounts_view(FX)[0].get("stuck") == Some(&json!(true))).await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_push_at_a_switch_tries_again() {
+        let b = pushes_fail_after("acctpushuse", 2).await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        let later = 6.0 * 3_600_000.0;
+        // a working retry arms the next one, so this fires a set number
+        for _ in 0..3 {
+            b.host.clock.manual_step(Some(later), true);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let row = |label: &str| b.host.accounts_view(FX).as_array().unwrap().iter().find(|r| r["label"] == label).cloned().unwrap();
+        until("the row says so", async || row("default").get("stuck") == Some(&json!(true))).await;
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
     /// A switch and a restart both refresh a token that's due. With the network
     /// gone each still goes ahead on what it holds, and the refresh tries again.
     #[tokio::test]

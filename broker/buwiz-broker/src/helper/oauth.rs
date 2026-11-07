@@ -517,7 +517,11 @@ pub fn challenge_of(verifier: &str) -> String {
 async fn error_of(res: http::Resp) -> AuthError {
     let status = res.status;
     let redirect = http::redirect_target(&res);
-    let body = res.text().await.unwrap_or_default();
+    // an answer cut off partway is no answer, not a stray page
+    let body = match res.text().await {
+        Ok(body) => body,
+        Err(e) => return AuthError::Unreached(e),
+    };
     let parsed: Option<Value> = serde_json::from_str(&body).ok();
     let o = parsed.as_ref().and_then(Value::as_object);
     let valid = o.is_some_and(|o| {
@@ -977,6 +981,23 @@ impl OAuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 403 that promises a body and drops the connection before sending it.
+    #[tokio::test]
+    async fn an_error_answer_cut_off_partway_is_no_answer() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/token", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // the request read, or closing resets the connection before the headers land
+            let _ = stream.read(&mut [0; 4096]).await;
+            stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 500\r\n\r\n<html>").await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        let e = token_request(&Fetcher::default(), &url, None, Vec::new(), None, None).await.unwrap_err();
+        assert_eq!(e.verdict(), Verdict::Unanswered, "{e:?}");
+    }
 
     #[test]
     fn discovery_urls_follow_the_sdk_order() {

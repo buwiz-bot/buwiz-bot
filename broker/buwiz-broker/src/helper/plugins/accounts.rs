@@ -535,8 +535,11 @@ impl Host {
                 }
             }
         }
-        self.push_live(&r.plugin, SET, set_args(r, &t)).await;
-        self.schedule_refresh(r, &t);
+        if self.push_live(&r.plugin, SET, set_args(r, &t)).await {
+            self.schedule_refresh(r, &t);
+        } else {
+            self.schedule_retry(r, After::Retry);
+        }
         true
     }
 
@@ -1043,6 +1046,9 @@ impl Host {
             blob["auth_methods"] = json!(p.auth_methods);
             blob["client"] = Value::Object(p.client.clone());
         }
+        // tokens change only under the plugin's lock, as a refresh's do
+        let lock = self.lock_of(&p.plugin);
+        let _held = lock.lock().await;
         if let Err(e) = self.put_tokens(&r.token_ref, &blob).await {
             self.emit(&p.plugin);
             return ("failed", e.message);
@@ -1053,8 +1059,6 @@ impl Host {
         // the new sign-in is the active one: the account's other labels leave the plugin
         let others: Vec<String> = self.account_rows(&p.plugin).into_iter().filter(|x| x.account == p.account && x.label != p.label && x.state == "connected").map(|x| x.label).collect();
         self.set_active(&p.plugin, &p.account, &p.label);
-        let lock = self.lock_of(&p.plugin);
-        let _held = lock.lock().await;
         for l in others {
             self.push_live(&p.plugin, CLEAR, json!({"account": p.account, "label": l})).await;
         }
@@ -1144,15 +1148,21 @@ impl Host {
 
     /// A push to the running plugin (none running: the next spawn pushes);
     /// -32601 fails it.
-    async fn push_live(&self, plugin: &str, name: &str, args: Value) {
-        let Ok(conn) = self.running_conn(plugin) else { return };
+    /// False when a running plugin didn't take it, so it's worth sending again.
+    /// One that isn't running gets its tokens when it starts.
+    async fn push_live(&self, plugin: &str, name: &str, args: Value) -> bool {
+        let Ok(conn) = self.running_conn(plugin) else { return true };
         match self.push(&conn, plugin, name, args).await {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(Fail::V1(e)) if e.code == "plugin_invalid" => {
                 self.stop_conn(plugin).await;
                 self.set_state(plugin, "failed", Some("plugin_invalid"), &e.message);
+                true
             }
-            Err(e) => eprintln!("  v1 {plugin}: {name}: {}", js::slice_utf16(e.message(), 200)),
+            Err(e) => {
+                eprintln!("  v1 {plugin}: {name}: {}", js::slice_utf16(e.message(), 200));
+                false
+            }
         }
     }
 
@@ -1287,10 +1297,11 @@ impl Host {
         };
         match refreshed {
             Ok(t) => {
-                if active {
-                    self.push_live(&r.plugin, SET, set_args(&r, &t)).await;
+                if !active || self.push_live(&r.plugin, SET, set_args(&r, &t)).await {
+                    self.schedule_refresh(&r, &t);
+                } else {
+                    self.schedule_retry(&r, After::Retry);
                 }
-                self.schedule_refresh(&r, &t);
                 self.account_changed(&r.plugin, &r.account, &r.label, "connected");
             }
             Err(e) if e.after != After::Expire => {
@@ -1331,6 +1342,10 @@ impl Host {
     async fn end_account(&self, plugin: &str, account: &str, b: &Value, remove: bool) -> Res {
         self.declared_one(plugin, account)?;
         let label = label_of(b)?;
+        // tokens change only under the plugin's lock: a refresh that has checked
+        // them is done writing before this drops them
+        let lock = self.lock_of(plugin);
+        let _held = lock.lock().await;
         let was_active = self.active_label(plugin, account).as_deref() == Some(label.as_str());
         let flow = flow_id(plugin, account, &label);
         let was_pending = self.accounts.pending().remove(&flow).is_some();
@@ -1351,8 +1366,6 @@ impl Host {
         let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET active=0 WHERE plugin=? AND account=? AND label=?", [plugin, account, &label]));
         let mut next = None;
         if row.is_some() {
-            let lock = self.lock_of(plugin);
-            let _held = lock.lock().await;
             self.push_live(plugin, CLEAR, json!({"account": account, "label": label})).await;
             // the active one signed out: another connected label is
             if was_active {
