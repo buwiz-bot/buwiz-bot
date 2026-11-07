@@ -3,8 +3,13 @@ name: CI
 # The app's, the office crates' and the broker's tests, and clippy on the
 # app and the office crates, on Apple silicon,
 # for every PR.
+#
+# main runs too, and only main saves caches: a PR can read its base branch's
+# cache but no other PR's, and caches saved by PRs push each other out.
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -39,6 +44,7 @@ jobs:
       # rustup installs app/rust-toolchain.toml's 1.99.0 on first use
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: app
       - name: Test
         working-directory: app
@@ -58,6 +64,7 @@ jobs:
         run: rustup component add clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: app
           key: clippy
       - name: Clippy
@@ -83,6 +90,7 @@ jobs:
         run: npm ci
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: broker
       - name: Test
         working-directory: broker
