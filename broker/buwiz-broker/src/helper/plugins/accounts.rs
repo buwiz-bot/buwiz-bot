@@ -83,6 +83,8 @@ pub const DEFAULT_LABEL: &str = "default";
 pub const NEEDS_GOOGLE_CLIENT: &str = "Add your Google client in Setup";
 pub const GOOGLE_REFUSED_CLIENT: &str = "Google refused this client. Check the Client ID and Secret.";
 const REFRESH_EARLY_MS: f64 = 5.0 * 60.0 * 1000.0;
+/// How long a refresh that got no answer waits to try again.
+const REFRESH_RETRY_MS: u64 = 60 * 1000;
 const PENDING_FOR: Duration = Duration::from_secs(10 * 60);
 pub const SET: &str = "buwiz.account.set";
 pub const CLEAR: &str = "buwiz.account.clear";
@@ -345,11 +347,40 @@ fn is_set(vals: &Map<String, Value>, key: &str) -> bool {
 struct Refused {
     why: String,
     bad_client: bool,
+    /// Nobody said no: the network failed, or the provider can't answer now.
+    unanswered: bool,
 }
 
 impl From<Refused> for String {
     fn from(r: Refused) -> String {
         r.why
+    }
+}
+
+/// Whether `e` leaves a sign-in as it was. Only the provider's own no ends one:
+/// a network that's gone, or a provider that's down or busy, says nothing of it.
+fn unanswered(e: &oauth::AuthError) -> bool {
+    match e {
+        oauth::AuthError::Plain(_) | oauth::AuthError::OAuth { kind: oauth::Kind::Server, .. } => true,
+        oauth::AuthError::OAuth { name, .. } => matches!(name.as_str(), "TemporarilyUnavailableError" | "TooManyRequestsError"),
+    }
+}
+
+/// A refresh that failed: why, and whether it's worth trying again.
+struct RefreshFailed {
+    why: String,
+    try_again: bool,
+}
+
+impl From<&str> for RefreshFailed {
+    fn from(why: &str) -> Self {
+        Self { why: why.to_owned(), try_again: false }
+    }
+}
+
+impl From<Refused> for RefreshFailed {
+    fn from(r: Refused) -> Self {
+        Self { try_again: r.unanswered, why: r.why }
     }
 }
 
@@ -454,8 +485,9 @@ impl Host {
     }
 
     /// Pushes `r`'s tokens to the running plugin (refreshed first when due)
-    /// and keeps them fresh; `false` when it had none or the refresh
-    /// failed (it is `expired` then). The caller holds the plugin's lock.
+    /// and keeps them fresh; `false` when it had none or the refresh was
+    /// refused (it is `expired` then). A refresh nobody answered pushes what
+    /// it holds and tries again. The caller holds the plugin's lock.
     async fn push_label(&self, r: &AccountRow) -> bool {
         let Some(mut t) = self.tokens(&r.token_ref).await else {
             self.expire_label(r).await;
@@ -464,6 +496,11 @@ impl Host {
         if self.due(&t) {
             match self.refresh_account(r).await {
                 Ok(fresh) => t = fresh,
+                Err(e) if e.try_again => {
+                    self.push_live(&r.plugin, SET, set_args(r, &t)).await;
+                    self.schedule_retry(r);
+                    return true;
+                }
                 Err(_) => {
                     self.expire_label(r).await;
                     return false;
@@ -998,13 +1035,13 @@ impl Host {
 
     /// A token request; the token response (`id_token` too).
     async fn token_call(&self, endpoint: &str, methods: &[String], client: &Map<String, Value>, params: Vec<(String, String)>) -> Result<Map<String, Value>, Refused> {
-        let url = Url::parse(endpoint).map_err(|e| Refused { why: e.to_string(), bad_client: false })?;
+        let url = Url::parse(endpoint).map_err(|e| Refused { why: e.to_string(), bad_client: false, unanswered: false })?;
         let mut md = Map::new();
         md.insert("token_endpoint".into(), json!(endpoint));
         md.insert("token_endpoint_auth_methods_supported".into(), json!(methods));
         oauth::token_request(&Fetcher::default(), &url, Some(&md), params, Some(client), None).await.map_err(|e| {
             let bad_client = matches!(&e, oauth::AuthError::OAuth { kind: oauth::Kind::InvalidClient | oauth::Kind::UnauthorizedClient, .. });
-            Refused { why: js::slice_utf16(&e.message(), 300), bad_client }
+            Refused { why: js::slice_utf16(&e.message(), 300), bad_client, unanswered: unanswered(&e) }
         })
     }
 
@@ -1027,7 +1064,7 @@ impl Host {
     }
 
     /// A refresh with the stored refresh token; the new blob, stored.
-    async fn refresh_account(&self, r: &AccountRow) -> Result<Value, String> {
+    async fn refresh_account(&self, r: &AccountRow) -> Result<Value, RefreshFailed> {
         let prev = self.tokens(&r.token_ref).await.ok_or("no stored tokens")?;
         let rt = prev.get("refresh_token").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or("no refresh token")?.to_owned();
         let (endpoint, methods, client) = if r.provider == "google" {
@@ -1039,7 +1076,7 @@ impl Host {
         };
         let t = self.token_call(&endpoint, &methods, &client, vec![("grant_type".into(), "refresh_token".into()), ("refresh_token".into(), rt)]).await?;
         let blob = self.blob(&t, Some(&prev));
-        self.put_tokens(&r.token_ref, &blob).await.map_err(|e| e.message)?;
+        self.put_tokens(&r.token_ref, &blob).await.map_err(|e| RefreshFailed { why: e.message, try_again: true })?;
         if let Some(s) = scopes_of(t.get("scope")) {
             let _ = self.put_account(&AccountRow { scopes: s, ..r.clone() });
         }
@@ -1077,7 +1114,8 @@ impl Host {
 
     /// After provision (the gate's connection): `buwiz.account.set` for
     /// each account's active label, refreshed first when it is within 5
-    /// minutes of expiry (a failed refresh: expired, nothing pushed); the
+    /// minutes of expiry (a refused refresh: expired, nothing pushed; one
+    /// nobody answered: pushed as it stands, and tried again); the
     /// other connected labels are only kept fresh.
     pub(super) async fn push_accounts(&self, id: &str, conn: &Conn, pkg: &Package) -> Result<(), V1Error> {
         for r in self.account_rows(id).into_iter().filter(|r| r.state == "connected" && pkg.accounts.iter().any(|a| a.id == r.account)) {
@@ -1091,17 +1129,22 @@ impl Host {
                 self.set_account_state(&r, "expired");
                 continue;
             };
+            let mut try_again = false;
             if self.due(&t) {
                 match self.refresh_account(&r).await {
                     Ok(fresh) => t = fresh,
-                    Err(why) => {
-                        eprintln!("  v1 {id}: account {}/{}: refresh failed: {}", r.account, r.label, js::slice_utf16(&why, 200));
-                        self.set_account_state(&r, "expired");
-                        continue;
+                    Err(e) => {
+                        eprintln!("  v1 {id}: account {}/{}: refresh failed: {}", r.account, r.label, js::slice_utf16(&e.why, 200));
+                        if !e.try_again {
+                            self.set_account_state(&r, "expired");
+                            continue;
+                        }
+                        try_again = true;
                     }
                 }
             }
             match self.push(conn, id, SET, set_args(&r, &t)).await {
+                Ok(()) if try_again => self.schedule_retry(&r),
                 Ok(()) => self.schedule_refresh(&r, &t),
                 Err(Fail::V1(e)) if e.code == "plugin_invalid" => return Err(e),
                 Err(e) => eprintln!("  v1 {id}: {SET}: {}", js::slice_utf16(e.message(), 200)),
@@ -1124,8 +1167,16 @@ impl Host {
     /// The refresh 5 minutes before `expires_at`.
     fn schedule_refresh(&self, r: &AccountRow, t: &Value) {
         let Some(expires) = t.get("expires_at").and_then(Value::as_f64) else { return };
+        self.refresh_in((expires * 1000.0 - REFRESH_EARLY_MS - self.clock.now()).max(0.0) as u64, r);
+    }
+
+    /// The next try of a refresh nobody answered.
+    fn schedule_retry(&self, r: &AccountRow) {
+        self.refresh_in(REFRESH_RETRY_MS, r);
+    }
+
+    fn refresh_in(&self, delay: u64, r: &AccountRow) {
         self.clear_refresh(&r.token_ref);
-        let delay = (expires * 1000.0 - REFRESH_EARLY_MS - self.clock.now()).max(0.0) as u64;
         let (me, row) = (self.me.clone(), r.clone());
         let timer = self.clock.set_timeout(
             delay,
@@ -1138,7 +1189,8 @@ impl Host {
     }
 
     /// A refresh timer fired: refresh and push again while the plugin
-    /// runs; a failure is `expired` and `buwiz.account.clear`.
+    /// runs; a refusal is `expired` and `buwiz.account.clear`, and a refresh
+    /// nobody answered changes nothing and tries again.
     async fn refresh_tick(&self, r: &AccountRow) {
         self.accounts.timers.lock().unwrap_or_else(|e| e.into_inner()).remove(&r.token_ref);
         if self.with_rt(&r.plugin, |rt| rt.state) != "running" {
@@ -1157,8 +1209,12 @@ impl Host {
                 self.schedule_refresh(&r, &t);
                 self.account_changed(&r.plugin, &r.account, &r.label, "connected");
             }
-            Err(why) => {
-                eprintln!("  v1 {}: account {}/{}: refresh failed: {}", r.plugin, r.account, r.label, js::slice_utf16(&why, 200));
+            Err(e) if e.try_again => {
+                eprintln!("  v1 {}: account {}/{}: refresh failed, trying again: {}", r.plugin, r.account, r.label, js::slice_utf16(&e.why, 200));
+                self.schedule_retry(&r);
+            }
+            Err(e) => {
+                eprintln!("  v1 {}: account {}/{}: refresh failed: {}", r.plugin, r.account, r.label, js::slice_utf16(&e.why, 200));
                 let _ = self.sql(|db| db.execute("UPDATE v1_accounts SET state='expired' WHERE plugin=? AND account=? AND label=?", [&r.plugin, &r.account, &r.label]));
                 self.account_changed(&r.plugin, &r.account, &r.label, "expired");
                 // the active one's token was out. One that wasn't has news only

@@ -1337,6 +1337,119 @@ mod tests {
         let _ = std::fs::remove_dir_all(&b.dir);
     }
 
+    /// A token endpoint that takes each connection and drops it, as a network
+    /// that's gone does; → its address and how many connections it dropped.
+    async fn dropping_token_endpoint() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = dropped.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        (url, dropped)
+    }
+
+    fn token_endpoint(b: &Bed, url: String) {
+        b.host.set_accounts_config(AccountsConfig { port: 8787, google_authorize: "https://accounts.example.test/auth".into(), google_token: url, open: Arc::new(|_: &str| {}) });
+    }
+
+    fn state_of(b: &Bed, label: &str) -> String {
+        b.host.account_rows(FX).iter().find(|r| r.label == label).unwrap().state.clone()
+    }
+
+    /// A network gone at refresh time says nothing about the sign-in: no clear
+    /// reaches the plugin, which would drop that account's mail, and the refresh
+    /// tries again. Only the provider's own no ends it.
+    #[tokio::test]
+    async fn a_dropped_connection_during_a_refresh_keeps_the_sign_in_and_tries_again() {
+        let b = accounts_bed("acctdrop", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let online = format!("{}/token", b.base);
+        let (offline, dropped) = dropping_token_endpoint().await;
+        let pushes = account_pushes(&b).await.len();
+        token_endpoint(&b, offline);
+
+        assert!(b.host.clock.manual_step(Some(3_300_000.0), true), "the refresh");
+        for tries in 1..=2 {
+            until("the dropped refresh", async || dropped.load(std::sync::atomic::Ordering::SeqCst) >= tries).await;
+            if tries == 1 {
+                until("the next try", async || b.host.clock.manual_step(None, true)).await;
+            }
+        }
+        // a timer waits for the next try, and nothing else happened
+        assert_eq!(state_of(&b, "default"), "connected");
+        assert_eq!(account_pushes(&b).await.len(), pushes, "the plugin hears nothing");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+
+        // the network's back
+        token_endpoint(&b, online);
+        token_answer(&b.files, 200, json!({"access_token": "at-2", "expires_in": 3600, "token_type": "Bearer"}));
+        until("the next try", async || b.host.clock.manual_step(None, true)).await;
+        until("the new token", async || account_pushes(&b).await.len() > pushes).await;
+        assert_eq!(account_pushes(&b).await.last().unwrap()["push"], "set");
+        assert_eq!(state_of(&b, "default"), "connected");
+
+        // the provider's no still ends it
+        token_answer(&b.files, 400, json!({"error": "invalid_grant"}));
+        assert!(b.host.clock.manual_step(Some(6_600_000.0), true));
+        until("the clear", async || pushed(&b.host).await == json!({})).await;
+        assert_eq!(state_of(&b, "default"), "expired");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A busy provider answers, but says nothing of the sign-in either.
+    #[tokio::test]
+    async fn a_provider_that_cant_answer_now_keeps_the_sign_in() {
+        let b = accounts_bed("acctbusy", HostClock::manual()).await;
+        connect_as(&b, "default", "at-1", "d@example.com").await;
+        let pushes = account_pushes(&b).await.len();
+        let answers = [(503, json!({"error": "temporarily_unavailable"})), (429, json!({"error": "too_many_requests"})), (500, json!({"oops": true}))];
+        b.host.clock.manual_step(Some(3_300_000.0), false);
+        let asked = async || b.log.lock().unwrap().iter().filter(|(r, _)| r == "POST /token").count();
+        for (status, body) in answers {
+            token_answer(&b.files, status, body);
+            let before = asked().await;
+            until("the next try", async || b.host.clock.manual_step(None, true)).await;
+            until("its answer", async || asked().await > before).await;
+            assert_eq!(state_of(&b, "default"), "connected", "{status}");
+            assert_eq!(account_pushes(&b).await.len(), pushes, "{status}");
+        }
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A switch and a restart both refresh a token that's due. With the network
+    /// gone each still goes ahead on what it holds, and the refresh tries again.
+    #[tokio::test]
+    async fn a_switch_and_a_restart_with_the_network_gone_keep_the_sign_in() {
+        let b = accounts_bed("acctdropuse", HostClock::manual()).await;
+        connect_as(&b, "default", "at-d", "d@example.com").await;
+        connect_as(&b, "work", "at-w", "w@example.com").await;
+        let (offline, dropped) = dropping_token_endpoint().await;
+        token_endpoint(&b, offline);
+        b.host.clock.manual_step(Some(3_400_000.0), false);
+
+        b.host.account_use(FX, "google", &json!({"label": "default"})).await.unwrap();
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst) >= 1, "it tried");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        assert_eq!((state_of(&b, "default"), state_of(&b, "work")), ("connected".to_owned(), "connected".to_owned()));
+        assert_eq!(b.host.active_label(FX, "google").as_deref(), Some("default"));
+
+        let tried = dropped.load(std::sync::atomic::Ordering::SeqCst);
+        b.host.disable(FX).await.unwrap();
+        b.host.enable(FX).await.unwrap();
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst) > tried, "it tried");
+        assert_eq!(state_of(&b, "default"), "connected");
+        assert_eq!(pushed_labels(&b).await, ["google/default"]);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
     /// A switch to a label whose tokens are gone, and the one before it gone too:
     /// nothing is left to push, so only a clear can tell the plugin.
     #[tokio::test]
