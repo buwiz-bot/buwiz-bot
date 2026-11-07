@@ -1200,8 +1200,8 @@ pub struct RoxBot {
     pub purpose: String,
     /// A temporary helper's parent and task (`helper`): no sidebar row.
     pub helper: Option<crate::agents::HelperOf>,
-    /// Whom it takes messages from: `all`, `none` or `some` (a list).
-    pub accepts: String,
+    /// Whom it takes messages from.
+    pub accepts: crate::agents::Accepts,
 }
 
 impl RoxBot {
@@ -3928,19 +3928,33 @@ impl Store {
             })
     }
 
-    /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`):
-    /// `all` or `none`.
-    pub fn agents_accepts(&'static self, bot: String, accepts: &'static str) {
-        self.bots.update(|bs| {
-            if let Some(b) = bs.iter_mut().find(|b| b.id == bot) {
-                b.accepts = accepts.to_owned();
-            }
-        });
+    /// Whom bot `bot` takes messages from (`/v1/host/agents/accepts`);
+    /// `answered` gets the broker's answer, None when none came (it may
+    /// have applied it even so). Shown at once. Without a yes the old value
+    /// goes back here, and the `/threads` that follows brings the real one:
+    /// it changes nothing here when nothing changed there.
+    pub fn agents_accepts(&'static self, bot: String, accepts: crate::agents::Accepts, answered: impl FnOnce(Option<serde_json::Value>) + 'static) {
+        let put = |to: &crate::agents::Accepts| {
+            let mut was = None;
+            self.bots.update(|bs| {
+                if let Some(b) = bs.iter_mut().find(|b| b.id == bot) {
+                    was = Some(std::mem::replace(&mut b.accepts, to.clone()));
+                }
+            });
+            was
+        };
+        let was = put(&accepts);
         spawn_detached(async move {
-            let r = client::post_any("/v1/host/agents/accepts", serde_json::json!({"bot": bot, "accepts": accepts})).await;
+            let r = client::post_any("/v1/host/agents/accepts", serde_json::json!({"bot": bot, "accepts": accepts.to_json()})).await;
             if r.as_ref().and_then(|v| v.get("ok")).and_then(|x| x.as_bool()) != Some(true) {
                 log::warn!("agents accepts {bot}: {r:?}");
+                self.bots.update(|bs| {
+                    if let (Some(b), Some(was)) = (bs.iter_mut().find(|b| b.id == bot), was) {
+                        b.accepts = was;
+                    }
+                });
             }
+            answered(r);
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }
@@ -6544,8 +6558,15 @@ impl Store {
         }
     }
 
-    /// `POST /chat` with the composer contents, then follow the run.
+    /// `POST /chat` with the composer contents, then follow the run: the
+    /// person's own Enter or Send.
     pub fn send(&'static self) {
+        self.send_as(true);
+    }
+
+    /// [`Self::send`]; `typed` false for text a tap sends on someone's
+    /// words (`send_text`): it never runs `/messages`.
+    fn send_as(&'static self, typed: bool) {
         // an agents' conversation is read-only (the broker refuses it too)
         if untracked(|| self.active_agents().is_some()) {
             return;
@@ -6555,12 +6576,13 @@ impl Store {
         // canonical ones before anything is sent; tokens or a command alone
         // never reach the model (mini_v1::ui).
         let resolved = self.v1_resolved.replace(false);
-        if !resolved && !text.starts_with("/status") && self.v1_send(&text) {
+        let own_command = text.starts_with("/status") || (typed && crate::messages::is_command(&text));
+        if !resolved && !own_command && self.v1_send(&text) {
             return;
         }
         // Commands (`/status`, a server's) and a message of `@` tokens
         // alone run here — they never reach the model (slash.rs).
-        if !resolved && crate::slash::dispatch(&text) {
+        if !resolved && crate::slash::dispatch(&text, typed) {
             return;
         }
         let reply_to = self.reply_to.get_untracked();
@@ -6679,7 +6701,8 @@ impl Store {
 
     /// Sends `text` as the next message, as the composer would, leaving the
     /// composer's own draft, files and reply as they were (a choice card's
-    /// answer, a plugin-needs card's Send again).
+    /// answer, a plugin's chip, a plugin-needs card's Send again). The words
+    /// may be a model's or a plugin's, so they don't count as typed.
     pub fn send_text(&'static self, text: String) {
         let kept = (
             self.draft.get_untracked(),
@@ -6691,7 +6714,7 @@ impl Store {
             self.attachments.set(Vec::new());
             self.reply_to.set(None);
         });
-        self.send();
+        self.send_as(false);
         batch(|| {
             self.draft.set(kept.0);
             self.attachments.set(kept.1);

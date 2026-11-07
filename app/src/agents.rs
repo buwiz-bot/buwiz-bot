@@ -74,14 +74,41 @@ impl HelperOf {
     }
 }
 
-/// Whom an agent takes messages from (`accepts`): `all` (the default),
-/// `none`, or `some` for a list of agents (set by the agent tools; shown,
-/// not edited, here).
-pub fn accepts_of(v: &serde_json::Value) -> String {
+/// Whom an agent takes messages from (`accepts`): every Bot (the default),
+/// nobody, or the Bots of a list. Only a person sets it, through
+/// `/v1/host/agents/accepts`; no agent tool does.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub enum Accepts {
+    #[default]
+    All,
+    None,
+    List(Vec<String>),
+}
+
+impl Accepts {
+    /// `all`, `none` or `some`.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Accepts::All => "all",
+            Accepts::None => "none",
+            Accepts::List(_) => "some",
+        }
+    }
+
+    /// As the broker's route takes it.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Accepts::List(ids) => serde_json::json!(ids),
+            other => serde_json::json!(other.word()),
+        }
+    }
+}
+
+pub fn accepts_of(v: &serde_json::Value) -> Accepts {
     match v.get("accepts") {
-        Some(serde_json::Value::String(x)) if x == "none" => "none".to_owned(),
-        Some(serde_json::Value::Array(_)) => "some".to_owned(),
-        _ => "all".to_owned(),
+        Some(serde_json::Value::String(x)) if x == "none" => Accepts::None,
+        Some(serde_json::Value::Array(l)) => Accepts::List(l.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()),
+        _ => Accepts::All,
     }
 }
 
@@ -497,9 +524,10 @@ mod tests {
         watcher.made_by = "scout".into();
         assert!(listed_bot(&watcher), "a permanent agent is listed");
         assert_eq!(HelperOf::of(&json!({"task": "x"})), None);
-        assert_eq!(accepts_of(&json!({})), "all");
-        assert_eq!(accepts_of(&json!({"accepts": "none"})), "none");
-        assert_eq!(accepts_of(&json!({"accepts": ["boss"]})), "some");
+        assert_eq!(accepts_of(&json!({})), Accepts::All);
+        assert_eq!(accepts_of(&json!({"accepts": "none"})), Accepts::None);
+        assert_eq!(accepts_of(&json!({"accepts": ["boss", "ada"]})), Accepts::List(vec!["boss".to_owned(), "ada".to_owned()]), "the list itself");
+        assert_eq!(accepts_of(&json!({"accepts": []})), Accepts::List(Vec::new()), "an empty list is no All");
     }
 
     #[test]
