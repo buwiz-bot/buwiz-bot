@@ -860,6 +860,7 @@ struct Bed {
 fn bed(label: &str) -> Bed {
     let dir = temp(label);
     let mut ctx = HubCtx::new(dir, Clock::manual());
+    ctx.ui.app_is_there();
     ctx.ext.insert(RealChatsDefaults);
     crate::hub::library::botctx::register(&mut ctx);
     ctx.clock.manual_step(Some(START), false);
@@ -1125,6 +1126,7 @@ async fn the_ceiling_hides_and_refuses_an_off_tool() {
 #[tokio::test]
 async fn looking_at_the_screen_is_off_until_a_person_turns_it_on_for_that_bot() {
     let b = bed("screens");
+    b.ctx.ui.app_went();
     assert_eq!((default_pos("hex", "screens"), default_pos(CHATS, "screens")), (Pos::Off, Pos::Off));
     let run = run_in(&b.ctx, &b.hex);
     let plain = run_in(&b.ctx, &b.plain);
@@ -1200,6 +1202,7 @@ fn turn_on(b: &Bed, keys: &[&str]) {
 #[tokio::test]
 async fn acting_on_the_screen_has_its_own_switch_off_until_a_person_turns_it_on_for_that_bot() {
     let b = bed("act");
+    b.ctx.ui.app_went();
     assert_eq!((default_pos("hex", "screen_actions"), default_pos(CHATS, "screen_actions")), (Pos::Off, Pos::Off));
     let run = run_in(&b.ctx, &b.hex);
     let plain = run_in(&b.ctx, &b.plain);
@@ -1661,6 +1664,7 @@ async fn skill_enable_and_mcp_enable_propose_and_disable_acts_as_before() {
 fn bed_waiting(label: &str, wait: std::time::Duration) -> Bed {
     let dir = temp(label);
     let mut ctx = HubCtx::new(dir, Clock::manual());
+    ctx.ui.app_is_there();
     ctx.ext.insert(ask::AskWait(wait));
     ctx.ext.insert(RealChatsDefaults);
     crate::hub::library::botctx::register(&mut ctx);
@@ -1707,7 +1711,7 @@ fn spawn_call(ctx: &Arc<HubCtx>, thread: &str, name: &str, input: Value) -> toki
     tokio::spawn(async move { exec_tool(&run, &block).await })
 }
 
-fn answer_card(ctx: &HubCtx, chat: &str, id: &Value, ans: &str) -> Result<Value, crate::v1::V1Error> {
+fn answer_card(ctx: &Arc<HubCtx>, chat: &str, id: &Value, ans: &str) -> Result<Value, crate::v1::V1Error> {
     ask::host_answer(ctx, &json!({"chat": chat, "id": id, "answer": ans}))
 }
 
@@ -1865,17 +1869,16 @@ async fn each_answer_runs_once_grants_the_chat_declines_or_saves_a_rule() {
 }
 
 #[tokio::test]
-async fn an_unanswered_card_expires_and_a_restart_expires_what_was_left() {
+async fn an_unanswered_card_waits_and_a_restart_expires_what_was_left_pending() {
     let b = bed_waiting("expire", std::time::Duration::from_millis(150));
     let r = exec_tool(&run_in(&b.ctx, &b.plain), &json!({"name": "memory_add", "input": {"text": "tea"}})).await;
-    assert_eq!(r, Out::err(ask::NO_ANSWER.into()));
+    assert_eq!(r, Out::err(ask::WAITS.into()));
     assert!(chats_memories(&b.ctx).is_empty());
     let n = asks(&b.ctx, &b.plain).pop().unwrap();
-    assert_eq!(n["state"], "expired");
-    // a late click: no answer is taken
-    let e = answer_card(&b.ctx, &b.plain, &n["id"], "once").unwrap_err();
-    assert_eq!((e.code.as_str(), e.message.as_str()), ("stale", ask::NO_ANSWER));
-    assert_eq!(activity(&b.ctx, None)[0]["outcome"], "expired");
+    assert_eq!(n["state"], "waiting");
+    assert_eq!(activity(&b.ctx, None)[0]["outcome"], "needs_ok");
+    let e = answer_card(&b.ctx, &b.plain, &n["id"], "no").unwrap();
+    assert_eq!(e["notice"]["state"], "declined");
     // a card a previous run left pending: expired on start, and a click is stale
     let left = json!({"kind": "tool_ask", "id": "a_left", "bot": "", "key": "memory", "tool": "memory_add", "title": "Save this to memory?", "state": "pending", "at": 1});
     crate::hub::tools::miniapps::post_in(&b.ctx, &b.plain, &left);
@@ -1883,7 +1886,7 @@ async fn an_unanswered_card_expires_and_a_restart_expires_what_was_left() {
     let left2 = json!({"kind": "tool_ask", "id": "a_left2", "bot": "", "key": "memory", "tool": "memory_add", "title": "Save this to memory?", "state": "pending", "at": 1});
     crate::hub::tools::miniapps::post_in(&b.ctx, &b.plain, &left2);
     ask::expire_pending(&b.ctx);
-    assert!(asks(&b.ctx, &b.plain).iter().all(|n| n["state"] == "expired"));
+    assert!(asks(&b.ctx, &b.plain).iter().filter(|n| n["id"] != e["notice"]["id"]).all(|n| n["state"] == "expired"));
 }
 
 #[tokio::test]
@@ -1968,16 +1971,18 @@ async fn a_routine_takes_ask_as_on_but_no_one_answers_the_guard_or_an_agents_req
     // off still refuses
     host_set(&b.ctx, &json!({"bot": "chats", "key": "memory", "state": "off"})).unwrap();
     assert!(crate::js::string_of(&exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "y"}})).await.content).contains("is off for plain chats"));
-    // after outside content the guard asks, and no one is there: refused
+    // after outside content the guard asks, and no one is there: it waits for them
     run.state().external = true;
-    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::NOBODY.into()));
+    assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::WAITS.into()));
+    let waiting = asks(&b.ctx, &b.plain);
+    assert_eq!(waiting.iter().map(|n| n["state"].as_str().unwrap()).collect::<Vec<_>>(), ["waiting"]);
     // an agent's request keeps refusing Ask, and the guard
     host_set(&b.ctx, &json!({"bot": "hex", "key": "memory", "state": "ask"})).unwrap();
     let run = turn_of(request());
     assert_eq!(exec_tool(&run, &json!({"name": "memory_add", "input": {"text": "x"}})).await, Out::err(ask::NOBODY.into()));
     run.state().external = true;
     assert_eq!(exec_tool(&run, &json!({"name": "shell_run", "input": {"command": "echo hi", "cwd": "/"}})).await, Out::err(ask::NOBODY.into()));
-    assert!(asks(&b.ctx, &b.plain).is_empty() && asks(&b.ctx, &b.hex).is_empty(), "no card");
+    assert!(asks(&b.ctx, &b.plain) == waiting && asks(&b.ctx, &b.hex).is_empty(), "an agent's request leaves no card");
     let outcomes: Vec<Value> = activity(&b.ctx, None).iter().filter(|r| r.get("tool").is_some()).map(|r| r["outcome"].clone()).collect();
     assert_eq!(outcomes, [json!("needs_ok"), json!("needs_ok"), json!("needs_ok")]);
 }
@@ -2003,6 +2008,7 @@ async fn an_mcp_tool_marked_read_only_runs_at_ask_and_the_rest_ask() {
     let script = dir.join("ro-server.mjs");
     std::fs::write(&script, marked).unwrap();
     let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
+    ctx.ui.app_is_there();
     ctx.ext.insert(ask::AskWait(std::time::Duration::from_millis(150)));
     ctx.ext.insert(RealChatsDefaults);
     ctx.store.load().unwrap();
@@ -2022,7 +2028,7 @@ async fn an_mcp_tool_marked_read_only_runs_at_ask_and_the_rest_ask() {
     assert!(crate::js::string_of(&r.content).contains("\"tool\":\"peek\""), "{r:?}");
     assert!(asks(&ctx, &chat).is_empty(), "a read-only tool runs at Ask");
     let r = exec_tool(&run, &json!({"name": "mcp_ro_echo", "input": {"x": 1}})).await;
-    assert_eq!(r, Out::err(ask::NO_ANSWER.into()), "the rest ask (and no answer came)");
+    assert_eq!(r, Out::err(ask::WAITS.into()), "the rest ask (and no answer came)");
     assert_eq!(asks(&ctx, &chat)[0]["key"], "mcp:ro");
 }
 

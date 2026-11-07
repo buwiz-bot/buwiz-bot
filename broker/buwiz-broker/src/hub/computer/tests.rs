@@ -34,6 +34,7 @@ fn bed_with(label: &str, make: impl FnOnce(Arc<dyn Provider>) -> Computers) -> B
     let dir = std::env::temp_dir().join(format!("buwiz-computer-hub-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut ctx = HubCtx::new(dir, Clock::manual());
+    ctx.ui.app_is_there();
     ctx.store.load().unwrap();
     let mock = Arc::new(MockProvider::default());
     *mock.apart.lock().unwrap() = Some(Ok(true));

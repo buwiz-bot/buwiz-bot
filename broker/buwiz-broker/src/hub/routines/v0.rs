@@ -21,6 +21,7 @@ use super::mcp::{call_tool_json, McpView};
 use super::templates::{self, Source};
 use super::text::{is_email, is_obj, len16, num, num_or_null, number, round, tpl, trim};
 use crate::hub::ctx::{Db, HubCtx};
+use crate::hub::policy::ask;
 use crate::hub::traits::TurnRequest;
 use crate::hub::types::TurnCtx;
 use crate::js;
@@ -422,6 +423,11 @@ impl V0 {
             let _ = Self::sql(db, "UPDATE routines SET enabled=0, last_run=?, last_error=? WHERE id=?", &[&started_i, &"its chat was deleted", &r.id]);
             return Ok(());
         };
+        // a card of its own waits for a person: no check, no model, nothing marked seen
+        if ask::routine_waits(ctx, &r.id) {
+            let _ = Self::sql(db, "UPDATE routines SET last_run=? WHERE id=?", &[&started_i, &r.id]);
+            return Ok(());
+        }
         let check = r.check();
         let mut fresh: Option<Vec<(String, Value)>> = None;
         if let Some(check) = &check {

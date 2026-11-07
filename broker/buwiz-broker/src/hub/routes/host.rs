@@ -37,7 +37,8 @@
 //! Bot controls (`hub::policy`): `GET /v1/host/tools?bot=<id>` (a Bot's switches, this
 //! Mac's mode and rules, Activity, Recent changes), `POST /v1/host/tools/answer {chat, id,
 //! answer}` (yes or no on a pending `tools_change` card), `POST /v1/host/tools/ask {chat, id,
-//! answer}` (once, chat, rule or no on a `tool_ask` card), the person's own edits `POST
+//! answer}` (once, chat, rule or no on a `tool_ask` card; a yes on a waiting one answers `{job,
+//! thread}`, the turn it started), the person's own edits `POST
 //! /v1/host/tools/set {bot | "chats", key, state}`, `/v1/host/shell/mode {mode}` and
 //! `/v1/host/shell/rules {op, kind, pattern}`, and `POST /v1/host/tools/undo {undo}`.
 //!
@@ -232,6 +233,7 @@ pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
     routes.on_start(settle_on_sign_in);
     // a card a previous run left waiting can't be answered now
     routes.on_start(|ctx| crate::hub::policy::ask::expire_pending(&ctx));
+    routes.on_start(crate::hub::policy::ask::sweep_waiting);
     let host = rs.clone();
     routes.route(Verb::Any, Pattern::Prefix("/v1/host/"), move |ctx, req| {
         let rs = host.clone();

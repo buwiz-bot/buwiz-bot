@@ -78,7 +78,20 @@ impl Jobs {
     /// A queued job on `thread` (`allocJobId()` and `jobs.set`); `cap`
     /// keeps the newest 25 (`/chat`'s `if (jobs.size > 25) …`).
     pub fn create(&self, thread: &str, extra: Value, retry: Option<String>, cap: bool) -> JobId {
+        Self::add(&mut self.lock(), thread, extra, retry, cap)
+    }
+
+    /// A queued job on `thread`, as [`Jobs::create`], unless one is still going there: the check
+    /// and the job are one step, so of two asking at once only one gets it.
+    pub fn create_if_idle(&self, thread: &str) -> Option<JobId> {
         let mut t = self.lock();
+        if t.jobs.iter().any(|j| j.thread == thread && !j.done) {
+            return None;
+        }
+        Some(Self::add(&mut t, thread, Value::Null, None, true))
+    }
+
+    fn add(t: &mut Table, thread: &str, extra: Value, retry: Option<String>, cap: bool) -> JobId {
         t.next = t.next.max(1);
         let id = t.next;
         t.next += 1;

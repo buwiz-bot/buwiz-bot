@@ -1226,9 +1226,13 @@ fn card_undo(id: &str, undo: &str) {
 pub(crate) const NO_ANSWER: &str = "No answer, so this didn't run.";
 /// The outside-content line.
 pub(crate) const READ_A_PAGE: &str = "This chat read a web page this turn.";
+/// What a waiting card says: its run has gone on without it.
+pub(crate) const WAITING_LINE: &str = "Waiting for your OK. This hasn't run.";
 
-/// A pending ask card's words: the title, its lines, the payload, the
-/// outside-content line, and its buttons (label, answer), the main one last.
+/// A pending or waiting ask card's words: the title, its lines, the payload,
+/// the outside-content line, and its buttons (label, answer), the main one last.
+/// A waiting card's run is over: a yes starts a new one for this one call, so
+/// it offers nothing that lasts.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct AskCopy {
     pub title: String,
@@ -1244,9 +1248,11 @@ pub(crate) fn ask_copy(n: &ToolAskNotice) -> AskCopy {
         // a person's own hands: there's no standing yes to give
         buttons.push(("Take over".to_owned(), "once"));
     } else {
-        buttons.push(("Allow in this chat".to_owned(), "chat"));
-        if n.key == "shell" && !n.prefix.is_empty() {
-            buttons.push((format!("Always allow `{}`", n.prefix), "rule"));
+        if n.state != "waiting" {
+            buttons.push(("Allow in this chat".to_owned(), "chat"));
+            if n.key == "shell" && !n.prefix.is_empty() {
+                buttons.push((format!("Always allow `{}`", n.prefix), "rule"));
+            }
         }
         buttons.push(("Allow".to_owned(), "once"));
     }
@@ -1282,7 +1288,7 @@ pub(crate) enum AskShows {
 pub(crate) fn ask_shows(n: &ToolAskNotice, local: Option<&AskLocal>, seen: i64, now: i64) -> AskShows {
     let n = local.and_then(|l| l.settled.as_ref()).unwrap_or(n);
     match n.state.as_str() {
-        "pending" => AskShows::Card,
+        "pending" | "waiting" => AskShows::Card,
         "allowed" | "declined" => {
             let start = receipt_start(n.at, seen);
             let answer = if n.answer.is_empty() { if n.state == "declined" { "no" } else { "once" } } else { n.answer.as_str() };
@@ -1310,7 +1316,7 @@ fn set_ask_local(id: &str, f: impl FnOnce(&mut AskLocal)) {
 pub(crate) fn ask_row(n: ToolAskNotice, chat: String) -> impl IntoElement {
     let seen = first_seen(&n.id);
     let start = receipt_start(n.at, seen);
-    if n.state != "pending" && receipt_fresh(start, now_ms()) {
+    if !matches!(n.state.as_str(), "pending" | "waiting") && receipt_fresh(start, now_ms()) {
         watch(start + RECEIPT_MS);
     }
     let n2 = n.clone();
@@ -1328,7 +1334,8 @@ pub(crate) fn ask_row(n: ToolAskNotice, chat: String) -> impl IntoElement {
 }
 
 /// A pending ask card: the title, the payload in a box, the outside-content
-/// line, then Not now, Allow in this chat, Always allow (the shell), Allow.
+/// line, then Not now, Allow in this chat, Always allow (the shell), Allow. A
+/// waiting one says so, with Not now and Allow.
 fn ask_card(n: &ToolAskNotice, chat: &str) -> impl IntoElement {
     let copy = ask_copy(n);
     let local = ask_local(&n.id).unwrap_or_default();
@@ -1359,6 +1366,9 @@ fn ask_card(n: &ToolAskNotice, chat: &str) -> impl IntoElement {
     if !copy.external.is_empty() {
         c = c.child(warn_band(copy.external.clone()));
     }
+    if n.state == "waiting" {
+        c = c.child(text(WAITING_LINE).text_size(px(12.0)).text_color(theme::MUTED));
+    }
     let mut buttons = view().flex_row().flex_wrap().items_center().justify_end().gap_2();
     let last = copy.buttons.len().saturating_sub(1);
     for (i, (label, ans)) in copy.buttons.iter().enumerate() {
@@ -1384,7 +1394,7 @@ pub(crate) fn ask_settled(v: Option<&Value>, base: &ToolAskNotice, answer: &str,
         answer: answer.to_owned(),
         ..base.clone()
     });
-    if n.state == "pending" {
+    if matches!(n.state.as_str(), "pending" | "waiting") {
         n.state = "expired".to_owned();
     }
     // the line counts from the click here
@@ -1393,12 +1403,17 @@ pub(crate) fn ask_settled(v: Option<&Value>, base: &ToolAskNotice, answer: &str,
 }
 
 /// A `stale` answer's notice as the broker has it now, else `base` expired;
-/// never pending.
+/// never pending or waiting.
 pub(crate) fn ask_stale(v: &Value, base: &ToolAskNotice) -> ToolAskNotice {
     match v.get("details").and_then(|d| d.get("notice")).and_then(ToolAskNotice::of) {
-        Some(n) if n.state != "pending" => n,
+        Some(n) if !matches!(n.state.as_str(), "pending" | "waiting") => n,
         _ => ToolAskNotice { state: "expired".to_owned(), ..base.clone() },
     }
+}
+
+/// The job a yes on a waiting card started.
+pub(crate) fn ask_started(v: &Value) -> Option<String> {
+    v.get("job").and_then(Value::as_u64).map(|j| j.to_string())
 }
 
 /// `POST /v1/host/tools/ask`: the card goes at once to its line; a refusal
@@ -1422,6 +1437,10 @@ fn answer_ask(chat: &str, base: &ToolAskNotice, answer: &'static str) {
                 // they said they'd take over: the screen is where they do
                 if base.tool == ASK_PERSON && answer == "once" {
                     crate::computer::open_full(&base.bot, &base.bot_name);
+                }
+                // a yes on a waiting card started a turn of its own
+                if let Some(job) = ask_started(&v) {
+                    store().follow_run(job, s(&v, "thread"), (!base.bot.is_empty()).then(|| base.bot.clone()));
                 }
                 set_ask_local(&id, |l| {
                     l.busy = false;
@@ -2662,6 +2681,24 @@ mod tests {
         assert_eq!(ask(json!({})).state, "pending");
         assert!(Turn::of(&json!({"role": "notice", "notice": {"kind": "tools_change", "id": "p_1"}})).tool_ask.is_none());
         assert!(Turn::of(&json!({"role": "notice", "notice": {"kind": "tool_ask"}})).tool_ask.is_none());
+    }
+
+    #[test]
+    fn a_waiting_card_draws_as_a_card_and_offers_nothing_that_lasts() {
+        let at = 1_793_745_245_000;
+        let words = |c: &AskCopy| c.buttons.iter().map(|b| (b.0.clone(), b.1)).collect::<Vec<_>>();
+        let shell = ask(json!({"state": "waiting", "key": "shell", "tool": "shell_run", "title": "Run `git push` on this Mac?", "prefix": "git push", "at": at}));
+        assert_eq!(ask_shows(&shell, None, at, at + 6 * 86_400_000), AskShows::Card, "days later it still waits");
+        assert_eq!(words(&ask_copy(&shell)), [("Not now".to_owned(), "no"), ("Allow".to_owned(), "once")]);
+        assert!(!ask_waits(&shell), "no run is waiting on it");
+        let takeover = ask(json!({"state": "waiting", "key": "computer_takeover", "tool": "computer_ask_person"}));
+        assert_eq!(words(&ask_copy(&takeover)), [("Not now".to_owned(), "no"), ("Take over".to_owned(), "once")]);
+        // a yes names the turn it started; a parked card's and a no's name none
+        assert_eq!(ask_started(&json!({"ok": true, "job": 7, "thread": "t1"})).as_deref(), Some("7"));
+        assert_eq!(ask_started(&json!({"ok": true})), None);
+        // stale: never back to waiting
+        let still = json!({"ok": false, "code": "stale", "details": {"notice": {"kind": "tool_ask", "id": "a_1", "state": "waiting"}}});
+        assert_eq!(ask_stale(&still, &shell).state, "expired");
     }
 
     #[test]
