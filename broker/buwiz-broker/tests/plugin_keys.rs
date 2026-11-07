@@ -446,3 +446,59 @@ fn a_helper_goes_by_its_data_dir_not_the_shape_of_its_db_path() {
     assert!(!took_the_keychain(&db, &port, bare(&root, &args, &env)));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+fn helper(root: &Path, cwd: &Path, args: &[&str]) -> Child {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"));
+    c.env_clear();
+    stub_sign_in(&mut c);
+    c.env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", root)
+        .env("BUWIZ_LINE_TOKEN", "test")
+        .env("BUWIZ_NO_KEYCHAIN", "1")
+        .env("BUWIZ_KEYSTORE", format!("file:{}", root.join("keys").display()))
+        .env("BUWIZ_TRUST_FILE", root.join("trust.json"))
+        .arg("helper")
+        .args(args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(file_for(&root.join("helper.log")))
+        .spawn()
+        .unwrap()
+}
+
+/// Keys never land in the working folder: a `--db` that names no folder is
+/// refused, with what to pass instead, and passing it works.
+#[test]
+fn a_helper_db_that_names_no_folder_needs_data() {
+    let root = std::env::temp_dir().join(format!("buwiz-helper-db-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (cwd, data) = (root.join("cwd"), root.join("data"));
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    for db in ["app.db", "./app.db", "././app.db"] {
+        let mut child = helper(&root, &cwd, &["--db", db]);
+        let start = Instant::now();
+        let code = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status.code();
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{db}: the helper started");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(code, Some(2), "{db}");
+        let log = said(&root.join("helper.log"));
+        assert!(log.contains("needs --data DIR"), "{db}: {log}");
+        assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0, "{db}: it wrote to the working folder");
+    }
+    let mut child = helper(&root, &cwd, &["--db", "./app.db", "--data", data.to_str().unwrap()]);
+    let mut first = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut first).unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(first.starts_with("buwiz-broker helper on"), "{first:?}: {}", said(&root.join("helper.log")));
+    let _ = std::fs::remove_dir_all(&root);
+}

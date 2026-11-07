@@ -10,12 +10,13 @@
 
 const BODY_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-/** The origins allowed to call: the server's own, plus `extra`. */
+/** The origins allowed to call: the server's own, plus `extra`. `null` is
+ *  never one, named or not: it's every sandboxed frame on every website. */
 export function allowedOrigins(port, extra = "") {
   return new Set([
     `http://127.0.0.1:${port}`,
     `http://localhost:${port}`,
-    ...String(extra || "").split(",").map((s) => s.trim()).filter(Boolean),
+    ...String(extra || "").split(",").map((s) => s.trim()).filter((s) => s && s !== "null"),
   ]);
 }
 
