@@ -738,3 +738,43 @@ fn an_open_conversation_keeps_archive_and_resume() {
     app.press("Unarchive the conversation");
     assert_eq!(wait_for(&mut app, &seen, "/v1/host/agents/archive", 2)[1], json!({"conversation": "conv_1", "archived": false}));
 }
+
+/// A frame in its parent: left, top, right, bottom.
+fn edges(f: nsh_core::geometry::Bounds<nsh_core::geometry::Points>) -> (f32, f32, f32, f32) {
+    (f.origin.x.0, f.origin.y.0, f.origin.x.0 + f.size.width.0, f.origin.y.0 + f.size.height.0)
+}
+
+/// Whether two frames in one parent share any point.
+fn overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// The card is the only control for this, so the name and every control
+/// hold at any width of the chat: one line when wide, the controls under
+/// the name when narrower, stacked when narrower still.
+#[test]
+fn a_cards_name_and_controls_never_overlap_at_any_chat_width() {
+    if !in_child("a_cards_name_and_controls_never_overlap_at_any_chat_width") {
+        return;
+    }
+    use crate::messages::{CONTROLS, WHO};
+    let (mut app, seen) = start(ok_reply());
+    open(&mut app, &seen, "t_nova", json!("all"));
+    show_card(&mut app, "nova");
+    let mut lines = Vec::new();
+    for w in [1000.0, 620.0, 460.0, 380.0, 320.0, 280.0, 240.0, 200.0] {
+        app.resize(w, 800.0);
+        settle(&mut app);
+        let [who, controls, hears, sends] = [WHO, CONTROLS, "Hears", "Can it start a message"].map(|l| edges(app.frame(l)));
+        let (row, block) = (app.parent_frame(WHO).size.width.0, controls.2 - controls.0);
+        assert!(!overlap(who, controls), "{w}: {who:?} {controls:?}");
+        assert!(!overlap(hears, sends), "{w}: {hears:?} {sends:?}");
+        assert!(who.2 - who.0 > 40.0, "{w}: the name has room: {who:?}");
+        assert!(who.0 >= 0.0 && who.2 <= row && controls.0 >= 0.0 && controls.2 <= row, "{w}: inside the row of {row}: {who:?} {controls:?}");
+        assert!(hears.0 >= 0.0 && hears.2 <= block && sends.0 >= 0.0 && sends.2 <= block, "{w}: inside its block of {block}: {hears:?} {sends:?}");
+        lines.push((controls.1 >= who.3, sends.1 >= hears.3));
+    }
+    assert_eq!(lines.first(), Some(&(false, false)), "wide: one line");
+    assert_eq!(lines.last(), Some(&(true, true)), "narrow: name, then Hears, then Sends");
+    assert!(lines.contains(&(true, false)), "between: the controls together under the name: {lines:?}");
+}
