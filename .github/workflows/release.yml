@@ -303,7 +303,12 @@ jobs:
         run: |
           spctl -a -vvv -t exec dist/*.app
           spctl -a -vvv -t open --context context:primary-signature dist/*.dmg
-          xcrun stapler validate dist/*.dmg
+          # stapler reaches Apple; a dropped connection gets a few more tries
+          for try in 1 2 3 4; do
+            xcrun stapler validate dist/*.dmg && break
+            [ "$try" = 4 ] && exit 1
+            sleep $((try * 15))
+          done
 
       - uses: actions/upload-artifact@v4
         with:
