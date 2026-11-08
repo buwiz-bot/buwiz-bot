@@ -792,9 +792,9 @@ pub struct AvatarDraft {
     pub h: f64,
 }
 
-/// Where "Your designs" is kept.
+/// Where the custom avatars are kept.
 const DESIGNS: &str = "/state/buwiz-avatar-designs";
-/// The longest wait between two tries at a save of "Your designs", in ms.
+/// The longest wait between two tries at a save of the custom avatars, in ms.
 const SAVE_WAIT_MAX: u64 = 30_000;
 
 /// The entries in a `/state` answer: none for a list never written (`null`
@@ -823,9 +823,9 @@ pub(crate) struct DesignsAdded {
     pub unusable: usize,
 }
 
-/// One avatar `POST /avatar/design` offers: a short label, the body in
-/// the app's shape form (a picker name or `outline:<path>`), its colour
-/// and one line on why it fits.
+/// One custom avatar: a short label, the body in the
+/// app's shape form (a picker name or `outline:<path>`), its colour and
+/// one line on why it fits.
 #[derive(Clone, PartialEq, Default)]
 pub struct AvatarCand {
     pub name: String,
@@ -835,6 +835,26 @@ pub struct AvatarCand {
     /// The saved entry this came from, written back as it was: a field this
     /// build doesn't know survives a save.
     pub raw: Option<serde_json::Value>,
+}
+
+/// The Create New Bot sheet's tabs: the shapes and colours, or the custom
+/// avatars.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SheetTab {
+    #[default]
+    Default,
+    Custom,
+}
+
+impl SheetTab {
+    pub const ALL: [SheetTab; 2] = [SheetTab::Default, SheetTab::Custom];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SheetTab::Default => "Default",
+            SheetTab::Custom => "Custom",
+        }
+    }
 }
 
 /// A bot's avatar before Design changed it, for Revert.
@@ -856,12 +876,6 @@ pub(crate) fn body_shape(shape: &str, outline: &str) -> String {
         "custom" => format!("{}{outline}", crate::avatar::OUTLINE),
         s => s.to_owned(),
     }
-}
-
-/// Whether `color` is the primary ink (`#FFFFFF`, drawn black on light
-/// themes and white on dark ones).
-pub(crate) fn is_primary_ink(color: &str) -> bool {
-    crate::mark::norm_color(color) == "#FFFFFF"
 }
 
 /// Going from a rich avatar to a body that isn't one. The colour it leaves is
@@ -3044,18 +3058,12 @@ pub struct Store {
     pub ad_prompt: Signal<String>,
     pub ad_busy: Signal<String>,
     pub ad_err: Signal<String>,
-    /// The Design panel (Edit Avatar's Design tab and the Create New
-    /// Bot sheet): the prompt, the attached picture, the request in
-    /// flight, the choices, the one picked, the error, and the avatar
-    /// before a pick (Revert).
-    pub design_prompt: Signal<String>,
-    pub design_image: Signal<Option<AvatarDraft>>,
-    pub design_busy: Signal<bool>,
-    pub design_cands: Signal<Vec<AvatarCand>>,
-    pub design_picked: Signal<Option<usize>>,
-    pub design_err: Signal<String>,
+    /// The Create New Bot sheet's tab. Default each time the sheet opens:
+    /// it goes back to Default whenever the sheet closes (`botmodal::layer`).
+    pub bot_sheet_tab: Signal<SheetTab>,
+    /// The bot's avatar before Edit Avatar's first Custom pick (Revert).
     pub design_was: Signal<Option<AvatarWas>>,
-    /// "Your designs": every Design pick, newest first, kept in
+    /// The custom avatars (the Custom tabs): newest first, kept in
     /// `/state/buwiz-avatar-designs` so any bot can use one again.
     pub design_saved: Signal<Vec<AvatarCand>>,
     /// Whether the saved list has been read. Until it has, nothing is saved:
@@ -3073,8 +3081,6 @@ pub struct Store {
     /// Reset is waiting on "Reset the avatar?": nothing is removed or
     /// reset before the confirm row's button.
     pub design_removing: Signal<Option<usize>>,
-    /// Design's mode: "mark" (3 mark avatars) or "rich" (3 multi-colour ones).
-    pub design_mode: Signal<&'static str>,
     pub avatar_reset_ask: Signal<bool>,
 
     // ————— Plugins marketplace (App.tsx:1291–1640 + the modal) —————
@@ -3383,11 +3389,7 @@ impl Store {
             ad_prompt: signal(String::new()),
             ad_busy: signal(String::new()),
             ad_err: signal(String::new()),
-            design_prompt: signal(String::new()),
-            design_image: signal(None),
-            design_cands: signal(Vec::new()),
-            design_picked: signal(None),
-            design_err: signal(String::new()),
+            bot_sheet_tab: signal(SheetTab::Default),
             design_was: signal(None),
             design_saved: signal(Vec::new()),
             design_loaded: signal(false),
@@ -3396,7 +3398,6 @@ impl Store {
             design_saving: Default::default(),
             design_unsaved: Default::default(),
             design_removing: signal(None),
-            design_mode: signal("mark"),
             avatar_reset_ask: signal(false),
             plugins_open: signal(false),
             plugin_nav: signal(vec![PluginNav::market()]),
@@ -3439,7 +3440,6 @@ impl Store {
             acct_err: signal(String::new()),
             plugin_copied: signal(false),
             account_open: signal(false),
-            design_busy: signal(false),
             palette: signal(false),
             palette_q: signal(String::new()),
             palette_sel: signal(0),
@@ -6120,110 +6120,23 @@ impl Store {
         self.design_reset();
     }
 
-    /// Opens the Create New Bot sheet with a clean Design panel (the
-    /// avatar editor shares it, so that closes).
+    /// Opens the Create New Bot sheet on its Default tab (the avatar
+    /// editor shares the custom avatars' state, so that closes).
     pub fn open_bot_modal(&'static self) {
         if self.avatar_editing.get_untracked() {
             self.close_avatar_editor();
         }
         self.design_reset();
+        self.bot_sheet_tab.set(SheetTab::Default);
         self.bot_modal.set(true);
     }
 
-    /// Clears the Design panel: prompt, picture, choices, Revert.
+    /// Clears the custom avatars' transient state: Revert, a pending
+    /// remove, a pending reset.
     pub fn design_reset(&'static self) {
-        self.design_prompt.set(String::new());
-        self.design_image.set(None);
-        self.design_busy.set(false);
-        self.design_cands.set(Vec::new());
-        self.design_picked.set(None);
-        self.design_err.set(String::new());
         self.design_was.set(None);
         self.design_removing.set(None);
         self.avatar_reset_ask.set(false);
-    }
-
-    /// Design: `POST /avatar/design` with the prompt (and the picture, if
-    /// one is attached) → 3 choices. A choice the engine can't draw is
-    /// dropped here.
-    pub fn design_avatar(&'static self) {
-        let prompt = self.design_prompt.get_untracked().trim().to_owned();
-        let image = self.design_image.get_untracked();
-        if self.design_busy.get_untracked() || (prompt.is_empty() && image.is_none()) {
-            return;
-        }
-        let name = self.bot_name.get_untracked();
-        let (model, effort, fast) = self.design_choice();
-        let mut body = serde_json::json!({"prompt": prompt, "name": name.trim(), "model": model, "effort": effort, "fast": fast});
-        if self.design_mode.get_untracked() == "rich" {
-            body["style"] = "rich".into();
-        }
-        if let Some(d) = &image {
-            body["image"] = d.uri.clone().into();
-        }
-        self.design_err.set(String::new());
-        self.design_busy.set(true);
-        spawn(async move {
-            match client::post_any("/avatar/design", body).await {
-                Some(v) if self::b(&v, "ok") => {
-                    let cands: Vec<AvatarCand> = list(&v, "candidates")
-                        .iter()
-                        .map(|c| AvatarCand {
-                            name: s(c, "name"),
-                            shape: shape_of(c),
-                            color: s(c, "color"),
-                            why: s(c, "why"),
-                            raw: None,
-                        })
-                        .filter(|c| crate::avatar::drawable(&c.shape))
-                        .collect();
-                    if cands.is_empty() {
-                        self.design_err.set("None of the designs could be drawn. Press Design again, or describe it differently.".into());
-                    }
-                    self.design_picked.set(None);
-                    self.design_cands.set(cands);
-                }
-                Some(v) => self.design_err.set(if s(&v, "error").is_empty() {
-                    "Couldn't design an avatar".into()
-                } else {
-                    s(&v, "error")
-                }),
-                None => self.design_err.set("Couldn't design an avatar".into()),
-            }
-            self.design_busy.set(false);
-        });
-    }
-
-    /// The model Design asks: the model picker's choice (the open bot's
-    /// own, or the app-wide one in the Create New Bot sheet), with its
-    /// label; an empty id is "Default", which the broker's Design default
-    /// answers.
-    pub fn design_model(&'static self) -> (String, String) {
-        let id = self.design_choice().0;
-        let label = if id.is_empty() {
-            "the default model".to_owned()
-        } else {
-            self.models
-                .get()
-                .into_iter()
-                .find(|m| m.id == id)
-                .map(|m| m.label)
-                .unwrap_or_else(|| pretty_model(&id))
-        };
-        (id, label)
-    }
-
-    /// The model picker's choice as Design sends it: `(model, effort,
-    /// fast)`, exactly what this bot chats with (its own model, else the
-    /// app-wide one; the Create New Bot sheet takes the app-wide one).
-    pub fn design_choice(&'static self) -> (String, String, bool) {
-        let (model, effort, fast) = if self.bot_modal.get() {
-            (self.model.get(), self.effort.get(), self.fast.get())
-        } else {
-            self.choice()
-        };
-        let model = if model.is_empty() { self.model.get() } else { model };
-        (model, effort, fast)
     }
 
     /// Reset (after its confirm row): the default ball in the primary ink,
@@ -6236,25 +6149,6 @@ impl Store {
             &b.id,
             serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
         );
-    }
-
-    /// Attaches a picture to design from (`POST /avatar/image/pick|paste`).
-    pub fn design_attach(&'static self, kind: &'static str) {
-        self.design_err.set(String::new());
-        self.picture_request(kind, move |st, path, body| {
-            spawn_detached(async move {
-                match client::post_any(&path, body).await {
-                    Some(v) if self::b(&v, "ok") => st.design_image.set(Some(AvatarDraft {
-                        uri: s(&v, "uri"),
-                        name: s(&v, "name"),
-                        w: f64of(&v, "w"),
-                        h: f64of(&v, "h"),
-                    })),
-                    Some(v) if !self::b(&v, "cancelled") => st.design_err.set(picture_error(kind, &v)),
-                    _ => {}
-                }
-            })
-        });
     }
 
     /// Where a picture comes from: "pick" opens the app's own open panel
@@ -6276,19 +6170,6 @@ impl Store {
             return;
         }
         then(self, format!("/avatar/image/{kind}"), serde_json::json!({}));
-    }
-
-    /// Uses choice `i` on the sheet's draft and keeps its shape in "Your
-    /// designs". A plain choice in the primary ink keeps the draft's colour;
-    /// one the prompt coloured
-    /// brings its colour, and a rich one always does: that field is its
-    /// shell (`shape_of`), which only draws the avatar.
-    pub fn design_pick(&'static self, i: usize) {
-        let Some(c) = self.design_cands.get_untracked().get(i).cloned() else { return };
-        self.design_picked.set(Some(i));
-        self.design_keep(&c);
-        let own = !is_primary_ink(&c.color);
-        self.design_use(c, true, own);
     }
 
     /// Puts a body on the Create New Bot draft, with its colour if it brings
@@ -6336,8 +6217,10 @@ impl Store {
         self.update_bot(&b.id, patch);
     }
 
-    /// Puts `c` at the front of "Your designs": the one already there if the
-    /// list has its shape, as that one may hold more than `c` does.
+    /// Puts `c` at the front of the custom avatars: the one already there if the
+    /// list has its shape, as that one may hold more than `c` does. Only
+    /// the tests keep one by hand now; packs come in through `designs_add`.
+    #[cfg(test)]
     pub(crate) fn design_keep(&'static self, c: &AvatarCand) {
         self.design_saved.update(|v| {
             let there = v.iter().position(|d| d.shape == c.shape);
@@ -6358,7 +6241,7 @@ impl Store {
         self.save_designs();
     }
 
-    /// Reads "Your designs", and keeps trying until an answer comes: a list
+    /// Reads the custom avatars, and keeps trying until an answer comes: a list
     /// that failed to load looks like an empty one, and saving that would
     /// wipe the real one.
     pub(crate) fn load_designs(&'static self) {
@@ -6400,7 +6283,7 @@ impl Store {
         }
     }
 
-    /// Adds what a pack holds to the front of "Your designs", in its order:
+    /// Adds what a pack holds to the front of the custom avatars, in its order:
     /// never over what's there, so a shape the list has stays as it is, and
     /// only what this build can draw. One save for all of it.
     pub(crate) fn designs_add(&'static self, entries: &[serde_json::Value]) -> DesignsAdded {
@@ -6489,7 +6372,6 @@ impl Store {
         };
         self.update_bot(&w.id, patch);
         self.design_was.set(None);
-        self.design_picked.set(None);
     }
 
     /// `pickAvatar("pick"|"paste")` — `POST /avatar/image/:kind`
