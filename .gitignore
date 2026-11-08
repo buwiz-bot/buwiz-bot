@@ -15,3 +15,6 @@ SECURITY_MODEL.md
 
 # release builds (scripts/release/)
 /dist/
+
+# Signing keys and certificates kept next to the checkout (never committed)
+.key/
