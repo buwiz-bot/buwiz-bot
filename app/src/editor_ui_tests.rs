@@ -15,7 +15,7 @@ use crate::live::store;
 use crate::store::AvatarCand;
 
 const CHILD: &str = "BUWIZ_EDITOR_UI_TEST";
-const EMPTY: &str = "Avatars you design show up here.";
+const EMPTY: &str = "No custom avatars yet";
 const LOADING: &str = "Loading your avatars…";
 
 fn in_child(name: &str) -> bool {
@@ -170,7 +170,10 @@ fn Editor() -> impl IntoElement {
         .child(text(|| {
             let shape = store().active_bot().map(|b| b.shape).unwrap_or_default();
             let n = store().design_saved.get().len();
-            format!("probe shape={shape} shown={n} loaded={}", store().design_loaded.get())
+            // spaces would split the probe
+            let draft = store().draft.get().replace(' ', "_");
+            let editing = store().avatar_editing.get();
+            format!("probe shape={shape} shown={n} loaded={} editing={editing} draft={draft}", store().design_loaded.get())
         }))
         .child(view().label("add a design").w(px(40.0)).h(px(40.0)).on_press(|| keep("Mine", "cloud")))
         .child(view().label("keep heart").w(px(40.0)).h(px(40.0)).on_press(|| keep("Heart", "heart")))
@@ -192,7 +195,7 @@ fn start(broker: &Stub) -> Headless {
     config.viewport = nsh_core::geometry::Size::new(px(1200.0), px(900.0));
     config.network = Some(Arc::new(broker.clone()));
     let mut app = run(config);
-    app.wait_for("Own tab");
+    app.wait_for("Custom tab");
     app
 }
 
@@ -217,7 +220,7 @@ fn pump_until(app: &mut Headless, what: &str, done: impl Fn(&Headless) -> bool) 
     panic!("{what}: not within a minute: {:?}", app.texts());
 }
 
-/// Your avatars are on Own, not on Bot, and there's no Design tab to find.
+/// Your avatars are on Custom, not on Bot, and there's no Design tab to find.
 #[test]
 fn own_lists_your_avatars_and_bot_doesnt() {
     if !in_child("own_lists_your_avatars_and_bot_doesnt") {
@@ -230,14 +233,14 @@ fn own_lists_your_avatars_and_bot_doesnt() {
     app.press("add a design");
     app.pump(Duration::from_millis(100));
     assert!(!app.has("Use your Mine design"), "on the Bot tab");
-    app.press("Own tab");
+    app.press("Custom tab");
     app.wait_for("Use your Mine design");
     app.press("Bot tab");
     app.wait_for("Reset avatar");
     assert!(!app.has("Use your Mine design"), "back on the Bot tab");
 }
 
-/// With nothing of your own, Own says so instead of being blank, and a first
+/// With nothing of your own, Custom says so instead of being blank, and a first
 /// design on a fresh app is saved.
 #[test]
 fn own_with_nothing_says_so() {
@@ -246,7 +249,7 @@ fn own_with_nothing_says_so() {
     }
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
     let mut app = start_loaded(&broker);
-    app.press("Own tab");
+    app.press("Custom tab");
     pump_until(&mut app, "the empty line", |app| shows(app, EMPTY));
     app.press("add a design");
     app.wait_for("Use your Mine design");
@@ -254,7 +257,38 @@ fn own_with_nothing_says_so() {
     pump_until(&mut app, "the save", |_| broker.names() == ["Mine"]);
 }
 
-/// A tap on Own puts the avatar on the Bot, and Revert brings the old one back.
+/// The tab once called Own is Custom, by its label and its words.
+#[test]
+fn the_own_tab_is_now_custom() {
+    if !in_child("the_own_tab_is_now_custom") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let app = start_loaded(&broker);
+    assert!(app.has("Custom tab") && !app.has("Own tab"), "the tab's label");
+    assert!(app.texts().contains(&"Custom") && !app.texts().contains(&"Own"), "the tab's words");
+}
+
+/// Custom with nothing there shows the sheet's empty state, and Insert in chat shuts Edit
+/// Avatar and puts the command in the message box, unsent.
+#[test]
+fn custom_empty_inserts_the_install_command() {
+    if !in_child("custom_empty_inserts_the_install_command") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("Custom tab");
+    app.wait_for("Insert in chat");
+    assert!(shows(&app, crate::design::INSTALL_ALL), "the command");
+    app.press("Insert in chat");
+    until(&mut app, "Edit Avatar shut", |p| p.get("editing").is_some_and(|e| e == "false"));
+    assert_eq!(read(&app).get("draft").map(String::as_str), Some("/avatars_install_all"));
+    app.pump(Duration::from_millis(300));
+    assert!(broker.posts().is_empty(), "something was posted");
+}
+
+/// A tap on Custom puts the avatar on the Bot, and Revert brings the old one back.
 #[test]
 fn a_tap_on_own_uses_it_and_revert_undoes_it() {
     if !in_child("a_tap_on_own_uses_it_and_revert_undoes_it") {
@@ -264,7 +298,7 @@ fn a_tap_on_own_uses_it_and_revert_undoes_it() {
     let mut app = start_loaded(&broker);
     assert_eq!(read(&app).get("shape").map(String::as_str), Some("blob"));
     app.press("add a design");
-    app.press("Own tab");
+    app.press("Custom tab");
     app.wait_for("Use your Mine design");
     assert!(!app.has("Revert avatar"), "nothing to revert yet");
     app.press("Use your Mine design");
@@ -274,7 +308,7 @@ fn a_tap_on_own_uses_it_and_revert_undoes_it() {
     until(&mut app, "the old avatar back", |p| p.get("shape").is_some_and(|s| s == "blob"));
 }
 
-/// A Bot-tab pick after an Own pick is the avatar now: Revert has nothing to undo.
+/// A Bot-tab pick after a Custom pick is the avatar now: Revert has nothing to undo.
 #[test]
 fn a_bot_tab_pick_ends_revert() {
     if !in_child("a_bot_tab_pick_ends_revert") {
@@ -283,7 +317,7 @@ fn a_bot_tab_pick_ends_revert() {
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
     let mut app = start_loaded(&broker);
     app.press("add a design");
-    app.press("Own tab");
+    app.press("Custom tab");
     app.wait_for("Use your Mine design");
     app.press("Use your Mine design");
     app.wait_for("Revert avatar");
@@ -291,7 +325,7 @@ fn a_bot_tab_pick_ends_revert() {
     app.wait_for("star character shape");
     app.press("star character shape");
     until(&mut app, "the pick on the Bot", |p| p.get("shape").is_some_and(|s| s == "star"));
-    app.press("Own tab");
+    app.press("Custom tab");
     app.wait_for("Use your Mine design");
     app.pump(Duration::from_millis(100));
     assert!(!app.has("Revert avatar"), "Revert would undo the Bot tab's pick");
@@ -317,7 +351,7 @@ fn a_design_it_cant_draw_survives_a_save() {
     pump_until(&mut app, "the second save", |_| broker.names() == ["Old", "Future"]);
 }
 
-/// A list that failed to load is no empty list: nothing is saved, Own doesn't say there's
+/// A list that failed to load is no empty list: nothing is saved, Custom doesn't say there's
 /// nothing, the load tries again, and what was kept meanwhile joins the real list.
 #[test]
 fn a_failed_load_saves_nothing_and_loses_nothing() {
@@ -327,7 +361,7 @@ fn a_failed_load_saves_nothing_and_loses_nothing() {
     let old = json!({"name": "Old", "shape": "cloud", "color": "#FFFFFF"});
     let broker = stub(saved(json!([old])), 2, Duration::ZERO);
     let mut app = start(&broker);
-    app.press("Own tab");
+    app.press("Custom tab");
     pump_until(&mut app, "the loading line", |app| shows(app, LOADING));
     assert!(!shows(&app, EMPTY), "says there's nothing, with the list unread");
     app.press("keep heart");
@@ -461,7 +495,7 @@ fn a_photo_ends_revert() {
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
     let mut app = start_loaded(&broker);
     app.press("add a design");
-    app.press("Own tab");
+    app.press("Custom tab");
     app.wait_for("Use your Mine design");
     app.press("Use your Mine design");
     app.wait_for("Revert avatar");

@@ -1619,7 +1619,7 @@ fn empty_pane() -> impl IntoElement {
 // ————————————————————————— the avatar editor —————————————————————————
 
 /// `avatarEditing`'s floating card under the pane avatar — 297 wide,
-/// Bot | Own | Upload tabs (App.tsx:3163). Rendered from `pane()`.
+/// Bot | Custom | Upload tabs (App.tsx:3163). Rendered from `pane()`.
 pub(crate) fn editor_overlay() -> impl IntoElement {
     dynamic(|| {
         let st = store();
@@ -1652,7 +1652,7 @@ pub(crate) fn editor_overlay() -> impl IntoElement {
     })
 }
 
-/// The Bot|Own|Upload pills + Reset, or Revert after an Own pick
+/// The Bot|Custom|Upload pills + Reset, or Revert after a Custom pick
 /// (App.tsx:3181).
 fn editor_tabs() -> impl IntoElement {
     view()
@@ -1661,40 +1661,13 @@ fn editor_tabs() -> impl IntoElement {
         .pt(px(9.0))
         .px_2()
         .gap(px(2.0))
-        .children(["bot", "own", "upload"].into_iter().map(|tb| {
-            let name = {
-                let mut c = tb.chars();
-                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-            };
-            view()
-                .label(format!("{name} tab"))
-                .rounded(px(999.0))
-                .px_2()
-                .py_1()
-                .bg(move || {
-                    if store().avatar_edit_tab.get() == tb {
-                        theme::SUBTLE
-                    } else {
-                        AdaptiveColor::TRANSPARENT
-                    }
-                })
-                .child(
-                    text(name)
-                    .text_size(px(13.0))
-                    .text_color(move || {
-                        if store().avatar_edit_tab.get() == tb {
-                            theme::TEXT
-                        } else {
-                            theme::DIM
-                        }
-                    }),
-                )
-                .on_press(move || {
-                    let st = store();
-                    st.avatar_edit_tab.set(tb.to_owned());
-                    st.avatar_err.set(String::new());
-                })
-                .into_element()
+        .children([("bot", "Bot"), ("custom", "Custom"), ("upload", "Upload")].into_iter().map(|(tb, name)| {
+            tab_pill(name, move || store().avatar_edit_tab.get() == tb, move || {
+                let st = store();
+                st.avatar_edit_tab.set(tb.to_owned());
+                st.avatar_err.set(String::new());
+            })
+            .into_element()
         }))
         .child(view().flex_1())
         .child(when(
@@ -1713,7 +1686,7 @@ fn editor_tabs() -> impl IntoElement {
             },
         ))
         .child(when(
-            || store().avatar_edit_tab.get() == "own" && store().design_was.get().is_some(),
+            || store().avatar_edit_tab.get() == "custom" && store().design_was.get().is_some(),
             || {
                 view()
                     .h(px(22.0))
@@ -1728,11 +1701,33 @@ fn editor_tabs() -> impl IntoElement {
         ))
 }
 
+/// One tab pill (Edit Avatar's, the Create New Bot sheet's): 13pt, the
+/// picked one on `SUBTLE`. Its accessibility label is "<name> tab".
+pub(crate) fn tab_pill(
+    name: &'static str,
+    on: impl Fn() -> bool + Clone + 'static,
+    press: impl Fn() + 'static,
+) -> impl IntoElement {
+    let on2 = on.clone();
+    view()
+        .label(format!("{name} tab"))
+        .rounded(px(999.0))
+        .px_2()
+        .py_1()
+        .bg(move || if on() { theme::SUBTLE } else { AdaptiveColor::TRANSPARENT })
+        .child(
+            text(name)
+                .text_size(px(13.0))
+                .text_color(move || if on2() { theme::TEXT } else { theme::DIM }),
+        )
+        .on_press(press)
+}
+
 /// The editor's body — the bot grid, your own avatars, or the upload zone
 /// (App.tsx:3214).
 fn editor_body() -> impl IntoElement {
     match store().avatar_edit_tab.get().as_str() {
-        "own" => own_tab().into_element(),
+        "custom" => custom_tab().into_element(),
         "upload" => upload_tab().into_element(),
         _ => bot_tab().into_element(),
     }
@@ -1884,30 +1879,15 @@ fn wears_picture() -> bool {
         .is_some_and(|b| !b.image.is_empty() || b.shape.starts_with(crate::avatar::RICH))
 }
 
-/// `Own` — the person's own avatars ("Your designs", `design::saved`). A
-/// tap puts one on the bot, and Revert brings the old one back.
-fn own_tab() -> impl IntoElement {
+/// `Custom` — the person's custom avatars (`design::custom`), or how to
+/// get some. A tap puts one on the bot, and Revert brings the old one back.
+fn custom_tab() -> impl IntoElement {
     view()
         .pt(px(16.0))
         .px_3()
         .pb(px(20.0))
         .gap_3()
-        .child(when(
-            || store().design_saved.get().is_empty(),
-            || {
-                text(|| {
-                    if store().design_loaded.get() {
-                        "Avatars you design show up here."
-                    } else {
-                        "Loading your avatars…"
-                    }
-                })
-                .text_size(px(13.0))
-                .text_color(theme::MUTED)
-                .into_element()
-            },
-        ))
-        .child(crate::design::saved(false))
+        .child(crate::design::custom(false))
 }
 
 /// `Upload` — the dashed drop zone, then the crop with name·size
