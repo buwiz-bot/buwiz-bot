@@ -81,6 +81,7 @@ fn Sheet() -> impl IntoElement {
     st.active_id.set("t1".to_owned());
     st.bot_shape.set("blob".to_owned());
     Owner::detached().run(|| st.load_designs());
+    crate::history::track();
     view()
         .size_full()
         .child(text(|| {
@@ -88,7 +89,7 @@ fn Sheet() -> impl IntoElement {
             // spaces would split the probe
             let draft = st.draft.get().replace(' ', "_");
             format!(
-                "probe shape={} modal={} tab={} draft={draft} loaded={}",
+                "probe shape={} modal={} tab={:?} draft={draft} loaded={}",
                 st.bot_shape.get(),
                 st.bot_modal.get(),
                 st.bot_sheet_tab.get(),
@@ -96,6 +97,8 @@ fn Sheet() -> impl IntoElement {
             )
         }))
         .child(view().label("open the sheet").w(px(40.0)).h(px(40.0)).on_press(|| store().open_bot_modal()))
+        .child(view().label("type a message").w(px(40.0)).h(px(40.0)).on_press(|| store().draft.set("half a thought".to_owned())))
+        .child(view().label("step back").w(px(40.0)).h(px(40.0)).on_press(|| crate::history::step(-1)))
         .child(crate::botmodal::layer())
 }
 
@@ -123,7 +126,7 @@ fn the_sheet_opens_on_default() {
         return;
     }
     let (mut app, _) = start(mine());
-    assert_eq!(read(&app).get("tab").map(String::as_str), Some("0"));
+    assert_eq!(read(&app).get("tab").map(String::as_str), Some("Default"));
     assert!(app.has("Custom tab"), "the Custom tab");
     assert!(app.has("star character shape"), "the shape grid");
     assert!(app.has("#FFFFFF character color"), "the colour row");
@@ -135,7 +138,7 @@ fn the_sheet_opens_on_default() {
     until(&mut app, "the sheet shut", |p| p.get("modal").is_some_and(|m| m == "false"));
     app.press("open the sheet");
     app.wait_for("star character shape");
-    assert_eq!(read(&app).get("tab").map(String::as_str), Some("0"), "opened on Custom");
+    assert_eq!(read(&app).get("tab").map(String::as_str), Some("Default"), "opened on Custom");
 }
 
 /// Custom lists the custom avatars, not the shape grid, and a tap puts one on the draft.
@@ -209,4 +212,59 @@ fn copy_copies_the_command() {
     assert!(broker.posts().iter().any(|p| p.ends_with("/copy")), "no copy: {:?}", broker.posts());
     assert_eq!(read(&app).get("modal").map(String::as_str), Some("true"));
     assert!(app.texts().contains(&"Copied"), "Copied");
+}
+
+/// Words in the message box are never replaced: Insert in chat isn't offered, Copy is.
+#[test]
+fn a_written_message_hides_insert_in_chat() {
+    if !in_child("a_written_message_hides_insert_in_chat") {
+        return;
+    }
+    let (mut app, _) = start(json!([]));
+    app.press("Custom tab");
+    app.wait_for("Insert in chat");
+    app.press("type a message");
+    until(&mut app, "the draft", |p| p.get("draft").is_some_and(|d| d == "half_a_thought"));
+    app.pump(std::time::Duration::from_millis(100));
+    assert!(!app.has("Insert in chat"), "Insert in chat over a written message");
+    assert!(app.has("Copy"), "Copy");
+    assert_eq!(read(&app).get("draft").map(String::as_str), Some("half_a_thought"));
+}
+
+/// "Copied" goes back to "Copy" after a moment.
+#[test]
+fn copied_goes_back_to_copy() {
+    if !in_child("copied_goes_back_to_copy") {
+        return;
+    }
+    let (mut app, _) = start(json!([]));
+    app.press("Custom tab");
+    app.wait_for("Copy");
+    app.press("Copy");
+    app.pump(std::time::Duration::from_millis(200));
+    assert!(app.texts().contains(&"Copied"), "Copied");
+    for _ in 0..60 {
+        if app.texts().contains(&"Copy") {
+            break;
+        }
+        app.pump(std::time::Duration::from_millis(50));
+    }
+    assert!(app.texts().contains(&"Copy") && !app.texts().contains(&"Copied"), "still Copied");
+}
+
+/// A step back to the open sheet, left on Custom, brings it back on Default.
+#[test]
+fn a_restored_sheet_opens_on_default() {
+    if !in_child("a_restored_sheet_opens_on_default") {
+        return;
+    }
+    let (mut app, _) = start(mine());
+    app.press("Custom tab");
+    app.wait_for("Use your Mine design");
+    app.press("Close dialog");
+    until(&mut app, "the sheet shut", |p| p.get("modal").is_some_and(|m| m == "false"));
+    app.press("step back");
+    until(&mut app, "the sheet back", |p| p.get("modal").is_some_and(|m| m == "true"));
+    app.wait_for("star character shape");
+    assert_eq!(read(&app).get("tab").map(String::as_str), Some("Default"), "restored on Custom");
 }

@@ -180,6 +180,7 @@ fn Editor() -> impl IntoElement {
         .child(view().label("keep star").w(px(40.0)).h(px(40.0)).on_press(|| keep("Star", "star")))
         .child(view().label("forget first").w(px(40.0)).h(px(40.0)).on_press(|| store().design_forget(0)))
         .child(view().label("install fox").w(px(40.0)).h(px(40.0)).on_press(|| crate::avatars::run(" install fox https://github.com/me/mine")))
+        .child(view().label("type a message").w(px(40.0)).h(px(40.0)).on_press(|| store().draft.set("half a thought".to_owned())))
         .child(view().label("read again").w(px(40.0)).h(px(40.0)).on_press(|| store().load_designs()))
         .child(view().label("set a photo").w(px(40.0)).h(px(40.0)).on_press(|| {
             store().avatar_draft.set(Some(crate::store::AvatarDraft { uri: "/tmp/p.png".to_owned(), ..Default::default() }));
@@ -222,8 +223,8 @@ fn pump_until(app: &mut Headless, what: &str, done: impl Fn(&Headless) -> bool) 
 
 /// Your avatars are on Custom, not on Bot, and there's no Design tab to find.
 #[test]
-fn own_lists_your_avatars_and_bot_doesnt() {
-    if !in_child("own_lists_your_avatars_and_bot_doesnt") {
+fn custom_lists_your_avatars_and_bot_doesnt() {
+    if !in_child("custom_lists_your_avatars_and_bot_doesnt") {
         return;
     }
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
@@ -243,8 +244,8 @@ fn own_lists_your_avatars_and_bot_doesnt() {
 /// With nothing of your own, Custom says so instead of being blank, and a first
 /// design on a fresh app is saved.
 #[test]
-fn own_with_nothing_says_so() {
-    if !in_child("own_with_nothing_says_so") {
+fn custom_with_nothing_says_so() {
+    if !in_child("custom_with_nothing_says_so") {
         return;
     }
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
@@ -259,8 +260,8 @@ fn own_with_nothing_says_so() {
 
 /// The tab once called Own is Custom, by its label and its words.
 #[test]
-fn the_own_tab_is_now_custom() {
-    if !in_child("the_own_tab_is_now_custom") {
+fn custom_is_the_tab_once_called_own() {
+    if !in_child("custom_is_the_tab_once_called_own") {
         return;
     }
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
@@ -288,10 +289,26 @@ fn custom_empty_inserts_the_install_command() {
     assert!(broker.posts().is_empty(), "something was posted");
 }
 
+/// Words in the message box are never replaced: Edit Avatar offers Copy, not Insert in chat.
+#[test]
+fn custom_empty_with_a_written_message_offers_only_copy() {
+    if !in_child("custom_empty_with_a_written_message_offers_only_copy") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("type a message");
+    until(&mut app, "the draft", |p| p.get("draft").is_some_and(|d| d == "half_a_thought"));
+    app.press("Custom tab");
+    app.wait_for("Copy");
+    assert!(!app.has("Insert in chat"), "Insert in chat over a written message");
+    assert_eq!(read(&app).get("draft").map(String::as_str), Some("half_a_thought"));
+}
+
 /// A tap on Custom puts the avatar on the Bot, and Revert brings the old one back.
 #[test]
-fn a_tap_on_own_uses_it_and_revert_undoes_it() {
-    if !in_child("a_tap_on_own_uses_it_and_revert_undoes_it") {
+fn a_tap_on_custom_uses_it_and_revert_undoes_it() {
+    if !in_child("a_tap_on_custom_uses_it_and_revert_undoes_it") {
         return;
     }
     let broker = stub(json!({"state": null}), 0, Duration::ZERO);
@@ -525,7 +542,7 @@ fn an_install_adds_and_replaces_nothing() {
     let mut app = start_loaded(&broker);
     app.press("install fox");
     pump_until(&mut app, "the save", |_| broker.names() == ["A", "B", "Mine"]);
-    let said = "Added 2 avatars to Your designs, 1 avatar already there, 1 avatar listed twice.";
+    let said = "Added 2 avatars to Custom, 1 avatar already there, 1 avatar listed twice.";
     pump_until(&mut app, "the outcome", |app| shows(app, said));
     assert_eq!(broker.pack_asks.lock().unwrap()[0], json!({"link": "https://github.com/me/mine", "pick": "fox"}));
     let list = broker.posts().pop().unwrap();
@@ -577,7 +594,7 @@ fn a_failed_pack_is_said_as_one() {
     *broker.packs.lock().unwrap() = answer;
     let mut app = start_loaded(&broker);
     app.press("install fox");
-    let said = "Added 1 avatar to Your designs, 1 pack couldn't be read.";
+    let said = "Added 1 avatar to Custom, 1 pack couldn't be read.";
     pump_until(&mut app, "the outcome", |app| shows(app, said));
     pump_until(&mut app, "the save", |_| broker.names() == ["A"]);
 }

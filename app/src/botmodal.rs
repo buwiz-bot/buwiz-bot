@@ -14,10 +14,20 @@ use crate::avatar::bot_avatar;
 use crate::icons::icon;
 use crate::links::LinkAsk;
 use crate::live::store;
+use crate::store::SheetTab;
 use crate::theme;
 
 /// The overlay layer drawn while `bot_modal` is open.
 pub(crate) fn layer() -> impl IntoElement {
+    // However it closes (Cancel, ✕, Escape, the scrim, Create, a step back)
+    // the sheet goes back to Default, so every way of opening it, a step
+    // forward through history included, lands there.
+    effect(|| {
+        let st = store();
+        if !st.bot_modal.get() {
+            st.bot_sheet_tab.set(SheetTab::Default);
+        }
+    });
     dynamic(|| {
         if !store().bot_modal.get() {
             return view().into_element();
@@ -145,7 +155,7 @@ fn body() -> impl IntoElement {
         // A floor under the tab's body, so the sheet doesn't jump much
         // between the two tabs.
         .child(view().w_full().items_center().min_h(px(TAB_MIN_H)).child(dynamic(|| {
-            if store().bot_sheet_tab.get() == 1 {
+            if store().bot_sheet_tab.get() == SheetTab::Custom {
                 view().w_full().mt_4().child(crate::design::custom(true)).into_element()
             } else {
                 view()
@@ -169,9 +179,9 @@ fn tabs() -> impl IntoElement {
         .flex_row()
         .justify_center()
         .gap(px(2.0))
-        .children(["Default", "Custom"].into_iter().enumerate().map(|(i, name)| {
-            crate::pane::tab_pill(name, move || store().bot_sheet_tab.get() == i, move || {
-                store().bot_sheet_tab.set(i)
+        .children(SheetTab::ALL.into_iter().map(|tab| {
+            crate::pane::tab_pill(tab.label(), move || store().bot_sheet_tab.get() == tab, move || {
+                store().bot_sheet_tab.set(tab)
             })
             .into_element()
         }))

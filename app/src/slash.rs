@@ -142,7 +142,7 @@ const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "avatars",
         args: "list [link] | install [all | <pack> | <name>] [link]",
-        description: "List avatar packs, or add avatars from one to Your designs",
+        description: "List avatar packs, or add avatars from one to Custom",
         menu: None,
         run: crate::avatars::run,
     },

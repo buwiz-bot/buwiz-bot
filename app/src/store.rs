@@ -792,9 +792,9 @@ pub struct AvatarDraft {
     pub h: f64,
 }
 
-/// Where "Your designs" is kept.
+/// Where the custom avatars are kept.
 const DESIGNS: &str = "/state/buwiz-avatar-designs";
-/// The longest wait between two tries at a save of "Your designs", in ms.
+/// The longest wait between two tries at a save of the custom avatars, in ms.
 const SAVE_WAIT_MAX: u64 = 30_000;
 
 /// The entries in a `/state` answer: none for a list never written (`null`
@@ -823,7 +823,7 @@ pub(crate) struct DesignsAdded {
     pub unusable: usize,
 }
 
-/// One custom avatar ("Your designs"): a short label, the body in the
+/// One custom avatar: a short label, the body in the
 /// app's shape form (a picker name or `outline:<path>`), its colour and
 /// one line on why it fits.
 #[derive(Clone, PartialEq, Default)]
@@ -835,6 +835,26 @@ pub struct AvatarCand {
     /// The saved entry this came from, written back as it was: a field this
     /// build doesn't know survives a save.
     pub raw: Option<serde_json::Value>,
+}
+
+/// The Create New Bot sheet's tabs: the shapes and colours, or the custom
+/// avatars.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SheetTab {
+    #[default]
+    Default,
+    Custom,
+}
+
+impl SheetTab {
+    pub const ALL: [SheetTab; 2] = [SheetTab::Default, SheetTab::Custom];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SheetTab::Default => "Default",
+            SheetTab::Custom => "Custom",
+        }
+    }
 }
 
 /// A bot's avatar before Design changed it, for Revert.
@@ -3038,12 +3058,12 @@ pub struct Store {
     pub ad_prompt: Signal<String>,
     pub ad_busy: Signal<String>,
     pub ad_err: Signal<String>,
-    /// The Create New Bot sheet's tab: 0 Default (shapes and colours), 1
-    /// Custom (the custom avatars). Default each time the sheet opens.
-    pub bot_sheet_tab: Signal<usize>,
+    /// The Create New Bot sheet's tab. Default each time the sheet opens:
+    /// it goes back to Default whenever the sheet closes (`botmodal::layer`).
+    pub bot_sheet_tab: Signal<SheetTab>,
     /// The bot's avatar before Edit Avatar's first Custom pick (Revert).
     pub design_was: Signal<Option<AvatarWas>>,
-    /// "Your designs", the custom avatars: newest first, kept in
+    /// The custom avatars (the Custom tabs): newest first, kept in
     /// `/state/buwiz-avatar-designs` so any bot can use one again.
     pub design_saved: Signal<Vec<AvatarCand>>,
     /// Whether the saved list has been read. Until it has, nothing is saved:
@@ -3369,7 +3389,7 @@ impl Store {
             ad_prompt: signal(String::new()),
             ad_busy: signal(String::new()),
             ad_err: signal(String::new()),
-            bot_sheet_tab: signal(0),
+            bot_sheet_tab: signal(SheetTab::Default),
             design_was: signal(None),
             design_saved: signal(Vec::new()),
             design_loaded: signal(false),
@@ -6107,7 +6127,7 @@ impl Store {
             self.close_avatar_editor();
         }
         self.design_reset();
-        self.bot_sheet_tab.set(0);
+        self.bot_sheet_tab.set(SheetTab::Default);
         self.bot_modal.set(true);
     }
 
@@ -6197,7 +6217,7 @@ impl Store {
         self.update_bot(&b.id, patch);
     }
 
-    /// Puts `c` at the front of "Your designs": the one already there if the
+    /// Puts `c` at the front of the custom avatars: the one already there if the
     /// list has its shape, as that one may hold more than `c` does. Only
     /// the tests keep one by hand now; packs come in through `designs_add`.
     #[cfg(test)]
@@ -6221,7 +6241,7 @@ impl Store {
         self.save_designs();
     }
 
-    /// Reads "Your designs", and keeps trying until an answer comes: a list
+    /// Reads the custom avatars, and keeps trying until an answer comes: a list
     /// that failed to load looks like an empty one, and saving that would
     /// wipe the real one.
     pub(crate) fn load_designs(&'static self) {
@@ -6263,7 +6283,7 @@ impl Store {
         }
     }
 
-    /// Adds what a pack holds to the front of "Your designs", in its order:
+    /// Adds what a pack holds to the front of the custom avatars, in its order:
     /// never over what's there, so a shape the list has stays as it is, and
     /// only what this build can draw. One save for all of it.
     pub(crate) fn designs_add(&'static self, entries: &[serde_json::Value]) -> DesignsAdded {

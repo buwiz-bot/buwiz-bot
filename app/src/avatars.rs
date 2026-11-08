@@ -1,4 +1,4 @@
-//! `/avatars`: the packs at a link, and adding avatars from one to "Your designs". The broker
+//! `/avatars`: the packs at a link, and adding avatars from one to Custom. The broker
 //! reads and checks the link (`POST /avatar/packs`) and never writes the list: that stays here,
 //! so it has one writer. The default link is the broker's.
 
@@ -102,7 +102,7 @@ fn outcome(got: DesignsAdded, refused: usize, failed: usize) -> String {
     let skipped = got.unusable + refused;
     let mut parts = Vec::new();
     if got.added > 0 {
-        parts.push(format!("Added {} to Your designs", avatars(got.added)));
+        parts.push(format!("Added {} to Custom", avatars(got.added)));
     }
     if got.there > 0 {
         parts.push(format!("{} already there", avatars(got.there)));
@@ -150,15 +150,15 @@ mod tests {
     #[test]
     fn what_it_says_after_an_install() {
         let got = |added, there, unusable| DesignsAdded { added, there, unusable, ..Default::default() };
-        assert_eq!(outcome(got(3, 0, 0), 0, 0), "Added 3 avatars to Your designs.");
-        assert_eq!(outcome(got(1, 2, 0), 0, 0), "Added 1 avatar to Your designs, 2 avatars already there.");
+        assert_eq!(outcome(got(3, 0, 0), 0, 0), "Added 3 avatars to Custom.");
+        assert_eq!(outcome(got(1, 2, 0), 0, 0), "Added 1 avatar to Custom, 2 avatars already there.");
         assert_eq!(outcome(got(0, 1, 0), 0, 0), "1 avatar already there.");
-        assert_eq!(outcome(got(1, 0, 1), 2, 0), "Added 1 avatar to Your designs, 3 avatars couldn't be used.");
+        assert_eq!(outcome(got(1, 0, 1), 2, 0), "Added 1 avatar to Custom, 3 avatars couldn't be used.");
         assert_eq!(outcome(got(0, 0, 0), 0, 0), "Nothing to add.");
         assert_eq!(outcome(got(0, 0, 0), 0, 1), "1 pack couldn't be read.");
-        assert_eq!(outcome(got(2, 0, 0), 0, 2), "Added 2 avatars to Your designs, 2 packs couldn't be read.");
+        assert_eq!(outcome(got(2, 0, 0), 0, 2), "Added 2 avatars to Custom, 2 packs couldn't be read.");
         let twice = DesignsAdded { added: 1, repeated: 1, ..Default::default() };
-        assert_eq!(outcome(twice, 0, 0), "Added 1 avatar to Your designs, 1 avatar listed twice.");
+        assert_eq!(outcome(twice, 0, 0), "Added 1 avatar to Custom, 1 avatar listed twice.");
     }
 
     #[test]

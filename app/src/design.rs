@@ -1,4 +1,4 @@
-//! The person's custom avatars ("Your designs", `Store::design_saved`): the
+//! The person's custom avatars (`Store::design_saved`): the
 //! Custom tab of the Create New Bot sheet and of Edit Avatar. `for_new` says
 //! where a tap lands (the sheet's draft, or the bot). With none there, the
 //! tab says how to get some: `/avatars install all` in chat.
@@ -34,7 +34,7 @@ pub(crate) fn custom(for_new: bool) -> impl IntoElement {
 
 /// No custom avatars yet: a muted face, what to do, and the command with
 /// Insert in chat (closes the sheet or Edit Avatar and puts it in the
-/// message box, unsent) and Copy.
+/// message box, unsent; only while that box is empty) and Copy.
 fn empty(for_new: bool) -> impl IntoElement {
     let copied = signal(false);
     view()
@@ -71,10 +71,13 @@ fn empty(for_new: bool) -> impl IntoElement {
                         .rounded(px(6.0))
                         .bg(theme::SUBTLE),
                 )
-                .child(small_pill(
-                    || "Insert in chat".to_owned(),
-                    "Insert in chat",
-                    move || insert_in_chat(for_new),
+                // never over words the person is writing: then only Copy
+                .child(when(
+                    || store().draft.get().trim().is_empty(),
+                    move || {
+                        small_pill(|| "Insert in chat".to_owned(), "Insert in chat", move || insert_in_chat(for_new))
+                            .into_element()
+                    },
                 ))
                 .child(small_pill(
                     move || if copied.get() { "Copied".to_owned() } else { "Copy".to_owned() },
@@ -82,6 +85,11 @@ fn empty(for_new: bool) -> impl IntoElement {
                     move || {
                         store().copy_text(INSTALL_ALL);
                         copied.set(true);
+                        // back to Copy after 1.5 s, as the plugin page's Copy link
+                        spawn(async move {
+                            timer(std::time::Duration::from_millis(1500)).await;
+                            copied.try_set(false);
+                        });
                     },
                 )),
         )
@@ -155,7 +163,7 @@ pub(crate) fn saved(for_new: bool) -> impl IntoElement {
             .gap(px(8.0))
             .child(match removing {
                 Some((i, name)) => confirm_row(
-                    format!("Remove “{name}” from Your designs?"),
+                    format!("Remove “{name}” from Custom?"),
                     "Remove",
                     move || store().design_forget(i),
                     || store().design_removing.set(None),
