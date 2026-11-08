@@ -181,8 +181,9 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // Office files' native views: their setting, and the open document
     // closing with the viewer
     crate::office::track();
-    // the ra-jit stats pill's switch (⌘⇧R, `dev.livebar`)
-    let live_bar_show = crate::live::keep("rox.livebar.show", || true);
+    // the ra-jit stats pill's switch (⌘⇧R, `dev.livebar`). Shown by default
+    // in dev builds only: a release never runs ra-jit, so it has no pill.
+    let live_bar_show = crate::live::keep("rox.livebar.show", || cfg!(debug_assertions));
     store().livebar.set(Some(live_bar_show));
 
     // Appearance follows `themePref` (theme.ts): System resolves to the
@@ -446,7 +447,7 @@ fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> 
     let state = move || note.get().split_once(':').map(|(s, _)| s.to_owned()).unwrap_or_default();
     let message = move || note.get().split_once(':').map(|(_, m)| m.to_owned()).unwrap_or_default();
     dynamic(move || {
-        if !show.get() {
+        if !cfg!(debug_assertions) || !show.get() {
             return view().into_element();
         }
         let (x, y) = pos.get();
