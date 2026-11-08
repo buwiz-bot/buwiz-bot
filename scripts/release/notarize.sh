@@ -54,6 +54,18 @@ if [ "$STATUS" != Accepted ]; then
   die "notarization of $(basename "$TARGET") ended ${STATUS:-without a status}"
 fi
 
-xcrun stapler staple "$TARGET"
-xcrun stapler validate "$TARGET"
+# stapler talks to Apple (CloudKit) and can lose the connection mid-call
+# ("The network connection was lost", error 68): try again before failing.
+apple() {
+  local try
+  for try in 1 2 3 4; do
+    "$@" && return 0
+    [ "$try" = 4 ] && break
+    echo "retrying in $((try * 15)) s: $*" >&2
+    sleep $((try * 15))
+  done
+  return 1
+}
+apple xcrun stapler staple "$TARGET" || die "stapling $(basename "$TARGET") failed"
+apple xcrun stapler validate "$TARGET" || die "the stapled ticket on $(basename "$TARGET") doesn't validate"
 echo "notarized and stapled $TARGET (submission $ID)"
