@@ -178,31 +178,8 @@ jobs:
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: server/package-lock.json
-      - name: Office editor and fonts (server/)
-        working-directory: server
-        run: |
-          npm ci
-          npm run build:office-editor
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            app
-            broker
-            nsh
-
-      - name: Build the release bundle
-        shell: bash
-        env:
-          BUILD_NUMBER: ${{ github.run_number }}
-        run: |
-          scripts/release/build.sh
-
+      # Before the build, so a wrong certificate, password or notary key fails
+      # in seconds, not after the hour the build takes.
       - name: Import the Developer ID certificate into a temporary keychain
         if: steps.inputs.outputs.signed == 'true'
         shell: bash
@@ -218,7 +195,8 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           (umask 077 && printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12")
           security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -f pkcs12 -k "$KEYCHAIN" \
-            -T /usr/bin/codesign
+            -T /usr/bin/codesign \
+            || { rm -f "$RUNNER_TEMP/cert.p12"; echo "MACOS_CERT_PASSWORD does not open MACOS_CERT_P12 (or it is not a .p12 macOS can read)" >&2; exit 1; }
           rm -f "$RUNNER_TEMP/cert.p12"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
@@ -235,6 +213,49 @@ jobs:
           fi
           echo "DEVELOPER_ID_APPLICATION=$NAME" >> "$GITHUB_ENV"
           echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: The notary key works
+        if: steps.inputs.outputs.signed == 'true'
+        shell: bash
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          KEY="$RUNNER_TEMP/notary-check.p8"
+          (umask 077 && printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$KEY")
+          trap 'rm -f "$KEY"' EXIT
+          grep -q "BEGIN PRIVATE KEY" "$KEY" || { echo "NOTARY_KEY_P8 is not a base64-encoded .p8 key" >&2; exit 1; }
+          xcrun notarytool history --key "$KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" >/dev/null \
+            || { echo "App Store Connect refused NOTARY_KEY_ID, NOTARY_ISSUER_ID or NOTARY_KEY_P8" >&2; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Office editor and fonts (server/)
+        working-directory: server
+        run: |
+          npm ci
+          npm run build:office-editor
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # keep the build when a later step (signing, notarizing) fails,
+          # so a retry doesn't rebuild from nothing
+          cache-on-failure: true
+          workspaces: |
+            app
+            broker
+            nsh
+
+      - name: Build the release bundle
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          scripts/release/build.sh
 
       - name: Sign, notarize and staple the app
         if: steps.inputs.outputs.signed == 'true'
