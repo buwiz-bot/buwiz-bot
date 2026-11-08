@@ -3509,28 +3509,34 @@ impl Store {
         crate::slash::boot();
         // v1 plugins: records, consent, the broker's events, the plugin list
         self.v1_boot();
-        // The installed plugins' logos sit in the sidebar footer.
-        self.fetch_plugins();
-        self.fetch_app_meta();
         self.load_designs();
         spawn(async move {
-            if let Some(v) = client::get("/state/rox-main-bot").await {
-                let id = v.get("state").map(|st| s(st, "id")).unwrap_or_default();
-                self.main_bot.set(id);
-            }
-        });
-        self.fetch_groups();
-        spawn(async move {
-            if let Some(v) = client::get("/state/rox-reactions").await
-                && let Some(m) = v.get("state").and_then(|s| s.as_object()) {
-                    self.art_reactions.set(
-                        m.iter()
-                            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
-                            .collect(),
-                    );
-            }
-        });
-        spawn(async move {
+            // These loads are asked once: at a first launch the broker this
+            // app just started may not listen yet, and each would come back
+            // empty for good. Wait for it to answer first.
+            client::wait_up(client::UP_CAP).await;
+            // the v1 plugin list (`v1_boot` set up the rest)
+            self.v1_refresh();
+            // The installed plugins' logos sit in the sidebar footer.
+            self.fetch_plugins();
+            self.fetch_app_meta();
+            spawn(async move {
+                if let Some(v) = client::get("/state/rox-main-bot").await {
+                    let id = v.get("state").map(|st| s(st, "id")).unwrap_or_default();
+                    self.main_bot.set(id);
+                }
+            });
+            self.fetch_groups();
+            spawn(async move {
+                if let Some(v) = client::get("/state/rox-reactions").await
+                    && let Some(m) = v.get("state").and_then(|s| s.as_object()) {
+                        self.art_reactions.set(
+                            m.iter()
+                                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                                .collect(),
+                        );
+                }
+            });
             // The zoom first: a transcript laid out before it lands is laid
             // out again at another size, and a link's turn drifts off.
             if let Some(v) = client::get("/state/rox-zoom").await {
