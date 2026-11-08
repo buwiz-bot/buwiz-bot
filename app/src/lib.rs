@@ -235,6 +235,8 @@ mod mini_ui_tests;
 mod run_ui_tests;
 #[cfg(test)]
 mod messages_ui_tests;
+#[cfg(test)]
+mod boot_ui_tests;
 
 #[cfg(test)]
 mod app_name_tests {

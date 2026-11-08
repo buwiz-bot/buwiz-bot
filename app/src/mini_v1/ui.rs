@@ -278,8 +278,8 @@ impl super::native::Chat for OpenChat {
 }
 
 impl Store {
-    /// At start: the records, the plugins, the consent dialogs and the
-    /// chat the bridge uses, the broker's events, the v0 migration.
+    /// At start: the records, the consent dialogs and the chat the bridge
+    /// uses, the broker's events, the v0 migration.
     pub fn v1_boot(&'static self) {
         self.v1.records.set(Records::load(&data_dir()));
         #[cfg(target_os = "macos")]
@@ -302,7 +302,8 @@ impl Store {
                 *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = id;
             })
         });
-        self.v1_refresh();
+        // the plugin list itself loads with boot's other one-shot loads,
+        // once the broker answers (`Store::boot`)
     }
 
     /// Lists the v1 plugins again.

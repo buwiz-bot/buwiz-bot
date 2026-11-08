@@ -124,6 +124,31 @@ pub async fn get(path: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&res.text()).ok()
 }
 
+/// How long boot waits for the broker before loading anyway: the app's own
+/// start gives a broker it launched 20 s to listen (`broker::run`).
+pub const UP_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Waits until the broker's `/health` answers 200, polling with backoff
+/// (0.1 s doubling to 1 s), at most `cap`; whether it did. A broker the app
+/// just launched takes a moment to listen, and a 503 means it is up but its
+/// node half is still starting: loads sent before either would fail and
+/// never be asked again.
+pub async fn wait_up(cap: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    let mut pause = std::time::Duration::from_millis(100);
+    loop {
+        if fetch(req("GET", "/health")).await.is_ok_and(|r| r.status() == 200) {
+            return true;
+        }
+        let Some(left) = cap.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) else {
+            log::warn!("broker: no healthy answer from {} in {cap:?}; loading anyway", backend());
+            return false;
+        };
+        timer(pause.min(left)).await;
+        pause = (pause * 2).min(std::time::Duration::from_secs(1));
+    }
+}
+
 /// [`get`], but an error status's JSON body comes back too (`{ok:false,
 /// code, message}`); `None` only when the broker can't be reached or
 /// answers no JSON.
