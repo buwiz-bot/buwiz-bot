@@ -1485,6 +1485,8 @@ pub struct Turn {
     pub tools_change: Option<ToolsChangeNotice>,
     /// A `notice` turn asking the user's OK for one call.
     pub tool_ask: Option<ToolAskNotice>,
+    /// A `notice` turn suggesting a computer be set up (`cards/computer_setup.rs`).
+    pub(crate) computer_setup: Option<crate::cards::computer_setup::Notice>,
     /// A `notice` turn's sentence: what the Hub refused the AI on a screen.
     pub ui_refused: Option<String>,
     /// A `notice` turn's sentence: why a run ended early (a Stop, a restart).
@@ -2664,6 +2666,7 @@ impl Turn {
             messages_card: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::messages::Notice::of)).flatten(),
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
+            computer_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::computer_setup::Notice::of)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
             run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| ["run_ended", "computer_job"].contains(&s(n, "kind").as_str()))).then(|| s(v, "text")),
             run_failed: s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "run_ended" && s(n, "reason") == "failed"),

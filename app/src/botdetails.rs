@@ -1,7 +1,8 @@
 //! Bot Details — Grok Bot's "View Details" modal: the bot's mark, name,
 //! last update and description, then Context (instructions, memories,
 //! skills) and Integrations, each a page of the same modal (‹ back, ×
-//! close). Publish sits in the footer, off until publishing exists.
+//! close), and Computer: where its next new computer is made
+//! (`homes.rs`). Publish sits in the footer, off until publishing exists.
 //!
 //! Opened to view (`edit` false: everything reads only) or to edit: the
 //! description and instructions become fields saved with Save, memories
@@ -40,6 +41,7 @@ pub(crate) fn open(bot: &str, edit: bool) {
     }
     st.bd_nav.set(vec!["main".to_owned()]);
     st.bot_details.set(Some(BotDetails { bot: bot.to_owned(), edit }));
+    crate::homes::reset_picker();
     // the add page lists what is installed
     st.fetch_mcp();
     st.fetch_skills();
@@ -339,6 +341,8 @@ fn main_page(b: &RoxBot, edit: bool) -> impl IntoElement {
                     "integrations",
                 )),
         )
+        // where this Bot's next new computer is made
+        .child(card().w_full().mt(px(16.0)).child(crate::homes::bot_row(&b.id, edit)))
 }
 
 fn context_page(b: &RoxBot, edit: bool) -> impl IntoElement {

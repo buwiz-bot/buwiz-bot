@@ -17,6 +17,7 @@
 
 pub(crate) mod approval;
 pub(crate) mod choice;
+pub(crate) mod computer_setup;
 pub(crate) mod plugin_needs;
 pub(crate) mod save_login;
 pub(crate) mod transport;

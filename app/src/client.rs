@@ -205,6 +205,18 @@ pub async fn post_status(path: &str, body: serde_json::Value) -> Option<(u16, se
     Some((res.head.status, serde_json::from_str(&res.text()).unwrap_or(serde_json::Value::Null)))
 }
 
+/// `method` (`PUT`, `POST`…) on `path`, with a JSON body or none: `(status,
+/// JSON body or null)`; `None` only when the broker can't be reached.
+pub async fn send_status(method: &str, path: &str, body: Option<serde_json::Value>) -> Option<(u16, serde_json::Value)> {
+    let mut r = req(method, path);
+    if let Some(body) = body {
+        r.headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+        r.body = nsh_core::platform::HttpBody::Bytes(body.to_string().into_bytes());
+    }
+    let res = fetch(r).await.ok()?;
+    Some((res.head.status, serde_json::from_str(&res.text()).unwrap_or(serde_json::Value::Null)))
+}
+
 /// Fire-and-forget POST used by mutations (rename, delete, react…).
 /// Detached: these run from press handlers that close their own layer
 /// (emoji pill, context menu) right after calling, and a task spawned

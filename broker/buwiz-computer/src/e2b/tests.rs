@@ -361,3 +361,35 @@ async fn answers_are_limited_in_size_and_time_and_redirects_are_errors() {
         .await
         .is_ok());
 }
+
+/// The platform for a Check: this team's sandboxes for the right key, and its templates.
+fn checked(req: &Seen) -> Answer {
+    let good = req.header("x-api-key") == Some("key-1");
+    match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/sandboxes") if good => ok(200, "[]"),
+        ("GET", "/sandboxes") => ok(401, r#"{"message":"bad key"}"#),
+        ("GET", "/templates") => ok(200, r#"[{"templateID":"t-9","aliases":["tpl"]}]"#),
+        _ => ok(404, "{}"),
+    }
+}
+
+#[tokio::test]
+async fn a_check_proves_the_key_and_finds_the_template_by_its_name() {
+    let fake = serve(checked).await;
+    provider(fake.addr).verify().await.unwrap();
+    let wrong = E2bProvider::new(Settings::new(Some(Secret::new("key-2")), Some("tpl".to_owned()))).with_api(Api::with_test(fake.addr, Some(CA.to_vec())));
+    assert_eq!(wrong.verify().await.unwrap_err().code(), "bad_key");
+    let missing = E2bProvider::new(Settings::new(Some(Secret::new("key-1")), Some("nope".to_owned()))).with_api(Api::with_test(fake.addr, Some(CA.to_vec())));
+    let said = missing.verify().await.unwrap_err();
+    assert_eq!(said.code(), "no_template");
+    assert!(!said.sentence().contains("key-1"));
+}
+
+#[tokio::test]
+async fn new_settings_reach_a_running_provider() {
+    let shared = crate::Shared::new(Settings::default());
+    let p = E2bProvider::shared(shared.clone());
+    assert_eq!(p.check().await.unwrap_err().code(), "no_key");
+    shared.set(Settings::new(Some(Secret::new("key-1")), Some("tpl".to_owned())));
+    p.check().await.unwrap();
+}

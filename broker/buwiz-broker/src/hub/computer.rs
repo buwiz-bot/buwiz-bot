@@ -66,6 +66,7 @@ use super::types::{self, HubRequest, HubResponse, Pattern::Exact as X, Pattern::
 use super::Registry;
 
 mod awake;
+pub mod homes;
 pub mod jobs;
 
 /// The own screens a box runs (`box-screen`'s `BOX_MAX_OWN_SCREENS`).
@@ -265,7 +266,8 @@ impl Drop for Handing {
 
 /// The hub's computers, in `ctx.ext`.
 pub struct Computers {
-    provider: Arc<dyn Provider>,
+    /// where new computers are made, and the provider of each kind
+    homes: homes::Homes,
     /// one for the broker: it holds the connections
     remote: Arc<RemoteProvider>,
     /// what a person's Test passed, as [`Computers::fingerprint`]s: a yes covers that and nothing
@@ -309,7 +311,14 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider, remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
+        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
+    }
+
+    /// Makes the homes' providers with `factory` (tests).
+    #[cfg(test)]
+    pub fn with_factory(mut self, factory: homes::Factory) -> Self {
+        self.homes = self.homes.with_factory(factory);
+        self
     }
 
     /// With this remote provider (tests).
@@ -328,14 +337,23 @@ impl Computers {
     }
 
     /// The provider of a saved computer: a kind this build can't run answers with its sentence.
-    fn provider_of(&self, machine: &Machine) -> Arc<dyn Provider> {
-        if machine.provider == ProviderKind::Remote {
+    fn provider_of(&self, ctx: &HubCtx, machine: &Machine) -> Arc<dyn Provider> {
+        self.provider_of_kind(ctx, machine.provider)
+    }
+
+    /// The provider of `kind`: the one this broker keeps for it, with a person's settings.
+    fn provider_of_kind(&self, ctx: &HubCtx, kind: ProviderKind) -> Arc<dyn Provider> {
+        if kind == ProviderKind::Remote {
             self.remote.clone()
-        } else if machine.provider == self.provider.kind() {
-            self.provider.clone()
         } else {
-            provider_for(machine.provider)
+            self.homes.provider(ctx, kind)
         }
+    }
+
+    /// The kind computer `id`'s row says it is.
+    fn kind_of(ctx: &HubCtx, id: &str) -> Result<Option<ProviderKind>, Problem> {
+        let word: Option<String> = ctx.db.with(|c| c.query_row("SELECT provider FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).map_err(db_problem)?;
+        Ok(word.as_deref().and_then(ProviderKind::parse))
     }
 
     async fn gate(&self) -> Option<&Gate> {
@@ -469,15 +487,20 @@ impl Computers {
         let dir = Self::dir(ctx, &id);
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
         let spec = Spec { id: id.clone(), dir: dir.clone() };
-        let made = self.provider.create(&spec).await;
+        // the Bot's own choice, else the Mac's default: only a person sets either
+        let (kind, _) = homes::home_of(ctx, bot);
+        let provider = self.provider_of_kind(ctx, kind);
+        // until its record is written: a removal of these keys waits, and then sees it
+        let _keys = self.homes.lock(kind).read().await;
+        let made = provider.create(&spec).await;
         let machine = match made {
             Ok(m) => m,
             Err(e) => {
                 // past its checks it may have left a part behind, and with no record nothing
                 // would find it: the sweep does, by its label
-                if !matches!(e, Problem::ProviderDown(_) | Problem::ProviderMissing(_) | Problem::ImageMissing(_) | Problem::NotBuilt(_)) {
+                if !matches!(e, Problem::ProviderDown(_) | Problem::ProviderMissing(_) | Problem::ImageMissing(_) | Problem::NotBuilt(_) | Problem::Refused { .. }) {
                     let at = policy::now(ctx);
-                    let _ = ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, gone_at) VALUES(?,?,?,?,?)", rusqlite::params![id, self.provider.kind().as_str(), at, bot, at]));
+                    let _ = ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, gone_at) VALUES(?,?,?,?,?)", rusqlite::params![id, kind.as_str(), at, bot, at]));
                 } else {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
@@ -486,7 +509,7 @@ impl Computers {
         };
         // from here a container exists: no record means nothing would ever remove it
         if let Err(e) = Self::record(ctx, &id, &machine, bot) {
-            let _ = self.provider.destroy(&machine).await;
+            let _ = provider.destroy(&machine).await;
             let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [&id]));
             let _ = std::fs::remove_dir_all(&dir);
             return Err(e);
@@ -568,7 +591,13 @@ impl Computers {
         }
         // its record is lost: what's left of the computer gets a new one, files and all
         let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
-        if let Some(machine) = self.provider.recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await? {
+        // by the kind it was: its files are only where it was made
+        let recovered = match Self::kind_of(ctx, &seat.computer)? {
+            Some(kind) => self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await?,
+            // a kind nothing here knows: there's nowhere to look
+            None => None,
+        };
+        if let Some(machine) = recovered {
             std::fs::create_dir_all(&spec.dir).map_err(|e| Problem::Failed(e.to_string()))?;
             // before the record: once that reads, nothing else says the secrets changed
             std::fs::write(Self::stop_owed(ctx, &seat.computer), "").map_err(|e| Problem::Failed(e.to_string()))?;
@@ -620,7 +649,7 @@ impl Computers {
         // what such a Bot left running is back with the wake
         self.settle_stops(ctx, Some(id)).await;
         let Ok(machine) = self.machine(ctx, id) else { return };
-        let provider = self.provider_of(&machine);
+        let provider = self.provider_of(ctx, &machine);
         let Ok((_, machine)) = provider.look(&machine).await else { return };
         // not knowing who sits here is no reason to take a screen down
         let Ok(seats) = Self::seats(ctx, id) else { return };
@@ -646,7 +675,7 @@ impl Computers {
             Err(_) => return Err(Problem::Failed("whether it can wake couldn't be checked. Try again in a moment".to_owned())),
         }
         let machine = self.machine(ctx, id)?;
-        let provider = self.provider_of(&machine);
+        let provider = self.provider_of(ctx, &machine);
         // recovered, what's running still has the old secrets. A real stop, so it can finish its
         // writes, and here, with the seats' lock long released. One that fails is the wake's
         // problem, and stays owed, so the next click tries it again
@@ -720,7 +749,7 @@ impl Computers {
 
     async fn put_to_sleep(&self, ctx: &HubCtx, id: &str, depth: Sleep, _marked: Sleeping<'_>) -> Result<(), Problem> {
         let machine = self.machine(ctx, id)?;
-        let provider = self.provider_of(&machine);
+        let provider = self.provider_of(ctx, &machine);
         // nothing the model recorded is left to pick up where it stopped
         let recording: Vec<(String, Recording)> = self.now().recordings.iter().filter(|(_, r)| r.computer == id && r.id.is_some()).map(|(bot, r)| (bot.clone(), r.clone())).collect();
         for (bot, r) in recording {
@@ -767,7 +796,7 @@ impl Computers {
             let Ok(machine) = self.machine(ctx, &id) else { continue };
             let row: Option<(i64, Option<i64>)> = ctx.db.with(|c| c.query_row("SELECT last_used, slept_at FROM computers WHERE id=?", [&id], |r| Ok((r.get(0)?, r.get(1)?))).optional()).ok().flatten();
             let Some((used, slept)) = row else { continue };
-            let provider = self.provider_of(&machine);
+            let provider = self.provider_of(ctx, &machine);
             match provider.power(&machine).await {
                 Ok(Power::Awake) if at - used >= millis(self.idle) && !self.watched(ctx, &id).await => {
                     let _ = self.sleep_if_unused(ctx, &id, Sleep::Light).await;
@@ -802,7 +831,7 @@ impl Computers {
             return Err(Problem::Failed(format!("a computer has room for {MAX_SEATS} Bots")));
         }
         // the seat comes last: a Bot that can't use the computer isn't seated at it
-        let provider = self.provider_of(&machine);
+        let provider = self.provider_of(ctx, &machine);
         let (power, machine) = provider.look(&machine).await?;
         let screen = if power == Power::Awake { Some(provider.screen_up(&machine, bot).await?) } else { None };
         // before the seat: there's no moment it's at a remote computer with the switch at On
@@ -820,6 +849,11 @@ impl Computers {
             Self::set_screen(ctx, bot, Some(&screen));
         }
         Ok(())
+    }
+
+    /// Whether `bot` sits at a computer whose record reads: one that only needs waking.
+    pub fn has_working(&self, ctx: &HubCtx, bot: &str) -> bool {
+        matches!(Self::seat(ctx, bot), Ok(Some(seat)) if self.machine(ctx, &seat.computer).is_ok())
     }
 
     /// A person took `bot` off a computer others stay at. The last Bot can't leave this way: that
@@ -872,7 +906,7 @@ impl Computers {
             self.settle_stops(ctx, Some(&seat.computer)).await;
             // asleep, its screen comes down at the next wake (`clear_empty_screens`)
             if let Ok(machine) = self.machine(ctx, &seat.computer) {
-                let provider = self.provider_of(&machine);
+                let provider = self.provider_of(ctx, &machine);
                 if let Ok((Power::Awake, machine)) = provider.look(&machine).await {
                     let _ = provider.screen_down(&machine, bot).await;
                 }
@@ -893,11 +927,17 @@ impl Computers {
         let Ok(remote) = Self::is_remote(ctx, id) else { return };
         self.retire_jobs(ctx, id, remote).await;
         let removed = match self.machine(ctx, id) {
-            Ok(m) => self.provider_of(&m).destroy(&m).await,
+            Ok(m) => self.provider_of(ctx, &m).destroy(&m).await,
             Err(_) => match (Self::is_remote(ctx, id), Self::reach_of(ctx, id)) {
                 // its record is all there is here
                 (Ok(true), _) => Ok(()),
-                (Ok(false), Ok(reach)) => self.provider.sweep(id, reach.as_ref()).await,
+                (Ok(false), Ok(reach)) => match Self::kind_of(ctx, id) {
+                    Ok(Some(kind)) => self.provider_of_kind(ctx, kind).sweep(id, reach.as_ref()).await,
+                    // a kind this build doesn't know: nothing here can delete it, so its row and
+                    // folder stay for a build that can
+                    Ok(None) => Err(Problem::Failed("this computer's kind isn't one this build knows".to_owned())),
+                    Err(e) => Err(e),
+                },
                 // the next look tries again, with the name that finds its files
                 (Err(e), _) | (_, Err(e)) => Err(e),
             },
@@ -1061,7 +1101,7 @@ impl Computers {
             }
         }
         let machine = self.machine(ctx, &seat.computer)?;
-        let provider = self.provider_of(&machine);
+        let provider = self.provider_of(ctx, &machine);
         // the one read of the computer for this request: what's below acts on it
         let (power, machine) = provider.look(&machine).await?;
         match (power, seat.screen) {
@@ -1248,7 +1288,14 @@ impl Computers {
     }
 
     /// The Computer tab's status for `bot`. No secret, no address.
+    /// [`Computers::status_of`], and where the Bot's next new computer would be made.
     pub async fn status(&self, ctx: &HubCtx, bot: &str) -> Value {
+        let mut out = self.status_of(ctx, bot).await;
+        out["home"] = homes::home_json(ctx, bot);
+        out
+    }
+
+    async fn status_of(&self, ctx: &HubCtx, bot: &str) -> Value {
         let sleep_after = self.idle.as_secs();
         let seat = match Self::seat(ctx, bot) {
             Ok(seat) => seat,
@@ -1298,8 +1345,8 @@ impl Computers {
         } else {
             match record {
                 Ok(m) => {
-                    out["provider"] = json!(m.provider.label());
-                    match self.provider_of(&m).power(&m).await {
+                    out["provider"] = json!(homes::label(m.provider));
+                    match self.provider_of(ctx, &m).power(&m).await {
                         Ok(Power::Broken(why)) => {
                             out["message"] = json!(why);
                             "error".to_owned()
@@ -1468,7 +1515,7 @@ fn millis(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
 }
 
-fn bot_name(ctx: &HubCtx, bot: &str) -> String {
+pub(crate) fn bot_name(ctx: &HubCtx, bot: &str) -> String {
     ctx.store.read(|s| s.bot(bot).map(|b| b.name.clone())).unwrap_or_else(|| bot.to_owned())
 }
 
@@ -1693,6 +1740,106 @@ async fn remove_remote(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
+/// The computers and the provider kind of a provider route, if a person's app is asking.
+fn provider_route(ctx: &HubCtx, req: &HubRequest) -> Result<(Arc<Computers>, ProviderKind), Box<HubResponse>> {
+    if !host::authorized(&req.headers) {
+        return Err(Box::new(host::unauthorized()));
+    }
+    let Some(computers) = Computers::of(ctx) else { return Err(Box::new(unavailable())) };
+    let word = req.params.first().cloned().unwrap_or_default();
+    match ProviderKind::parse(&word).filter(|k| homes::OFFERED.contains(k)) {
+        Some(kind) => Ok((computers, kind)),
+        None => Err(Box::new(types::json(StatusCode::NOT_FOUND, &json!({"ok": false, "code": "not_found", "message": "There's no such place to make computers."})))),
+    }
+}
+
+macro_rules! provider_route {
+    ($ctx:expr, $req:expr) => {
+        match provider_route(&$ctx, &$req) {
+            Ok(v) => v,
+            Err(r) => return *r,
+        }
+    };
+}
+
+/// `GET /v1/host/computer/providers`: every home, its keys as set or not, and the Mac's default.
+async fn providers(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    if !host::authorized(&req.headers) {
+        return host::unauthorized();
+    }
+    let Some(computers) = Computers::of(&ctx) else { return unavailable() };
+    types::json(StatusCode::OK, &computers.providers_json(&ctx))
+}
+
+/// `PUT /v1/host/computer/providers/{kind} {values, clear?}`: checked, then kept, or nothing kept.
+async fn save_provider(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, kind) = provider_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let values = body.get("values").and_then(Value::as_object).cloned().unwrap_or_default();
+    let clear: Vec<String> = body.get("clear").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+    match computers.save_provider(&ctx, kind, &values, &clear).await {
+        Ok(provider) => types::json(StatusCode::OK, &json!({"ok": true, "provider": provider})),
+        Err(p) => refused(&p),
+    }
+}
+
+/// `POST /v1/host/computer/providers/{kind}/check`.
+async fn check_provider(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, kind) = provider_route!(ctx, req);
+    match computers.check_provider(&ctx, kind).await {
+        Ok(message) => types::json(StatusCode::OK, &json!({"ok": true, "message": message})),
+        Err(p) => refused(&p),
+    }
+}
+
+/// `POST /v1/host/computer/providers/{kind}/remove`: refused while a computer made with the keys is there.
+async fn remove_provider(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, kind) = provider_route!(ctx, req);
+    match computers.remove_provider(&ctx, kind).await {
+        Ok(provider) => types::json(StatusCode::OK, &json!({"ok": true, "provider": provider})),
+        Err(p) => refused(&p),
+    }
+}
+
+/// The kind a body names, `None` for `null`: `Err` for a word that isn't one.
+fn kind_in(body: &Value) -> Result<Option<ProviderKind>, Problem> {
+    match body.get("kind") {
+        None => Err(Problem::Refused { code: "not_offered", message: "Say where: a kind, or null for the default.".to_owned() }),
+        Some(Value::Null) => Ok(None),
+        Some(v) => v.as_str().and_then(ProviderKind::parse).map(Some).ok_or_else(|| Problem::Refused { code: "not_offered", message: "That isn't a place computers can be made.".to_owned() }),
+    }
+}
+
+/// `PUT /v1/host/computer/providers/default {kind}`.
+async fn set_default(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    if !host::authorized(&req.headers) {
+        return host::unauthorized();
+    }
+    let Some(computers) = Computers::of(&ctx) else { return unavailable() };
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let kind = match kind_in(&body) {
+        Ok(Some(kind)) => kind,
+        Ok(None) => return refused(&Problem::Refused { code: "not_offered", message: "Name the place new computers should go.".to_owned() }),
+        Err(p) => return refused(&p),
+    };
+    match computers.set_default(&ctx, kind) {
+        Ok(default) => types::json(StatusCode::OK, &json!({"ok": true, "default": default})),
+        Err(p) => refused(&p),
+    }
+}
+
+/// `PUT /v1/host/computer/bot/{bot}/provider {kind | null}`: where the Bot's next computer goes.
+async fn set_bot_home(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let set = kind_in(&body).and_then(|kind| computers.set_bot_home(&ctx, &bot, kind));
+    // the home alone: the whole status would ask the computer's provider, and nothing here needs it
+    match set {
+        Ok(()) => types::json(StatusCode::OK, &json!({"ok": true, "home": homes::home_json(&ctx, &bot)})),
+        Err(p) => refused(&p),
+    }
+}
+
 async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if !host::authorized(&req.headers) {
         return host::unauthorized();
@@ -1703,9 +1850,18 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// Puts the computers in `ctx.ext`, with their routes and the timer that puts them to sleep.
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.ext.get::<Arc<Computers>>().is_none() {
-        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::from_env()))));
+        // Docker's: every other kind is made with a person's settings (`homes`), and the env word
+        // only says where new computers go
+        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::Docker))));
     }
     routes.route(Verb::Get, X("/v1/host/computers"), list);
+    routes.route(Verb::Get, X("/v1/host/computer/providers"), providers);
+    // before the kind's routes: `default` isn't a kind
+    routes.route(Verb::Put, X("/v1/host/computer/providers/default"), set_default);
+    routes.route(Verb::Put, S("/v1/host/computer/providers/*"), save_provider);
+    routes.route(Verb::Post, S("/v1/host/computer/providers/*/check"), check_provider);
+    routes.route(Verb::Post, S("/v1/host/computer/providers/*/remove"), remove_provider);
+    routes.route(Verb::Put, S("/v1/host/computer/bot/*/provider"), set_bot_home);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/test"), test_remote);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote"), add_remote);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/remove"), remove_remote);

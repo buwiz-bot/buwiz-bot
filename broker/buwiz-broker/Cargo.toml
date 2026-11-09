@@ -12,6 +12,7 @@ publish = false
 test-google = []
 
 [dependencies]
+async-trait = "0.1"
 # office in Rust (plan 6.1): BetterOffice's engines, the crates its npm
 # packages are built from
 betteroffice-docx = "0.5.1"

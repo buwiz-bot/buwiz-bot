@@ -335,3 +335,17 @@ async fn a_key_is_checked_before_a_call_and_missing_it_is_a_sentence() {
 fn the_label_says_the_regions_are_eu_only() {
     assert!(ProviderKind::Boat.label().contains("EU"));
 }
+
+#[tokio::test]
+async fn a_check_proves_the_key_with_a_read() {
+    let fake = serve(|req: &Seen| match (req.method.as_str(), req.path.as_str(), req.header("authorization")) {
+        ("GET", "/api/v1/sandboxes", Some("Bearer boat_key")) => ok(200, r#"{"sandboxes":[]}"#),
+        ("GET", "/api/v1/sandboxes", _) => ok(401, "{}"),
+        _ => ok(404, "{}"),
+    })
+    .await;
+    let (ssh, _) = refusing_ssh("verify");
+    provider(fake.addr, ssh.clone()).verify().await.unwrap();
+    let wrong = BoatProvider::new(Settings::new(Some(Secret::new("other")), None)).with_api(Api::with_test(fake.addr, Some(CA.to_vec()))).with_ssh(ssh);
+    assert_eq!(wrong.verify().await.unwrap_err().code(), "bad_key");
+}

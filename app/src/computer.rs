@@ -19,6 +19,9 @@
 //! broker and stays in memory here only until the form closes. Its key is a file's path, so the
 //! key itself is never on screen. The tab says what's different, in words: nothing walls off that
 //! machine, sleeping is disconnecting, and removing forgets the connection.
+//!
+//! With no computer, the tab says where this Bot's next one would be made, and Set up a computer
+//! opens the chat's pick-a-home card here (`cards/computer_setup.rs`, homes in `homes.rs`).
 
 use nsh_base::input;
 use nsh_core::prelude::*;
@@ -52,6 +55,8 @@ pub(crate) struct Status {
     pub remote: Option<Remote>,
     /// the jobs on this computer, by any Bot at it
     pub jobs: Vec<Job>,
+    /// where this Bot's next new computer would be made
+    pub home: Option<crate::homes::Next>,
 }
 
 /// A command a Bot left running on this computer.
@@ -142,6 +147,7 @@ impl Status {
             takeover: v.get("takeover").and_then(Takeover::parse),
             remote: v.get("remote").and_then(Remote::parse),
             jobs: v.get("jobs").and_then(Value::as_array).into_iter().flatten().filter_map(Job::parse).collect(),
+            home: v.get("home").and_then(crate::homes::Next::parse),
         }
     }
 
@@ -280,6 +286,8 @@ thread_local! {
     static WOKE: Signal<std::collections::HashMap<String, (u64, Option<std::time::Instant>)>> = Owner::detached().run(|| keep("computer.woke", Default::default));
     /// The form for a remote computer. Secrets are in here for as long as it's open.
     static FORM: Form = Owner::detached().run(Form::new);
+    /// The tab's Set up a computer is open.
+    static SETUP: Signal<bool> = Owner::detached().run(|| signal(false));
 }
 
 /// How far the form has got.
@@ -775,6 +783,7 @@ pub(crate) fn pane() -> impl IntoElement {
             pane_signal().set(Pane { bot: b.id.clone(), ..Pane::default() });
             // what was typed and agreed to was for the Bot this tab was on
             form().clear();
+            SETUP.with(|s| s.set(false));
         }
         spawn_detached(refresh(b.id));
     }
@@ -867,7 +876,19 @@ pub(crate) fn remote_form() -> impl IntoElement {
     let f = form();
     view()
         .pt(px(10.0))
-        .child(when(move || f.stage.with(|s| *s == Stage::Closed), move || small_button("computer-remote-open", "Connect a remote computer", move || f.stage.set(Stage::Editing)).into_element()))
+        .child(when(
+            move || f.stage.with(|s| *s == Stage::Closed),
+            move || {
+                let setup = SETUP.with(|s| *s);
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .child(small_button("computer-remote-open", "Connect a remote computer", move || f.stage.set(Stage::Editing)))
+                    .child(small_button("computer-setup-open", "Set up a computer", move || setup.update(|o| *o = !*o)))
+                    .into_element()
+            },
+        ))
+        .child(when(move || f.stage.with(|s| *s == Stage::Closed) && SETUP.with(|s| s.get()), setup_part))
         .child(when(
             move || f.stage.with(|s| *s != Stage::Closed),
             move || {
@@ -885,6 +906,31 @@ pub(crate) fn remote_form() -> impl IntoElement {
                     .into_element()
             },
         ))
+}
+
+/// The tab's Set up a computer: the chat's pick-a-home card, for this Bot.
+fn setup_part() -> AnyElement {
+    let bot = pane_signal().with_untracked(|p| p.bot.clone());
+    let name = store().bots.with_untracked(|l| l.iter().find(|b| b.id == bot).map(|b| b.name.clone())).unwrap_or_default();
+    view()
+        .pt(px(10.0))
+        .gap_2()
+        .child(crate::cards::computer_setup::flow(format!("tab:{bot}"), bot, name, String::new(), crate::cards::computer_setup::Step::Pick))
+        .into_element()
+}
+
+/// Opens the Computer tab on `bot` with the remote computer's form open: what picking A remote
+/// computer does elsewhere.
+pub(crate) fn open_remote(bot: &str) {
+    let st = store();
+    if pane_signal().with_untracked(|p| p.bot != bot) {
+        pane_signal().set(Pane { bot: bot.to_owned(), ..Pane::default() });
+        form().clear();
+    }
+    SETUP.with(|s| s.set(false));
+    form().stage.set(Stage::Editing);
+    st.detail_tab.set("computer".to_owned());
+    st.right_open.set(true);
 }
 
 fn note(words: String) -> impl IntoElement {
@@ -1013,6 +1059,9 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
         out = out.child(view().flex_row().pt(px(10.0)).child(small_button("computer-leave", "Leave this computer", move || leave(b.clone()))));
     }
     if p.status.state == "absent" {
+        if let Some(next) = &p.status.home {
+            out = out.child(view().test_id("computer-next-home").child(note(format!("New computers for this Bot: {}", next.label))));
+        }
         for j in &p.join {
             let (b, id) = (bot.to_owned(), j.id.clone());
             out = out.child(

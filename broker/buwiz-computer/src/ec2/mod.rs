@@ -34,7 +34,7 @@ use async_trait::async_trait;
 
 use crate::guest::BoxGuest;
 use crate::remote::{clean, free_ports, guest_at, guest_ports, ssh};
-use crate::{random_hex, CommandOutput, Far, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Settled, Sleep, Spec, Viewer, WaitFor, Woke};
+use crate::{random_hex, Shared, CommandOutput, Far, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Settled, Sleep, Spec, Viewer, WaitFor, Woke};
 
 pub mod api;
 pub mod console;
@@ -142,7 +142,8 @@ struct Open {
 
 /// Every EC2 computer's connections, by the folder the broker keeps for it. The hub keeps one.
 pub struct Ec2Provider {
-    config: Config,
+    /// read at each use: a person can change the region or the template
+    config: Shared<Config>,
     keys: Arc<dyn creds::Keys>,
     /// `http://host:port` instead of AWS (tests)
     endpoint: Option<String>,
@@ -158,6 +159,12 @@ pub struct Ec2Provider {
 impl Ec2Provider {
     /// With these settings, signing with `keys`: neither is read from anywhere here.
     pub fn new(config: Config, keys: Arc<dyn creds::Keys>) -> Self {
+        Self::shared(Shared::new(config), keys)
+    }
+
+    /// The provider reading its settings from `config`, which the broker changes when a person
+    /// saves new ones. `keys` are read for each call already.
+    pub fn shared(config: Shared<Config>, keys: Arc<dyn creds::Keys>) -> Self {
         Self { config, keys, endpoint: None, apis: Mutex::default(), ssh: PathBuf::from(ssh::SSH), keygen: PathBuf::from(KEYGEN), patience: Patience::default(), links: Mutex::default(), turns: Mutex::default() }
     }
 
@@ -293,7 +300,7 @@ impl Ec2Provider {
     /// that isn't the pinned one ends it at once.
     async fn connect(&self, machine: &Machine, ip: &str, pin: &str) -> Result<Arc<Open>> {
         let key = std::fs::read_to_string(machine.dir.join(FOLDER).join(KEY)).map(Secret::new).map_err(|_| Problem::Remote(NO_KEY.to_owned()))?;
-        let at = ssh::At { host: ip.to_owned(), user: Some(self.config.user.clone()), port: None };
+        let at = ssh::At { host: ip.to_owned(), user: Some(self.config.get().user), port: None };
         let began = Instant::now();
         let mut lost_ports = 0;
         loop {
@@ -324,7 +331,7 @@ impl Ec2Provider {
     /// however this ends.
     async fn start_box(&self, machine: &Machine, open: &Open) -> Result<()> {
         let id = computer_id(machine);
-        let image = machine.image.clone().unwrap_or_else(|| self.config.image.clone());
+        let image = machine.image.clone().unwrap_or_else(|| self.config.get().image);
         let secrets = format!("{}\n{}\n", machine.token.expose(), machine.viewer_password.expose());
         let started = async {
             let ran = Self::root(open, &instance::start(&image, &id), &[], Some(secrets.as_bytes()), self.patience.setup).await?;
@@ -381,7 +388,7 @@ impl Ec2Provider {
 
     /// Instances of computer `id`, by both tags: the config's region and `last`'s.
     async fn found(&self, id: &str, last: Option<&Reach>) -> Result<Vec<(Arc<Api>, Instance)>> {
-        let mut regions = vec![self.config.region.clone()];
+        let mut regions = vec![self.config.get().region];
         if let Some(Reach::Instance { region, .. }) = last {
             if !regions.contains(region) {
                 regions.push(region.clone());
@@ -498,18 +505,28 @@ impl Provider for Ec2Provider {
         if !self.ssh.is_file() {
             return Err(Problem::ProviderMissing("ssh".to_owned()));
         }
-        self.api(&self.config.region)?.template_exists(&self.config.template).await
+        let config = self.config.get();
+        self.api(&config.region)?.template_exists(&config.template).await
+    }
+
+    /// [`Provider::check`], and a launch AWS answers as a dry run: these keys may make a computer
+    /// from the template in this region, tags and all, and nothing is launched.
+    async fn verify(&self) -> Result<()> {
+        self.check().await?;
+        let config = self.config.get();
+        self.api(&config.region)?.run_dry(&config.template).await
     }
 
     /// Launches its instance, which starts at once: the wake that follows finds it on its way up.
     async fn create(&self, spec: &Spec) -> Result<Machine> {
         self.check().await?;
-        let api = self.api(&self.config.region)?;
+        let config = self.config.get();
+        let api = self.api(&config.region)?;
         let folder = spec.dir.join(FOLDER);
         let public = keygen(&self.keygen, &folder, &spec.id).await?;
-        let own = api.template_user_data(&self.config.template).await?;
+        let own = api.template_user_data(&config.template).await?;
         let data = instance::user_data(own.as_deref(), &public, &format!("buwiz-{}", random_hex(12)?));
-        let id = match api.run(&self.config.template, &spec.id, &data, &format!("{}-{}", spec.id, random_hex(6)?)).await {
+        let id = match api.run(&config.template, &spec.id, &data, &format!("{}-{}", spec.id, random_hex(6)?)).await {
             Ok(id) => id,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&folder);
@@ -518,8 +535,8 @@ impl Provider for Ec2Provider {
         };
         Ok(Machine {
             provider: ProviderKind::Ec2,
-            reach: Reach::Instance { id, region: self.config.region.clone() },
-            image: Some(self.config.image.clone()),
+            reach: Reach::Instance { id, region: config.region.clone() },
+            image: Some(config.image.clone()),
             token: Secret::fresh(24)?,
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
@@ -621,7 +638,7 @@ impl Provider for Ec2Provider {
         Ok(Some(Machine {
             provider: ProviderKind::Ec2,
             reach: Reach::Instance { id: found.id, region: api.region.clone() },
-            image: Some(self.config.image.clone()),
+            image: Some(self.config.get().image),
             token: Secret::fresh(24)?,
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),

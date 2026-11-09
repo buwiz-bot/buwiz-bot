@@ -83,6 +83,7 @@ use hyper::Method;
 use serde_json::{json, Value};
 
 use crate::cloud::{Api, Reply, Settings};
+use crate::Shared;
 use crate::docker::{EXEC_PORT, HOST_PORT};
 use crate::remote::tls::{self, Relays};
 use crate::remote::{answers, beat, clean, guest_at, guest_ports, Open, Way, BEAT, CHECK_PATIENCE};
@@ -112,8 +113,8 @@ const DROPPED: &str = "The connection to this computer dropped. Click it to conn
 /// E2B's sandboxes, one per computer, and their connections. The hub keeps one, because it holds
 /// the connections.
 pub struct E2bProvider {
-    key: Option<Secret>,
-    template: Option<String>,
+    /// the key and the template (`image`), read at each use: a person can change them
+    settings: Shared<Settings>,
     api: Api,
     links: Mutex<HashMap<PathBuf, Arc<Open>>>,
     /// one connect or disconnect at a time, per computer
@@ -124,9 +125,14 @@ impl E2bProvider {
     /// The provider with its settings (see [`crate::cloud::settings`]). Nothing is read from the
     /// environment here.
     pub fn new(settings: Settings) -> Self {
+        Self::shared(Shared::new(settings))
+    }
+
+    /// The provider reading its settings from `settings`, which the broker changes when a person
+    /// saves new ones.
+    pub fn shared(settings: Shared<Settings>) -> Self {
         Self {
-            key: settings.key,
-            template: settings.image,
+            settings,
             api: Api::new(),
             links: Mutex::default(),
             turns: Mutex::default(),
@@ -139,12 +145,12 @@ impl E2bProvider {
         self
     }
 
-    fn key(&self) -> Result<&Secret> {
-        self.key.as_ref().ok_or_else(|| Problem::Failed("E2B needs an API key before it can make a computer. Add it in the broker's settings.".to_owned()))
+    fn key(&self) -> Result<Secret> {
+        self.settings.get().key.ok_or_else(|| Problem::Refused { code: "no_key", message: "E2B needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
     }
 
-    fn template(&self) -> Result<&str> {
-        self.template.as_deref().ok_or_else(|| Problem::Failed("E2B needs a template: build one from the computer image, then add its id in the broker's settings.".to_owned()))
+    fn template(&self) -> Result<String> {
+        self.settings.get().image.ok_or_else(|| Problem::Refused { code: "no_template", message: "E2B needs a template: build one from the computer image, then add its id in Settings › Computers.".to_owned() })
     }
 
     /// One call to the control API, with the key. The key goes only after the handshake (see [`crate::cloud`]).
@@ -155,8 +161,8 @@ impl E2bProvider {
         body: Option<Value>,
         patience: Duration,
     ) -> Result<Reply> {
-        let key = self.key()?.expose();
-        let mut headers = vec![("X-API-Key", key)];
+        let key = self.key()?;
+        let mut headers = vec![("X-API-Key", key.expose())];
         let body = body.map(|b| Bytes::from(b.to_string()));
         if body.is_some() {
             headers.push(("Content-Type", "application/json"));
@@ -474,11 +480,40 @@ impl Provider for E2bProvider {
         Ok(())
     }
 
+    /// The key works (E2B lists this team's sandboxes for it), and the team has the template.
+    async fn verify(&self) -> Result<()> {
+        self.check().await?;
+        let listed = self.api(Method::GET, "/sandboxes", None, CALL_PATIENCE).await?;
+        match listed.status {
+            200 => {}
+            401 | 403 => return Err(Problem::Refused { code: "bad_key", message: "E2B didn't take this API key. Copy it again from the E2B dashboard (Team › API keys).".to_owned() }),
+            other => return Err(outcome(other)),
+        }
+        let template = self.template()?;
+        let templates = self.api(Method::GET, "/templates", None, CALL_PATIENCE).await?;
+        if templates.status != 200 {
+            // the key works; whether this key may list templates is the team's setting, so the
+            // template is checked by the first computer made
+            return Ok(());
+        }
+        let known = templates.json()?.as_array().is_some_and(|all| {
+            all.iter().any(|t| {
+                t.get("templateID").and_then(Value::as_str) == Some(template.as_str())
+                    || t.get("aliases").and_then(Value::as_array).is_some_and(|a| a.iter().any(|n| n.as_str() == Some(template.as_str())))
+            })
+        });
+        if known {
+            Ok(())
+        } else {
+            Err(Problem::Refused { code: "no_template", message: format!("This E2B team has no template {template}. Build it from the computer image in this team, then check again.") })
+        }
+    }
+
     /// Makes the sandbox from the template, stages the secrets, starts the box once to be sure it
     /// answers, and pauses it. Any failure on the way kills the sandbox.
     async fn create(&self, spec: &Spec) -> Result<Machine> {
         self.check().await?;
-        let template = self.template()?.to_owned();
+        let template = self.template()?;
         let body = json!({
             "templateID": template,
             "timeout": SESSION_SECONDS,

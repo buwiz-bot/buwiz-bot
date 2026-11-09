@@ -252,7 +252,7 @@ impl Computers {
                 }
             }
             let Ok(machine) = self.machine(ctx, &j.computer) else { continue };
-            let provider = self.provider_of(&machine);
+            let provider = self.provider_of(ctx, &machine);
             let paid = match provider.look(&machine).await {
                 // the wall comes before anything runs there, as it does for a tool
                 Ok((Power::Awake, machine)) => provider.guard(&machine).await.is_ok() && cancelled(provider.as_ref(), &machine, &folder_of(&j.bot), &j.id).await,

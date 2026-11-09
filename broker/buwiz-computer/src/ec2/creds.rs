@@ -23,8 +23,8 @@ pub trait Keys: Send + Sync + std::fmt::Debug {
     fn read(&self) -> Result<Credentials>;
 }
 
-fn none(profile: &str, why: &str) -> Problem {
-    Problem::Remote(format!("This Mac has no AWS keys for the broker: {why}. Put the access key of the IAM user made for it (buwiz-computer-broker) under [{profile}] in ~/.aws/credentials."))
+fn none(code: &'static str, profile: &str, why: &str) -> Problem {
+    Problem::Refused { code, message: format!("This Mac has no AWS keys for the broker: {why}. Paste an access key in Settings › Computers, or put the access key of the IAM user made for it (buwiz-computer-broker) under [{profile}] in ~/.aws/credentials.") }
 }
 
 /// The environment, then the profile's files.
@@ -62,12 +62,12 @@ pub fn resolve(env: &dyn Fn(&str) -> Option<String>, home: Option<&Path>, profil
         return Ok(Credentials { access_key: id, secret: Secret::new(secret), token: get("aws_session_token").map(Secret::new) });
     }
     if sections.iter().all(Option::is_none) {
-        return Err(none(profile, &format!("there's no profile {profile}")));
+        return Err(none("no_key", profile, &format!("there's no profile {profile}")));
     }
     let other = ["login_session", "sso_session", "sso_start_url", "role_arn", "credential_process"].into_iter().find(|k| get(k).is_some());
     Err(match other {
-        Some(way) => none(profile, &format!("profile {profile} signs in with {way}, which the broker doesn't use")),
-        None => none(profile, &format!("profile {profile} has no access key")),
+        Some(way) => none("sso_profile", profile, &format!("profile {profile} signs in with {way}, which the broker can't use yet: give it a profile with an access key")),
+        None => none("no_key", profile, &format!("profile {profile} has no access key")),
     })
 }
 

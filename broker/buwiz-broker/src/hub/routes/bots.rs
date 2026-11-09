@@ -446,6 +446,8 @@ pub(crate) async fn bot_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse
             eprintln!("buwiz-broker: a deleted Bot's computer: {}", e.code());
         }
     }
+    // and its choice of where a new one is made
+    crate::hub::computer::homes::forget_bot(&ctx, &bot_id);
     ok(&json!({"ok": true}))
 }
 
