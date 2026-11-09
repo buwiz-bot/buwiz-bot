@@ -1371,7 +1371,7 @@ impl Computers {
         } else {
             match record {
                 Ok(m) => {
-                    out["provider"] = json!(homes::label(m.provider));
+                    out["provider"] = json!(m.provider.label());
                     match self.provider_of(ctx, &m).power(&m).await {
                         Ok(Power::Broken(why)) => {
                             out["message"] = json!(why);

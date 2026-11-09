@@ -116,10 +116,7 @@ fn run_check(key: String, kind: String) {
     spawn_detached(async move {
         let h = homes::loaded().await;
         let kind = if kind.is_empty() { h.default.kind.clone() } else { kind };
-        let result = match homes::check(&kind).await {
-            Said::Yes(v) => Ok(v.get("message").and_then(Value::as_str).unwrap_or("It works.").to_owned()),
-            Said::No(why) => Err(why),
-        };
+        let result = homes::check(&kind).await;
         go(&key, Step::Checked(kind, result));
     });
 }

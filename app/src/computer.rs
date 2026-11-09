@@ -28,6 +28,7 @@ use nsh_core::prelude::*;
 use serde_json::{json, Value};
 
 use crate::client;
+use crate::homes;
 use crate::live::{keep, store};
 use crate::store::{spawn_detached, CtxItem};
 use crate::theme::{self, tc};
@@ -56,7 +57,7 @@ pub(crate) struct Status {
     /// the jobs on this computer, by any Bot at it
     pub jobs: Vec<Job>,
     /// where this Bot's next new computer would be made
-    pub home: Option<crate::homes::Next>,
+    pub home: Option<homes::Next>,
 }
 
 /// A command a Bot left running on this computer.
@@ -147,7 +148,7 @@ impl Status {
             takeover: v.get("takeover").and_then(Takeover::parse),
             remote: v.get("remote").and_then(Remote::parse),
             jobs: v.get("jobs").and_then(Value::as_array).into_iter().flatten().filter_map(Job::parse).collect(),
-            home: v.get("home").and_then(crate::homes::Next::parse),
+            home: v.get("home").and_then(homes::Next::parse),
         }
     }
 
@@ -452,9 +453,9 @@ pub(crate) fn delete_layer() -> impl IntoElement {
                         .p(px(18.0))
                         .gap_2()
                         .rounded(px(14.0))
-                        .bg(tc("#232323"))
-                        .child(text(format!("Delete {}?", ask.name)).text_size(px(15.0)).font_weight(FontWeight::MEDIUM).text_color(tc("#f5f5f5")))
-                        .child(text(ask.words).number_of_lines(6).text_size(px(13.0)).text_color(tc("#f5f5f5c8")))
+                        .bg(theme::POPOVER)
+                        .child(text(format!("Delete {}?", ask.name)).text_size(px(15.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                        .child(text(ask.words).number_of_lines(6).text_size(px(13.0)).text_color(theme::DIM))
                         .child(
                             view()
                                 .flex_row()
@@ -934,21 +935,11 @@ pub(crate) fn open_remote(bot: &str) {
 }
 
 fn note(words: String) -> impl IntoElement {
-    text(words).text_size(px(12.0)).line_height(px(16.0)).text_color(theme::MUTED).pt(px(10.0))
+    homes::line(words).pt(px(10.0))
 }
 
 fn small_button(id: &'static str, words: &'static str, press: impl Fn() + 'static) -> impl IntoElement {
-    view()
-        .test_id(id)
-        .label(words)
-        .h(px(28.0))
-        .px(px(12.0))
-        .rounded(px(14.0))
-        .items_center()
-        .justify_center()
-        .bg(tc("#f5f5f50f"))
-        .child(text(words).text_size(px(12.0)).text_color(theme::TEXT))
-        .on_press(press)
+    homes::small_button(words, words, press).test_id(id)
 }
 
 /// For a test: what a poll of `bot` would bring, and the screen's picture if there is one.

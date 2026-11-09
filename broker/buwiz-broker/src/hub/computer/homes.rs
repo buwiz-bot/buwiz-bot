@@ -94,18 +94,6 @@ fn fields(kind: ProviderKind) -> &'static [Field] {
     }
 }
 
-/// What a person calls a home.
-pub fn label(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Docker => "Docker on this Mac",
-        ProviderKind::Ec2 => "AWS EC2",
-        ProviderKind::E2b => "E2B",
-        ProviderKind::Boat => "boat.dev",
-        ProviderKind::Remote => "A remote computer",
-        other => other.label(),
-    }
-}
-
 fn notes(kind: ProviderKind) -> Vec<String> {
     match kind {
         ProviderKind::Docker => vec!["Runs on this Mac, walled off from it. Needs Docker Desktop running.".to_owned()],
@@ -518,12 +506,12 @@ pub fn forget_bot(ctx: &HubCtx, bot: &str) {
 
 pub fn home_json(ctx: &HubCtx, bot: &str) -> Value {
     let (kind, source) = home_of(ctx, bot);
-    json!({"kind": kind.as_str(), "label": label(kind), "source": source})
+    json!({"kind": kind.as_str(), "label": kind.label(), "source": source})
 }
 
 fn default_json(ctx: &HubCtx) -> Value {
     let (kind, source) = default_home(ctx);
-    json!({"kind": kind.as_str(), "label": label(kind), "source": source})
+    json!({"kind": kind.as_str(), "label": kind.label(), "source": source})
 }
 
 /// A computer made on a home that is still there.
@@ -568,8 +556,8 @@ type Settled = HashMap<String, Option<Problem>>;
 fn still_leaving(kind: ProviderKind, id: &str, settled: &Settled) -> Problem {
     match settled.get(id) {
         Some(Some(Problem::Refused { code, .. })) if *code != "keychain" => stuck(kind, id),
-        Some(Some(why)) => refusal("in_use", format!("Computer {id} on {} couldn't be deleted just now: {} Try again in a minute.", label(kind), why.sentence())),
-        _ => refusal("in_use", format!("Computer {id} on {} is being deleted right now. Try again in a minute.", label(kind))),
+        Some(Some(why)) => refusal("in_use", format!("Computer {id} on {} couldn't be deleted just now: {} Try again in a minute.", kind.label(), why.sentence())),
+        _ => refusal("in_use", format!("Computer {id} on {} is being deleted right now. Try again in a minute.", kind.label())),
     }
 }
 
@@ -579,7 +567,7 @@ fn stuck(kind: ProviderKind, id: &str) -> Problem {
         "stuck",
         format!(
             "Computer {id} on {} is being deleted, and the keys in use can't reach it any more, so it may still be there and costing. {}. Then press Forget {id} in Settings › Computers, and try again.",
-            label(kind),
+            kind.label(),
             look_for(kind, id)
         ),
     )
@@ -633,7 +621,7 @@ impl Computers {
         let (default, _) = default_home(ctx);
         let built = built(kind);
         let mut o = json!({
-            "kind": kind.as_str(), "label": label(kind), "built": built, "configured": built && configured_with(kind, &read),
+            "kind": kind.as_str(), "label": kind.label(), "built": built, "configured": built && configured_with(kind, &read),
             "canDefault": can_default(kind), "isDefault": default == kind, "fields": shown, "notes": notes(kind), "computers": computers,
             "source": if saved.is_some() { "saved" } else if fields(kind).is_empty() { "none" } else { "env" },
         });
@@ -657,7 +645,7 @@ impl Computers {
     /// blank secret keeps the one there), and `clear` the ones to empty.
     pub async fn save_provider(&self, ctx: &HubCtx, kind: ProviderKind, values: &Map<String, Value>, clear: &[String]) -> Result<Value, Problem> {
         if fields(kind).is_empty() {
-            return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", label(kind))));
+            return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", kind.label())));
         }
         // before the lock: a platform that hangs mustn't hold up the Bots' clicks
         let settled = self.settle_leaving(ctx, kind).await?;
@@ -668,7 +656,7 @@ impl Computers {
             let typed = values.get(f.key).and_then(Value::as_str).map(str::trim);
             if let Some(v) = typed {
                 if v.len() > MAX_VALUE || v.chars().any(char::is_control) {
-                    return Err(refusal("invalid", format!("{} isn't something {} takes.", f.label, label(kind))));
+                    return Err(refusal("invalid", format!("{} isn't something {} takes.", f.label, kind.label())));
                 }
             }
             match (f.secret, typed) {
@@ -691,7 +679,7 @@ impl Computers {
         for f in fields(kind).iter().filter(|f| f.required) {
             let has = if f.secret { next.secret(f.key).is_some() } else { next.get(f.key).is_some() };
             if !has {
-                return Err(refusal("missing", format!("{} needs its {} first.", label(kind), f.label.to_lowercase())));
+                return Err(refusal("missing", format!("{} needs its {} first.", kind.label(), f.label.to_lowercase())));
             }
         }
         if kind == ProviderKind::Ec2 && next.secret("access_key_id").is_some() != next.secret("secret_access_key").is_some() {
@@ -725,7 +713,7 @@ impl Computers {
                     return Err(still_leaving(kind, &id, settled));
                 }
                 // a record that can't be read now may be back: nothing can say these keys see it
-                return Err(refusal("in_use", format!("A computer on {} is being made or removed right now. Try again in a minute.", label(kind))));
+                return Err(refusal("in_use", format!("A computer on {} is being made or removed right now. Try again in a minute.", kind.label())));
             };
             let seen = candidate.power(&machine).await;
             if unseen(&seen) {
@@ -738,7 +726,7 @@ impl Computers {
                 }
                 return Err(refusal(
                     "other_account",
-                    format!("These keys can't see a computer already made on {} (they may be another account's). Nothing was changed: delete those Bots' computers first, or use keys of the same account.", label(kind)),
+                    format!("These keys can't see a computer already made on {} (they may be another account's). Nothing was changed: delete those Bots' computers first, or use keys of the same account.", kind.label()),
                 ));
             }
             seen?;
@@ -767,22 +755,22 @@ impl Computers {
     /// a computer in use is deleted with its Bot first.
     pub async fn forget_leaving(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<Value, Problem> {
         if fields(kind).is_empty() {
-            return Err(refusal("nothing_to_set", format!("{} has nothing to forget here.", label(kind))));
+            return Err(refusal("nothing_to_set", format!("{} has nothing to forget here.", kind.label())));
         }
         let leaving = |ctx: &HubCtx| computers_on(ctx, kind).map(|on| on.into_iter().any(|o| o.leaving && o.id == id));
         if !leaving(ctx)? {
-            return Err(refusal("not_leaving", format!("{id} isn't a computer on {} that's being deleted. Delete its Bot first.", label(kind))));
+            return Err(refusal("not_leaving", format!("{id} isn't a computer on {} that's being deleted. Delete its Bot first.", kind.label())));
         }
         // being woken, it may be coming up right now: forgotten, nothing would ever stop it
         if self.now().waking.contains(id) {
-            return Err(refusal("in_use", format!("Computer {id} on {} is being woken right now. Try again in a minute.", label(kind))));
+            return Err(refusal("in_use", format!("Computer {id} on {} is being woken right now. Try again in a minute.", kind.label())));
         }
         // the keys in use once more, with no lock held. Only their own refusal lets a person's word
         // stand for the platform's: anything else, and they may still reach it
         match self.finish_retire(ctx, id).await {
             Ok(()) => return Ok(self.provider_json(ctx, kind)),
             Err(Problem::Refused { code, .. }) if code != "keychain" => {}
-            Err(why) => return Err(refusal("in_use", format!("{} couldn't be asked about {id} just now: {} Nothing was forgotten. Try again in a minute.", label(kind), why.sentence()))),
+            Err(why) => return Err(refusal("in_use", format!("{} couldn't be asked about {id} just now: {} Nothing was forgotten. Try again in a minute.", kind.label(), why.sentence()))),
         }
         let _saving = self.homes.lock(kind).write().await;
         if leaving(ctx)? && !self.now().waking.contains(id) {
@@ -801,7 +789,7 @@ impl Computers {
             }
             ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat => {
                 self.homes.provider(ctx, kind).verify().await?;
-                Ok(format!("{} works with these keys: it can make computers.", label(kind)))
+                Ok(format!("{} works with these keys: it can make computers.", kind.label()))
             }
             other => Err(Problem::NotBuilt(other)),
         }
@@ -810,7 +798,7 @@ impl Computers {
     /// Forgets `kind`'s keys and settings, unless a computer made with them is still there.
     pub async fn remove_provider(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<Value, Problem> {
         if fields(kind).is_empty() {
-            return Err(refusal("nothing_to_set", format!("{} has no keys to remove.", label(kind))));
+            return Err(refusal("nothing_to_set", format!("{} has no keys to remove.", kind.label())));
         }
         // before the lock: a platform that hangs mustn't hold up the Bots' clicks
         let settled = self.settle_leaving(ctx, kind).await?;
@@ -823,7 +811,7 @@ impl Computers {
             let whose = if names.is_empty() { format!("{} of them", in_use.len()) } else { names.join(", ") };
             return Err(refusal(
                 "in_use",
-                format!("{} still has computers made with these keys ({whose}). Without the keys nothing could sleep or delete them, and they'd go on costing. Delete those Bots' computers first (delete the Bot, from its menu), then remove the keys.", label(kind)),
+                format!("{} still has computers made with these keys ({whose}). Without the keys nothing could sleep or delete them, and they'd go on costing. Delete those Bots' computers first (delete the Bot, from its menu), then remove the keys.", kind.label()),
             ));
         }
         // on its way out, and still there after the keys in use tried: why, and Forget once stuck
@@ -863,10 +851,10 @@ impl Computers {
             return Err(refusal("cant_default", "A remote computer can't be where new computers go: connect one from a Bot's Computer tab.".to_owned()));
         }
         if !offered(kind) || !built(kind) {
-            return Err(refusal("not_offered", format!("{} isn't offered yet.", label(kind))));
+            return Err(refusal("not_offered", format!("{} isn't offered yet.", kind.label())));
         }
         if !self.homes.configured(ctx, kind) {
-            return Err(refusal("not_configured", format!("Add {}'s keys first, then pick it.", label(kind))));
+            return Err(refusal("not_configured", format!("Add {}'s keys first, then pick it.", kind.label())));
         }
         Ok(())
     }
@@ -886,7 +874,7 @@ struct Unread(ProviderKind);
 
 impl Unread {
     fn no<T>(&self) -> buwiz_computer::Result<T> {
-        Err(Problem::Refused { code: "keychain", message: format!("This Mac's Keychain didn't answer, so {}'s keys couldn't be read. Unlock the Mac's Keychain, then try again.", label(self.0)) })
+        Err(Problem::Refused { code: "keychain", message: format!("This Mac's Keychain didn't answer, so {}'s keys couldn't be read. Unlock the Mac's Keychain, then try again.", self.0.label()) })
     }
 }
 
