@@ -28,6 +28,10 @@ struct Platform {
     good_revoked: std::sync::atomic::AtomicBool,
     /// what each sweep was asked to delete
     swept: Mutex<Vec<String>>,
+    /// the platform doesn't answer deletes for now: a try again, not a refusal of the key
+    deletes_down: std::sync::atomic::AtomicBool,
+    /// a delete waits until this is cleared
+    deletes_hang: std::sync::atomic::AtomicBool,
 }
 
 struct FakeCloud {
@@ -39,6 +43,17 @@ struct FakeCloud {
 impl FakeCloud {
     fn key(&self) -> Option<String> {
         self.settings.get().key.map(|k| k.expose().to_owned())
+    }
+
+    /// What a delete meets before the key is asked.
+    async fn deleting(&self) -> buwiz_computer::Result<()> {
+        while self.platform.deletes_hang.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if self.platform.deletes_down.load(Ordering::SeqCst) {
+            return Err(Problem::Remote("E2B didn't answer.".into()));
+        }
+        self.revoked()
     }
 
     fn revoked(&self) -> buwiz_computer::Result<()> {
@@ -99,11 +114,11 @@ impl Provider for FakeCloud {
     }
 
     async fn destroy(&self, _machine: &Machine) -> buwiz_computer::Result<()> {
-        self.revoked()
+        self.deleting().await
     }
 
     async fn sweep(&self, id: &str, _last: Option<&Reach>) -> buwiz_computer::Result<()> {
-        self.revoked()?;
+        self.deleting().await?;
         self.platform.swept.lock().unwrap().push(id.to_owned());
         Ok(())
     }
@@ -519,4 +534,61 @@ async fn a_later_turn_doesnt_post_a_second_setup_card() {
     assert!(words(&call(&first, tools::SETUP, json!({"reason": "a browser"})).await).contains("card is in the chat"));
     let later = run(&b, &b.ann.1, None);
     assert!(words(&call(&later, tools::SETUP, json!({"reason": "again"})).await).contains("already in the chat"));
+}
+
+#[tokio::test]
+async fn a_delete_the_platform_didnt_answer_is_a_try_again_and_never_forgotten() {
+    let (b, platform) = homes_bed("leftover-down");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    // the keys in use may still reach it: nothing says to look, or to forget
+    platform.deletes_down.store(true, Ordering::SeqCst);
+    for p in [save_e2b(&b, OTHER).await.unwrap_err(), b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap_err()] {
+        assert_eq!(p.code(), "in_use", "{}", p.sentence());
+        assert!(p.sentence().contains("Try again") && !p.sentence().contains("Forget"), "{}", p.sentence());
+    }
+    assert_eq!(b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, "cmp_0abc").await.unwrap_err().code(), "in_use");
+    assert_eq!(rows(&b), 1, "nothing was forgotten");
+    // back up: the keys in use delete it
+    platform.deletes_down.store(false, Ordering::SeqCst);
+    b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap();
+    assert_eq!(rows(&b), 0);
+}
+
+#[tokio::test]
+async fn a_computer_being_woken_is_never_forgotten() {
+    let (b, platform) = homes_bed("leftover-waking");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    platform.good_revoked.store(true, Ordering::SeqCst);
+    b.computers.now().waking.insert("cmp_0abc".to_owned());
+    assert_eq!(b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, "cmp_0abc").await.unwrap_err().code(), "in_use");
+    assert_eq!(b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap_err().code(), "in_use");
+    assert_eq!(rows(&b), 1);
+    assert!(platform.swept.lock().unwrap().is_empty(), "nothing was deleted under a wake");
+}
+
+#[tokio::test]
+async fn a_platform_that_hangs_on_a_delete_holds_no_home_lock() {
+    let (b, platform) = homes_bed("leftover-hangs");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    platform.deletes_hang.store(true, Ordering::SeqCst);
+    let computers = b.computers.clone();
+    let ctx = b.ctx.clone();
+    let removing = tokio::spawn(async move { computers.remove_provider(&ctx, ProviderKind::E2b).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(b.computers.homes.lock(ProviderKind::E2b).try_read().is_ok(), "a make on E2B would wait on a hung delete, and every click with it");
+    platform.deletes_hang.store(false, Ordering::SeqCst);
+    removing.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_home_with_no_keys_offers_no_forget() {
+    let (b, _) = homes_bed("docker-leftover");
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES('cmp_0abc', 'docker', 1, 1)", [])).unwrap();
+    let shown = b.computers.providers_json(&b.ctx);
+    let listed = &provider_of(&shown, "docker")["computers"][0];
+    assert_eq!(listed["id"], "cmp_0abc");
+    assert!(listed.get("leaving").is_none() && listed.get("look").is_none(), "{listed}");
 }

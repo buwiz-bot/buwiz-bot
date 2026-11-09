@@ -592,7 +592,7 @@ impl Computers {
                 // just made: nothing is on it. The provider isn't waited on under the lock
                 self.mark_retired(ctx, &id);
                 drop(seating);
-                self.finish_retire(ctx, &id).await;
+                let _ = self.finish_retire(ctx, &id).await;
                 return Err(e);
             }
             return Ok(id);
@@ -627,7 +627,7 @@ impl Computers {
         if let Err(e) = ctx.db.with(|c| c.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [&id, &seat.computer])) {
             self.mark_retired(ctx, &id);
             drop(seating);
-            self.finish_retire(ctx, &id).await;
+            let _ = self.finish_retire(ctx, &id).await;
             return Err(db_problem(e));
         }
         self.mark_retired(ctx, &seat.computer);
@@ -800,7 +800,7 @@ impl Computers {
         for id in Self::ids_where(ctx, "gone_at IS NOT NULL") {
             // a wake in flight could put back what this removes: the next look gets it
             if !self.now().waking.contains(&id) {
-                self.finish_retire(ctx, &id).await;
+                let _ = self.finish_retire(ctx, &id).await;
             }
         }
         self.poll_jobs(ctx).await;
@@ -938,9 +938,11 @@ impl Computers {
         let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
     }
 
-    async fn finish_retire(&self, ctx: &HubCtx, id: &str) {
+    /// Deletes computer `id`, on its way out, and then all that's kept of it here. `Err` says why
+    /// it's still there: the next look tries again.
+    async fn finish_retire(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
         // read while the row is there. Not knowing is a try next time: the row is what finds the key
-        let Ok(remote) = Self::is_remote(ctx, id) else { return };
+        let remote = Self::is_remote(ctx, id)?;
         self.retire_jobs(ctx, id, remote).await;
         let removed = match self.machine(ctx, id) {
             Ok(m) => self.provider_of(ctx, &m).destroy(&m).await,
@@ -958,13 +960,16 @@ impl Computers {
                 (Err(e), _) | (_, Err(e)) => Err(e),
             },
         };
-        if matches!(removed, Ok(()) | Err(Problem::NotBuilt(_) | Problem::Gone)) {
-            // the key first: with its row gone nothing would ever find it again
-            if remote && !keys(ctx).is_ok_and(|k| k.remove_computer_key(id).is_ok()) {
-                return;
-            }
-            self.drop_record(ctx, id);
+        match removed {
+            Ok(()) | Err(Problem::NotBuilt(_) | Problem::Gone) => {}
+            Err(e) => return Err(e),
         }
+        // the key first: with its row gone nothing would ever find it again
+        if remote && !keys(ctx).is_ok_and(|k| k.remove_computer_key(id).is_ok()) {
+            return Err(Problem::Failed("its key couldn't be removed from this Mac's Keychain".to_owned()));
+        }
+        self.drop_record(ctx, id);
+        Ok(())
     }
 
     /// Everything this broker keeps of computer `id`: its row, jobs, record and folder.
@@ -1085,7 +1090,7 @@ impl Computers {
             self.close_viewer(bot);
         }
         if !self.now().waking.contains(&id) {
-            self.finish_retire(ctx, &id).await;
+            let _ = self.finish_retire(ctx, &id).await;
         }
         Ok(())
     }

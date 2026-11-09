@@ -110,6 +110,9 @@ const RETRY: Duration = Duration::from_secs(2);
 const MAX_PAGES: usize = 10;
 const DROPPED: &str = "The connection to this computer dropped. Click it to connect again.";
 
+/// The metadata key each sandbox carries, with its computer's id: what a sweep looks for.
+pub const METADATA_KEY: &str = "buwiz-computer";
+
 /// E2B's sandboxes, one per computer, and their connections. The hub keeps one, because it holds
 /// the connections.
 pub struct E2bProvider {
@@ -253,7 +256,7 @@ impl E2bProvider {
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let mut path = format!(
-                "/v2/sandboxes?state=running,paused&limit=100&metadata=buwiz-computer%3D{computer}"
+                "/v2/sandboxes?state=running,paused&limit=100&metadata={METADATA_KEY}%3D{computer}"
             );
             if let Some(next) = &cursor {
                 path.push_str(&format!("&nextToken={next}"));
@@ -520,7 +523,7 @@ impl Provider for E2bProvider {
             "autoPause": true,
             "autoPauseMemory": true,
             "network": {"allowPublicTraffic": true},
-            "metadata": {"buwiz-computer": spec.id},
+            "metadata": {METADATA_KEY: spec.id},
         });
         let reply = self
             .api(Method::POST, "/v2/sandboxes", Some(body), CALL_PATIENCE)

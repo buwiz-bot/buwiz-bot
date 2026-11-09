@@ -122,7 +122,7 @@ async fn a_failed_read_of_the_row_keeps_the_local_provider_off_it() {
     let id = lost_remote(&b, "b_ann");
     b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME COLUMN provider TO provider_gone", [])).unwrap();
     assert!(b.computers.click(&b.ctx, "b_ann").await.is_err());
-    b.computers.finish_retire(&b.ctx, &id).await;
+    let _ = b.computers.finish_retire(&b.ctx, &id).await;
     assert_eq!(b.mock.calls(), Vec::<String>::new());
 }
 

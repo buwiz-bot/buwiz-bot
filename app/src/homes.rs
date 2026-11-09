@@ -82,7 +82,7 @@ pub(crate) struct Home {
     pub notes: Vec<String>,
     /// the computers on it: (id, the Bots at it)
     pub computers: Vec<(String, Vec<String>)>,
-    /// the ones of them being deleted: (id, where a person looks for what's left of it)
+    /// the ones on it being deleted, apart: (id, where a person looks for what's left of it)
     pub leaving: Vec<(String, String)>,
     /// a limited policy to copy, as JSON text; "" for none
     pub policy: String,
@@ -99,18 +99,16 @@ impl Home {
         if kind.is_empty() {
             return None;
         }
-        let computers = list("computers")
-            .iter()
-            .filter_map(|c| {
+        let (mut computers, mut leaving) = (Vec::new(), Vec::new());
+        for c in list("computers") {
+            let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
+            if c.get("leaving").and_then(Value::as_bool) == Some(true) {
+                leaving.push((id, c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned()));
+            } else {
                 let bots = c.get("bots").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
-                Some((c.get("id")?.as_str()?.to_owned(), bots))
-            })
-            .collect();
-        let leaving = list("computers")
-            .iter()
-            .filter(|c| c.get("leaving").and_then(Value::as_bool) == Some(true))
-            .filter_map(|c| Some((c.get("id")?.as_str()?.to_owned(), c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned())))
-            .collect();
+                computers.push((id, bots));
+            }
+        }
         Some(Self {
             label: Some(text("label")).filter(|l| !l.is_empty()).unwrap_or_else(|| label_of(&kind)),
             built: v.get("built").and_then(Value::as_bool).unwrap_or(true),
@@ -1191,7 +1189,7 @@ mod tests {
         v["computers"] = json!([{"id": "cmp_ab12", "bots": ["Ann"]}, {"id": "cmp_cd34", "bots": [], "leaving": true, "look": "Terminate any instance tagged buwiz:computer-id=cmp_cd34"}]);
         let h = Home::parse(&v).unwrap();
         assert_eq!(h.leaving, vec![("cmp_cd34".to_owned(), "Terminate any instance tagged buwiz:computer-id=cmp_cd34".to_owned())]);
-        assert_eq!(h.computers.len(), 2);
+        assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as being deleted");
     }
 
     #[test]
