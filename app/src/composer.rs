@@ -144,10 +144,9 @@ pub(crate) fn composer() -> impl IntoElement {
                             .bot
                             .or_else(|| bot.as_ref().map(|b| b.id.clone()))
                             .unwrap_or_else(|| "status".to_owned());
-                        // A plain chat has no bot: Grok's own mark, white on
-                        // dark and black on light.
+                        // A plain chat has no bot: the app's own mark, Wiz's hat.
                         let (shape, color) = bot.map(|b| (b.shape, b.color)).unwrap_or_else(|| {
-                            ("blob".into(), "#FFFFFF".into())
+                            (crate::store::wiz_hat().shape, "#FFFFFF".into())
                         });
                         Some((seed, shape, color))
                     });

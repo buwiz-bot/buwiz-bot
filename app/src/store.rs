@@ -3378,7 +3378,7 @@ impl Store {
             v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
-            bot_shape: signal("blob".to_owned()),
+            bot_shape: signal(wiz_hat().shape),
             bot_color: signal("#FFFFFF".to_owned()),
             bot_hover: signal(String::new()),
             pane_btn_hover: signal(String::new()),
@@ -6160,16 +6160,16 @@ impl Store {
         self.avatar_reset_ask.set(false);
     }
 
-    /// Reset (after its confirm row): the default ball in the primary ink,
-    /// no photo.
+    /// Reset (after its confirm row): the default avatar, Wiz's hat
+    /// ([`wiz_hat`]), no photo.
     pub fn reset_avatar(&'static self) {
         self.avatar_reset_ask.set(false);
         self.design_was.set(None);
         let Some(b) = self.active_bot_untracked() else { return };
-        self.update_bot(
-            &b.id,
-            serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
-        );
+        let mut patch = body_fields(&wiz_hat().shape);
+        patch["image"] = "".into();
+        patch["crop"] = serde_json::Value::Null;
+        self.update_bot(&b.id, patch);
     }
 
     /// Where a picture comes from: "pick" opens the app's own open panel

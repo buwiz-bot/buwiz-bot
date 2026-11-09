@@ -191,7 +191,7 @@ fn bot_profile() -> impl IntoElement {
                                     Some(b) => BotAvatarProps::bot(&b, 80.0),
                                     // A plain chat: the app's default mark.
                                     None => BotAvatarProps {
-                                        shape: "blob".to_owned(),
+                                        shape: crate::store::wiz_hat().shape,
                                         color: "#FFFFFF".to_owned(),
                                         size: 80.0,
                                         seed: Some("app".to_owned()),

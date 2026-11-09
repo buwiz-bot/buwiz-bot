@@ -366,6 +366,23 @@ fn the_bot_tab_offers_the_wiz_hat() {
     assert!(!app.has("Revert avatar"), "Revert would undo the hat");
 }
 
+/// Reset puts the default avatar, Wiz's hat, back on the bot.
+#[test]
+fn reset_puts_the_wiz_hat_on() {
+    if !in_child("reset_puts_the_wiz_hat_on") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("Bot tab");
+    app.wait_for("Reset avatar");
+    assert_eq!(read(&app).get("hat").map(String::as_str), Some("false"), "the bot starts as a blob");
+    app.press("Reset avatar");
+    app.wait_for("Reset");
+    app.press("Reset");
+    until(&mut app, "the hat on the Bot", |p| p.get("hat").is_some_and(|h| h == "true"));
+}
+
 /// An entry this build can't draw isn't shown, and comes through a save whole.
 #[test]
 fn a_design_it_cant_draw_survives_a_save() {

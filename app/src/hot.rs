@@ -629,10 +629,9 @@ fn top_bar() -> impl IntoElement {
                         .child(dynamic(move || {
                             let props = match store().active_bot() {
                                 Some(b) => crate::avatar::BotAvatarProps::bot(&b, 24.0),
-                                // A plain chat: the app's own mark — the round
-                                // blob, white on dark, black on light.
+                                // A plain chat: the app's own mark, Wiz's hat.
                                 None => crate::avatar::BotAvatarProps {
-                                    shape: "blob".to_owned(),
+                                    shape: crate::store::wiz_hat().shape,
                                     color: "#FFFFFF".to_owned(),
                                     size: 24.0,
                                     seed: Some("app".to_owned()),
