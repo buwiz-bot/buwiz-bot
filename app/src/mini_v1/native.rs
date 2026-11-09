@@ -203,6 +203,11 @@ impl HostUi for MacUi {
         super::to_store(move |_| crate::toast::show(said));
     }
 
+    /// A card in the chat hands nothing off: the bridge refuses it out loud.
+    fn hands_off(&self) -> bool {
+        !self.inline
+    }
+
     /// On `open_document`'s terms. A marked copy of the Bot's own is made on
     /// a thread of its own, then opened on the main thread, as `open_url`
     /// opens.

@@ -133,6 +133,11 @@ pub trait HostUi: Send + Sync {
     fn open_document(&self, doc: Document, live: Live) {
         let _ = (doc, live);
     }
+    /// Whether this open may hand a file to the system or to Downloads at
+    /// all: a card in the chat may not, and its press is never spent on one.
+    fn hands_off(&self) -> bool {
+        true
+    }
     /// Opens `file`, already checked, in the system's default app for its
     /// kind, if `live()` holds and the open is still what the person sees.
     /// Hosts that can't ignore it.
@@ -903,8 +908,8 @@ impl OpenContext {
                 fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
             me.open_document(document, &who);
-            let spent = me.hand_file(open_with, &who, Hand::OpenWith, false);
-            me.hand_file(save, &who, Hand::Save, spent);
+            let heard = me.hand_file(open_with, &who, Hand::OpenWith, false);
+            me.hand_file(save, &who, Hand::Save, heard);
             Ok(answer)
         });
     }
@@ -931,11 +936,13 @@ impl OpenContext {
 
     /// A hand-off `who` made refused for `why`: the person hears of it if a
     /// press of theirs made the call and the screen is still there. An app's
-    /// own code, with no press, gets the log line alone.
-    fn say_refused(&self, who: &CallActor, why: Refused, said: &'static str) {
-        if who.press.is_some() && who.actor == Actor::Person && why != Refused::Closed {
+    /// own code, with no press, gets the log line alone. Whether it told.
+    fn say_refused(&self, who: &CallActor, why: Refused, said: &'static str) -> bool {
+        let told = who.press.is_some() && who.actor == Actor::Person && why != Refused::Closed;
+        if told {
             self.ui.file_refused(said);
         }
+        told
     }
 
     /// A result's `_meta["buwiz/open_with"]` or `_meta["buwiz/save"]`, from a
@@ -943,10 +950,12 @@ impl OpenContext {
     /// takes `buwiz/document`, and with the person's own press just before
     /// the call, which this spends: "no agent has acted" alone is what an
     /// app's code at load or on a timer gets too. Nothing of the path goes to
-    /// the log. Whether it spent the press: a second hand-off from the same
-    /// result (`after_spent`) then finds none, which is the log's alone, not
-    /// a "couldn't save" beside a file that opened.
-    fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand, after_spent: bool) -> bool {
+    /// the log. A card refuses out loud, before any press is spent. Whether
+    /// the person heard of it, by the file handed off or a refusal: a second
+    /// hand-off from the same result (`after`) is then the log's alone, not a
+    /// second message beside the first ("couldn't save" by a file that
+    /// opened).
+    fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand, after: bool) -> bool {
         let Some(field) = field else { return false };
         let p = &self.prepared;
         let live = self.session.check_live().map_err(|_| Refused::Closed);
@@ -959,7 +968,8 @@ impl OpenContext {
             Some(press) if self.ui.spend_press(press) => Ok(file),
             _ => Err(Refused::NoPress),
         };
-        match live.and_then(|()| check(p.plugin.first_party, who.actor, folder.as_deref(), &field)).and_then(pressed) {
+        let card = |file| if self.ui.hands_off() { Ok(file) } else { Err(Refused::Card) };
+        match live.and_then(|()| check(p.plugin.first_party, who.actor, folder.as_deref(), &field)).and_then(card).and_then(pressed) {
             Ok(file) => {
                 let session = self.session.clone();
                 let live: Live = Arc::new(move || session.check_live().is_ok());
@@ -971,10 +981,10 @@ impl OpenContext {
             }
             Err(why) => {
                 log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app);
-                if !(after_spent && why == Refused::NoPress) {
-                    self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+                if after {
+                    return false;
                 }
-                false
+                self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED })
             }
         }
     }

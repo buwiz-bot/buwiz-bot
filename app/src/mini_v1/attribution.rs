@@ -43,11 +43,16 @@
 //! person's, so an app's code at load or on a timer would pass the actor
 //! alone; it can't make a press. One press, one hand-off.
 //!
+//! A press made while the agent is still acting is no press: the agent's
+//! own click can't leave one for the surface to spend once it goes quiet.
+//!
 //! The Bot's own viewer (`buwiz/document`, `document`) is the one exception:
 //! it needs the person's surface, not a press. It shows the file inside the
-//! Bot, from a copy of its own kept under the copies' cap, and opens no other
-//! app, so a screen's code showing a file at load shows it to the person and
-//! nothing more.
+//! Bot and opens no other app, so a screen's code showing a file at load
+//! shows it to the person and nothing more. A picture or a PDF it shows from
+//! a copy of its own, kept under the copies' cap; a Word or Sheet file it
+//! opens from the plugin's path, checked again just before, for the
+//! viewer's edits go back there, to the plugin's pending edit.
 //!
 //! A call takes its actor when the app makes it, not when it is signed: a
 //! queued call of the agent's stays the agent's. The broker turns the
@@ -156,8 +161,13 @@ impl Attribution {
     }
 
     /// The person activated something in `surface`: [`Self::person_pressed`],
-    /// and a press a hand-off may spend.
+    /// and a press a hand-off may spend, if what the agent started is over
+    /// ([`Self::quiet`]): one made before is none, even once a later key-up
+    /// takes the surface back.
     pub fn person_activated(&mut self, surface: u64, now: Instant) {
+        if !self.quiet(now) {
+            return;
+        }
         self.person_pressed(surface, now);
         self.next_press += 1;
         self.presses.insert(surface, (self.next_press, now));
@@ -704,6 +714,17 @@ mod tests {
         keys_left();
         assert_eq!(down(), Gesture::Activation, "the next Return counts");
         keys_left();
+    }
+
+    #[test]
+    fn a_press_while_the_agent_acts_is_none_once_a_key_up_takes_the_surface_back() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.agent_acted(t);
+        a.person_input(FORM, Gesture::Activation, secs(t, 1));
+        a.person_input(FORM, Gesture::Nothing, secs(t, 2));
+        assert_eq!(a.actor(FORM), Actor::Person, "the key-up took it back");
+        assert_eq!(a.fresh_press(FORM, secs(t, 3)), None, "the call at 3 hands nothing off");
     }
 
     #[test]

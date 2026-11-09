@@ -310,6 +310,24 @@ fn a_result_asking_to_open_and_save_opens_and_says_nothing_of_the_save() {
 }
 
 #[test]
+fn a_cards_open_and_save_says_the_first_refusal_and_only_that() {
+    let bed = Bed::new();
+    let path = bed.folder.join("open-1f/1/IMG_4250.png");
+    let script = format!("return await buwiz.call(\"fx_document\", {});", json!({"open_with": {"path": path}, "save": {"path": path}}));
+    let folder = bed.folder.clone();
+    let mut o = Open::start_with(FIXTURE, json!({"tools": TOOLS}), &script, Limits::default(), move |ui| {
+        ui.first_party.store(true, Ordering::SeqCst);
+        ui.inline_card.store(true, Ordering::SeqCst);
+        *ui.folder.lock().unwrap() = Some(folder);
+        *ui.hand_press.lock().unwrap() = Some(3);
+    });
+    o.wait("{");
+    assert!(opened_with(&o).is_empty() && saved(&o).is_empty(), "a card hands nothing off");
+    assert_eq!(told(&o), [OPEN_REFUSED], "the person hears of the first, once");
+    assert!(o.ui.spent.lock().unwrap().is_empty(), "and no press was spent on it");
+}
+
+#[test]
 fn the_bots_own_viewer_shows_with_no_press_where_an_open_with_needs_one() {
     let bed = Bed::new();
     let field = bed.field("open-1f/1/Invoice.pdf");

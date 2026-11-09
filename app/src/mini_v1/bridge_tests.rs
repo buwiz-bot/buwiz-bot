@@ -247,6 +247,8 @@ struct TestUi {
     spent: Mutex<Vec<u64>>,
     /// What the person was told of hand-offs that did nothing.
     refusals: Mutex<Vec<&'static str>>,
+    /// The open is a card in the chat, which hands nothing off.
+    inline_card: AtomicBool,
 }
 
 impl HostUi for TestUi {
@@ -259,6 +261,9 @@ impl HostUi for TestUi {
     }
     fn file_refused(&self, said: &'static str) {
         self.refusals.lock().unwrap().push(said);
+    }
+    fn hands_off(&self) -> bool {
+        !self.inline_card.load(Ordering::SeqCst)
     }
     fn fresh_press(&self) -> Option<u64> {
         *self.hand_press.lock().unwrap()

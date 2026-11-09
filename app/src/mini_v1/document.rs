@@ -82,6 +82,8 @@ pub enum Refused {
     /// No press of the person's in the open just before the call, or a
     /// hand-off spent it (`attribution`'s `fresh_press`).
     NoPress,
+    /// A card in the chat, which hands no file to the system or Downloads.
+    Card,
 }
 
 /// A file that passed [`check`]: its real path, the name it has there, the
@@ -220,29 +222,45 @@ fn checked_in(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Va
     Ok((path, name, file))
 }
 
+/// Unicode's Default_Ignorable_Code_Point set (DerivedCoreProperties.txt,
+/// Unicode 16): what a renderer draws as nothing, the soft hyphen, the
+/// joiners and marks, the variation selectors, the Hangul fillers and the
+/// tag characters among them. Inclusive ranges.
+const IGNORABLE: [(char, char); 20] = [
+    ('\u{00AD}', '\u{00AD}'),
+    ('\u{034F}', '\u{034F}'),
+    ('\u{061C}', '\u{061C}'),
+    ('\u{115F}', '\u{1160}'),
+    ('\u{17B4}', '\u{17B5}'),
+    ('\u{180B}', '\u{180F}'),
+    ('\u{200B}', '\u{200F}'),
+    ('\u{202A}', '\u{202E}'),
+    ('\u{2060}', '\u{206F}'),
+    ('\u{3164}', '\u{3164}'),
+    ('\u{FE00}', '\u{FE0F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFA0}', '\u{FFA0}'),
+    ('\u{FFF0}', '\u{FFF8}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    ('\u{E0000}', '\u{E0FFF}'),
+    // not ignorable, but they hide text all the same: the interlinear
+    // annotation marks
+    ('\u{FFF9}', '\u{FFFB}'),
+    // and the bidirectional isolates, inside 2060-206F above, named apart
+    ('\u{2066}', '\u{2069}'),
+    ('\u{180E}', '\u{180E}'),
+];
+
 /// The characters that make a name show as another: the bidirectional
 /// embeddings, overrides and isolates (`x\u{202E}fdp.command` shows as
-/// `xdnammoc.pdf`), the marks and joiners that show as nothing (the Arabic
-/// letter mark among them; the word joiner and the invisible operators,
-/// the Mongolian vowel separator, the soft hyphen, the interlinear
-/// annotation marks, and the tag characters, which hide text in a name),
-/// the byte order mark, and control characters. A file named with one is
+/// `xdnammoc.pdf`), everything [`IGNORABLE`] has (the marks, joiners,
+/// variation selectors and tags that show as nothing), the interlinear
+/// annotation marks, and control characters. A file named with one is
 /// refused, with the person told, never shown, opened or saved under
 /// another look.
 pub(super) fn deceives(c: char) -> bool {
-    matches!(
-        c,
-        '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{061C}'
-            | '\u{180E}'
-            | '\u{00AD}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{FEFF}'
-            | '\u{E0000}'..='\u{E007F}'
-    ) || c.is_control()
+    IGNORABLE.iter().any(|&(lo, hi)| (lo..=hi).contains(&c)) || c.is_control()
 }
 
 /// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
@@ -614,15 +632,22 @@ mod tests {
     #[test]
     fn a_name_with_an_invisible_joiner_hyphen_or_tag_is_refused_too() {
         let bed = Bed::new();
-        let hidden = ['\u{2060}', '\u{2062}', '\u{2064}', '\u{180E}', '\u{00AD}', '\u{FFF9}', '\u{FFFB}', '\u{E0001}', '\u{E0041}', '\u{E007F}'];
+        let hidden = [
+            '\u{2060}', '\u{2062}', '\u{2064}', '\u{180E}', '\u{00AD}', '\u{FFF9}', '\u{FFFB}', '\u{E0001}', '\u{E0041}', '\u{E007F}',
+            // the rest of Default_Ignorable_Code_Point
+            '\u{034F}', '\u{115F}', '\u{17B4}', '\u{180B}', '\u{180D}', '\u{180F}', '\u{206A}', '\u{3164}', '\u{FE00}', '\u{FE0F}', '\u{FFA0}',
+            '\u{1BCA0}', '\u{1D173}', '\u{E0100}', '\u{E01EF}',
+        ];
         for c in hidden {
             let name = format!("in{c}voice.pdf");
             assert_eq!(bed.ask(&bed.file(&name)), Err(Refused::Name), "{name:?}");
         }
-        // unassigned, so no disk takes it in a name, but in the block all the same
-        assert!(deceives('\u{E0000}'));
-        for c in ['\u{205F}', '\u{2065}', '\u{FFFC}', '\u{E0080}'] {
-            assert!(!deceives(c), "{c:?} is outside the list");
+        // unassigned, so no disk takes them in a name, but in the set all the same
+        for c in ['\u{E0000}', '\u{2065}', '\u{FFF0}', '\u{E0FFF}'] {
+            assert!(deceives(c), "{c:?}");
+        }
+        for c in ['\u{205F}', '\u{FFFC}', '\u{E1000}', '\u{034E}', '\u{FE10}', 'a', '\u{00E9}'] {
+            assert!(!deceives(c), "{c:?} is outside the set");
         }
     }
 

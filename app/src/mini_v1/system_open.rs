@@ -272,7 +272,12 @@ impl Record {
         if ino.is_none() && !pending {
             return None;
         }
-        Some(Record { name: v.get("name")?.as_str()?.to_owned(), ino, bytes: v.get("bytes").and_then(Value::as_u64).unwrap_or(0), source, pending })
+        // one plain name in the copy's folder, never a way out of it
+        let name = v.get("name")?.as_str()?;
+        if !matches!(Path::new(name).components().collect::<Vec<_>>().as_slice(), [std::path::Component::Normal(n)] if *n == name) {
+            return None;
+        }
+        Some(Record { name: name.to_owned(), ino, bytes: v.get("bytes").and_then(Value::as_u64).unwrap_or(0), source, pending })
     }
 
     /// Writes this down as copy `id`'s in `base`: a `new` record never over
@@ -366,8 +371,13 @@ fn copy_with(name: &str, base: &Path, source: Option<[u64; 4]>, cap: Cap, put: i
         return Err(io::ErrorKind::FileTooLarge.into());
     }
     private_dir(base)?;
+    // room first, from copies no app is likely to hold open; none, no copy
+    if !self::cap(base, cap, None, Some(size)) {
+        return Err(io::ErrorKind::FileTooLarge.into());
+    }
     let id = super::keys::random_id();
-    let mut record = Record { name: name.to_owned(), ino: None, bytes: 0, source, pending: true };
+    // the size it will be: a copy cut off midway counts against the cap
+    let mut record = Record { name: name.to_owned(), ino: None, bytes: size, source, pending: true };
     // on record before the folder is: a copy cut off midway is the sweep's
     record.write(base, &id, true)?;
     let dir = base.join(&id);
@@ -385,7 +395,7 @@ fn copy_with(name: &str, base: &Path, source: Option<[u64; 4]>, cap: Cap, put: i
         remove_copy(base, &id, &record);
         return Err(e);
     }
-    self::cap(base, cap, Some(&id));
+    self::cap(base, cap, Some(&id), None);
     Ok(to)
 }
 
@@ -475,28 +485,45 @@ pub fn discard(copy: &Path) {
     }
 }
 
-/// Keeps `base` to `cap`'s copies and bytes, taking the oldest first, but
-/// never `keep` (the copy a hand-off is returning) nor a copy still being
-/// made (pending, and under a day old).
+/// How long a copy counts as in use after it was made or last used: an app
+/// may have it open, so the cap never takes it ([`cap`]).
 #[cfg(target_os = "macos")]
-pub fn cap(base: &Path, cap: Cap, keep: Option<&str>) {
+pub const IN_USE: Duration = Duration::from_secs(10 * 60);
+
+/// Keeps `base` to `cap`'s copies and bytes, with room for one more of
+/// `coming` bytes if any, taking the oldest first, but never `keep` (the
+/// copy a hand-off is returning), a copy made or used within [`IN_USE`],
+/// nor one still being made (pending, and under a day old). Whether it
+/// fits. For a copy `coming`, it takes nothing unless that makes room: a
+/// copy refused leaves the others be.
+#[cfg(target_os = "macos")]
+pub fn cap(base: &Path, cap: Cap, keep: Option<&str>, coming: Option<u64>) -> bool {
     let now = SystemTime::now();
     let mut all = records(base);
     all.sort_by_key(|(_, _, at)| *at);
-    let mut total: u64 = all.iter().map(|(_, r, _)| r.bytes).sum();
-    let mut left = all.len();
+    let mut total: u64 = all.iter().map(|(_, r, _)| r.bytes).sum::<u64>() + coming.unwrap_or(0);
+    let mut left = all.len() + usize::from(coming.is_some());
+    let mut take = Vec::new();
     for (id, record, at) in &all {
         if left <= cap.most && total <= cap.bytes {
             break;
         }
-        let making = record.pending && now.duration_since(*at).map_or(true, |age| age <= OPENED_FOR);
-        if keep == Some(id.as_str()) || making {
+        let age = now.duration_since(*at).unwrap_or_default();
+        let making = record.pending && age <= OPENED_FOR;
+        if keep == Some(id.as_str()) || making || age < IN_USE {
             continue;
         }
-        remove_copy(base, id, record);
+        take.push((id, record));
         total = total.saturating_sub(record.bytes);
         left -= 1;
     }
+    let fits = left <= cap.most && total <= cap.bytes;
+    if fits || coming.is_none() {
+        for (id, record) in take {
+            remove_copy(base, id, record);
+        }
+    }
+    fits
 }
 
 /// How a hand-off that copies went ([`copy_between_checks`]).
@@ -560,7 +587,7 @@ pub fn sweep(base: &Path, now: SystemTime, cap: Cap) {
             remove_copy(base, &id, &record);
         }
     }
-    self::cap(base, cap, None);
+    self::cap(base, cap, None, None);
 }
 
 /// How often the Bot sweeps [`opened_dir`] while it runs.
@@ -1097,16 +1124,17 @@ mod tests {
         let third = copy_for_view(&changed.file, "a.png", &bed.opened(), CAP).unwrap();
         assert!(third.fresh && third.path != first.path);
         assert_eq!(fs::read(&third.path).unwrap(), b"changed, and longer");
-        // past the cap, the oldest go
+        // past the cap, the oldest go, once no app is likely to hold them
         for i in 0..5 {
             let name = format!("p{i}.png");
             let f = bed.open(&bed.file(&name)).unwrap();
             copy_for_view(&f.file, &name, &bed.opened(), CAP).unwrap();
         }
-        cap(&bed.opened(), Cap { most: 3, bytes: u64::MAX }, None);
+        shift(&bed.opened(), IN_USE);
+        cap(&bed.opened(), Cap { most: 3, bytes: u64::MAX }, None, None);
         assert_eq!(records(&bed.opened()).len(), 3);
         assert!(!first.path.exists());
-        cap(&bed.opened(), Cap { most: 10, bytes: 1 }, None);
+        cap(&bed.opened(), Cap { most: 10, bytes: 1 }, None, None);
         assert_eq!(records(&bed.opened()).len(), 0, "past the bytes too");
     }
 
@@ -1118,6 +1146,61 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn copies_in(base: &Path) -> usize {
         records(base).len()
+    }
+
+    /// Makes every copy in `base` `by` older, keeping their order.
+    #[cfg(target_os = "macos")]
+    fn shift(base: &Path, by: Duration) {
+        for (id, _, at) in records(base) {
+            fs::File::open(base.join(format!("{id}.copy"))).unwrap().set_modified(at - by - Duration::from_secs(1)).unwrap();
+        }
+    }
+
+    /// Preview has A open, moments old; B would push the folder past the
+    /// cap. A stays, and B is refused, until A is past [`IN_USE`].
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_cap_never_takes_a_copy_an_app_may_have_open() {
+        let bed = Bed::new();
+        let cap = Cap { most: 64, bytes: 30 };
+        let a = bed.open(&bed.file("a.pdf")).unwrap();
+        let held = copy_for_open(&a, &bed.opened(), cap).unwrap();
+        let path = bed.folder.join("open-1f/1/b.pdf");
+        fs::write(&path, [b'x'; 28]).unwrap();
+        let b = bed.open(&path).unwrap();
+        assert_eq!(copy_for_open(&b, &bed.opened(), cap).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        assert!(held.exists(), "a copy an app may hold stays");
+        assert_eq!(copies_in(&bed.opened()), 1, "and the new one was never made");
+        shift(&bed.opened(), IN_USE);
+        let made = copy_for_open(&b, &bed.opened(), cap).unwrap();
+        assert!(made.exists() && !held.exists(), "past its while in use, it makes room");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_cut_off_midway_counts_its_whole_size_against_the_cap() {
+        let bed = Bed::new();
+        let put = |out: fs::File, _: &Path| -> io::Result<fs::File> {
+            let (_, record, _) = records(&bed.opened()).pop().unwrap();
+            assert_eq!(record.bytes, 900, "the pending record's size is the file's");
+            Ok(out)
+        };
+        copy_with("a.pdf", &bed.opened(), None, CAP, put, 900).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_record_naming_a_way_out_of_its_folder_is_no_record() {
+        let bed = Bed::new();
+        fs::create_dir_all(bed.opened()).unwrap();
+        for name in ["../x.pdf", "a/b.pdf", "/etc/hosts", ".", "..", "a.pdf/"] {
+            let at = bed.opened().join("r.copy");
+            fs::write(&at, json!({"name": name, "ino": 1, "bytes": 1}).to_string()).unwrap();
+            assert_eq!(Record::read(&at), None, "{name}");
+        }
+        let at = bed.opened().join("r.copy");
+        fs::write(&at, json!({"name": "a.pdf", "ino": 1, "bytes": 1}).to_string()).unwrap();
+        assert!(Record::read(&at).is_some());
     }
 
     /// The Bot killed midway through a copy, as a panic in the middle of its
@@ -1167,6 +1250,7 @@ mod tests {
         let two = Cap { most: 2, bytes: u64::MAX };
         let first = copy_for_open(&file, &bed.opened(), two).unwrap();
         copy_for_open(&file, &bed.opened(), two).unwrap();
+        shift(&bed.opened(), IN_USE);
         let last = copy_for_open(&file, &bed.opened(), two).unwrap();
         assert_eq!(copies_in(&bed.opened()), 2);
         assert!(!first.exists() && last.exists(), "the oldest went, the new one stays");
@@ -1200,11 +1284,12 @@ mod tests {
         let other = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         let returned = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         // the one returned reads as the oldest (a clock set back)
-        age(&returned, Duration::from_secs(60));
-        cap(&bed.opened(), Cap { most: 1, bytes: u64::MAX }, Some(&id_of(&returned)));
+        age(&other, IN_USE + Duration::from_secs(60));
+        age(&returned, IN_USE + Duration::from_secs(120));
+        cap(&bed.opened(), Cap { most: 1, bytes: u64::MAX }, Some(&id_of(&returned)), None);
         assert!(returned.exists(), "kept");
         assert!(!other.exists());
-        cap(&bed.opened(), Cap { most: 0, bytes: 0 }, Some(&id_of(&returned)));
+        cap(&bed.opened(), Cap { most: 0, bytes: 0 }, Some(&id_of(&returned)), None);
         assert!(returned.exists(), "kept past any cap");
     }
 
@@ -1217,6 +1302,7 @@ mod tests {
         for _ in 0..2 {
             copy_for_open(&file, &bed.opened(), CAP).unwrap();
         }
+        shift(&bed.opened(), IN_USE);
         sweep(&bed.opened(), SystemTime::now(), Cap { most: 2, bytes: u64::MAX });
         assert_eq!(copies_in(&bed.opened()), 2);
         assert!(!first.exists(), "the oldest went");
