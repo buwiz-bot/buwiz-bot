@@ -182,11 +182,19 @@ impl HostUi for MacUi {
         std::thread::spawn(move || {
             let shown = doc.clone();
             let (to, again) = (key.clone(), live.clone());
-            let done = move |copy: PathBuf| {
-                let doc = shown.with_copy(&copy);
-                super::to_store(move |st| st.v1_document(&to, &doc, again()));
+            // the store shows it, if its screen is still the person's: the
+            // check and the showing in one job; a miss takes a copy this made
+            let done = move |copy: system_open::Copied| {
+                let doc = shown.with_copy(&copy.path);
+                super::to_store(move |st| {
+                    if st.v1_on_top(&to, again()) {
+                        st.v1_document(&to, &doc, true);
+                    } else if copy.fresh {
+                        system_open::discard(&copy.path);
+                    }
+                });
             };
-            let copy = || system_open::copy_file(doc.file(), doc.name(), &system_open::opened_dir());
+            let copy = || system_open::copy_for_view(doc.file(), doc.name(), &copies()?);
             handed("a document", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
         });
     }
@@ -204,15 +212,19 @@ impl HostUi for MacUi {
         }
         let key = self.key.clone();
         std::thread::spawn(move || {
-            let done = |copy: PathBuf| {
+            let again = live.clone();
+            // the screen was checked on the store's thread just now, which
+            // alone knows it; main asks the open again, and opens or takes
+            // the copy away, in one go
+            let done = move |copy: system_open::Copied| {
                 on_main(move || {
-                    if !system_open::open_copy(&copy) {
-                        log::info!("mini v1: a file opened nothing: its copy wasn't marked, or nothing opened it");
+                    if !system_open::open_or_discard(&copy.path, again(), system_open::open_copy) {
+                        log::info!("mini v1: a file opened nothing: its open ended, its copy wasn't marked, or nothing opened it");
                         super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
                     }
                 })
             };
-            let copy = || system_open::copy_for_open(&file, &system_open::opened_dir());
+            let copy = || system_open::copy_for_open(&file, &copies()?).map(system_open::Copied::fresh);
             handed("a file", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
         });
     }
@@ -386,6 +398,11 @@ fn write_pasteboard(text: &str) {
         let _: isize = msg_send![&*board, clearContents];
         let _: bool = msg_send![&*board, setString: &*s, forType: &*kind];
     }
+}
+
+/// [`system_open::opened_dir`], or an error to fail a copy with.
+fn copies() -> std::io::Result<PathBuf> {
+    system_open::opened_dir().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
 }
 
 /// Whether the open `key` is still the person's screen, on top, and `live`,

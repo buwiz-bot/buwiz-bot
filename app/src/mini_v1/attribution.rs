@@ -157,6 +157,15 @@ impl Attribution {
         self.presses.insert(surface, (self.next_press, now));
     }
 
+    /// The person's input in `surface`, as [`Gesture`] has it.
+    pub fn person_input(&mut self, surface: u64, gesture: Gesture, now: Instant) {
+        match gesture {
+            Gesture::Activation => self.person_activated(surface, now),
+            Gesture::Typing => self.person_typed(surface, now),
+            Gesture::Nothing => {}
+        }
+    }
+
     /// The person typed in `surface`: [`Self::person_pressed`], and no press
     /// there is one to hand off by any more.
     pub fn person_typed(&mut self, surface: u64, now: Instant) {
@@ -248,13 +257,10 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     use nsh_platform_macos::Input;
     nsh_platform_macos::on_input(mtm, move |input| match input {
         Input::Agent => with(|a| a.agent_acted(Instant::now())),
-        Input::Person { surface } => match current_gesture(mtm) {
-            Gesture::Activation => with(|a| a.person_activated(surface, Instant::now())),
-            Gesture::Typing => with(|a| a.person_typed(surface, Instant::now())),
-            Gesture::Nothing => {}
-        },
+        Input::Person { surface } => with(|a| a.person_input(surface, current_gesture(mtm), Instant::now())),
     });
     watch_key_ups(mtm);
+    watch_resigns();
     with(Attribution::watch);
 }
 
@@ -292,7 +298,15 @@ fn current_gesture(mtm: nsh_platform_macos::objc2::MainThreadMarker) -> Gesture 
 }
 
 /// Whether `responder` takes typed text: anything that speaks the text input
-/// protocol, as AppKit's and nsh's text views, and a web view's fields, do.
+/// protocol, as AppKit's and nsh's text views, and a web view, do.
+///
+/// A web view counts whole, whatever has the focus in its page. The one a
+/// mini app's screen holds is the mail reader's (`gws-screens`' `reader`): a
+/// sealed page with no script, whose links go to the screen's own code and
+/// can't hand a file off. A TSX app can't make one at all (`load`'s
+/// `SDK1_NSH` has no `WebView`). So Space or Return on a link in a mail is
+/// typing, which only means no press: a hand-off a page could start would
+/// need its own press.
 #[cfg(target_os = "macos")]
 pub fn takes_text(responder: &nsh_platform_macos::objc2::runtime::NSObject) -> bool {
     use nsh_platform_macos::objc2::runtime::{AnyProtocol, NSObjectProtocol};
@@ -347,6 +361,38 @@ fn watch_key_ups(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     // long as the app.
     let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyUp, &block) };
     std::mem::forget(monitor);
+}
+
+/// Forgets every key held: what the window or the app losing the keys does.
+/// A key held then comes up elsewhere (in Preview, which a hand-off brought
+/// up), and its next press here must count.
+#[cfg(target_os = "macos")]
+pub fn keys_left() {
+    with_held(HashSet::clear);
+}
+
+/// Hears the window or the app resign key or active ([`keys_left`]).
+#[cfg(target_os = "macos")]
+fn watch_resigns() {
+    use std::ptr::NonNull;
+
+    use nsh_platform_macos::{
+        block2::RcBlock,
+        objc2::{msg_send, rc::Retained, runtime::{AnyClass, AnyObject}},
+        objc2_foundation::NSString,
+    };
+    let Some(class) = AnyClass::get(c"NSNotificationCenter") else { return };
+    let block = RcBlock::new(|_: NonNull<AnyObject>| keys_left());
+    for name in ["NSApplicationDidResignActiveNotification", "NSWindowDidResignKeyNotification"] {
+        let name = NSString::from_str(name);
+        // SAFETY: NSNotificationCenter's documented methods: any object, any
+        // queue (the poster's, AppKit's main), the block kept by the center.
+        unsafe {
+            let center: Retained<AnyObject> = msg_send![class, defaultCenter];
+            let observer: Option<Retained<AnyObject>> = msg_send![&*center, addObserverForName: &*name, object: None::<&AnyObject>, queue: None::<&AnyObject>, usingBlock: &*block];
+            std::mem::forget(observer);
+        }
+    }
 }
 
 /// Return (36), keypad Enter (76) and Space (49): the keys that press what
@@ -635,10 +681,31 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn a_key_held_when_the_bot_loses_the_keys_presses_again_next_time() {
+        use nsh_platform_macos::objc2_app_kit::NSEventType;
+        use events::key;
+        // the shared hold, as the app's listener keeps it
+        let down = || with_held(|held| gesture_of(&key(NSEventType::KeyDown, 36, false), false, held));
+        keys_left();
+        assert_eq!(down(), Gesture::Activation);
+        // Return's key-up goes to Preview, which the hand-off brought up
+        assert_eq!(down(), Gesture::Nothing, "still held, as far as the Bot heard");
+        keys_left();
+        assert_eq!(down(), Gesture::Activation, "the next Return counts");
+        keys_left();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn a_click_is_a_press_and_its_mouse_up_takes_nothing_back() {
         use nsh_platform_macos::objc2_app_kit::NSEventType;
         use events::mouse;
         let mut held = HashSet::new();
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_input(FORM, gesture_of(&mouse(NSEventType::LeftMouseDown), false, &mut held), t);
+        a.person_input(FORM, gesture_of(&mouse(NSEventType::LeftMouseUp), false, &mut held), t + Duration::from_millis(80));
+        assert!(a.fresh_press(FORM, t + Duration::from_millis(100)).is_some(), "the mouse-up left the press");
         assert_eq!(gesture_of(&mouse(NSEventType::LeftMouseDown), false, &mut held), Gesture::Activation);
         assert_eq!(gesture_of(&mouse(NSEventType::LeftMouseUp), false, &mut held), Gesture::Nothing);
         assert_eq!(gesture_of(&mouse(NSEventType::RightMouseDown), false, &mut held), Gesture::Nothing);

@@ -222,11 +222,12 @@ fn checked_in(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Va
 
 /// The characters that make a name show as another: the bidirectional
 /// embeddings, overrides and isolates (`x\u{202E}fdp.command` shows as
-/// `xdnammoc.pdf`), the marks and joiners that show as nothing, the byte
+/// `xdnammoc.pdf`), the marks and joiners that show as nothing (the Arabic
+/// letter mark among them), the byte
 /// order mark, and control characters. A file named with one is refused,
 /// with the person told, never shown, opened or saved under another look.
 pub(super) fn deceives(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}'..='\u{200F}' | '\u{FEFF}') || c.is_control()
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}'..='\u{200F}' | '\u{061C}' | '\u{FEFF}') || c.is_control()
 }
 
 /// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
@@ -589,7 +590,7 @@ mod tests {
     #[test]
     fn a_name_that_would_show_as_another_is_refused_not_shown() {
         let bed = Bed::new();
-        for name in ["invoice\u{202E}fdp.docx", "a\u{2066}b.png", "a\u{200B}.pdf", "a\u{200E}.xlsx", "a\u{FEFF}.jpg", "a\u{0007}.docx", "a\nb.pdf"] {
+        for name in ["invoice\u{202E}fdp.docx", "a\u{2066}b.png", "a\u{200B}.pdf", "a\u{200E}.xlsx", "a\u{FEFF}.jpg", "a\u{0007}.docx", "a\nb.pdf", "a\u{061C}.pdf"] {
             assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Name), "{name:?}");
         }
         assert!(bed.ask(&bed.file("Report (final).docx")).is_ok());
