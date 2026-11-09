@@ -229,4 +229,4 @@ branch = "pr/macos-web-file-url"
 kind = "fix"
 pr = 0
 status = "local"
-note = "a file:// source loads by loadFileURL, reading its own folder only, and an unrestricted app may navigate to it: the viewer's PDF of a local copy was blank"
+note = "a file:// source loads by loadFileURL, reading its own folder only, and that web view may navigate to that file and no other: the viewer's PDF of a local copy was blank"
