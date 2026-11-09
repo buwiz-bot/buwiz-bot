@@ -204,7 +204,7 @@ fn key_has_passphrase(text: &str) -> bool {
 
 /// `count` ports of the computers' range that are free now. What's free can be gone by the time
 /// `ssh` binds it, which its caller retries.
-fn free_ports(count: usize) -> Result<Vec<u16>> {
+pub(crate) fn free_ports(count: usize) -> Result<Vec<u16>> {
     let mut start = [0u8; 2];
     getrandom::getrandom(&mut start).map_err(|e| Problem::Failed(format!("no randomness: {e}")))?;
     let span = DOCKER_PORT_LAST - PORT_FIRST + 1;

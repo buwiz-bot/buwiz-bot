@@ -2,201 +2,15 @@
 //! `*.e2b.app`, its certificate is one the tests' root vouches for, and the box behind its relays
 //! answers as a box. Nothing here reaches E2B.
 
+use super::E2bProvider;
+use crate::cloud::fake::{empty, ok, serve, Answer, Seen, CA};
+use crate::cloud::{Api, Settings};
+use crate::{Machine, Power, Problem, Provider, ProviderKind, Reach, Secret, Sleep, Spec, Woke};
+use hyper::Method;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use hyper::Method;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::ServerConfig;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
-
-use super::E2bProvider;
-use crate::cloud::Api;
-use crate::{Machine, Power, Problem, Provider, ProviderKind, Reach, Secret, Sleep, Spec, Woke};
-
-const CA: &[u8] = include_bytes!("testdata/ca.der");
-const LEAF: &[u8] = include_bytes!("testdata/leaf.der");
-const KEY: &[u8] = include_bytes!("testdata/leaf.key.der");
-
 const CREATED: &str = r#"{"sandboxID":"sbx-1","envdAccessToken":"envd-1","templateID":"tpl","clientID":"c","envdVersion":"0.2.0"}"#;
-
-/// One request the fake received.
-#[derive(Clone, Debug)]
-struct Seen {
-    method: String,
-    /// the request target, query and all
-    path: String,
-    /// the `Host` header
-    host: String,
-    /// names lowercased
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
-impl Seen {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
-    }
-
-    /// `METHOD path`, as the platform's API saw it.
-    fn call(&self) -> String {
-        format!("{} {}", self.method, self.path)
-    }
-}
-
-/// status (0 = never answer), headers, body
-type Answer = (u16, Vec<(String, String)>, Vec<u8>);
-
-fn ok(status: u16, body: &str) -> Answer {
-    (
-        status,
-        vec![("Content-Type".to_owned(), "application/json".to_owned())],
-        body.as_bytes().to_vec(),
-    )
-}
-
-fn empty(status: u16) -> Answer {
-    (status, vec![], vec![])
-}
-
-struct Fake {
-    addr: SocketAddr,
-    seen: Arc<Mutex<Vec<Seen>>>,
-}
-
-impl Fake {
-    fn requests(&self) -> Vec<Seen> {
-        self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// What the platform's own API got, in order.
-    fn api_calls(&self) -> Vec<String> {
-        self.requests()
-            .iter()
-            .filter(|r| r.host == "api.e2b.app")
-            .map(Seen::call)
-            .collect()
-    }
-}
-
-/// A TLS server on loopback that answers each request with `route`, and records it.
-async fn serve(route: impl Fn(&Seen) -> Answer + Send + Sync + 'static) -> Fake {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let chain = vec![
-        CertificateDer::from(LEAF.to_vec()),
-        CertificateDer::from(CA.to_vec()),
-    ];
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            chain,
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(KEY.to_vec())),
-        )
-        .unwrap();
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-    let seen: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
-    let (route, log) = (Arc::new(route), seen.clone());
-    tokio::spawn(async move {
-        while let Ok((tcp, _)) = listener.accept().await {
-            let (acceptor, route, log) = (acceptor.clone(), route.clone(), log.clone());
-            tokio::spawn(async move {
-                let Ok(mut tls) = acceptor.accept(tcp).await else {
-                    return;
-                };
-                let Some(request) = read_request(&mut tls).await else {
-                    return;
-                };
-                let answer = route(&request);
-                log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
-                write_answer(&mut tls, answer).await;
-            });
-        }
-    });
-    Fake { addr, seen }
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-async fn read_request<S: AsyncReadExt + Unpin>(stream: &mut S) -> Option<Seen> {
-    let mut buf = Vec::new();
-    let head_end = loop {
-        if let Some(at) = find(&buf, b"\r\n\r\n") {
-            break at + 4;
-        }
-        if buf.len() > 64 * 1024 {
-            return None;
-        }
-        let mut chunk = [0u8; 4096];
-        let n = stream.read(&mut chunk).await.ok()?;
-        if n == 0 {
-            return None;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let mut lines = head.split("\r\n");
-    let mut first = lines.next()?.split(' ');
-    let method = first.next()?.to_owned();
-    let path = first.next()?.to_owned();
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|l| l.split_once(':'))
-        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()))
-        .collect();
-    let host = headers
-        .iter()
-        .find(|(k, _)| k == "host")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
-    let length = headers
-        .iter()
-        .find(|(k, _)| k == "content-length")
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    let mut body = buf[head_end..].to_vec();
-    while body.len() < length {
-        let mut chunk = [0u8; 4096];
-        let n = stream.read(&mut chunk).await.ok()?;
-        if n == 0 {
-            return None;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(length);
-    Some(Seen {
-        method,
-        path,
-        host,
-        headers,
-        body,
-    })
-}
-
-async fn write_answer<S: AsyncWriteExt + Unpin>(stream: &mut S, (status, headers, body): Answer) {
-    if status == 0 {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        return;
-    }
-    let mut head = format!(
-        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    for (name, value) in headers {
-        head.push_str(&format!("{name}: {value}\r\n"));
-    }
-    head.push_str("\r\n");
-    let _ = stream.write_all(head.as_bytes()).await;
-    let _ = stream.write_all(&body).await;
-    let _ = stream.shutdown().await;
-}
 
 /// The platform as it answers a sandbox that exists, and the box behind its names.
 fn platform(req: &Seen) -> Answer {
@@ -217,8 +31,11 @@ fn platform(req: &Seen) -> Answer {
 }
 
 fn provider(addr: SocketAddr) -> E2bProvider {
-    E2bProvider::new(Some(Secret::new("key-1")), Some("tpl".to_owned()))
-        .with_api(Api::with_test(addr, Some(CA.to_vec())))
+    E2bProvider::new(Settings::new(
+        Some(Secret::new("key-1")),
+        Some("tpl".to_owned()),
+    ))
+    .with_api(Api::with_test(addr, Some(CA.to_vec())))
 }
 
 fn spec(name: &str) -> Spec {
@@ -311,12 +128,12 @@ async fn the_lifecycle_is_one_sandbox_and_its_secrets_go_in_in_order() {
 
 #[tokio::test]
 async fn a_missing_key_or_template_is_a_sentence_and_no_call_is_made() {
-    let no_key = E2bProvider::new(None, Some("tpl".to_owned()));
+    let no_key = E2bProvider::new(Settings::new(None, Some("tpl".to_owned())));
     let sentence = no_key.check().await.unwrap_err().sentence();
-    assert!(sentence.contains("E2B_API_KEY"), "{sentence}");
-    let no_template = E2bProvider::new(Some(Secret::new("key-1")), None);
+    assert!(sentence.contains("API key"), "{sentence}");
+    let no_template = E2bProvider::new(Settings::new(Some(Secret::new("key-1")), None));
     let sentence = no_template.check().await.unwrap_err().sentence();
-    assert!(sentence.contains("BUWIZ_E2B_TEMPLATE"), "{sentence}");
+    assert!(sentence.contains("template"), "{sentence}");
     assert!(no_key.create(&spec("nokey")).await.is_err());
 }
 
@@ -324,8 +141,11 @@ async fn a_missing_key_or_template_is_a_sentence_and_no_call_is_made() {
 async fn nothing_is_sent_to_a_host_the_roots_dont_vouch_for() {
     // the fake's certificate is not in the public roots, and this provider trusts no extra root
     let fake = serve(platform).await;
-    let p = E2bProvider::new(Some(Secret::new("key-1")), Some("tpl".to_owned()))
-        .with_api(Api::with_test(fake.addr, None));
+    let p = E2bProvider::new(Settings::new(
+        Some(Secret::new("key-1")),
+        Some("tpl".to_owned()),
+    ))
+    .with_api(Api::with_test(fake.addr, None));
     let err = p.create(&spec("untrusted")).await.unwrap_err();
     assert!(matches!(err, Problem::Failed(_)), "{err:?}");
     assert!(!err.sentence().contains("key-1"));

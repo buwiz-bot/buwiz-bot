@@ -490,6 +490,7 @@ dependencies = [
  "hyper-util",
  "jpeg-encoder",
  "png",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

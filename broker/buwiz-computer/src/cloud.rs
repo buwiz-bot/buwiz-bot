@@ -10,6 +10,9 @@
 //! for the whole of it; an answer is read up to [`MAX_REPLY`] bytes; a redirect is an error, so a
 //! header with a key in it never follows a `Location` to a host the roots didn't check.
 
+#[cfg(test)]
+pub mod fake;
+
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -21,7 +24,7 @@ use hyper_util::rt::TokioIo;
 use serde_json::Value;
 
 use crate::remote::tls;
-use crate::{Problem, Result};
+use crate::{Problem, ProviderKind, Result, Secret};
 
 /// The most an answer may be. A platform's JSON is small; a page of listings is the largest.
 pub const MAX_REPLY: usize = 1024 * 1024;
@@ -152,4 +155,40 @@ fn broken(host: &str) -> Problem {
     Problem::Failed(format!(
         "{host} didn't answer as HTTP, so nothing more was sent."
     ))
+}
+
+/// What a cloud provider is set up with: its API key, and what its computers are made from (an E2B
+/// template id, or a boat image). Providers take this in their constructor and never read the
+/// environment themselves, so a later source (the Keychain, a settings page) only has to produce a
+/// `Settings`.
+#[derive(Clone, Debug, Default)]
+pub struct Settings {
+    pub key: Option<Secret>,
+    pub image: Option<String>,
+}
+
+impl Settings {
+    pub fn new(key: Option<Secret>, image: Option<String>) -> Self {
+        Self { key, image }
+    }
+}
+
+/// The settings for `kind`, from the environment. A development source only: it's the one resolver,
+/// so the providers don't change when the owner's settings move somewhere else.
+pub fn settings(kind: ProviderKind) -> Settings {
+    let (key_var, image_var) = match kind {
+        ProviderKind::E2b => ("E2B_API_KEY", "BUWIZ_E2B_TEMPLATE"),
+        ProviderKind::Boat => ("BOAT_API_KEY", "BUWIZ_BOAT_IMAGE"),
+        _ => return Settings::default(),
+    };
+    let read = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    Settings {
+        key: read(key_var).map(Secret::new),
+        image: read(image_var),
+    }
 }

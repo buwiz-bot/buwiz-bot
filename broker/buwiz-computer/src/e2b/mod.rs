@@ -82,7 +82,7 @@ use bytes::Bytes;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::cloud::{Api, Reply};
+use crate::cloud::{Api, Reply, Settings};
 use crate::docker::{EXEC_PORT, HOST_PORT};
 use crate::remote::tls::{self, Relays};
 use crate::remote::{answers, beat, clean, guest_at, guest_ports, Open, Way, BEAT, CHECK_PATIENCE};
@@ -90,9 +90,6 @@ use crate::{
     CommandOutput, Far, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result,
     Screen, Screenshot, Secret, Settled, Sleep, Spec, Viewer, WaitFor, Woke,
 };
-
-pub const KEY_ENV: &str = "E2B_API_KEY";
-pub const TEMPLATE_ENV: &str = "BUWIZ_E2B_TEMPLATE";
 
 const API_HOST: &str = "api.e2b.app";
 const ENVD_HOST: &str = "sandbox.e2b.app";
@@ -124,28 +121,16 @@ pub struct E2bProvider {
 }
 
 impl E2bProvider {
-    pub fn new(key: Option<Secret>, template: Option<String>) -> Self {
+    /// The provider with its settings (see [`crate::cloud::settings`]). Nothing is read from the
+    /// environment here.
+    pub fn new(settings: Settings) -> Self {
         Self {
-            key,
-            template,
+            key: settings.key,
+            template: settings.image,
             api: Api::new(),
             links: Mutex::default(),
             turns: Mutex::default(),
         }
-    }
-
-    /// From `E2B_API_KEY` and `BUWIZ_E2B_TEMPLATE`. Neither is read back or logged.
-    pub fn from_env() -> Self {
-        let key = std::env::var(KEY_ENV)
-            .ok()
-            .map(|k| k.trim().to_owned())
-            .filter(|k| !k.is_empty())
-            .map(Secret::new);
-        let template = std::env::var(TEMPLATE_ENV)
-            .ok()
-            .map(|t| t.trim().to_owned())
-            .filter(|t| !t.is_empty());
-        Self::new(key, template)
     }
 
     /// Sends the platform's names to a test's fake, and trusts its root (tests).
@@ -155,11 +140,11 @@ impl E2bProvider {
     }
 
     fn key(&self) -> Result<&Secret> {
-        self.key.as_ref().ok_or_else(|| Problem::Failed(format!("E2B needs an API key: set {KEY_ENV} where the broker starts, then start the broker again.")))
+        self.key.as_ref().ok_or_else(|| Problem::Failed("E2B needs an API key before it can make a computer. Add it in the broker's settings.".to_owned()))
     }
 
     fn template(&self) -> Result<&str> {
-        self.template.as_deref().ok_or_else(|| Problem::Failed(format!("E2B needs a template: build one from the computer image, and set {TEMPLATE_ENV} to its id.")))
+        self.template.as_deref().ok_or_else(|| Problem::Failed("E2B needs a template: build one from the computer image, then add its id in the broker's settings.".to_owned()))
     }
 
     /// One call to the control API, with the key. The key goes only after the handshake (see [`crate::cloud`]).
@@ -464,7 +449,7 @@ fn outcome(status: u16) -> Problem {
     match status {
         404 => Problem::Gone,
         401 | 403 => Problem::Failed(
-            "E2B refused this broker's key, or the team can't use sandboxes. Check E2B_API_KEY."
+            "E2B refused this broker's key, or the team can't use sandboxes. Check the API key."
                 .to_owned(),
         ),
         409 => Problem::Failed(
@@ -506,7 +491,7 @@ impl Provider for E2bProvider {
             .api(Method::POST, "/v2/sandboxes", Some(body), CALL_PATIENCE)
             .await?;
         if reply.status == 404 {
-            return Err(Problem::Failed(format!("E2B has no template named {template}: build it first, and set {TEMPLATE_ENV} to its id.")));
+            return Err(Problem::Failed(format!("E2B has no template named {template}: build it first, then add its id in the broker's settings.")));
         }
         if reply.status != 201 {
             return Err(outcome(reply.status));

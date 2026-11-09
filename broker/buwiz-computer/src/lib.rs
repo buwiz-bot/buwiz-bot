@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod boat;
 pub mod cloud;
 pub mod docker;
 pub mod e2b;
@@ -39,6 +40,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use docker::DockerProvider;
+pub use boat::BoatProvider;
 pub use e2b::E2bProvider;
 pub use gate::{Gate, Mode};
 pub use guest::BoxGuest;
@@ -106,7 +108,7 @@ pub enum ProviderKind {
     Remote,
     /// an E2B sandbox, from a template built on the computer image ([`e2b`])
     E2b,
-    /// a boat.dev sandbox: its slot only, until it's built
+    /// a boat.dev sandbox, reached over SSH only ([`boat`])
     Boat,
     /// a Fly Machine: its slot only, until it's built
     Fly,
@@ -141,7 +143,7 @@ impl ProviderKind {
             Self::Ec2 => "AWS EC2",
             Self::Remote => "A remote computer",
             Self::E2b => "E2B",
-            Self::Boat => "boat.dev",
+            Self::Boat => "boat.dev (EU regions only today)",
             Self::Fly => "Fly.io",
         }
     }
@@ -630,7 +632,8 @@ pub fn provider_for(kind: ProviderKind) -> std::sync::Arc<dyn Provider> {
     match kind {
         ProviderKind::Docker => std::sync::Arc::new(DockerProvider::from_env()),
         ProviderKind::Remote => std::sync::Arc::new(RemoteProvider::new()),
-        ProviderKind::E2b => std::sync::Arc::new(E2bProvider::from_env()),
+        ProviderKind::E2b => std::sync::Arc::new(E2bProvider::new(cloud::settings(kind))),
+        ProviderKind::Boat => std::sync::Arc::new(BoatProvider::new(cloud::settings(kind))),
         other => std::sync::Arc::new(Planned(other)),
     }
 }
