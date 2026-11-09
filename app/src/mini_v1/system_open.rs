@@ -24,8 +24,9 @@
 //! does) the moment it exists, before a byte is in it, so Gatekeeper and the
 //! app that opens it treat it as a file from the internet: a mail's
 //! attachment is a stranger's. The plugin marks what it writes too, but a
-//! copy needn't carry that. Its name loses the characters that make one name
-//! show as another ([`clean_name`]).
+//! copy needn't carry that. A name with a character that makes it show as
+//! another is refused at the check (`document::deceives`), with the person
+//! told, so a copy keeps the name on disk as it is.
 //!
 //! A refusal carries no part of the path, as `document`'s does ([`Refused`]).
 
@@ -84,21 +85,6 @@ pub fn check_save(first_party: bool, actor: Actor, folder: Option<&Path>, field:
     Ok(LocalFile { name, file: Arc::new(file) })
 }
 
-/// The characters that make a name show as another: the bidirectional
-/// embeddings, overrides and isolates (`x\u{202E}fdp.command` shows as
-/// `xdnammoc.pdf`), the marks and joiners that show as nothing, the byte
-/// order mark, and control characters.
-fn deceives(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}'..='\u{200F}' | '\u{FEFF}') || c.is_control()
-}
-
-/// `name` as a copy is named: without [`deceives`]'s characters or a path
-/// separator, and never empty, `.` or `..`.
-pub fn clean_name(name: &str) -> String {
-    let clean: String = name.chars().filter(|&c| !deceives(c) && c != '/' && c != ':').collect();
-    if clean.is_empty() || clean == "." || clean == ".." { "download".to_owned() } else { clean }
-}
-
 /// `<home>/Downloads`: `None` without a real home.
 #[cfg(target_os = "macos")]
 pub fn downloads() -> Option<PathBuf> {
@@ -106,11 +92,24 @@ pub fn downloads() -> Option<PathBuf> {
     home.is_absolute().then(|| home.join("Downloads"))
 }
 
-/// Where `buwiz/open_with`'s copies go: in the Bot's own data folder (a test
-/// instance's own), one folder per copy, so each keeps its name.
+/// Where the copies a plugin's files are opened and shown from go, one
+/// folder per copy, so each keeps its name: the Bot's caches, which no backup
+/// keeps, `~/Library/Caches/<bundle id>/opened`. A test instance
+/// (`BUWIZ_DATA_DIR`) keeps its own in its data folder, so its sweep never
+/// reaches the owner's.
 #[cfg(target_os = "macos")]
 pub fn opened_dir() -> PathBuf {
-    crate::vault::data_dir().join("opened")
+    let test = buwiz_protocol::env::var_os("BUWIZ_DATA_DIR");
+    opened_dir_of(std::env::var_os("HOME").as_deref(), test.as_deref())
+}
+
+/// [`opened_dir`] for `home` and a test instance's data folder `test`.
+#[cfg(target_os = "macos")]
+fn opened_dir_of(home: Option<&std::ffi::OsStr>, test: Option<&std::ffi::OsStr>) -> PathBuf {
+    match test.filter(|t| !t.is_empty()) {
+        Some(dir) => Path::new(dir).join("Caches/opened"),
+        None => Path::new(home.unwrap_or_default()).join("Library/Caches").join(crate::identity::APP_ID).join("opened"),
+    }
 }
 
 /// How long a copy [`opened_dir`] holds lives: the app it went to has long
@@ -146,11 +145,12 @@ fn create_marked(to: &Path) -> io::Result<fs::File> {
 }
 
 /// Copies all of `from` into `out`, at `to`, which goes again if the copy
-/// fails. It reads by offset from the start, never the file's own position,
+/// fails; to the disk itself if `sync` (a save, which the person keeps; a
+/// copy to open needn't outlive a crash). It reads by offset from the start, never the file's own position,
 /// which every holder of the open file shares: a second copy reads it all
 /// too.
 #[cfg(target_os = "macos")]
-fn fill(from: &fs::File, mut out: fs::File, to: &Path) -> io::Result<()> {
+fn fill(from: &fs::File, mut out: fs::File, to: &Path, sync: bool) -> io::Result<()> {
     use std::{io::Write, os::unix::fs::FileExt};
     let mut copy = || -> io::Result<()> {
         let mut buf = vec![0; 1 << 16];
@@ -158,7 +158,7 @@ fn fill(from: &fs::File, mut out: fs::File, to: &Path) -> io::Result<()> {
         loop {
             let n = from.read_at(&mut buf, at)?;
             if n == 0 {
-                return out.sync_all();
+                return if sync { out.sync_all() } else { Ok(()) };
             }
             out.write_all(&buf[..n])?;
             at += n as u64;
@@ -177,15 +177,14 @@ fn fill(from: &fs::File, mut out: fs::File, to: &Path) -> io::Result<()> {
 /// over, a link included.
 #[cfg(target_os = "macos")]
 pub fn save_in(file: &LocalFile, dir: &Path) -> io::Result<PathBuf> {
-    let name = clean_name(&file.name);
     for n in 1..=999 {
-        let to = dir.join(numbered(&name, n));
+        let to = dir.join(numbered(&file.name, n));
         let out = match create_marked(&to) {
             Ok(out) => out,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         };
-        return fill(&file.file, out, &to).map(|()| to);
+        return fill(&file.file, out, &to, true).map(|()| to);
     }
     Err(io::Error::from(io::ErrorKind::AlreadyExists))
 }
@@ -199,14 +198,14 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Copies `file` for `buwiz/open_with` into a new folder of its own in
-/// `base`, under its own name, cleaned: the copy's path, for [`open_copy`].
+/// `base`, under its own name: the copy's path, for [`open_copy`].
 #[cfg(target_os = "macos")]
 pub fn copy_for_open(file: &LocalFile, base: &Path) -> io::Result<PathBuf> {
     copy_file(&file.file, &file.name, base)
 }
 
 /// Copies all of `from`, named `name` on disk, into a new folder of its own
-/// in `base`, under that name, cleaned and marked: the copy's path. The
+/// in `base`, under that name, marked: the copy's path. The
 /// viewers' pictures and PDFs are shown from such a copy too. A copy that
 /// fails takes its folder with it.
 #[cfg(target_os = "macos")]
@@ -215,13 +214,49 @@ pub fn copy_file(from: &fs::File, name: &str, base: &Path) -> io::Result<PathBuf
     private_dir(base)?;
     let dir = base.join(super::keys::random_id());
     fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    let to = dir.join(clean_name(name));
-    let copied = create_marked(&to).and_then(|out| fill(from, out, &to));
+    let to = dir.join(name);
+    let copied = create_marked(&to).and_then(|out| fill(from, out, &to, false));
     if let Err(e) = copied {
         let _ = fs::remove_dir_all(&dir);
         return Err(e);
     }
     Ok(to)
+}
+
+/// How a hand-off that copies went ([`copy_between_checks`]).
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+pub enum Handed {
+    /// The screen wasn't the person's any more before the copy: none made.
+    LeftBefore,
+    /// The copy failed, and took its folder.
+    Failed(io::ErrorKind),
+    /// The screen wasn't the person's any more once the copy was there: it
+    /// went again.
+    LeftAfter,
+    /// Handed on to `done`.
+    Done,
+}
+
+/// A hand-off that copies, in its order: `shows()` (the open still the
+/// person's, on top), the copy, `shows()` again, then `done` with the copy. A
+/// copy can take a while, and the person can leave meanwhile: a miss after it
+/// takes the copy, and its folder, away again.
+#[cfg(target_os = "macos")]
+pub fn copy_between_checks(shows: &dyn Fn() -> bool, copy: impl FnOnce() -> io::Result<PathBuf>, done: impl FnOnce(PathBuf)) -> Handed {
+    if !shows() {
+        return Handed::LeftBefore;
+    }
+    let copy = match copy() {
+        Ok(copy) => copy,
+        Err(e) => return Handed::Failed(e.kind()),
+    };
+    if !shows() {
+        let _ = fs::remove_dir_all(copy.parent().unwrap_or(&copy));
+        return Handed::LeftAfter;
+    }
+    done(copy);
+    Handed::Done
 }
 
 /// Takes away the copies in `base` older than [`OPENED_FOR`] at `now`.
@@ -467,14 +502,53 @@ mod tests {
     }
 
     #[test]
-    fn a_name_loses_what_would_make_it_show_as_another() {
-        assert_eq!(clean_name("invoice\u{202E}fdp.command"), "invoicefdp.command");
-        assert_eq!(clean_name("a\u{2066}b\u{2069}\u{200E}\u{200F}\u{200B}\u{200C}\u{200D}\u{FEFF}.pdf"), "ab.pdf");
-        assert_eq!(clean_name("a\u{0007}\nb\u{007F}.pdf"), "ab.pdf");
-        assert_eq!(clean_name("../a/b:c.pdf"), "..abc.pdf");
-        assert_eq!(clean_name("\u{202E}"), "download");
-        assert_eq!(clean_name(".\u{200B}."), "download");
-        assert_eq!(clean_name("IMG_4250 (1).png"), "IMG_4250 (1).png");
+    fn a_name_that_would_show_as_another_opens_and_saves_nothing() {
+        let bed = Bed::new();
+        for name in ["invoice\u{202E}fdp.command", "a\u{200B}.pdf", "a\u{2069}.png", "a\u{0007}.pdf"] {
+            let path = bed.file(name);
+            assert_eq!(bed.open(&path).err(), Some(Refused::Name), "{name:?}");
+            assert_eq!(bed.save(&path).err(), Some(Refused::Name), "{name:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn copies_go_to_the_bots_caches_not_its_backed_up_data() {
+        let home = std::ffi::OsStr::new("/Users/someone");
+        assert_eq!(opened_dir_of(Some(home), None), PathBuf::from("/Users/someone/Library/Caches/com.buwiz.bot/opened"));
+        assert_eq!(opened_dir_of(Some(home), Some(std::ffi::OsStr::new(""))), PathBuf::from("/Users/someone/Library/Caches/com.buwiz.bot/opened"));
+        let test = std::ffi::OsStr::new("/tmp/bench/data");
+        assert_eq!(opened_dir_of(Some(home), Some(test)), PathBuf::from("/tmp/bench/data/Caches/opened"), "a test instance's own");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_hand_off_checks_the_screen_before_and_after_its_copy() {
+        use std::cell::Cell;
+        let bed = Bed::new();
+        let file = bed.open(&bed.file("a.pdf")).unwrap();
+        let answers = |a: &'static [bool]| {
+            let at = Cell::new(0);
+            move || {
+                let i = at.get();
+                at.set(i + 1);
+                a.get(i).copied().unwrap_or(false)
+            }
+        };
+        let made = Cell::new(false);
+        let copy = || {
+            made.set(true);
+            copy_for_open(&file, &bed.opened())
+        };
+        assert_eq!(copy_between_checks(&answers(&[false]), copy, |_| panic!("not handed")), Handed::LeftBefore);
+        assert!(!made.get(), "no copy for a screen already left");
+        let copy = || copy_for_open(&file, &bed.opened());
+        assert_eq!(copy_between_checks(&answers(&[true, false]), copy, |_| panic!("not handed")), Handed::LeftAfter);
+        assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 0, "the copy went again");
+        let got = Cell::new(None);
+        let copy = || copy_for_open(&file, &bed.opened());
+        assert_eq!(copy_between_checks(&answers(&[true, true]), copy, |c| got.set(Some(c))), Handed::Done);
+        assert_eq!(fs::read(got.take().unwrap()).unwrap(), b"a.pdf");
     }
 
     #[cfg(target_os = "macos")]
@@ -495,16 +569,6 @@ mod tests {
         assert!(quarantine(&to).is_some(), "marked");
         assert!(is_marked(&to));
         assert_eq!(quarantine(&path), None, "the plugin's own file is left as it was");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_saved_name_loses_its_bidi_and_invisible_characters() {
-        let bed = Bed::new();
-        let file = bed.save(&bed.file("invoice\u{202E}fdp.command")).unwrap();
-        assert_eq!(save_in(&file, &bed.downloads()).unwrap(), bed.downloads().join("invoicefdp.command"));
-        let file = bed.open(&bed.file("a\u{200B}.pdf")).unwrap();
-        assert_eq!(copy_for_open(&file, &bed.opened()).unwrap().file_name().unwrap(), "a.pdf");
     }
 
     #[cfg(target_os = "macos")]

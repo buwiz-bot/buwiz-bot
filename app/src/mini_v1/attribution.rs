@@ -35,9 +35,10 @@
 //! Downloads (`system_open`) takes more than "the person's": the person's own
 //! activation in that surface within [`PRESS_WINDOW`] before the call, which
 //! the hand-off spends ([`Attribution::fresh_press`],
-//! [`Attribution::spend_press`]). An activation is a click, or Return, Enter
-//! or Space anywhere but in text ([`activates`]). Typing is none, and takes
-//! back any press before it: a timer that fires while the person types in a
+//! [`Attribution::spend_press`]). An activation is a left click, or Return,
+//! Enter or Space going down anywhere but in text, once per press: a key's
+//! repeats while held are none (`gesture_of`). Typing is none, and takes back
+//! any press before it: a timer that fires while the person types in a
 //! search field hands off nothing. Until an agent has acted every call is the
 //! person's, so an app's code at load or on a timer would pass the actor
 //! alone; it can't make a press. One press, one hand-off.
@@ -247,30 +248,105 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     use nsh_platform_macos::Input;
     nsh_platform_macos::on_input(mtm, move |input| match input {
         Input::Agent => with(|a| a.agent_acted(Instant::now())),
-        Input::Person { surface } if activates(mtm) => with(|a| a.person_activated(surface, Instant::now())),
-        Input::Person { surface } => with(|a| a.person_typed(surface, Instant::now())),
+        Input::Person { surface } => match current_gesture(mtm) {
+            Gesture::Activation => with(|a| a.person_activated(surface, Instant::now())),
+            Gesture::Typing => with(|a| a.person_typed(surface, Instant::now())),
+            Gesture::Nothing => {}
+        },
     });
+    watch_key_ups(mtm);
     with(Attribution::watch);
 }
 
-/// Whether the event the app is handling now, which nsh just said is the
-/// person's, is an activation: a left click, or Return, Enter or Space with no
-/// text taking keys. Any other key is typing.
+/// What a piece of the person's input is to a hand-off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gesture {
+    /// A left click, or Return, Enter or Space going down outside text: a
+    /// press a hand-off may spend.
+    Activation,
+    /// Any other key: it takes back a press before it.
+    Typing,
+    /// Neither: a key repeating or still held, a key or button coming up,
+    /// another button.
+    Nothing,
+}
+
+/// The activation keys down now, by code: one going down again before it
+/// came up is no new press ([`gesture_of`]). Main thread.
 #[cfg(target_os = "macos")]
-fn activates(mtm: nsh_platform_macos::objc2::MainThreadMarker) -> bool {
-    use nsh_platform_macos::{
-        objc2::{ClassType, runtime::NSObjectProtocol},
-        objc2_app_kit::{NSApplication, NSEventType, NSText},
-    };
-    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else { return false };
-    match event.r#type() {
-        NSEventType::LeftMouseDown => true,
-        NSEventType::KeyDown => {
-            let in_text = event.window(mtm).and_then(|w| w.firstResponder()).is_some_and(|r| r.isKindOfClass(NSText::class()));
-            activation_key(event.keyCode()) && !in_text
-        }
-        _ => false,
+static HELD: Mutex<Option<HashSet<u16>>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn with_held<R>(f: impl FnOnce(&mut HashSet<u16>) -> R) -> R {
+    f(HELD.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
+}
+
+/// [`gesture_of`] the event the app is handling now, which nsh just said is
+/// the person's, with what has the keys.
+#[cfg(target_os = "macos")]
+fn current_gesture(mtm: nsh_platform_macos::objc2::MainThreadMarker) -> Gesture {
+    use nsh_platform_macos::objc2_app_kit::NSApplication;
+    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else { return Gesture::Nothing };
+    let in_text = event.window(mtm).and_then(|w| w.firstResponder()).is_some_and(|r| takes_text(&r));
+    with_held(|held| gesture_of(&event, in_text, held))
+}
+
+/// Whether `responder` takes typed text: anything that speaks the text input
+/// protocol, as AppKit's and nsh's text views, and a web view's fields, do.
+#[cfg(target_os = "macos")]
+pub fn takes_text(responder: &nsh_platform_macos::objc2::runtime::NSObject) -> bool {
+    use nsh_platform_macos::objc2::runtime::{AnyProtocol, NSObjectProtocol};
+    AnyProtocol::get(c"NSTextInputClient").is_some_and(|p| responder.conformsToProtocol(p))
+}
+
+/// What `event` is to a hand-off ([`Gesture`]), `in_text` if text has the
+/// keys, `held` the activation keys down now, which this keeps.
+#[cfg(target_os = "macos")]
+pub fn gesture_of(event: &nsh_platform_macos::objc2_app_kit::NSEvent, in_text: bool, held: &mut HashSet<u16>) -> Gesture {
+    use nsh_platform_macos::objc2_app_kit::NSEventType;
+    let kind = event.r#type();
+    if kind == NSEventType::LeftMouseDown {
+        return Gesture::Activation;
     }
+    if kind == NSEventType::KeyUp {
+        held.remove(&event.keyCode());
+        return Gesture::Nothing;
+    }
+    if kind != NSEventType::KeyDown {
+        return Gesture::Nothing;
+    }
+    let code = event.keyCode();
+    if event.isARepeat() || held.contains(&code) {
+        return Gesture::Nothing;
+    }
+    if in_text || !activation_key(code) {
+        return Gesture::Typing;
+    }
+    held.insert(code);
+    Gesture::Activation
+}
+
+/// Hears keys coming up, which nsh doesn't report: what lets the next press
+/// of an activation key count ([`HELD`]).
+#[cfg(target_os = "macos")]
+fn watch_key_ups(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
+    use std::ptr::NonNull;
+
+    use nsh_platform_macos::{
+        block2::RcBlock,
+        objc2_app_kit::{NSApplication, NSEvent, NSEventMask},
+    };
+    let _ = NSApplication::sharedApplication(mtm);
+    let block = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit passes a valid event.
+        let up = unsafe { event.as_ref() };
+        with_held(|held| gesture_of(up, false, held));
+        event.as_ptr()
+    });
+    // SAFETY: the block hands the event back unchanged; the monitor lives as
+    // long as the app.
+    let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyUp, &block) };
+    std::mem::forget(monitor);
 }
 
 /// Return (36), keypad Enter (76) and Space (49): the keys that press what
@@ -502,6 +578,113 @@ mod tests {
         a.person_activated(FORM, secs(t, 1));
         a.person_typed(FORM, secs(t, 1) + Duration::from_millis(100));
         assert_eq!(a.fresh_press(FORM, secs(t, 1) + Duration::from_millis(500)), None);
+    }
+
+    /// Real AppKit events, as the app gets them.
+    #[cfg(target_os = "macos")]
+    mod events {
+        use nsh_platform_macos::{
+            objc2::{ClassType, msg_send, rc::Retained, runtime::{AnyObject, Bool}},
+            objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType},
+            objc2_foundation::{NSPoint, NSString},
+        };
+
+        pub fn key(kind: NSEventType, code: u16, repeat: bool) -> Retained<NSEvent> {
+            let chars = NSString::from_str(" ");
+            // SAFETY: NSEvent's documented constructor, its arguments of their types.
+            let made: Option<Retained<NSEvent>> = unsafe {
+                msg_send![NSEvent::class(), keyEventWithType: kind, location: NSPoint::new(0.0, 0.0), modifierFlags: NSEventModifierFlags(0), timestamp: 0.0f64, windowNumber: 0isize, context: None::<&AnyObject>, characters: &*chars, charactersIgnoringModifiers: &*chars, isARepeat: Bool::new(repeat), keyCode: code]
+            };
+            made.expect("a key event")
+        }
+
+        pub fn mouse(kind: NSEventType) -> Retained<NSEvent> {
+            // SAFETY: as `key`.
+            let made: Option<Retained<NSEvent>> = unsafe {
+                msg_send![NSEvent::class(), mouseEventWithType: kind, location: NSPoint::new(0.0, 0.0), modifierFlags: NSEventModifierFlags(0), timestamp: 0.0f64, windowNumber: 0isize, context: None::<&AnyObject>, eventNumber: 0isize, clickCount: 1isize, pressure: 1.0f32]
+            };
+            made.expect("a mouse event")
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_held_space_or_return_is_one_press_however_long_it_repeats() {
+        use nsh_platform_macos::objc2_app_kit::NSEventType;
+        use events::key;
+        let mut held = HashSet::new();
+        for code in [49, 36] {
+            assert_eq!(gesture_of(&key(NSEventType::KeyDown, code, false), false, &mut held), Gesture::Activation);
+            for _ in 0..5 {
+                assert_eq!(gesture_of(&key(NSEventType::KeyDown, code, true), false, &mut held), Gesture::Nothing, "a repeat");
+            }
+            // a second down with no up between, as a lost repeat flag would be
+            assert_eq!(gesture_of(&key(NSEventType::KeyDown, code, false), false, &mut held), Gesture::Nothing);
+            assert_eq!(gesture_of(&key(NSEventType::KeyUp, code, false), false, &mut held), Gesture::Nothing);
+            assert_eq!(gesture_of(&key(NSEventType::KeyDown, code, false), false, &mut held), Gesture::Activation, "the next press");
+            gesture_of(&key(NSEventType::KeyUp, code, false), false, &mut held);
+        }
+        // the presses a held key would make are one hand-off
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_activated(FORM, t);
+        let n = a.fresh_press(FORM, t).unwrap();
+        assert!(a.spend_press(FORM, n));
+        assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(500)), None, "its repeats make none");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_click_is_a_press_and_its_mouse_up_takes_nothing_back() {
+        use nsh_platform_macos::objc2_app_kit::NSEventType;
+        use events::mouse;
+        let mut held = HashSet::new();
+        assert_eq!(gesture_of(&mouse(NSEventType::LeftMouseDown), false, &mut held), Gesture::Activation);
+        assert_eq!(gesture_of(&mouse(NSEventType::LeftMouseUp), false, &mut held), Gesture::Nothing);
+        assert_eq!(gesture_of(&mouse(NSEventType::RightMouseDown), false, &mut held), Gesture::Nothing);
+        assert_eq!(gesture_of(&mouse(NSEventType::LeftMouseDown), true, &mut held), Gesture::Activation, "a click in a text field is still a click");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_space_typed_in_a_text_field_is_no_press() {
+        use nsh_platform_macos::{
+            objc2::{
+                ClassType, msg_send,
+                rc::{Allocated, Retained},
+                runtime::{AnyClass, AnyProtocol, ClassBuilder, NSObject, NSObjectProtocol},
+            },
+            objc2_app_kit::NSEventType,
+        };
+        let make = |class: &std::ffi::CStr| -> Retained<NSObject> {
+            let class = AnyClass::get(class).unwrap();
+            // SAFETY: a plain alloc/init of an AppKit view class.
+            unsafe {
+                let made: Allocated<NSObject> = msg_send![class, alloc];
+                msg_send![made, init]
+            }
+        };
+        let field = make(c"NSTextView");
+        let plain = make(c"NSView");
+        assert!(takes_text(&field));
+        assert!(!takes_text(&plain));
+        // a view that takes text and is no NSText, as a web view's fields: a
+        // class of its own that speaks the protocol
+        let mut builder = ClassBuilder::new(c"BuwizTestTextInput", NSObject::class()).unwrap();
+        builder.add_protocol(AnyProtocol::get(c"NSTextInputClient").unwrap());
+        builder.register();
+        let input = make(c"BuwizTestTextInput");
+        assert!(!input.isKindOfClass(AnyClass::get(c"NSText").unwrap()));
+        assert!(takes_text(&input), "no NSText, and it takes text");
+        let mut held = HashSet::new();
+        let space = events::key(NSEventType::KeyDown, 49, false);
+        assert_eq!(gesture_of(&space, takes_text(&field), &mut held), Gesture::Typing);
+        assert_eq!(gesture_of(&events::key(NSEventType::KeyDown, 36, false), takes_text(&field), &mut held), Gesture::Typing, "Return too");
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_typed(FORM, t);
+        assert_eq!(a.fresh_press(FORM, t), None);
+        assert_eq!(gesture_of(&space, takes_text(&plain), &mut held), Gesture::Activation, "outside text it presses");
     }
 
     #[test]

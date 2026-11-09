@@ -35,7 +35,7 @@ use serde_json::Value;
 use super::{
     RoxError, V1Key,
     attribution::{self, Actor},
-    bridge::{self, Consent, Emit, HostUi, OpenContext, PickRequest, Press},
+    bridge::{self, Consent, Emit, HostUi, Live, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
     document::{self, Document},
     host_api, load,
@@ -171,7 +171,7 @@ impl HostUi for MacUi {
     ///
     /// A picture or a PDF is copied first, from the file opened at the check,
     /// on a thread of its own, and shown from the copy (`document`).
-    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_document(&self, doc: Document, live: Live) {
         if self.inline {
             return log::info!("mini v1: a card's document opened nothing");
         }
@@ -179,13 +179,15 @@ impl HostUi for MacUi {
         if !doc.needs_copy() {
             return super::to_store(move |st| st.v1_document(&key, &doc, live()));
         }
-        std::thread::spawn(move || match system_open::copy_file(doc.file(), doc.name(), &system_open::opened_dir()) {
-            Ok(copy) => super::to_store(move |st| st.v1_document(&key, &doc.with_copy(&copy), live())),
-            Err(e) => {
-                // the error's kind only: its text may hold a path
-                log::info!("mini v1: a document opened nothing: {:?}", e.kind());
-                super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
-            }
+        std::thread::spawn(move || {
+            let shown = doc.clone();
+            let (to, again) = (key.clone(), live.clone());
+            let done = move |copy: PathBuf| {
+                let doc = shown.with_copy(&copy);
+                super::to_store(move |st| st.v1_document(&to, &doc, again()));
+            };
+            let copy = || system_open::copy_file(doc.file(), doc.name(), &system_open::opened_dir());
+            handed("a document", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
         });
     }
 
@@ -196,34 +198,28 @@ impl HostUi for MacUi {
     /// On `open_document`'s terms. A marked copy of the Bot's own is made on
     /// a thread of its own, then opened on the main thread, as `open_url`
     /// opens.
-    fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_with(&self, file: LocalFile, live: Live) {
         if self.inline {
             return log::info!("mini v1: a card's file opened nothing");
         }
         let key = self.key.clone();
-        super::to_store(move |st| {
-            if !st.v1_on_top(&key, live()) {
-                return log::info!("mini v1: a file came after its screen left the top: nothing opened");
-            }
-            std::thread::spawn(move || match system_open::copy_for_open(&file, &system_open::opened_dir()) {
-                Ok(copy) => on_main(move || {
+        std::thread::spawn(move || {
+            let done = |copy: PathBuf| {
+                on_main(move || {
                     if !system_open::open_copy(&copy) {
                         log::info!("mini v1: a file opened nothing: its copy wasn't marked, or nothing opened it");
                         super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
                     }
-                }),
-                Err(e) => {
-                    // the error's kind only: its text may hold a path
-                    log::info!("mini v1: a file opened nothing: {:?}", e.kind());
-                    super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
-                }
-            });
+                })
+            };
+            let copy = || system_open::copy_for_open(&file, &system_open::opened_dir());
+            handed("a file", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
         });
     }
 
     /// On `open_document`'s terms. The copy runs on a thread of its own (an
     /// attachment can be large), then a toast says how it went.
-    fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn save(&self, file: LocalFile, live: Live) {
         if self.inline {
             return log::info!("mini v1: a card's file saved nothing");
         }
@@ -389,6 +385,31 @@ fn write_pasteboard(text: &str) {
         let board: Retained<AnyObject> = msg_send![class, generalPasteboard];
         let _: isize = msg_send![&*board, clearContents];
         let _: bool = msg_send![&*board, setString: &*s, forType: &*kind];
+    }
+}
+
+/// Whether the open `key` is still the person's screen, on top, and `live`,
+/// as the store has it: what a hand-off that copies asks before and after its
+/// copy, from the copy's own thread. No answer in time is no.
+fn shows(key: &str, live: &Live) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (key, live) = (key.to_owned(), live.clone());
+    super::to_store(move |st| {
+        let _ = tx.send(st.v1_on_top(&key, live()));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or(false)
+}
+
+/// Logs how a hand-off of `what` that copies went, nothing of the file, and
+/// tells the person of a copy that failed.
+fn handed(what: &str, how: system_open::Handed) {
+    match how {
+        system_open::Handed::Done => {}
+        system_open::Handed::Failed(kind) => {
+            log::info!("mini v1: {what} opened nothing: {kind:?}");
+            super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
+        }
+        left => log::info!("mini v1: {what} opened nothing: its screen left the top ({left:?})"),
     }
 }
 

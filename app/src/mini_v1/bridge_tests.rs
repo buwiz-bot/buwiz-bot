@@ -237,7 +237,7 @@ struct TestUi {
     /// The documents that reached the viewer.
     documents: Mutex<Vec<Document>>,
     /// What each was handed to ask, when its job runs, if its open lives.
-    lives: Mutex<Vec<Box<dyn FnOnce() -> bool + Send>>>,
+    lives: Mutex<Vec<Live>>,
     /// The files handed to the system's default app, and to Downloads.
     opened_with: Mutex<Vec<LocalFile>>,
     saved: Mutex<Vec<LocalFile>>,
@@ -253,7 +253,7 @@ impl HostUi for TestUi {
     fn plugin_folder(&self, _: &str) -> Option<PathBuf> {
         self.folder.lock().unwrap().clone()
     }
-    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_document(&self, doc: Document, live: Live) {
         self.documents.lock().unwrap().push(doc);
         self.lives.lock().unwrap().push(live);
     }
@@ -271,11 +271,11 @@ impl HostUi for TestUi {
         spent.push(press);
         true
     }
-    fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_with(&self, file: LocalFile, live: Live) {
         self.opened_with.lock().unwrap().push(file);
         self.lives.lock().unwrap().push(live);
     }
-    fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn save(&self, file: LocalFile, live: Live) {
         self.saved.lock().unwrap().push(file);
         self.lives.lock().unwrap().push(live);
     }

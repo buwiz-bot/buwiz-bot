@@ -54,6 +54,10 @@ use crate::agent_hub::{
     press::{self, Verdict},
 };
 
+/// Whether the open a hand-off came from still lives: asked when the hand-off
+/// runs, and again after a copy that took a while.
+pub type Live = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// What needs the person, or the app around the bridge.
 pub trait HostUi: Send + Sync {
     /// Asks the person (spec 9.7); `answer(true)` goes ahead. Any thread.
@@ -126,13 +130,13 @@ pub trait HostUi: Send + Sync {
     /// Shows `doc`, already checked, in the Bot's own viewer over this open,
     /// if `live()` holds and the open is still what the person sees. Hosts
     /// without a viewer ignore it.
-    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_document(&self, doc: Document, live: Live) {
         let _ = (doc, live);
     }
     /// Opens `file`, already checked, in the system's default app for its
     /// kind, if `live()` holds and the open is still what the person sees.
     /// Hosts that can't ignore it.
-    fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_with(&self, file: LocalFile, live: Live) {
         let _ = (file, live);
     }
     /// Tells the person that a file their press handed over did nothing:
@@ -143,7 +147,7 @@ pub trait HostUi: Send + Sync {
     }
     /// Copies `file`, already checked, to the person's Downloads folder and
     /// says so, on the same terms as [`HostUi::open_with`].
-    fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn save(&self, file: LocalFile, live: Live) {
         let _ = (file, live);
     }
     /// The open's session ended for `why` (a plugin restart shows
@@ -916,7 +920,7 @@ impl OpenContext {
         match live.and_then(|()| document::check(p.plugin.first_party, who.actor, folder.as_deref(), &field)) {
             Ok(doc) => {
                 let session = self.session.clone();
-                self.ui.open_document(doc, Box::new(move || session.check_live().is_ok()));
+                self.ui.open_document(doc, Arc::new(move || session.check_live().is_ok()));
             }
             Err(why) => {
                 log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app);
@@ -956,7 +960,7 @@ impl OpenContext {
         match live.and_then(|()| check(p.plugin.first_party, who.actor, folder.as_deref(), &field)).and_then(pressed) {
             Ok(file) => {
                 let session = self.session.clone();
-                let live = Box::new(move || session.check_live().is_ok());
+                let live: Live = Arc::new(move || session.check_live().is_ok());
                 match hand {
                     Hand::OpenWith => self.ui.open_with(file, live),
                     Hand::Save => self.ui.save(file, live),

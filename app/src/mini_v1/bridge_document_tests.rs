@@ -362,3 +362,20 @@ fn a_refusal_with_no_press_behind_it_is_only_logged() {
     o.wait("{");
     assert!(told(&o).is_empty());
 }
+
+#[test]
+fn a_name_that_would_show_as_another_is_refused_out_loud() {
+    let bed = Bed::new();
+    let name = "open-1f/1/invoice\u{202E}fdp.command";
+    fs::write(bed.folder.join(name), "x").unwrap();
+    let mut o = bed.save(true, false, name);
+    o.wait("{");
+    assert!(saved(&o).is_empty());
+    assert_eq!(told(&o), [SAVE_REFUSED]);
+    let pdf = "open-1f/1/a\u{200B}.pdf";
+    fs::write(bed.folder.join(pdf), "x").unwrap();
+    let mut o = bed.pressed(true, false, Some(1), json!({"field": bed.field(pdf)}));
+    o.wait("{");
+    assert!(opened(&o).is_empty(), "the viewer never shows the name");
+    assert_eq!(told(&o), [OPEN_REFUSED]);
+}

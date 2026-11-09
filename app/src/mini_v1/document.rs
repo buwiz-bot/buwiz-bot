@@ -70,6 +70,9 @@ pub enum Refused {
     Link,
     /// Inside the folder, but not at `open-<hex>/<folder>/<file>`.
     Shape,
+    /// A name with a character that makes it show as another
+    /// ([`deceives`]).
+    Name,
     /// Nothing there.
     Missing,
     /// There, but no regular file.
@@ -211,19 +214,32 @@ fn checked_in(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Va
     let (real, file) = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed), legacy)?;
     let path = real.to_str().ok_or(Refused::Kind)?.to_owned();
     let name = real.file_name().and_then(OsStr::to_str).ok_or(Refused::Kind)?.to_owned();
+    if name.chars().any(deceives) {
+        return Err(Refused::Name);
+    }
     Ok((path, name, file))
+}
+
+/// The characters that make a name show as another: the bidirectional
+/// embeddings, overrides and isolates (`x\u{202E}fdp.command` shows as
+/// `xdnammoc.pdf`), the marks and joiners that show as nothing, the byte
+/// order mark, and control characters. A file named with one is refused,
+/// with the person told, never shown, opened or saved under another look.
+pub(super) fn deceives(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}'..='\u{200F}' | '\u{FEFF}') || c.is_control()
 }
 
 /// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
 /// where a plugin hands its files over, and the only place the Bot takes one.
-/// With `legacy`, a Word or Sheet file at `open/<n>/<file>` passes too:
+/// With `legacy`, a Word or Sheet file at `open/<digits>/<file>` passes too:
 /// where plugin 1.4.0 hands them over, and it runs beside this Bot until
 /// 1.5.0 reaches the person.
 fn handed_over(rest: &Path, legacy: bool) -> bool {
     let parts: Vec<Component> = rest.components().collect();
     let hex = |s: &OsStr| s.to_str().and_then(|s| s.strip_prefix("open-")).is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()));
-    let old = |s: &OsStr, file: &OsStr| legacy && s == "open" && file.to_str().is_some_and(crate::office::native_ext);
-    matches!(parts.as_slice(), [Component::Normal(first), Component::Normal(_), Component::Normal(file)] if hex(first) || old(first, file))
+    let digits = |s: &OsStr| s.to_str().is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+    let old = |s: &OsStr, n: &OsStr, file: &OsStr| legacy && s == "open" && digits(n) && file.to_str().is_some_and(crate::office::native_ext);
+    matches!(parts.as_slice(), [Component::Normal(first), Component::Normal(n), Component::Normal(file)] if hex(first) || old(first, n, file))
 }
 
 /// `claimed` as the real path of a regular file at a hand-off place inside
@@ -530,6 +546,13 @@ mod tests {
         for name in ["a.png", "b.pdf"] {
             assert_eq!(bed.ask(&at(name)), Err(Refused::Shape), "{name}: only the new place");
         }
+        // the old place's folder is a number
+        for n in ["x", "3a", "-1", " 3"] {
+            fs::create_dir_all(bed.folder.join("open").join(n)).unwrap();
+            let path = bed.folder.join("open").join(n).join("a.docx");
+            fs::write(&path, "x").unwrap();
+            assert_eq!(bed.ask(&path), Err(Refused::Shape), "open/{n}/");
+        }
         // and nothing but the viewer takes the old place
         let field = json!({"path": at("d.docx")});
         assert_eq!(checked(true, Actor::Person, Some(&bed.folder), &field).err(), Some(Refused::Shape));
@@ -561,6 +584,15 @@ mod tests {
             assert!(!shown.needs_copy() && shown.still_checked());
             assert_eq!(shown.attach().path, copy.to_str().unwrap());
         }
+    }
+
+    #[test]
+    fn a_name_that_would_show_as_another_is_refused_not_shown() {
+        let bed = Bed::new();
+        for name in ["invoice\u{202E}fdp.docx", "a\u{2066}b.png", "a\u{200B}.pdf", "a\u{200E}.xlsx", "a\u{FEFF}.jpg", "a\u{0007}.docx", "a\nb.pdf"] {
+            assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Name), "{name:?}");
+        }
+        assert!(bed.ask(&bed.file("Report (final).docx")).is_ok());
     }
 
     #[test]
