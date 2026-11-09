@@ -74,7 +74,7 @@ const IDLE_ENV: &str = "BUWIZ_COMPUTER_IDLE_SECS";
 const DEEP_ENV: &str = "BUWIZ_COMPUTER_DEEP_SECS";
 const QUIET_ENV: &str = "BUWIZ_COMPUTER_QUIET_SECS";
 /// Idle this long, it sleeps. Asleep this long, it lets go of its memory.
-const IDLE: Duration = Duration::from_secs(15 * 60);
+const IDLE: Duration = Duration::from_secs(30 * 60);
 const DEEP: Duration = Duration::from_secs(2 * 60 * 60);
 /// A person with a drive viewer open and no input for this long has gone. Until then they're there,
 /// between clicks: the agent mustn't land where they're about to press.
