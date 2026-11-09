@@ -645,7 +645,7 @@ pub(crate) fn key_form(form: KeyForm, home: Home, saved: Rc<dyn Fn()>, cancelled
         let policy = home.policy.clone();
         buttons = buttons.child(small_button("Copy the limited policy".to_owned(), "Copy the limited policy".to_owned(), move || {
             crate::live::store().copy_text(&policy);
-            crate::toast::show("Copied the limited policy.");
+            crate::toast::show("Copied the limited policy. Put your 12-digit AWS account number where it says <ACCOUNT_ID>.");
         }));
     }
     buttons = buttons.child(small_button(format!("Cancel the key for {}", home.label), "Cancel".to_owned(), move || {
@@ -826,7 +826,8 @@ pub(crate) fn settings_page() -> impl IntoElement {
 // ---------------------------------------------------------------------------
 
 /// Bot Details' Computer line: where this Bot's next new computer is made, and a picker.
-pub(crate) fn bot_row(bot: &str) -> impl IntoElement {
+/// `edit` false: Bot Details is open to read, so the line only says where, with no picker.
+pub(crate) fn bot_row(bot: &str, edit: bool) -> impl IntoElement {
     let (open, note) = PICKER.with(|p| *p);
     let b = bot.to_owned();
     let (list, home) = (due("providers"), due(&format!("bot:{bot}")));
@@ -854,10 +855,14 @@ pub(crate) fn bot_row(bot: &str) -> impl IntoElement {
                 .px(px(16.0))
                 .py(px(12.0))
                 .child(text("Computer").text_size(px(15.0)).text_color(theme::TEXT).flex_1())
-                .child(text(format!("{words} ▾")).number_of_lines(1).text_size(px(14.0)).text_color(theme::DIM))
-                .on_press(move || open.update(|o| *o = !*o)),
+                .child(text(if edit { format!("{words} ▾") } else { words }).number_of_lines(1).text_size(px(14.0)).text_color(theme::DIM))
+                .on_press(move || {
+                    if edit {
+                        open.update(|o| *o = !*o);
+                    }
+                }),
         );
-        if open.get() {
+        if edit && open.get() {
             let on = next.as_ref().filter(|n| n.source == "bot").map(|n| n.kind.clone());
             let mut picks = view().px(px(16.0)).pb(px(12.0)).gap(px(4.0)).child(bot_choice(&bot, format!("Default ({})", h.default.label), None, on.is_none()));
             for home in h.bot_choices() {

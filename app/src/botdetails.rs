@@ -342,7 +342,7 @@ fn main_page(b: &RoxBot, edit: bool) -> impl IntoElement {
                 )),
         )
         // where this Bot's next new computer is made
-        .child(card().w_full().mt(px(16.0)).child(crate::homes::bot_row(&b.id)))
+        .child(card().w_full().mt(px(16.0)).child(crate::homes::bot_row(&b.id, edit)))
 }
 
 fn context_page(b: &RoxBot, edit: bool) -> impl IntoElement {

@@ -231,7 +231,7 @@ fn computer_default_sends_the_default_put() {
 #[component]
 fn Details() -> impl IntoElement {
     let _ = crate::live::store();
-    view().size_full().child(crate::homes::bot_row("b1")).child(text("probe ready=1").text_size(px(8.0)))
+    view().size_full().child(crate::homes::bot_row("b1", true)).child(text("probe ready=1").text_size(px(8.0)))
 }
 
 #[test]
@@ -252,6 +252,25 @@ fn the_bot_details_picker_sends_null_for_the_default() {
     let sent = wait_for_change(&mut app, 1);
     assert_eq!(sent, [("PUT".to_owned(), "/v1/host/computer/bot/b1/provider".to_owned(), json!({"kind": null}))]);
     wait_for_text(&mut app, "Default (Docker on this Mac) ▾");
+}
+
+#[component]
+fn ReadDetails() -> impl IntoElement {
+    let _ = crate::live::store();
+    view().size_full().child(crate::homes::bot_row("b1", false)).child(text("probe ready=1").text_size(px(8.0)))
+}
+
+#[test]
+fn bot_details_open_to_read_shows_the_home_and_offers_no_picker() {
+    if !in_child("bot_details_open_to_read_shows_the_home_and_offers_no_picker") {
+        return;
+    }
+    route("GET", "/v1/host/computer/providers", 200, providers(true));
+    route("GET", "/v1/host/computer/bot/b1", 200, json!({"state": "absent", "home": {"kind": "e2b", "label": "E2B", "source": "bot"}}));
+    let mut app = start::<ReadDetails>((600.0, 600.0));
+    wait_for_text(&mut app, "E2B");
+    app.press("Computer");
+    assert!(!app.has("E2B ▾") && !app.has("AWS EC2") && !app.has("Default (Docker on this Mac)"), "no picker when it only reads");
 }
 
 #[component]

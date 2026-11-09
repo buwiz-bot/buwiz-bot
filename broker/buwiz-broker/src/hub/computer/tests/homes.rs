@@ -389,3 +389,33 @@ async fn a_named_aws_profile_that_gives_no_keys_isnt_ready_or_a_default() {
     assert_eq!(shown["configured"], false);
     assert_eq!(b.computers.set_default(&b.ctx, ProviderKind::Ec2).unwrap_err().code(), "not_configured");
 }
+
+#[tokio::test]
+async fn keys_that_cant_be_read_make_a_home_refuse_and_never_sign_with_this_macs_own() {
+    let (b, _) = homes_bed("unread-refuses");
+    // the keys file is there and can't be read, before anything asked for the provider
+    std::fs::create_dir_all(b.ctx.data.join("keys/provider-creds/ec2~default.json")).unwrap();
+    let p = b.computers.homes.provider(&b.ctx, ProviderKind::Ec2);
+    let said = p.verify().await.unwrap_err();
+    assert_eq!(said.code(), "keychain", "{}", said.sentence());
+    // nothing was kept: once the keys can be read, the provider is made with them
+    assert!(b.computers.providers_json(&b.ctx)["providers"].as_array().unwrap().iter().any(|h| h["kind"] == "ec2" && h["configured"] == false));
+}
+
+#[tokio::test]
+async fn a_computer_being_made_or_removed_holds_off_new_keys() {
+    let (b, _) = homes_bed("being-removed");
+    save_e2b(&b, GOOD).await.unwrap();
+    // a failed create's leftover: a row on its way out, with no record to ask about
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES('cmp_0abc', 'e2b', 1, 1)", [])).unwrap();
+    assert_eq!(save_e2b(&b, OTHER).await.unwrap_err().code(), "in_use");
+}
+
+#[tokio::test]
+async fn a_later_turn_doesnt_post_a_second_setup_card() {
+    let (b, _) = homes_bed("setup-twice");
+    let first = run(&b, &b.ann.1, None);
+    assert!(words(&call(&first, tools::SETUP, json!({"reason": "a browser"})).await).contains("card is in the chat"));
+    let later = run(&b, &b.ann.1, None);
+    assert!(words(&call(&later, tools::SETUP, json!({"reason": "again"})).await).contains("already in the chat"));
+}

@@ -464,11 +464,11 @@ fn setup(run: &Run, computers: &Computers, bot: &str, input: &Value) -> Out {
     if computers.has_working(&run.ctx, bot) {
         return Out::err("You already have a computer. If it's asleep, ask the person to wake it from the Computer tab.".to_owned());
     }
-    if run.state().setup_asked {
-        return Out::err("The card is already in the chat: wait for the person.".to_owned());
+    let chat = run.thread_id();
+    if run.state().setup_asked || setup_card_lately(run, &chat, bot) {
+        return Out::err("A setup card is already in the chat: wait for the person.".to_owned());
     }
     let reason: String = text(input, "reason").unwrap_or("").trim().chars().take(MAX_REASON).collect();
-    let chat = run.thread_id();
     let id = format!("cs_{}", buwiz_computer::random_hex(8).unwrap_or_default());
     let n = json!({
         "kind": "computer_setup", "id": id, "bot": bot, "botName": crate::hub::computer::bot_name(&run.ctx, bot), "chat": chat,
@@ -480,6 +480,21 @@ fn setup(run: &Run, computers: &Computers, bot: &str, input: &Value) -> Out {
     // only once it's there: a card that wasn't posted can be asked for again
     run.state().setup_asked = true;
     Out::ok("A card is in the chat for the person to pick where your computer runs and add their own keys. You won't see any key. Wait for them: once it's set up they wake it, and then you can use it.".to_owned())
+}
+
+/// How long a setup card in a chat stands for the Bot asking: a later turn doesn't post another.
+const SETUP_CARD_STANDS_MS: i64 = 10 * 60 * 1000;
+
+/// Whether `bot` put a setup card in `chat` within [`SETUP_CARD_STANDS_MS`].
+fn setup_card_lately(run: &Run, chat: &str, bot: &str) -> bool {
+    let since = crate::hub::policy::now(&run.ctx) - SETUP_CARD_STANDS_MS;
+    run.ctx.store.read(|s| {
+        s.thread(chat).is_some_and(|t| {
+            t.turns.iter().rev().filter_map(|turn| turn.notice.as_ref()).any(|n| {
+                n["kind"] == "computer_setup" && n["bot"] == bot && n["at"].as_i64().is_some_and(|at| at >= since)
+            })
+        })
+    })
 }
 
 /// Whether a command may go, for `name`. On a shared computer the other Bots are what's at stake,

@@ -108,6 +108,7 @@ fn notes(kind: ProviderKind) -> Vec<String> {
         ProviderKind::Ec2 => vec![
             "Your own AWS account pays for the computers. Sleep hibernates them, so a sleeping one costs only its disk.".to_owned(),
             "To set up AWS, launch the stack (Launch the AWS stack) in the region above. It asks for AllowedSshCidr: this Mac's public address with /32 after it, like 203.0.113.7/32 (search the web for \"what is my IP\" to find it). Its output BrokerAccessKeyConsole opens the page where you make the access key to paste here.".to_owned(),
+            "Copy the limited policy names your account as <ACCOUNT_ID>: put your 12-digit account number there, or use the stack's BrokerPolicyJson output, which has it filled in.".to_owned(),
             "A stack made from an older template has no buwiz:managed tag on its launch template, subnet and security group, and AWS refuses the launch: update the stack with this template.".to_owned(),
         ],
         ProviderKind::E2b => vec![
@@ -260,13 +261,33 @@ pub struct Homes {
     locks: HashMap<ProviderKind, tokio::sync::RwLock<()>>,
     /// for a kind `locks` lacks, which `ProviderKind::ALL` rules out
     fallback_lock: tokio::sync::RwLock<()>,
+    /// what this broker's keys are hidden under ([`Homes::hide`])
+    id: String,
+}
+
+impl Drop for Homes {
+    /// Its keys aren't anyone's to hide any more.
+    fn drop(&mut self) {
+        for kind in ProviderKind::ALL {
+            buwiz_computer::hide(&format!("{}/{}", self.id, kind.as_str()), Vec::new());
+        }
+    }
 }
 
 impl Homes {
     /// `first` serves its own kind: Docker's provider, or a test's.
     pub fn new(first: Arc<dyn Provider>) -> Self {
+        // no randomness from the system: its address in memory is this broker's own too
+        let id = buwiz_computer::random_hex(8).unwrap_or_else(|_| format!("{:p}", Arc::as_ptr(&first)));
         let providers = HashMap::from([(first.kind(), first)]);
-        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), unread: Mutex::default(), generations: Mutex::default(), locks: ProviderKind::ALL.into_iter().map(|k| (k, tokio::sync::RwLock::new(()))).collect(), fallback_lock: tokio::sync::RwLock::new(()) }
+        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), unread: Mutex::default(), generations: Mutex::default(), locks: ProviderKind::ALL.into_iter().map(|k| (k, tokio::sync::RwLock::new(()))).collect(), fallback_lock: tokio::sync::RwLock::new(()), id }
+    }
+
+    /// Makes [`buwiz_computer::Machine::scrub`] hide `kind`'s keys, and only its current ones. Under
+    /// this broker's own name: another's (a test's) never replaces them.
+    fn hide(&self, kind: ProviderKind, saved: Option<&Saved>) {
+        let secrets = saved.map(|s| s.secrets.values().filter(|v| !v.expose().is_empty()).cloned().collect()).unwrap_or_default();
+        buwiz_computer::hide(&format!("{}/{}", self.id, kind.as_str()), secrets);
     }
 
     /// `kind`'s lock: [`Homes::locks`].
@@ -292,9 +313,9 @@ impl Homes {
             ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat => match self.handles_of(ctx, kind) {
                 Ok(Handles::Cloud(s)) => (self.factory)(Made::Cloud(kind, s)),
                 Ok(Handles::Ec2(c, k)) => (self.factory)(Made::Ec2(c, Arc::new(StoreKeys(k)))),
-                // the keystore didn't answer: a provider with nothing set, for this call alone. Kept,
-                // it would stand for "no keys" until the next save
-                Err(_) => return self.candidate(kind, &Saved::default()),
+                // the keystore didn't answer: a provider that refuses everything, for this call alone.
+                // Never one with nothing set: AWS's would sign with this Mac's own keys
+                Err(_) => return Arc::new(Unread(kind)),
             },
             other => provider_for(other),
         };
@@ -337,7 +358,7 @@ impl Homes {
             } else {
                 Handles::Cloud(Shared::new(cloud_settings(kind, saved.as_ref())))
             };
-            hide(kind, saved.as_ref());
+            self.hide(kind, saved.as_ref());
             all.insert(kind, h.clone());
             return Ok(h);
         }
@@ -363,7 +384,7 @@ impl Homes {
             // no provider was made yet: it reads the store when it is
             None => {}
         }
-        hide(kind, saved);
+        self.hide(kind, saved);
     }
 
     /// A provider of its own with `saved`, for a check that mustn't touch the live one.
@@ -378,7 +399,26 @@ impl Homes {
 
     /// Whether `kind` has what a computer needs, as far as can be told without asking the platform.
     fn configured(&self, ctx: &HubCtx, kind: ProviderKind) -> bool {
-        configured_with(kind, &load(ctx, kind))
+        configured_with(kind, &self.read(ctx, kind))
+    }
+
+    /// What's saved for `kind`, for a view: nothing for a home that keeps nothing, and a keystore
+    /// that didn't answer a moment ago isn't asked again until [`UNREAD_WAIT`] is up.
+    fn read(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<Option<Saved>, Problem> {
+        if fields(kind).is_empty() {
+            return Ok(None);
+        }
+        if self.unread.lock().unwrap_or_else(|e| e.into_inner()).get(&kind).is_some_and(|at| at.elapsed() < UNREAD_WAIT) {
+            return Err(Problem::Failed("the keystore didn't answer a moment ago".to_owned()));
+        }
+        let read = load(ctx, kind);
+        let mut unread = self.unread.lock().unwrap_or_else(|e| e.into_inner());
+        if read.is_err() {
+            unread.insert(kind, Instant::now());
+        } else {
+            unread.remove(&kind);
+        }
+        read
     }
 }
 
@@ -400,11 +440,6 @@ fn configured_with(kind: ProviderKind, read: &Result<Option<Saved>, Problem>) ->
     }
 }
 
-/// Makes [`buwiz_computer::Machine::scrub`] hide `kind`'s keys, and only its current ones.
-fn hide(kind: ProviderKind, saved: Option<&Saved>) {
-    let secrets = saved.map(|s| s.secrets.values().filter(|v| !v.expose().is_empty()).cloned().collect()).unwrap_or_default();
-    buwiz_computer::hide(kind.as_str(), secrets);
-}
 
 // ---- the store ----
 
@@ -420,19 +455,29 @@ fn load(ctx: &HubCtx, kind: ProviderKind) -> Result<Option<Saved>, Problem> {
     Ok(Some(Saved { config, secrets: secrets.into_iter().map(|(k, v)| (k, Secret::new(v))).collect() }))
 }
 
-/// Keeps `saved` for `kind`: the keys first, so a row never says there are keys the keystore lost.
-fn store(ctx: &HubCtx, kind: ProviderKind, saved: &Saved) -> Result<(), Problem> {
+/// Puts `secrets` in the keystore for `kind`, or empties it for none.
+fn keep_secrets(ctx: &HubCtx, kind: ProviderKind, secrets: &BTreeMap<String, Secret>) -> Result<(), Problem> {
     let ks = keys(ctx)?;
-    if saved.secrets.is_empty() {
-        ks.remove_provider_cred(kind.as_str()).map_err(Problem::Failed)?;
-    } else {
-        let plain: BTreeMap<&str, &str> = saved.secrets.iter().map(|(k, v)| (k.as_str(), v.expose())).collect();
-        let text = serde_json::to_string(&plain).map_err(|e| Problem::Failed(e.to_string()))?;
-        ks.put_provider_cred(kind.as_str(), &text).map_err(|e| Problem::Failed(format!("The keys couldn't be kept in this Mac's Keychain: {e}")))?;
+    if secrets.is_empty() {
+        return ks.remove_provider_cred(kind.as_str()).map_err(Problem::Failed);
     }
+    let plain: BTreeMap<&str, &str> = secrets.iter().map(|(k, v)| (k.as_str(), v.expose())).collect();
+    let text = serde_json::to_string(&plain).map_err(|e| Problem::Failed(e.to_string()))?;
+    ks.put_provider_cred(kind.as_str(), &text).map_err(|e| Problem::Failed(format!("The keys couldn't be kept in this Mac's Keychain: {e}")))
+}
+
+/// Keeps `saved` for `kind`, keys first: a row never says there are keys the keystore lost. A row
+/// that doesn't write puts `before`'s keys back, so what's kept and what's used stay one.
+fn store(ctx: &HubCtx, kind: ProviderKind, saved: &Saved, before: &Saved) -> Result<(), Problem> {
+    keep_secrets(ctx, kind, &saved.secrets)?;
     let config = serde_json::to_string(&saved.config).map_err(|e| Problem::Failed(e.to_string()))?;
     let at = policy::now(ctx);
-    ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO computer_providers(kind, config, updated_at) VALUES(?,?,?)", rusqlite::params![kind.as_str(), config, at])).map(|_| ()).map_err(db_problem)
+    let row = ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO computer_providers(kind, config, updated_at) VALUES(?,?,?)", rusqlite::params![kind.as_str(), config, at]));
+    if let Err(e) = row {
+        let _ = keep_secrets(ctx, kind, &before.secrets);
+        return Err(db_problem(e));
+    }
+    Ok(())
 }
 
 fn forget(ctx: &HubCtx, kind: ProviderKind) -> Result<(), Problem> {
@@ -500,7 +545,7 @@ fn last4(s: &Secret) -> Option<String> {
 impl Computers {
     fn provider_json(&self, ctx: &HubCtx, kind: ProviderKind) -> Value {
         // one read of the keystore for the whole answer, and none for a home with nothing to keep
-        let read = if fields(kind).is_empty() { Ok(None) } else { load(ctx, kind) };
+        let read = self.homes.read(ctx, kind);
         let saved = read.as_ref().ok().cloned().flatten();
         let (env_config, _) = ec2_settings(None);
         let shown: Vec<Value> = fields(kind)
@@ -554,7 +599,8 @@ impl Computers {
             return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", label(kind))));
         }
         let _saving = self.homes.lock(kind).write().await;
-        let mut next = load(ctx, kind)?.unwrap_or_default();
+        let before = load(ctx, kind)?.unwrap_or_default();
+        let mut next = before.clone();
         for f in fields(kind) {
             let typed = values.get(f.key).and_then(Value::as_str).map(str::trim);
             if let Some(v) = typed {
@@ -592,7 +638,7 @@ impl Computers {
         let candidate = self.homes.candidate(kind, &next);
         candidate.verify().await?;
         self.sees_its_computers(ctx, kind, &*candidate).await?;
-        store(ctx, kind, &next)?;
+        store(ctx, kind, &next, &before)?;
         self.homes.apply(kind, Some(&next));
         Ok(self.provider_json(ctx, kind))
     }
@@ -608,7 +654,11 @@ impl Computers {
         let gone = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone));
         let live = self.homes.provider(ctx, kind);
         for (id, _) in computers_on(ctx, kind)? {
-            let Ok(machine) = self.machine(ctx, &id) else { continue };
+            // a computer whose record can't be read now (being made, or being removed) may still be
+            // there: nothing can say these keys see it, so they wait
+            let Ok(machine) = self.machine(ctx, &id) else {
+                return Err(refusal("in_use", format!("A computer on {} is being made or removed right now. Try again in a minute.", label(kind))));
+            };
             let seen = candidate.power(&machine).await;
             if unseen(&seen) {
                 if gone(&live.power(&machine).await) {
@@ -704,6 +754,43 @@ fn built(kind: ProviderKind) -> bool {
 
 fn refusal(code: &'static str, message: String) -> Problem {
     Problem::Refused { code, message }
+}
+
+/// A provider whose keys couldn't be read: it refuses everything, in words that say so.
+struct Unread(ProviderKind);
+
+impl Unread {
+    fn no<T>(&self) -> buwiz_computer::Result<T> {
+        Err(Problem::Refused { code: "keychain", message: format!("This Mac's Keychain didn't answer, so {}'s keys couldn't be read. Unlock the Mac's Keychain, then try again.", label(self.0)) })
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Unread {
+    fn kind(&self) -> ProviderKind {
+        self.0
+    }
+    async fn check(&self) -> buwiz_computer::Result<()> {
+        self.no()
+    }
+    async fn create(&self, _spec: &buwiz_computer::Spec) -> buwiz_computer::Result<buwiz_computer::Machine> {
+        self.no()
+    }
+    async fn power(&self, _machine: &buwiz_computer::Machine) -> buwiz_computer::Result<Power> {
+        self.no()
+    }
+    async fn wake(&self, _machine: &buwiz_computer::Machine) -> buwiz_computer::Result<buwiz_computer::Woke> {
+        self.no()
+    }
+    async fn sleep(&self, _machine: &buwiz_computer::Machine, _depth: buwiz_computer::Sleep) -> buwiz_computer::Result<()> {
+        self.no()
+    }
+    async fn destroy(&self, _machine: &buwiz_computer::Machine) -> buwiz_computer::Result<()> {
+        self.no()
+    }
+    async fn sweep(&self, _id: &str, _last: Option<&buwiz_computer::Reach>) -> buwiz_computer::Result<()> {
+        self.no()
+    }
 }
 
 #[cfg(test)]

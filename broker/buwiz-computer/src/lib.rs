@@ -109,8 +109,9 @@ fn hidden_keys() -> &'static RwLock<std::collections::HashMap<String, Vec<Secret
     HIDDEN.get_or_init(RwLock::default)
 }
 
-/// Makes [`Machine::scrub`] hide `secrets` too: the keys `owner` (a provider's word) holds in
-/// memory. Each call replaces what that owner had, so an old key stops being one to look for.
+/// Makes [`Machine::scrub`] hide `secrets` too: the keys `owner` holds in memory (the broker names
+/// itself and the provider). Each call replaces what that owner had, so an old key stops being one
+/// to look for; an empty list lets it go.
 pub fn hide(owner: &str, secrets: Vec<Secret>) {
     hidden_keys().write().unwrap_or_else(|e| e.into_inner()).insert(owner.to_owned(), secrets);
 }

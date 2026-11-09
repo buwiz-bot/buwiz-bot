@@ -1833,8 +1833,9 @@ async fn set_bot_home(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let set = kind_in(&body).and_then(|kind| computers.set_bot_home(&ctx, &bot, kind));
+    // the home alone: the whole status would ask the computer's provider, and nothing here needs it
     match set {
-        Ok(()) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),
+        Ok(()) => types::json(StatusCode::OK, &json!({"ok": true, "home": homes::home_json(&ctx, &bot)})),
         Err(p) => refused(&p),
     }
 }
