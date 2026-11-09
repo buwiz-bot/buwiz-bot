@@ -285,6 +285,41 @@ fn one_press_hands_off_exactly_one_file() {
 }
 
 #[test]
+fn a_result_asking_to_open_and_save_opens_and_says_nothing_of_the_save() {
+    let bed = Bed::new();
+    let path = bed.folder.join("open-1f/1/IMG_4250.png");
+    let mut o = bed.pressed(true, false, Some(8), json!({"open_with": {"path": path}, "save": {"path": path}}));
+    o.wait("{");
+    assert_eq!(opened_with(&o), ["IMG_4250.png"]);
+    assert!(saved(&o).is_empty());
+    assert!(told(&o).is_empty(), "no \"couldn't save\" beside a file that opened");
+    // a second call's save after the press went still says so
+    let script = format!(
+        "await buwiz.call(\"fx_document\", {}); return await buwiz.call(\"fx_document\", {});",
+        json!({"open_with": {"path": path}}),
+        json!({"save": {"path": path}})
+    );
+    let folder = bed.folder.clone();
+    let mut o = Open::start_with(FIXTURE, json!({"tools": TOOLS}), &script, Limits::default(), move |ui| {
+        ui.first_party.store(true, Ordering::SeqCst);
+        *ui.folder.lock().unwrap() = Some(folder);
+        *ui.hand_press.lock().unwrap() = Some(9);
+    });
+    o.wait("{");
+    assert_eq!(told(&o), [SAVE_REFUSED]);
+}
+
+#[test]
+fn the_bots_own_viewer_shows_with_no_press_where_an_open_with_needs_one() {
+    let bed = Bed::new();
+    let field = bed.field("open-1f/1/Invoice.pdf");
+    let mut o = bed.pressed(true, false, None, json!({"field": field, "open_with": {"path": bed.folder.join("open-1f/1/Invoice.pdf")}}));
+    assert_eq!(o.wait("{"), r#"{"opened":true}"#);
+    assert_eq!(viewed(&o).len(), 1, "buwiz/document needs no press");
+    assert!(opened_with(&o).is_empty(), "buwiz/open_with does");
+}
+
+#[test]
 fn the_ais_call_or_a_third_party_plugins_opens_and_saves_nothing() {
     let bed = Bed::new();
     for (first_party, agent) in [(true, true), (false, false)] {

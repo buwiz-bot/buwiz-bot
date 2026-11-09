@@ -194,7 +194,7 @@ impl HostUi for MacUi {
                     }
                 });
             };
-            let copy = || system_open::copy_for_view(doc.file(), doc.name(), &copies()?);
+            let copy = || system_open::copy_for_view(doc.file(), doc.name(), &copies()?, system_open::CAP);
             handed("a document", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
         });
     }
@@ -212,19 +212,21 @@ impl HostUi for MacUi {
         }
         let key = self.key.clone();
         std::thread::spawn(move || {
-            let again = live.clone();
-            // the screen was checked on the store's thread just now, which
-            // alone knows it; main asks the open again, and opens or takes
-            // the copy away, in one go
+            let (to, again) = (key.clone(), live.clone());
+            // main asks the store again whether the screen is the person's,
+            // on top (the store's thread alone knows), and opens or takes the
+            // copy away, in one go: while main waits, no input of the
+            // person's can move the screen
             let done = move |copy: system_open::Copied| {
                 on_main(move || {
-                    if !system_open::open_or_discard(&copy.path, again(), system_open::open_copy) {
-                        log::info!("mini v1: a file opened nothing: its open ended, its copy wasn't marked, or nothing opened it");
+                    let on_top = || shows_within(&to, &again, ON_MAIN_WAIT);
+                    if !system_open::open_or_discard(&copy.path, on_top, system_open::open_copy) {
+                        log::info!("mini v1: a file opened nothing: its screen left the top, its copy wasn't marked, or nothing opened it");
                         super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
                     }
                 })
             };
-            let copy = || system_open::copy_for_open(&file, &copies()?).map(system_open::Copied::fresh);
+            let copy = || system_open::copy_for_open(&file, &copies()?, system_open::CAP).map(system_open::Copied::fresh);
             handed("a file", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
         });
     }
@@ -409,12 +411,21 @@ fn copies() -> std::io::Result<PathBuf> {
 /// as the store has it: what a hand-off that copies asks before and after its
 /// copy, from the copy's own thread. No answer in time is no.
 fn shows(key: &str, live: &Live) -> bool {
+    shows_within(key, live, std::time::Duration::from_secs(10))
+}
+
+/// How long main waits for the store's answer before an open: short, for
+/// main draws nothing meanwhile. No answer is no open.
+const ON_MAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`shows`], waiting at most `wait`.
+fn shows_within(key: &str, live: &Live, wait: std::time::Duration) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     let (key, live) = (key.to_owned(), live.clone());
     super::to_store(move |st| {
         let _ = tx.send(st.v1_on_top(&key, live()));
     });
-    rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or(false)
+    rx.recv_timeout(wait).unwrap_or(false)
 }
 
 /// Logs how a hand-off of `what` that copies went, nothing of the file, and

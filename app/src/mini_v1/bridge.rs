@@ -903,8 +903,8 @@ impl OpenContext {
                 fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
             me.open_document(document, &who);
-            me.hand_file(open_with, &who, Hand::OpenWith);
-            me.hand_file(save, &who, Hand::Save);
+            let spent = me.hand_file(open_with, &who, Hand::OpenWith, false);
+            me.hand_file(save, &who, Hand::Save, spent);
             Ok(answer)
         });
     }
@@ -943,9 +943,11 @@ impl OpenContext {
     /// takes `buwiz/document`, and with the person's own press just before
     /// the call, which this spends: "no agent has acted" alone is what an
     /// app's code at load or on a timer gets too. Nothing of the path goes to
-    /// the log.
-    fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand) {
-        let Some(field) = field else { return };
+    /// the log. Whether it spent the press: a second hand-off from the same
+    /// result (`after_spent`) then finds none, which is the log's alone, not
+    /// a "couldn't save" beside a file that opened.
+    fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand, after_spent: bool) -> bool {
+        let Some(field) = field else { return false };
         let p = &self.prepared;
         let live = self.session.check_live().map_err(|_| Refused::Closed);
         let folder = self.ui.plugin_folder(&p.plugin.id);
@@ -965,10 +967,14 @@ impl OpenContext {
                     Hand::OpenWith => self.ui.open_with(file, live),
                     Hand::Save => self.ui.save(file, live),
                 }
+                true
             }
             Err(why) => {
                 log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app);
-                self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+                if !(after_spent && why == Refused::NoPress) {
+                    self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+                }
+                false
             }
         }
     }

@@ -223,11 +223,26 @@ fn checked_in(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Va
 /// The characters that make a name show as another: the bidirectional
 /// embeddings, overrides and isolates (`x\u{202E}fdp.command` shows as
 /// `xdnammoc.pdf`), the marks and joiners that show as nothing (the Arabic
-/// letter mark among them), the byte
-/// order mark, and control characters. A file named with one is refused,
-/// with the person told, never shown, opened or saved under another look.
+/// letter mark among them; the word joiner and the invisible operators,
+/// the Mongolian vowel separator, the soft hyphen, the interlinear
+/// annotation marks, and the tag characters, which hide text in a name),
+/// the byte order mark, and control characters. A file named with one is
+/// refused, with the person told, never shown, opened or saved under
+/// another look.
 pub(super) fn deceives(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200B}'..='\u{200F}' | '\u{061C}' | '\u{FEFF}') || c.is_control()
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{00AD}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E007F}'
+    ) || c.is_control()
 }
 
 /// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
@@ -594,6 +609,21 @@ mod tests {
             assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Name), "{name:?}");
         }
         assert!(bed.ask(&bed.file("Report (final).docx")).is_ok());
+    }
+
+    #[test]
+    fn a_name_with_an_invisible_joiner_hyphen_or_tag_is_refused_too() {
+        let bed = Bed::new();
+        let hidden = ['\u{2060}', '\u{2062}', '\u{2064}', '\u{180E}', '\u{00AD}', '\u{FFF9}', '\u{FFFB}', '\u{E0001}', '\u{E0041}', '\u{E007F}'];
+        for c in hidden {
+            let name = format!("in{c}voice.pdf");
+            assert_eq!(bed.ask(&bed.file(&name)), Err(Refused::Name), "{name:?}");
+        }
+        // unassigned, so no disk takes it in a name, but in the block all the same
+        assert!(deceives('\u{E0000}'));
+        for c in ['\u{205F}', '\u{2065}', '\u{FFFC}', '\u{E0080}'] {
+            assert!(!deceives(c), "{c:?} is outside the list");
+        }
     }
 
     #[test]

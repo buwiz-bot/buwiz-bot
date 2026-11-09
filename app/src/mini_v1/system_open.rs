@@ -149,9 +149,11 @@ fn create_marked(to: &Path) -> io::Result<fs::File> {
 /// fails; to the disk itself if `sync` (a save, which the person keeps; a
 /// copy to open needn't outlive a crash). It reads by offset from the start, never the file's own position,
 /// which every holder of the open file shares: a second copy reads it all
-/// too.
+/// too. Past `most` bytes, if any, it fails: a file the plugin keeps
+/// writing to after the check grows no copy past the cap ([`Cap`]). `out`
+/// back, once whole.
 #[cfg(target_os = "macos")]
-fn fill(from: &fs::File, mut out: fs::File, to: &Path, sync: bool) -> io::Result<()> {
+fn fill(from: &fs::File, mut out: fs::File, to: &Path, sync: bool, most: Option<u64>) -> io::Result<fs::File> {
     use std::{io::Write, os::unix::fs::FileExt};
     let mut copy = || -> io::Result<()> {
         let mut buf = vec![0; 1 << 16];
@@ -161,16 +163,21 @@ fn fill(from: &fs::File, mut out: fs::File, to: &Path, sync: bool) -> io::Result
             if n == 0 {
                 return if sync { out.sync_all() } else { Ok(()) };
             }
-            out.write_all(&buf[..n])?;
             at += n as u64;
+            if most.is_some_and(|most| at > most) {
+                return Err(io::ErrorKind::FileTooLarge.into());
+            }
+            out.write_all(&buf[..n])?;
         }
     };
-    let copied = copy();
-    if copied.is_err() {
-        drop(out);
-        let _ = fs::remove_file(to);
+    match copy() {
+        Ok(()) => Ok(out),
+        Err(e) => {
+            drop(out);
+            let _ = fs::remove_file(to);
+            Err(e)
+        }
     }
-    copied
 }
 
 /// Copies `file` into `dir` under its own name, cleaned, or the first
@@ -185,7 +192,7 @@ pub fn save_in(file: &LocalFile, dir: &Path) -> io::Result<PathBuf> {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         };
-        return fill(&file.file, out, &to, true).map(|()| to);
+        return fill(&file.file, out, &to, true, None).map(|_| to);
     }
     Err(io::Error::from(io::ErrorKind::AlreadyExists))
 }
@@ -199,10 +206,11 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Copies `file` for `buwiz/open_with` into a new folder of its own in
-/// `base`, under its own name: the copy's path, for [`open_copy`].
+/// `base`, under its own name, within `cap`: the copy's path, for
+/// [`open_copy`].
 #[cfg(target_os = "macos")]
-pub fn copy_for_open(file: &LocalFile, base: &Path) -> io::Result<PathBuf> {
-    copy_file(&file.file, &file.name, base, None)
+pub fn copy_for_open(file: &LocalFile, base: &Path, cap: Cap) -> io::Result<PathBuf> {
+    copy_file(&file.file, &file.name, base, None, cap)
 }
 
 /// A copy in [`opened_dir`]: where it is, and whether this hand-off made it
@@ -225,30 +233,92 @@ impl Copied {
 /// What the Bot writes down of each copy it makes, beside its folder in
 /// [`opened_dir`] (`<id>.copy`): the copy's name and inode, all a sweep may
 /// take away, and for a viewer's copy the file it came from.
+///
+/// It is written first, `pending`, before the folder is made, and again
+/// once the copy is whole: a copy cut off midway (the Bot killed, the disk
+/// full) is still on record, so the sweep takes it. A pending copy was never
+/// handed to anything, and its folder was only ever the Bot's: the file its
+/// record names is taken by that name, as a regular file, with no inode yet.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Record {
     name: String,
-    ino: u64,
+    ino: Option<u64>,
     bytes: u64,
     /// The checked file's device, inode, change time (ns) and size.
     source: Option<[u64; 4]>,
+    pending: bool,
 }
 
 #[cfg(target_os = "macos")]
 impl Record {
     fn to_json(&self) -> String {
-        serde_json::json!({"name": self.name, "ino": self.ino, "bytes": self.bytes, "source": self.source}).to_string()
+        serde_json::json!({"name": self.name, "ino": self.ino, "bytes": self.bytes, "source": self.source, "pending": self.pending}).to_string()
     }
 
+    /// The record at `at`, read through no link and never waiting on a pipe
+    /// put in its place ([`open_plain`]).
     fn read(at: &Path) -> Option<Record> {
-        let v: Value = serde_json::from_str(&fs::read_to_string(at).ok()?).ok()?;
+        use std::io::Read;
+        let mut text = String::new();
+        open_plain(at)?.take(1 << 16).read_to_string(&mut text).ok()?;
+        let v: Value = serde_json::from_str(&text).ok()?;
         let source = v.get("source").and_then(Value::as_array).and_then(|a| {
             let n: Vec<u64> = a.iter().filter_map(Value::as_u64).collect();
             <[u64; 4]>::try_from(n).ok()
         });
-        Some(Record { name: v.get("name")?.as_str()?.to_owned(), ino: v.get("ino")?.as_u64()?, bytes: v.get("bytes").and_then(Value::as_u64).unwrap_or(0), source })
+        let pending = v.get("pending").and_then(Value::as_bool).unwrap_or(false);
+        let ino = v.get("ino").and_then(Value::as_u64);
+        if ino.is_none() && !pending {
+            return None;
+        }
+        Some(Record { name: v.get("name")?.as_str()?.to_owned(), ino, bytes: v.get("bytes").and_then(Value::as_u64).unwrap_or(0), source, pending })
     }
+
+    /// Writes this down as copy `id`'s in `base`: a `new` record never over
+    /// another, and never through a link or into a pipe.
+    fn write(&self, base: &Path, id: &str, new: bool) -> io::Result<()> {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        if new {
+            opts.create_new(true);
+        } else {
+            opts.truncate(true);
+        }
+        let mut f = opts.open(base.join(format!("{id}.copy")))?;
+        if !f.metadata()?.file_type().is_file() {
+            return Err(io::Error::other("not a record"));
+        }
+        f.write_all(self.to_json().as_bytes())
+    }
+}
+
+/// `path` opened to read, never through a link (`O_NOFOLLOW`) and never
+/// waiting on a pipe put in its place (`O_NONBLOCK`): `None` unless it is a
+/// regular file.
+#[cfg(target_os = "macos")]
+fn open_plain(path: &Path) -> Option<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?;
+    f.metadata().ok()?.file_type().is_file().then_some(f)
+}
+
+/// Marks the record at `at` as used now, through the record itself
+/// ([`open_plain`]): a link or a pipe in its place is left as it is.
+#[cfg(target_os = "macos")]
+fn touch(at: &Path) -> io::Result<()> {
+    open_plain(at).ok_or_else(|| io::Error::other("not a record"))?.set_modified(SystemTime::now())
+}
+
+/// The folder at `dir`, opened as itself, never through a link, its mode set
+/// through that (`fchmod`): the open folder, for what is done in it next.
+#[cfg(target_os = "macos")]
+fn chmod_dir(dir: &Path, mode: u32) -> io::Result<fs::File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let d = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY).open(dir)?;
+    d.set_permissions(fs::Permissions::from_mode(mode))?;
+    Ok(d)
 }
 
 /// The identity of an open file, for a viewer's copy to be reused by: its
@@ -261,61 +331,81 @@ fn identity(from: &fs::File) -> io::Result<[u64; 4]> {
 }
 
 /// The most copies [`opened_dir`] keeps, and the most bytes in them: past
-/// either, the oldest go first ([`cap`]).
+/// either, the oldest go first ([`cap`]). A single file over `bytes` gets no
+/// copy at all.
 #[cfg(target_os = "macos")]
-pub const MAX_COPIES: usize = 64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cap {
+    pub most: usize,
+    pub bytes: u64,
+}
+
+/// The Bot's [`Cap`]: 64 copies, 1 GiB.
 #[cfg(target_os = "macos")]
-pub const MAX_BYTES: u64 = 1 << 30;
+pub const CAP: Cap = Cap { most: 64, bytes: 1 << 30 };
 
 /// Copies all of `from`, named `name` on disk, into a new folder of its own
 /// in `base`, under that name, marked, then locked: the file read-only, its
 /// folder too, so the app it opens in shows it locked and a Duplicate or a
 /// Save As can't land in it, where the sweep would take it. The copy is
-/// written down ([`Record`]), with `source` for a viewer's. A copy that fails
-/// takes its folder with it.
+/// written down ([`Record`]) before anything else is made, with `source` for
+/// a viewer's. A copy that fails takes its folder with it. A file over
+/// `cap`'s bytes is refused before anything is written; after a copy, the
+/// oldest others go past `cap` ([`cap`]), never this one.
 #[cfg(target_os = "macos")]
-pub fn copy_file(from: &fs::File, name: &str, base: &Path, source: Option<[u64; 4]>) -> io::Result<PathBuf> {
+pub fn copy_file(from: &fs::File, name: &str, base: &Path, source: Option<[u64; 4]>, cap: Cap) -> io::Result<PathBuf> {
+    copy_with(name, base, source, cap, |out, to| fill(from, out, to, false, Some(cap.bytes)), from.metadata()?.len())
+}
+
+/// [`copy_file`], the bytes put in by `put` (into the new file, at its path,
+/// the file back once whole), of a file `size` long.
+#[cfg(target_os = "macos")]
+fn copy_with(name: &str, base: &Path, source: Option<[u64; 4]>, cap: Cap, put: impl FnOnce(fs::File, &Path) -> io::Result<fs::File>, size: u64) -> io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if size > cap.bytes {
+        return Err(io::ErrorKind::FileTooLarge.into());
+    }
     private_dir(base)?;
     let id = super::keys::random_id();
+    let mut record = Record { name: name.to_owned(), ino: None, bytes: 0, source, pending: true };
+    // on record before the folder is: a copy cut off midway is the sweep's
+    record.write(base, &id, true)?;
     let dir = base.join(&id);
-    fs::DirBuilder::new().mode(0o700).create(&dir)?;
     let to = dir.join(name);
-    let made = create_marked(&to).and_then(|out| fill(from, out, &to, false)).and_then(|()| {
-        fs::set_permissions(&to, fs::Permissions::from_mode(0o444))?;
-        let m = fs::symlink_metadata(&to)?;
-        let record = Record { name: name.to_owned(), ino: m.ino(), bytes: m.size(), source };
-        fs::write(base.join(format!("{id}.copy")), record.to_json())?;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555))
-    });
-    if let Err(e) = made {
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_file(base.join(format!("{id}.copy")));
+    let made = || -> io::Result<()> {
+        fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        let out = put(create_marked(&to)?, &to)?;
+        out.set_permissions(fs::Permissions::from_mode(0o444))?;
+        let m = out.metadata()?;
+        record = Record { ino: Some(m.ino()), bytes: m.size(), pending: false, ..record.clone() };
+        record.write(base, &id, false)?;
+        chmod_dir(&dir, 0o555).map(drop)
+    };
+    if let Err(e) = made() {
+        remove_copy(base, &id, &record);
         return Err(e);
     }
+    self::cap(base, cap, Some(&id));
     Ok(to)
 }
 
 /// A copy of `from` for the viewer, named `name`: the one an earlier open of
-/// the very same file made, if it is still whole, or a new one, after which
-/// [`cap`] keeps the folder in bounds.
+/// the very same file made, if it is still whole, or a new one, within `cap`
+/// ([`copy_file`]).
 #[cfg(target_os = "macos")]
-pub fn copy_for_view(from: &fs::File, name: &str, base: &Path) -> io::Result<Copied> {
+pub fn copy_for_view(from: &fs::File, name: &str, base: &Path, cap: Cap) -> io::Result<Copied> {
     use std::os::unix::fs::MetadataExt;
     let source = identity(from)?;
     for (id, record, _) in records(base) {
         let path = base.join(&id).join(&record.name);
-        let whole = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file() && m.ino() == record.ino);
-        if record.source == Some(source) && record.name == name && whole {
+        let whole = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file() && Some(m.ino()) == record.ino);
+        if record.source == Some(source) && record.name == name && whole && !record.pending {
             // in use again: the sweep counts its day from now
-            let _ = fs::File::open(base.join(format!("{id}.copy"))).and_then(|f| f.set_modified(SystemTime::now()));
+            let _ = touch(&base.join(format!("{id}.copy")));
             return Ok(Copied { path, fresh: false });
         }
     }
-    let path = copy_file(from, name, base, Some(source))?;
-    cap(base, MAX_COPIES, MAX_BYTES);
-    Ok(Copied::fresh(path))
+    copy_file(from, name, base, Some(source), cap).map(Copied::fresh)
 }
 
 /// The copies `base` has written down: each one's id, record, and when it
@@ -339,29 +429,40 @@ fn records(base: &Path) -> Vec<(String, Record, SystemTime)> {
 }
 
 /// Takes away the copy `id` of `base`: its folder unlocked, the file its
-/// record names if it is still that file (a regular one, the same inode,
-/// never through a link), the folder if that leaves it empty, then the
-/// record. Nothing else in the folder is touched, and nothing is followed or
-/// gone into.
+/// record names if it is still that file (a regular one, the same inode, or
+/// any inode while the copy is `pending`), the folder if that leaves it
+/// empty, then the record. All of it through the folder opened as itself,
+/// never a link ([`chmod_dir`]): nothing else in the folder is touched, and
+/// nothing is followed or gone into.
 #[cfg(target_os = "macos")]
 fn remove_copy(base: &Path, id: &str, record: &Record) {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
     let dir = base.join(id);
-    let Ok(meta) = fs::symlink_metadata(&dir) else {
+    let gone = |at: &Path| at.symlink_metadata().is_err_and(|e| e.kind() == io::ErrorKind::NotFound);
+    if gone(&dir) {
         let _ = fs::remove_file(base.join(format!("{id}.copy")));
         return;
-    };
-    if !meta.file_type().is_dir() {
-        return;
     }
-    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-    let file = dir.join(&record.name);
-    if fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_file() && m.ino() == record.ino) {
-        let _ = fs::remove_file(&file);
+    let Ok(open) = chmod_dir(&dir, 0o700) else { return };
+    if let Ok(name) = std::ffi::CString::new(std::ffi::OsStr::new(&record.name).as_bytes()) {
+        let fd = open.as_raw_fd();
+        // SAFETY: fstatat and unlinkat on the open folder, with a
+        // NUL-terminated name and a stat buffer of our own; no link followed.
+        unsafe {
+            let mut st: libc::stat = std::mem::zeroed();
+            let found = libc::fstatat(fd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) == 0;
+            let file = found && (st.st_mode & libc::S_IFMT) == libc::S_IFREG;
+            if file && (record.pending || record.ino == Some(st.st_ino)) {
+                libc::unlinkat(fd, name.as_ptr(), 0);
+            }
+        }
     }
+    drop(open);
     // only if empty: a stranger's file keeps the folder
     let _ = fs::remove_dir(&dir);
-    let _ = fs::remove_file(base.join(format!("{id}.copy")));
+    if gone(&dir) {
+        let _ = fs::remove_file(base.join(format!("{id}.copy")));
+    }
 }
 
 /// Takes away the copy at `copy` this hand-off made ([`remove_copy`]).
@@ -374,20 +475,26 @@ pub fn discard(copy: &Path) {
     }
 }
 
-/// Keeps `base` to `most` copies and `bytes` in them, taking the oldest
-/// first.
+/// Keeps `base` to `cap`'s copies and bytes, taking the oldest first, but
+/// never `keep` (the copy a hand-off is returning) nor a copy still being
+/// made (pending, and under a day old).
 #[cfg(target_os = "macos")]
-pub fn cap(base: &Path, most: usize, bytes: u64) {
+pub fn cap(base: &Path, cap: Cap, keep: Option<&str>) {
+    let now = SystemTime::now();
     let mut all = records(base);
     all.sort_by_key(|(_, _, at)| *at);
     let mut total: u64 = all.iter().map(|(_, r, _)| r.bytes).sum();
     let mut left = all.len();
-    for (id, record, _) in &all {
-        if left <= most && total <= bytes {
+    for (id, record, at) in &all {
+        if left <= cap.most && total <= cap.bytes {
             break;
         }
+        let making = record.pending && now.duration_since(*at).map_or(true, |age| age <= OPENED_FOR);
+        if keep == Some(id.as_str()) || making {
+            continue;
+        }
         remove_copy(base, id, record);
-        total -= record.bytes;
+        total = total.saturating_sub(record.bytes);
         left -= 1;
     }
 }
@@ -430,12 +537,13 @@ pub fn copy_between_checks(shows: &dyn Fn() -> bool, copy: impl FnOnce() -> io::
     Handed::Done
 }
 
-/// The last step of `buwiz/open_with`, on the main thread: `open` the copy if
-/// the open still `live`s, and take the copy away if it doesn't or nothing
+/// The last step of `buwiz/open_with`, on the main thread: asks `on_top`
+/// (the open still the person's screen, on top, and live) in this very step,
+/// then `open`s the copy if so, and takes the copy away if not or nothing
 /// opened it. Whether it opened.
 #[cfg(target_os = "macos")]
-pub fn open_or_discard(copy: &Path, live: bool, open: impl FnOnce(&Path) -> bool) -> bool {
-    let opened = live && open(copy);
+pub fn open_or_discard(copy: &Path, on_top: impl FnOnce() -> bool, open: impl FnOnce(&Path) -> bool) -> bool {
+    let opened = on_top() && open(copy);
     if !opened {
         discard(copy);
     }
@@ -443,14 +551,16 @@ pub fn open_or_discard(copy: &Path, live: bool, open: impl FnOnce(&Path) -> bool
 }
 
 /// Takes away the copies in `base` last made or used before [`OPENED_FOR`]
-/// at `now`: only what each record names ([`remove_copy`]).
+/// at `now`, a copy cut off midway among them: only what each record names
+/// ([`remove_copy`]). Then keeps the rest to `cap` ([`cap`]).
 #[cfg(target_os = "macos")]
-pub fn sweep(base: &Path, now: SystemTime) {
+pub fn sweep(base: &Path, now: SystemTime, cap: Cap) {
     for (id, record, at) in records(base) {
         if now.duration_since(at).is_ok_and(|age| age > OPENED_FOR) {
             remove_copy(base, &id, &record);
         }
     }
+    self::cap(base, cap, None);
 }
 
 /// How often the Bot sweeps [`opened_dir`] while it runs.
@@ -462,7 +572,7 @@ pub const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 #[cfg(target_os = "macos")]
 pub fn sweep_every(base: &Path, every: Duration) {
     loop {
-        sweep(base, SystemTime::now());
+        sweep(base, SystemTime::now(), CAP);
         std::thread::sleep(every);
     }
 }
@@ -752,21 +862,21 @@ mod tests {
         let made = Cell::new(false);
         let copy = || {
             made.set(true);
-            copy_for_open(&file, &bed.opened()).map(Copied::fresh)
+            copy_for_open(&file, &bed.opened(), CAP).map(Copied::fresh)
         };
         assert_eq!(copy_between_checks(&answers(&[false]), copy, |_| panic!("not handed")), Handed::LeftBefore);
         assert!(!made.get(), "no copy for a screen already left");
-        let copy = || copy_for_open(&file, &bed.opened()).map(Copied::fresh);
+        let copy = || copy_for_open(&file, &bed.opened(), CAP).map(Copied::fresh);
         assert_eq!(copy_between_checks(&answers(&[true, false]), copy, |_| panic!("not handed")), Handed::LeftAfter);
         assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 0, "the copy went again");
         let got = Cell::new(None);
-        let copy = || copy_for_open(&file, &bed.opened()).map(Copied::fresh);
+        let copy = || copy_for_open(&file, &bed.opened(), CAP).map(Copied::fresh);
         assert_eq!(copy_between_checks(&answers(&[true, true]), copy, |c| got.set(Some(c))), Handed::Done);
         assert_eq!(fs::read(got.take().unwrap().path).unwrap(), b"a.pdf");
         // a viewer's copy an earlier open made stays for that one
         let view = file.file.as_ref();
-        let shared = copy_for_view(view, "a.pdf", &bed.opened()).unwrap();
-        let copy = || copy_for_view(view, "a.pdf", &bed.opened());
+        let shared = copy_for_view(view, "a.pdf", &bed.opened(), CAP).unwrap();
+        let copy = || copy_for_view(view, "a.pdf", &bed.opened(), CAP);
         assert_eq!(copy_between_checks(&answers(&[true, false]), copy, |_| panic!("not handed")), Handed::LeftAfter);
         assert!(shared.path.exists());
     }
@@ -822,7 +932,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         symlink(&secret, &path).unwrap();
         assert_eq!(fs::read(save_in(&save, &bed.downloads()).unwrap()).unwrap(), b"IMG_4250.png");
-        let copy = copy_for_open(&open, &bed.opened()).unwrap();
+        let copy = copy_for_open(&open, &bed.opened(), CAP).unwrap();
         assert_eq!(fs::read(&copy).unwrap(), b"IMG_4250.png");
         assert!(!copy.starts_with(&bed.folder), "the app gets the Bot's copy, never the plugin's path");
     }
@@ -842,7 +952,7 @@ mod tests {
     fn an_open_gets_a_marked_copy_in_a_folder_only_this_account_enters() {
         let bed = Bed::new();
         let file = bed.open(&bed.file("Invoice.pdf")).unwrap();
-        let copy = copy_for_open(&file, &bed.opened()).unwrap();
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         assert_eq!(copy.file_name().unwrap(), "Invoice.pdf");
         assert!(quarantine(&copy).is_some() && is_marked(&copy));
         assert_eq!(mode(&bed.opened()), 0o700);
@@ -850,7 +960,7 @@ mod tests {
         assert_eq!(mode(&copy), 0o444, "read-only: the app opens it locked");
         assert!(fs::write(copy.parent().unwrap().join("Invoice copy.pdf"), "x").is_err(), "no Duplicate lands in it");
         // a second open of the same name gets a folder of its own, and all of the file
-        let again = copy_for_open(&file, &bed.opened()).unwrap();
+        let again = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         assert!(again != copy && again.file_name().unwrap() == "Invoice.pdf");
         assert_eq!(fs::read(&copy).unwrap(), b"Invoice.pdf");
         assert_eq!(fs::read(&again).unwrap(), b"Invoice.pdf", "the second copy reads from the start too");
@@ -864,7 +974,7 @@ mod tests {
         let twin = file.clone();
         assert_eq!(fs::read(save_in(&file, &bed.downloads()).unwrap()).unwrap(), b"Invoice.pdf");
         assert_eq!(fs::read(save_in(&twin, &bed.downloads()).unwrap()).unwrap(), b"Invoice.pdf");
-        assert_eq!(fs::read(copy_for_open(&twin, &bed.opened()).unwrap()).unwrap(), b"Invoice.pdf");
+        assert_eq!(fs::read(copy_for_open(&twin, &bed.opened(), CAP).unwrap()).unwrap(), b"Invoice.pdf");
     }
 
     #[cfg(target_os = "macos")]
@@ -874,7 +984,7 @@ mod tests {
         let path = bed.file("a.pdf");
         // a file that can't be read from fails the copy after its folder is made
         let unreadable = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        assert!(copy_file(&unreadable, "a.pdf", &bed.opened(), None).is_err());
+        assert!(copy_file(&unreadable, "a.pdf", &bed.opened(), None, CAP).is_err());
         assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 0);
     }
 
@@ -889,7 +999,7 @@ mod tests {
         // a copy made after the first sweep, a day old by its time
         std::thread::sleep(Duration::from_millis(60));
         let file = bed.open(&bed.file("a.pdf")).unwrap();
-        let old = copy_for_open(&file, &base).unwrap();
+        let old = copy_for_open(&file, &base, CAP).unwrap();
         age(&old, OPENED_FOR + Duration::from_secs(60));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while old.exists() {
@@ -904,10 +1014,10 @@ mod tests {
     fn the_sweep_takes_an_old_copy_and_leaves_a_fresh_one() {
         let bed = Bed::new();
         let file = bed.open(&bed.file("a.pdf")).unwrap();
-        let old = copy_for_open(&file, &bed.opened()).unwrap();
-        let fresh = copy_for_open(&file, &bed.opened()).unwrap();
+        let old = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        let fresh = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         age(&old, OPENED_FOR + Duration::from_secs(60));
-        sweep(&bed.opened(), SystemTime::now());
+        sweep(&bed.opened(), SystemTime::now(), CAP);
         assert!(!old.parent().unwrap().exists(), "older than a day, its folder too");
         assert!(fresh.exists());
     }
@@ -918,14 +1028,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let bed = Bed::new();
         let file = bed.open(&bed.file("a.pages")).unwrap();
-        let copy = copy_for_open(&file, &bed.opened()).unwrap();
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         let dir = copy.parent().unwrap().to_owned();
         // an edit saved beside it, had the folder let it
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(dir.join("a (edited).pages"), "the person's work").unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
         age(&copy, OPENED_FOR + Duration::from_secs(60));
-        sweep(&bed.opened(), SystemTime::now());
+        sweep(&bed.opened(), SystemTime::now(), CAP);
         assert!(!copy.exists(), "its own file goes");
         assert_eq!(fs::read(dir.join("a (edited).pages")).unwrap(), b"the person's work");
         assert!(dir.is_dir(), "the folder stays with it");
@@ -937,7 +1047,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let bed = Bed::new();
         let file = bed.open(&bed.file("a.pdf")).unwrap();
-        let copy = copy_for_open(&file, &bed.opened()).unwrap();
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
         let dir = copy.parent().unwrap().to_owned();
         let precious = bed.outside("precious.pdf");
         let deeper = dir.join("deeper");
@@ -948,7 +1058,7 @@ mod tests {
         fs::create_dir(&deeper).unwrap();
         fs::write(deeper.join("x"), "x").unwrap();
         age(&copy, OPENED_FOR + Duration::from_secs(60));
-        sweep(&bed.opened(), SystemTime::now());
+        sweep(&bed.opened(), SystemTime::now(), CAP);
         assert_eq!(fs::read(&precious).unwrap(), b"elsewhere");
         assert!(fs::symlink_metadata(&copy).unwrap().file_type().is_symlink(), "not its file: left");
         assert!(deeper.join("x").exists());
@@ -959,14 +1069,14 @@ mod tests {
     fn a_copy_on_a_miss_goes_folder_and_all() {
         let bed = Bed::new();
         let file = bed.open(&bed.file("a.pdf")).unwrap();
-        let copy = copy_for_open(&file, &bed.opened()).unwrap();
-        assert!(!open_or_discard(&copy, false, |_| panic!("the open is gone")));
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        assert!(!open_or_discard(&copy, || false, |_| panic!("the open is gone")));
         assert!(!copy.parent().unwrap().exists());
-        let copy = copy_for_open(&file, &bed.opened()).unwrap();
-        assert!(!open_or_discard(&copy, true, |_| false), "nothing opened it");
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        assert!(!open_or_discard(&copy, || true, |_| false), "nothing opened it");
         assert!(!copy.parent().unwrap().exists());
-        let copy = copy_for_open(&file, &bed.opened()).unwrap();
-        assert!(open_or_discard(&copy, true, |_| true));
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        assert!(open_or_discard(&copy, || true, |_| true));
         assert!(copy.exists());
         assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 2, "one copy and its record");
     }
@@ -977,27 +1087,203 @@ mod tests {
         let bed = Bed::new();
         let path = bed.file("a.png");
         let file = bed.open(&path).unwrap();
-        let first = copy_for_view(&file.file, "a.png", &bed.opened()).unwrap();
-        let again = copy_for_view(&file.file, "a.png", &bed.opened()).unwrap();
+        let first = copy_for_view(&file.file, "a.png", &bed.opened(), CAP).unwrap();
+        let again = copy_for_view(&file.file, "a.png", &bed.opened(), CAP).unwrap();
         assert!(first.fresh && !again.fresh);
         assert_eq!(first.path, again.path, "one copy for one file");
         // the file changed: a new copy
         fs::write(&path, "changed, and longer").unwrap();
         let changed = bed.open(&path).unwrap();
-        let third = copy_for_view(&changed.file, "a.png", &bed.opened()).unwrap();
+        let third = copy_for_view(&changed.file, "a.png", &bed.opened(), CAP).unwrap();
         assert!(third.fresh && third.path != first.path);
         assert_eq!(fs::read(&third.path).unwrap(), b"changed, and longer");
         // past the cap, the oldest go
         for i in 0..5 {
             let name = format!("p{i}.png");
             let f = bed.open(&bed.file(&name)).unwrap();
-            copy_for_view(&f.file, &name, &bed.opened()).unwrap();
+            copy_for_view(&f.file, &name, &bed.opened(), CAP).unwrap();
         }
-        cap(&bed.opened(), 3, u64::MAX);
+        cap(&bed.opened(), Cap { most: 3, bytes: u64::MAX }, None);
         assert_eq!(records(&bed.opened()).len(), 3);
         assert!(!first.path.exists());
-        cap(&bed.opened(), 10, 1);
+        cap(&bed.opened(), Cap { most: 10, bytes: 1 }, None);
         assert_eq!(records(&bed.opened()).len(), 0, "past the bytes too");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn id_of(copy: &Path) -> String {
+        copy.parent().unwrap().file_name().unwrap().to_str().unwrap().to_owned()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn copies_in(base: &Path) -> usize {
+        records(base).len()
+    }
+
+    /// The Bot killed midway through a copy, as a panic in the middle of its
+    /// bytes leaves it: the folder and a marked file, nothing more.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_cut_off_midway_is_still_the_sweeps() {
+        let bed = Bed::new();
+        let cut = std::panic::catch_unwind(|| {
+            let put = |out: fs::File, _: &Path| -> io::Result<fs::File> {
+                drop(out);
+                panic!("killed midway")
+            };
+            let _ = copy_with("a.pdf", &bed.opened(), None, CAP, put, 5);
+        });
+        assert!(cut.is_err());
+        let dirs: Vec<PathBuf> = fs::read_dir(bed.opened()).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        assert_eq!(dirs.len(), 1, "the cut copy's folder is there");
+        let copy = dirs[0].join("a.pdf");
+        assert!(copy.exists());
+        age(&copy, OPENED_FOR + Duration::from_secs(60));
+        sweep(&bed.opened(), SystemTime::now(), CAP);
+        assert!(!dirs[0].exists(), "a day on, the sweep took it");
+        assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 0, "its record too");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_still_being_made_is_left_by_the_sweep_and_the_cap() {
+        let bed = Bed::new();
+        let put = |out: fs::File, to: &Path| {
+            // the sweep, with no room at all, while this one copies
+            sweep(&bed.opened(), SystemTime::now(), Cap { most: 0, bytes: 0 });
+            assert!(to.exists(), "a copy being made is no one's to take");
+            Ok(out)
+        };
+        let copy = copy_with("b.pdf", &bed.opened(), None, Cap { most: 1, bytes: u64::MAX }, put, 0).unwrap();
+        assert!(copy.exists());
+        assert_eq!(copies_in(&bed.opened()), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_open_keeps_the_copies_to_the_cap() {
+        let bed = Bed::new();
+        let file = bed.open(&bed.file("a.pdf")).unwrap();
+        let two = Cap { most: 2, bytes: u64::MAX };
+        let first = copy_for_open(&file, &bed.opened(), two).unwrap();
+        copy_for_open(&file, &bed.opened(), two).unwrap();
+        let last = copy_for_open(&file, &bed.opened(), two).unwrap();
+        assert_eq!(copies_in(&bed.opened()), 2);
+        assert!(!first.exists() && last.exists(), "the oldest went, the new one stays");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_over_the_cap_gets_no_copy_and_takes_none_away() {
+        let bed = Bed::new();
+        let small = bed.open(&bed.file("a.pdf")).unwrap();
+        let cap = Cap { most: 64, bytes: 50 };
+        let kept = copy_for_open(&small, &bed.opened(), cap).unwrap();
+        let path = bed.folder.join("open-1f/1/big.pdf");
+        fs::write(&path, [b'x'; 100]).unwrap();
+        let big = bed.open(&path).unwrap();
+        assert_eq!(copy_for_open(&big, &bed.opened(), cap).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(copy_for_view(&big.file, "big.pdf", &bed.opened(), cap).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        assert!(kept.exists(), "no copy taken away for one that never fit");
+        assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 2, "one copy and its record, no other");
+        // one that grows past the cap while it copies stops there
+        let grown = copy_with("big.pdf", &bed.opened(), None, cap, |out, to| fill(&big.file, out, to, false, Some(cap.bytes)), 10);
+        assert_eq!(grown.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_cap_never_takes_the_copy_it_returns() {
+        let bed = Bed::new();
+        let file = bed.open(&bed.file("a.pdf")).unwrap();
+        let other = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        let returned = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        // the one returned reads as the oldest (a clock set back)
+        age(&returned, Duration::from_secs(60));
+        cap(&bed.opened(), Cap { most: 1, bytes: u64::MAX }, Some(&id_of(&returned)));
+        assert!(returned.exists(), "kept");
+        assert!(!other.exists());
+        cap(&bed.opened(), Cap { most: 0, bytes: 0 }, Some(&id_of(&returned)));
+        assert!(returned.exists(), "kept past any cap");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sweep_keeps_the_copies_to_the_cap() {
+        let bed = Bed::new();
+        let file = bed.open(&bed.file("a.pdf")).unwrap();
+        let first = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        for _ in 0..2 {
+            copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        }
+        sweep(&bed.opened(), SystemTime::now(), Cap { most: 2, bytes: u64::MAX });
+        assert_eq!(copies_in(&bed.opened()), 2);
+        assert!(!first.exists(), "the oldest went");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pipe_in_a_records_place_never_holds_a_discard() {
+        let bed = Bed::new();
+        let file = bed.open(&bed.file("a.pdf")).unwrap();
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        let record = bed.opened().join(format!("{}.copy", id_of(&copy)));
+        fs::remove_file(&record).unwrap();
+        let c = std::ffi::CString::new(record.to_str().unwrap()).unwrap();
+        // SAFETY: mkfifo with a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = copy.clone();
+        std::thread::spawn(move || {
+            discard(&at);
+            let _ = tx.send(());
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "the discard came back");
+        assert!(copy.exists(), "no record of it: left");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn marking_a_copy_used_or_unlocking_its_folder_follows_no_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let bed = Bed::new();
+        let target = bed.outside("target.pdf");
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        fs::File::open(&target).unwrap().set_modified(old).unwrap();
+        let link = bed.base.join("record.copy");
+        symlink(&target, &link).unwrap();
+        assert!(touch(&link).is_err());
+        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), old, "the file it points at is untouched");
+        let dir = bed.base.join("elsewhere");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let dir_link = bed.base.join("copy-folder");
+        symlink(&dir, &dir_link).unwrap();
+        assert!(chmod_dir(&dir_link, 0o700).is_err());
+        assert_eq!(mode(&dir), 0o755, "the folder it points at keeps its mode");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_open_asks_the_screen_in_the_step_that_opens() {
+        use std::cell::Cell;
+        let bed = Bed::new();
+        let file = bed.open(&bed.file("a.pdf")).unwrap();
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        let asked = Cell::new(false);
+        let on_top = || {
+            asked.set(true);
+            false
+        };
+        assert!(!open_or_discard(&copy, on_top, |_| panic!("the screen left the top")));
+        assert!(asked.get());
+        assert!(!copy.parent().unwrap().exists(), "the copy went");
+        let copy = copy_for_open(&file, &bed.opened(), CAP).unwrap();
+        let on_top = || {
+            asked.set(false);
+            true
+        };
+        assert!(open_or_discard(&copy, on_top, |_| !asked.get()), "asked before it opened");
     }
 
     #[cfg(target_os = "macos")]

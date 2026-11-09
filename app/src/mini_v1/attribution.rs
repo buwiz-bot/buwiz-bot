@@ -43,6 +43,12 @@
 //! person's, so an app's code at load or on a timer would pass the actor
 //! alone; it can't make a press. One press, one hand-off.
 //!
+//! The Bot's own viewer (`buwiz/document`, `document`) is the one exception:
+//! it needs the person's surface, not a press. It shows the file inside the
+//! Bot, from a copy of its own kept under the copies' cap, and opens no other
+//! app, so a screen's code showing a file at load shows it to the person and
+//! nothing more.
+//!
 //! A call takes its actor when the app makes it, not when it is signed: a
 //! queued call of the agent's stays the agent's. The broker turns the
 //! actor into the origin the plugin sees, and reads still go out as the
@@ -157,12 +163,14 @@ impl Attribution {
         self.presses.insert(surface, (self.next_press, now));
     }
 
-    /// The person's input in `surface`, as [`Gesture`] has it.
+    /// The person's input in `surface`, as [`Gesture`] has it: any of it
+    /// takes the surface back ([`Self::person_pressed`]); only the press a
+    /// hand-off may spend differs.
     pub fn person_input(&mut self, surface: u64, gesture: Gesture, now: Instant) {
         match gesture {
             Gesture::Activation => self.person_activated(surface, now),
             Gesture::Typing => self.person_typed(surface, now),
-            Gesture::Nothing => {}
+            Gesture::Nothing => self.person_pressed(surface, now),
         }
     }
 
@@ -297,10 +305,11 @@ fn current_gesture(mtm: nsh_platform_macos::objc2::MainThreadMarker) -> Gesture 
     with_held(|held| gesture_of(&event, in_text, held))
 }
 
-/// Whether `responder` takes typed text: anything that speaks the text input
-/// protocol, as AppKit's and nsh's text views, and a web view, do.
+/// Whether `responder` takes typed text: a web view (`WKWebView`, by kind:
+/// KVO renames the class), and anything that speaks the text input
+/// protocol, as AppKit's and nsh's text views do.
 ///
-/// A web view counts whole, whatever has the focus in its page. The one a
+/// A web view counts whole, whether or not it says it speaks the protocol, whatever has the focus in its page. The one a
 /// mini app's screen holds is the mail reader's (`gws-screens`' `reader`): a
 /// sealed page with no script, whose links go to the screen's own code and
 /// can't hand a file off. A TSX app can't make one at all (`load`'s
@@ -309,8 +318,9 @@ fn current_gesture(mtm: nsh_platform_macos::objc2::MainThreadMarker) -> Gesture 
 /// need its own press.
 #[cfg(target_os = "macos")]
 pub fn takes_text(responder: &nsh_platform_macos::objc2::runtime::NSObject) -> bool {
-    use nsh_platform_macos::objc2::runtime::{AnyProtocol, NSObjectProtocol};
-    AnyProtocol::get(c"NSTextInputClient").is_some_and(|p| responder.conformsToProtocol(p))
+    use nsh_platform_macos::objc2::runtime::{AnyClass, AnyProtocol, NSObjectProtocol};
+    AnyClass::get(c"WKWebView").is_some_and(|web| responder.isKindOfClass(web))
+        || AnyProtocol::get(c"NSTextInputClient").is_some_and(|p| responder.conformsToProtocol(p))
 }
 
 /// What `event` is to a hand-off ([`Gesture`]), `in_text` if text has the
@@ -397,6 +407,7 @@ fn watch_resigns() {
 
 /// Return (36), keypad Enter (76) and Space (49): the keys that press what
 /// has the focus.
+#[cfg(target_os = "macos")]
 fn activation_key(code: u16) -> bool {
     matches!(code, 36 | 76 | 49)
 }
@@ -695,6 +706,32 @@ mod tests {
         keys_left();
     }
 
+    #[test]
+    fn input_that_is_no_press_still_takes_the_surface_back() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.agent_acted(t);
+        a.person_input(FORM, Gesture::Nothing, secs(t, 60));
+        assert_eq!(a.actor(FORM), Actor::Person);
+        assert_eq!(a.fresh_press(FORM, secs(t, 60)), None, "and mints no press to hand off by");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_key_up_or_a_right_click_takes_the_surface_back_with_no_press() {
+        use nsh_platform_macos::objc2_app_kit::NSEventType;
+        use events::{key, mouse};
+        for (what, event) in [("a key-up", key(NSEventType::KeyUp, 49, false)), ("a right-click", mouse(NSEventType::RightMouseDown)), ("a held key", key(NSEventType::KeyDown, 49, true))] {
+            let mut held = HashSet::new();
+            let t = Instant::now();
+            let mut a = watched();
+            a.agent_acted(t);
+            a.person_input(FORM, gesture_of(&event, false, &mut held), secs(t, 60));
+            assert_eq!(a.actor(FORM), Actor::Person, "{what}");
+            assert_eq!(a.fresh_press(FORM, secs(t, 60)), None, "{what}");
+        }
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn a_click_is_a_press_and_its_mouse_up_takes_nothing_back() {
@@ -754,6 +791,43 @@ mod tests {
         assert_eq!(gesture_of(&space, takes_text(&plain), &mut held), Gesture::Activation, "outside text it presses");
     }
 
+    /// The mail reader and the print preview are web views: one that didn't
+    /// say it speaks the text protocol still takes the keys as text.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_web_view_takes_text_even_when_it_doesnt_say_so() {
+        use nsh_platform_macos::objc2::{
+            msg_send, sel,
+            rc::Allocated,
+            runtime::{AnyClass, AnyObject, AnyProtocol, Bool, ClassBuilder, NSObject, Sel},
+        };
+        use nsh_platform_macos::objc2_app_kit::NSEventType;
+        extern "C-unwind" fn says_no(_: &AnyObject, _: Sel, _: *const AnyProtocol) -> Bool {
+            Bool::NO
+        }
+        // the app loads WebKit with its first web view; a test loads it itself
+        // SAFETY: dlopen of a system framework by its path.
+        unsafe { libc::dlopen(c"/System/Library/Frameworks/WebKit.framework/WebKit".as_ptr(), libc::RTLD_LAZY) };
+        let web = AnyClass::get(c"WKWebView").expect("WebKit is loaded");
+        let mut builder = ClassBuilder::new(c"BuwizTestQuietWebView", web).unwrap();
+        // SAFETY: `conformsToProtocol:`'s own signature.
+        unsafe { builder.add_method(sel!(conformsToProtocol:), says_no as extern "C-unwind" fn(_, _, _) -> _) };
+        let quiet = builder.register();
+        // allocated only: a web view is made on the main thread, and its
+        // kind is all this asks; never initialized, so never released
+        // SAFETY: a plain alloc of the class above.
+        let made: Allocated<NSObject> = unsafe { msg_send![quiet, alloc] };
+        let view: &'static NSObject = unsafe { &*Allocated::as_ptr(&made) };
+        std::mem::forget(made);
+        let p = AnyProtocol::get(c"NSTextInputClient").unwrap();
+        assert!(!nsh_platform_macos::objc2::runtime::NSObjectProtocol::conformsToProtocol(view, p));
+        assert!(takes_text(view));
+        let mut held = HashSet::new();
+        let space = events::key(NSEventType::KeyDown, 49, false);
+        assert_eq!(gesture_of(&space, takes_text(view), &mut held), Gesture::Typing);
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_return_enter_and_space_activate() {
         for code in [36, 76, 49] {
