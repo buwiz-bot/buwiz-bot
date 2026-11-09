@@ -68,10 +68,10 @@ const DOCKER_PATIENCE: Duration = Duration::from_secs(60);
 const WAKE_PATIENCE: Duration = Duration::from_secs(120);
 /// On the image, and so on each container made from it: this image runs commands as users of their
 /// own. A new value is for an image whose containers need making again.
-const USERS_LABEL: &str = "app.buwiz.box.users";
-const USERS_VERSION: &str = "1";
+pub(crate) const USERS_LABEL: &str = "app.buwiz.box.users";
+pub(crate) const USERS_VERSION: &str = "1";
 /// What the box's root needs, and nothing else. A box doesn't start with fewer.
-const BOX_CAPS: [&str; 8] = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETGID", "SETUID"];
+pub(crate) const BOX_CAPS: [&str; 8] = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETGID", "SETUID"];
 /// Below this a port takes a capability, in the network the holder owns, so no command can listen
 /// on a service's port, free or not, or send from one. It's the first above the viewers.
 const FIRST_OPEN_PORT: u16 = 6906;
@@ -262,7 +262,7 @@ raise SystemExit('programs kept coming')
 ///   cookie is the same for theirs. A desktop can't pass a cookie on, by mode or by group.
 /// - No desktop has shared memory open.
 /// - No process of a Bot's user holds a capability, but voxl its port's.
-const APART: &str = r#"
+pub(crate) const APART: &str = r#"
 import os, re, socket, stat, struct, sys
 def no(why):
     print(why)

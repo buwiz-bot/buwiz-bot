@@ -1,4 +1,4 @@
-//! The slots of the providers that aren't built: Lume, sbx, EC2 and the generic remote. Each
+//! The slots of the providers that aren't built: Lume and sbx. Each
 //! answers with its sentence, so a saved computer of that kind shows what's wrong and nothing
 //! panics.
 

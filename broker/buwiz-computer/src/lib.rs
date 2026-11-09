@@ -6,8 +6,8 @@
 //! One computer serves one or more Bots, and each gets a [`Screen`] of its own: its own display,
 //! input and folder. Everything that acts takes the screen it acts on; the hub picks it, from
 //! the Bot, and the model never names one.
-//! Docker and a remote computer a person points at are built ([`remote::RemoteProvider`]). The
-//! others have their slot ([`planned::Planned`]), and each says so in a sentence until it is built.
+//! Docker, AWS EC2 ([`ec2::Ec2Provider`]) and a remote computer a person points at are built
+//! ([`remote::RemoteProvider`]). The others have their slot ([`planned::Planned`]), and each says so in a sentence until it is built.
 //!
 //! What a provider can't do stays a method: it answers [`Problem::Unsupported`], so the hub's
 //! routes and tools are the same whatever the computer is. An SSH host with no box has `run` and
@@ -20,6 +20,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod docker;
+pub mod ec2;
 pub mod gate;
 pub mod guest;
 pub mod job;
@@ -37,6 +38,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use docker::DockerProvider;
+pub use ec2::Ec2Provider;
 pub use gate::{Gate, Mode};
 pub use guest::BoxGuest;
 pub use planned::Planned;
@@ -87,6 +89,9 @@ pub fn random_hex(bytes: usize) -> Result<String> {
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// Names the provider new computers are made with ([`ProviderKind::from_env`]).
+pub const PROVIDER_ENV: &str = "BUWIZ_COMPUTER_PROVIDER";
+
 /// Who runs the computer. The saved word survives a build that doesn't know the provider yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -120,6 +125,19 @@ impl ProviderKind {
         Self::ALL.into_iter().find(|k| k.as_str() == word)
     }
 
+    /// Where a new computer is made: `BUWIZ_COMPUTER_PROVIDER` (`docker` or `ec2`), Docker when
+    /// it says nothing or a word this build doesn't know.
+    pub fn from_env() -> Self {
+        let word = std::env::var(PROVIDER_ENV).unwrap_or_default();
+        let word = word.trim();
+        Self::parse(word).unwrap_or_else(|| {
+            if !word.is_empty() {
+                eprintln!("buwiz-computer: {PROVIDER_ENV}={word:?} isn't a provider; making computers with Docker");
+            }
+            Self::Docker
+        })
+    }
+
     /// What a person calls it.
     pub fn label(self) -> &'static str {
         match self {
@@ -140,6 +158,8 @@ pub enum Reach {
     /// a box behind TLS, at `https://<name>`: see [`remote`]
     Url { url: String },
     Ssh { host: String, user: Option<String>, port: Option<u16> },
+    /// a machine a cloud runs for the broker, by the cloud's id for it: an EC2 instance
+    Instance { id: String, region: String },
 }
 
 /// What a person handed over for a computer that isn't the Bot's to run. No secret here is ever
@@ -443,7 +463,7 @@ impl Problem {
             Self::ProviderMissing(what) => format!("{what} isn't installed on this Mac. Install it, then click the computer again."),
             Self::ProviderDown(what) => format!("{what} isn't running. Open it, wait until it says it's running, then click the computer again."),
             Self::ImageMissing(image) => format!("This Mac doesn't have the computer's image ({image}). Build or pull it, then click the computer again."),
-            Self::NotBuilt(kind) => format!("{} computers aren't built yet. Docker on this Mac and remote computers work today.", kind.label()),
+            Self::NotBuilt(kind) => format!("{} computers aren't built yet. Docker on this Mac, AWS EC2 and remote computers work today.", kind.label()),
             Self::Gone => "This computer is gone. Click it to make a new one.".to_owned(),
             Self::Unsupported(what) => format!("This computer can't {what}."),
             Self::Guest { message, .. } => format!("The computer said: {message}"),
@@ -607,11 +627,14 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// The provider for `kind`: Docker's, a remote one, or the slot of one that isn't built. A remote
-/// provider holds its connections, so the hub keeps one and doesn't ask here for each call.
+/// The provider for `kind`: Docker's, EC2's, a remote one, or the slot of one that isn't built. A
+/// remote provider holds its connections, so the hub keeps one and doesn't ask here for each call.
+/// EC2's holds them too, so there is one of it for this process, whoever asks.
 pub fn provider_for(kind: ProviderKind) -> std::sync::Arc<dyn Provider> {
+    static EC2: std::sync::OnceLock<std::sync::Arc<Ec2Provider>> = std::sync::OnceLock::new();
     match kind {
         ProviderKind::Docker => std::sync::Arc::new(DockerProvider::from_env()),
+        ProviderKind::Ec2 => EC2.get_or_init(|| std::sync::Arc::new(Ec2Provider::from_env())).clone(),
         ProviderKind::Remote => std::sync::Arc::new(RemoteProvider::new()),
         other => std::sync::Arc::new(Planned(other)),
     }
@@ -682,6 +705,7 @@ mod tests {
             Reach::Container { name: "c".into() },
             Reach::Url { url: "https://x.example/".into() },
             Reach::Ssh { host: "h".into(), user: Some("u".into()), port: Some(2222) },
+            Reach::Instance { id: "i-0123456789abcdef0".into(), region: "ap-southeast-1".into() },
         ] {
             let saved = serde_json::to_string(&reach).unwrap();
             assert_eq!(serde_json::from_str::<Reach>(&saved).unwrap(), reach);
@@ -720,6 +744,6 @@ mod tests {
     fn the_sentences_say_what_a_person_can_do() {
         assert!(Problem::ProviderDown("Docker".into()).sentence().starts_with("Docker isn't running."));
         assert!(Problem::ImageMissing("img:1".into()).sentence().contains("doesn't have the computer's image (img:1)"));
-        assert!(Problem::NotBuilt(ProviderKind::Ec2).sentence().contains("AWS EC2"));
+        assert!(Problem::NotBuilt(ProviderKind::Lume).sentence().contains("Lume"));
     }
 }

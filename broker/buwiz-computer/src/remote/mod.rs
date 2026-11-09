@@ -204,7 +204,7 @@ fn key_has_passphrase(text: &str) -> bool {
 
 /// `count` ports of the computers' range that are free now. What's free can be gone by the time
 /// `ssh` binds it, which its caller retries.
-fn free_ports(count: usize) -> Result<Vec<u16>> {
+pub(crate) fn free_ports(count: usize) -> Result<Vec<u16>> {
     let mut start = [0u8; 2];
     getrandom::getrandom(&mut start).map_err(|e| Problem::Failed(format!("no randomness: {e}")))?;
     let span = DOCKER_PORT_LAST - PORT_FIRST + 1;
@@ -478,7 +478,7 @@ impl RemoteProvider {
                 let guest = guest_at(&ports, machine.token.clone())?.named(&names[&EXEC_PORT], &names[&HOST_PORT]);
                 Open { way: Way::Tls(relays), guest: Some(guest), ports, names, silent: AtomicBool::new(false) }
             }
-            Reach::Container { .. } => return Err(Problem::Failed("that's a container".to_owned())),
+            Reach::Container { .. } | Reach::Instance { .. } => return Err(Problem::Failed("that isn't a remote computer".to_owned())),
         };
         let open = Arc::new(open);
         if let Err(p) = answers(&open).await {
@@ -491,11 +491,11 @@ impl RemoteProvider {
 }
 
 /// Every guest port a box has, in one order.
-fn guest_ports() -> impl Iterator<Item = u16> {
+pub(crate) fn guest_ports() -> impl Iterator<Item = u16> {
     [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS)
 }
 
-fn guest_at(ports: &HashMap<u16, u16>, token: Secret) -> Result<BoxGuest> {
+pub(crate) fn guest_at(ports: &HashMap<u16, u16>, token: Secret) -> Result<BoxGuest> {
     let at = |p: u16| ports.get(&p).map(|here| format!("http://127.0.0.1:{here}")).ok_or_else(|| Problem::Failed("a port isn't forwarded".to_owned()));
     Ok(BoxGuest::connect(&at(EXEC_PORT)?, &at(HOST_PORT)?, token))
 }
@@ -522,7 +522,7 @@ fn link_of(machine: &Machine) -> Result<&Link> {
 }
 
 /// Anything from a box, with this computer's secrets out of what it said.
-fn clean<T>(machine: &Machine, got: Result<T>) -> Result<T> {
+pub(crate) fn clean<T>(machine: &Machine, got: Result<T>) -> Result<T> {
     got.map_err(|p| match p {
         Problem::Guest { status, message } => Problem::Guest { status, message: machine.scrub(&message) },
         other => other,
