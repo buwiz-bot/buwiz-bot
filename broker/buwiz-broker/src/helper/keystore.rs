@@ -350,10 +350,19 @@ impl Keystore {
             }
             Keystore::Keychain => {
                 let account = format!("{kind}/default");
+                // what's there now, so a write that doesn't hold can put it back
+                let before = self.get_provider_cred(kind)?;
                 PROVIDER_ITEMS.put(&account, &buwiz_protocol::keys::b64(secrets.as_bytes()))?;
-                if self.get_provider_cred(kind)?.as_deref() != Some(secrets) {
-                    PROVIDER_ITEMS.remove(&account);
-                    return Err("the Keychain didn't keep these keys whole".to_owned());
+                if !matches!(self.get_provider_cred(kind), Ok(Some(kept)) if kept == secrets) {
+                    match before {
+                        Some(old) => {
+                            let _ = PROVIDER_ITEMS.put(&account, &buwiz_protocol::keys::b64(old.as_bytes()));
+                        }
+                        None => {
+                            PROVIDER_ITEMS.remove(&account);
+                        }
+                    }
+                    return Err("the Keychain didn't keep these keys whole, so the ones before are kept".to_owned());
                 }
                 Ok(())
             }

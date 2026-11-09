@@ -45,13 +45,13 @@ impl Provider for FakeCloud {
     }
 
     async fn check(&self) -> buwiz_computer::Result<()> {
-        self.key().map(drop).ok_or(Problem::Credentials { code: "no_key", message: "no key".into() })
+        self.key().map(drop).ok_or(Problem::Refused { code: "no_key", message: "no key".into() })
     }
 
     async fn verify(&self) -> buwiz_computer::Result<()> {
         match self.key().as_deref() {
             Some(GOOD) | Some(OTHER) => Ok(()),
-            _ => Err(Problem::Credentials { code: "bad_key", message: "E2B didn't take this API key.".into() }),
+            _ => Err(Problem::Refused { code: "bad_key", message: "E2B didn't take this API key.".into() }),
         }
     }
 
@@ -302,19 +302,18 @@ async fn removing_a_homes_keys_takes_it_off_as_the_default_and_as_a_bots_choice(
 }
 
 #[tokio::test]
-async fn naming_a_new_aws_profile_with_the_keys_left_blank_uses_the_profile() {
+async fn a_saved_aws_key_is_kept_by_blank_boxes_and_let_go_only_when_asked() {
     let (b, _) = homes_bed("aws-profile");
-    let save = |pairs: &'static [(&'static str, &'static str)]| {
-        let (b, v) = (&b, values(pairs));
-        async move { b.computers.save_provider(&b.ctx, ProviderKind::Ec2, &v, &[]).await }
+    let save = |pairs: &'static [(&'static str, &'static str)], clear: &'static [&'static str]| {
+        let (b, v, c) = (&b, values(pairs), clear.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        async move { b.computers.save_provider(&b.ctx, ProviderKind::Ec2, &v, &c).await }
     };
-    save(&[("access_key_id", "test-access-key-id"), ("secret_access_key", "test-secret-value-long"), ("region", "ap-southeast-1")]).await.unwrap();
+    save(&[("access_key_id", "test-access-key-id"), ("secret_access_key", "test-secret-value-long"), ("region", "ap-southeast-1")], &[]).await.unwrap();
+    // a profile named with the boxes blank: a blank box keeps the saved key, as the form says
+    save(&[("access_key_id", ""), ("secret_access_key", ""), ("profile", "work"), ("region", "eu-west-1")], &[]).await.unwrap();
     assert!(keys(&b.ctx).unwrap().get_provider_cred("ec2").unwrap().is_some());
-    // a region changed with the keys left blank keeps them
-    save(&[("access_key_id", ""), ("secret_access_key", ""), ("region", "eu-west-1")]).await.unwrap();
-    assert!(keys(&b.ctx).unwrap().get_provider_cred("ec2").unwrap().is_some());
-    // a profile named with them blank: the keys go, so the profile is what signs
-    let shown = save(&[("access_key_id", ""), ("secret_access_key", ""), ("profile", "work"), ("region", "eu-west-1")]).await.unwrap();
+    // Use the profile instead: the keys are cleared on purpose
+    let shown = save(&[("profile", "work"), ("region", "eu-west-1")], &["access_key_id", "secret_access_key"]).await.unwrap();
     assert_eq!(keys(&b.ctx).unwrap().get_provider_cred("ec2").unwrap(), None);
     assert_eq!((field(&shown, "secret_access_key")["set"].clone(), field(&shown, "profile")["value"].clone()), (json!(false), json!("work")));
 }
@@ -381,4 +380,12 @@ fn an_aws_keys_debug_says_where_they_are_from_and_never_the_key() {
     use crate::hub::computer::homes::AwsKeys;
     let saved = AwsKeys::Saved(buwiz_computer::ec2::sigv4::Credentials { access_key: "AKID-shown-nowhere".into(), secret: Secret::new("s"), token: None });
     assert!(!format!("{saved:?}").contains("AKID-shown-nowhere"));
+}
+
+#[tokio::test]
+async fn a_named_aws_profile_that_gives_no_keys_isnt_ready_or_a_default() {
+    let (b, _) = homes_bed("aws-no-profile");
+    let shown = b.computers.save_provider(&b.ctx, ProviderKind::Ec2, &values(&[("profile", "buwiz-test-no-such-profile"), ("region", "eu-west-1")]), &[]).await.unwrap();
+    assert_eq!(shown["configured"], false);
+    assert_eq!(b.computers.set_default(&b.ctx, ProviderKind::Ec2).unwrap_err().code(), "not_configured");
 }

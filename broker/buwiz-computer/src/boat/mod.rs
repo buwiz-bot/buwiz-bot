@@ -284,7 +284,7 @@ impl BoatProvider {
     }
 
     fn key(&self) -> Result<Secret> {
-        self.settings.get().key.ok_or_else(|| Problem::Credentials { code: "no_key", message: "boat needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
+        self.settings.get().key.ok_or_else(|| Problem::Refused { code: "no_key", message: "boat needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
     }
 
     /// What its computers are made from: the default computer image when none is set.
@@ -670,7 +670,7 @@ impl Provider for BoatProvider {
         let reply = self.call(Method::GET, "/sandboxes", &[], None, CALL_PATIENCE).await?;
         match reply.status {
             200 => Ok(()),
-            401 | 403 => Err(Problem::Credentials { code: "bad_key", message: "boat didn't take this API key. Copy it again from boat.dev, then check again.".to_owned() }),
+            401 | 403 => Err(Problem::Refused { code: "bad_key", message: "boat didn't take this API key. Copy it again from boat.dev, then check again.".to_owned() }),
             _ => Err(outcome(&reply)),
         }
     }

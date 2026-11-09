@@ -24,7 +24,7 @@ pub trait Keys: Send + Sync + std::fmt::Debug {
 }
 
 fn none(code: &'static str, profile: &str, why: &str) -> Problem {
-    Problem::Credentials { code, message: format!("This Mac has no AWS keys for the broker: {why}. Paste an access key in Settings › Computers, or put the access key of the IAM user made for it (buwiz-computer-broker) under [{profile}] in ~/.aws/credentials.") }
+    Problem::Refused { code, message: format!("This Mac has no AWS keys for the broker: {why}. Paste an access key in Settings › Computers, or put the access key of the IAM user made for it (buwiz-computer-broker) under [{profile}] in ~/.aws/credentials.") }
 }
 
 /// The environment, then the profile's files.

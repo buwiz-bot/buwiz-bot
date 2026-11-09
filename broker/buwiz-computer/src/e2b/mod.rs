@@ -146,11 +146,11 @@ impl E2bProvider {
     }
 
     fn key(&self) -> Result<Secret> {
-        self.settings.get().key.ok_or_else(|| Problem::Credentials { code: "no_key", message: "E2B needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
+        self.settings.get().key.ok_or_else(|| Problem::Refused { code: "no_key", message: "E2B needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
     }
 
     fn template(&self) -> Result<String> {
-        self.settings.get().image.ok_or_else(|| Problem::Credentials { code: "no_template", message: "E2B needs a template: build one from the computer image, then add its id in Settings › Computers.".to_owned() })
+        self.settings.get().image.ok_or_else(|| Problem::Refused { code: "no_template", message: "E2B needs a template: build one from the computer image, then add its id in Settings › Computers.".to_owned() })
     }
 
     /// One call to the control API, with the key. The key goes only after the handshake (see [`crate::cloud`]).
@@ -486,7 +486,7 @@ impl Provider for E2bProvider {
         let listed = self.api(Method::GET, "/sandboxes", None, CALL_PATIENCE).await?;
         match listed.status {
             200 => {}
-            401 | 403 => return Err(Problem::Credentials { code: "bad_key", message: "E2B didn't take this API key. Copy it again from the E2B dashboard (Team › API keys).".to_owned() }),
+            401 | 403 => return Err(Problem::Refused { code: "bad_key", message: "E2B didn't take this API key. Copy it again from the E2B dashboard (Team › API keys).".to_owned() }),
             other => return Err(outcome(other)),
         }
         let template = self.template()?;
@@ -505,7 +505,7 @@ impl Provider for E2bProvider {
         if known {
             Ok(())
         } else {
-            Err(Problem::Credentials { code: "no_template", message: format!("This E2B team has no template {template}. Build it from the computer image in this team, then check again.") })
+            Err(Problem::Refused { code: "no_template", message: format!("This E2B team has no template {template}. Build it from the computer image in this team, then check again.") })
         }
     }
 

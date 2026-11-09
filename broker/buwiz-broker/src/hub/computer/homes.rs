@@ -66,7 +66,7 @@ struct Field {
 }
 
 const EC2_FIELDS: &[Field] = &[
-    Field { key: "access_key_id", label: "Access key ID", placeholder: "AKIA…", secret: true, required: false, hint: "The access key of the AWS user made for Buwiz (buwiz-computer-broker). To use an AWS profile on this Mac instead, leave both keys blank and name the profile below." },
+    Field { key: "access_key_id", label: "Access key ID", placeholder: "AKIA…", secret: true, required: false, hint: "The access key of the AWS user made for Buwiz (buwiz-computer-broker). To use an AWS profile on this Mac instead, name it below; with a key saved, press Use the profile instead, since a blank box keeps the saved key." },
     Field { key: "secret_access_key", label: "Secret access key", placeholder: "", secret: true, required: false, hint: "Shown once by AWS when the access key is made." },
     Field { key: "profile", label: "AWS profile", placeholder: "buwiz-broker", secret: false, required: false, hint: "Used when no access key is pasted: a profile in ~/.aws with an access key. A profile that signs in through the browser (SSO, aws login) doesn't work yet." },
     Field { key: "region", label: "Region", placeholder: ec2::DEFAULT_REGION, secret: false, required: true, hint: "Where the computers run, like ap-southeast-1. The launch template must be in this region." },
@@ -235,9 +235,12 @@ fn ec2_settings(saved: Option<&Saved>) -> (ec2::Config, AwsKeys) {
         user: env.user,
         image: env.image,
     };
-    let keys = match (s.secret("access_key_id"), s.secret("secret_access_key")) {
-        (Some(id), Some(secret)) => AwsKeys::Saved(Credentials { access_key: id.expose().to_owned(), secret, token: None }),
-        _ => AwsKeys::Profile(config.profile.clone()),
+    // pasted keys, else a profile the person named, else as a developer has it: the environment's
+    // keys, then the profile's
+    let keys = match (s.secret("access_key_id"), s.secret("secret_access_key"), s.get("profile")) {
+        (Some(id), Some(secret), _) => AwsKeys::Saved(Credentials { access_key: id.expose().to_owned(), secret, token: None }),
+        (_, _, Some(profile)) => AwsKeys::Profile(profile),
+        _ => AwsKeys::Env(config.profile.clone()),
     };
     (config, keys)
 }
@@ -249,6 +252,8 @@ pub struct Homes {
     factory: Factory,
     /// when each kind's keystore last didn't answer
     unread: Mutex<HashMap<ProviderKind, Instant>>,
+    /// by kind: how many saves were applied, so a first read can tell one landed meanwhile
+    generations: Mutex<HashMap<ProviderKind, u64>>,
     /// by kind: a save or a removal holds it to write, and the making of a computer to read. A key
     /// can't be removed while a computer is being made with it, nor two saves cross, and one home's
     /// save never waits on another's launch
@@ -261,7 +266,7 @@ impl Homes {
     /// `first` serves its own kind: Docker's provider, or a test's.
     pub fn new(first: Arc<dyn Provider>) -> Self {
         let providers = HashMap::from([(first.kind(), first)]);
-        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), unread: Mutex::default(), locks: ProviderKind::ALL.into_iter().map(|k| (k, tokio::sync::RwLock::new(()))).collect(), fallback_lock: tokio::sync::RwLock::new(()) }
+        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), unread: Mutex::default(), generations: Mutex::default(), locks: ProviderKind::ALL.into_iter().map(|k| (k, tokio::sync::RwLock::new(()))).collect(), fallback_lock: tokio::sync::RwLock::new(()) }
     }
 
     /// `kind`'s lock: [`Homes::locks`].
@@ -296,42 +301,58 @@ impl Homes {
         self.providers.lock().unwrap_or_else(|e| e.into_inner()).entry(kind).or_insert(made).clone()
     }
 
-    /// The live handles of `kind`, made from what's saved the first time. The read is under the
-    /// handles' lock, which [`Homes::apply`] takes too: a save that lands meanwhile is either read
-    /// here or applied after. A keystore that didn't answer is asked again only after
-    /// [`UNREAD_WAIT`], since each try can take seconds.
+    /// The live handles of `kind`, made from what's saved the first time. The keystore is read with
+    /// no lock held, since it can take seconds; a save applied meanwhile moves `kind`'s generation
+    /// on, and the read is made again, so it's never lost. A keystore that didn't answer is asked
+    /// again only after [`UNREAD_WAIT`].
     fn handles_of(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<Handles, Problem> {
-        let mut all = self.handles.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(h) = all.get(&kind) {
-            return Ok(h.clone());
-        }
-        let mut unread = self.unread.lock().unwrap_or_else(|e| e.into_inner());
-        if unread.get(&kind).is_some_and(|at| at.elapsed() < UNREAD_WAIT) {
-            return Err(Problem::Failed("the keystore didn't answer a moment ago".to_owned()));
-        }
-        let saved = match load(ctx, kind) {
-            Ok(saved) => saved,
-            Err(p) => {
-                eprintln!("buwiz-broker: {}'s keys couldn't be read: {}", kind.as_str(), p.code());
-                unread.insert(kind, Instant::now());
-                return Err(p);
+        for _ in 0..3 {
+            if let Some(h) = self.handles.lock().unwrap_or_else(|e| e.into_inner()).get(&kind) {
+                return Ok(h.clone());
             }
-        };
-        unread.remove(&kind);
-        let h = if kind == ProviderKind::Ec2 {
-            let (config, keys) = ec2_settings(saved.as_ref());
-            Handles::Ec2(Shared::new(config), Shared::new(keys))
-        } else {
-            Handles::Cloud(Shared::new(cloud_settings(kind, saved.as_ref())))
-        };
-        hide(kind, saved.as_ref());
-        all.insert(kind, h.clone());
-        Ok(h)
+            if self.unread.lock().unwrap_or_else(|e| e.into_inner()).get(&kind).is_some_and(|at| at.elapsed() < UNREAD_WAIT) {
+                return Err(Problem::Failed("the keystore didn't answer a moment ago".to_owned()));
+            }
+            let began = self.generation(kind);
+            let saved = match load(ctx, kind) {
+                Ok(saved) => saved,
+                Err(p) => {
+                    eprintln!("buwiz-broker: {}'s keys couldn't be read: {}", kind.as_str(), p.code());
+                    self.unread.lock().unwrap_or_else(|e| e.into_inner()).insert(kind, Instant::now());
+                    return Err(p);
+                }
+            };
+            self.unread.lock().unwrap_or_else(|e| e.into_inner()).remove(&kind);
+            let mut all = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(h) = all.get(&kind) {
+                return Ok(h.clone());
+            }
+            // a save landed while this read: read again
+            if self.generation(kind) != began {
+                continue;
+            }
+            let h = if kind == ProviderKind::Ec2 {
+                let (config, keys) = ec2_settings(saved.as_ref());
+                Handles::Ec2(Shared::new(config), Shared::new(keys))
+            } else {
+                Handles::Cloud(Shared::new(cloud_settings(kind, saved.as_ref())))
+            };
+            hide(kind, saved.as_ref());
+            all.insert(kind, h.clone());
+            return Ok(h);
+        }
+        Err(Problem::Failed("the keys kept changing while they were read: try again".to_owned()))
+    }
+
+    fn generation(&self, kind: ProviderKind) -> u64 {
+        self.generations.lock().unwrap_or_else(|e| e.into_inner()).get(&kind).copied().unwrap_or(0)
     }
 
     /// Puts `saved` (or the environment's, for `None`) in front of `kind`'s live provider.
     fn apply(&self, kind: ProviderKind, saved: Option<&Saved>) {
         let all = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+        // under the handles' lock: a first read that began before this sees it moved on
+        *self.generations.lock().unwrap_or_else(|e| e.into_inner()).entry(kind).or_insert(0) += 1;
         match all.get(&kind).cloned() {
             Some(Handles::Cloud(s)) => s.set(cloud_settings(kind, saved)),
             Some(Handles::Ec2(c, k)) => {
@@ -366,9 +387,10 @@ fn configured_with(kind: ProviderKind, read: &Result<Option<Saved>, Problem>) ->
     let Ok(saved) = read else { return false };
     match kind {
         ProviderKind::Docker | ProviderKind::Remote => true,
+        // a profile, named or the developer's, counts once its files give keys: read here, no call
         ProviderKind::Ec2 => match ec2_settings(saved.as_ref()).1 {
-            AwsKeys::Saved(_) | AwsKeys::Profile(_) => true,
-            env @ AwsKeys::Env(_) => creds::Keys::read(&StoreKeys(Shared::new(env))).is_ok(),
+            AwsKeys::Saved(_) => true,
+            other => creds::Keys::read(&StoreKeys(Shared::new(other))).is_ok(),
         },
         ProviderKind::E2b | ProviderKind::Boat => {
             let s = cloud_settings(kind, saved.as_ref());
@@ -533,13 +555,6 @@ impl Computers {
         }
         let _saving = self.homes.lock(kind).write().await;
         let mut next = load(ctx, kind)?.unwrap_or_default();
-        let typed_of = |key: &str| values.get(key).and_then(Value::as_str).map(str::trim).unwrap_or("");
-        // a new profile named with both keys left blank: the profile is what's meant, and pasted
-        // keys would win over it
-        if kind == ProviderKind::Ec2 && !typed_of("profile").is_empty() && next.get("profile").as_deref() != Some(typed_of("profile")) && typed_of("access_key_id").is_empty() && typed_of("secret_access_key").is_empty() {
-            next.secrets.remove("access_key_id");
-            next.secrets.remove("secret_access_key");
-        }
         for f in fields(kind) {
             let typed = values.get(f.key).and_then(Value::as_str).map(str::trim);
             if let Some(v) = typed {
@@ -587,13 +602,16 @@ impl Computers {
     /// Every one of them is asked about. One that the keys in use can't see either is already gone,
     /// and doesn't count against the new ones.
     async fn sees_its_computers(&self, ctx: &HubCtx, kind: ProviderKind, candidate: &dyn Provider) -> Result<(), Problem> {
-        let unseen = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone) | Err(Problem::Credentials { .. }));
+        let unseen = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone) | Err(Problem::Refused { .. }));
+        // only a platform's own word that it's gone counts as gone: keys the live provider lacks
+        // (none saved, or a keystore that didn't answer) say nothing about the computer
+        let gone = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone));
         let live = self.homes.provider(ctx, kind);
         for (id, _) in computers_on(ctx, kind)? {
             let Ok(machine) = self.machine(ctx, &id) else { continue };
             let seen = candidate.power(&machine).await;
             if unseen(&seen) {
-                if unseen(&live.power(&machine).await) {
+                if gone(&live.power(&machine).await) {
                     continue;
                 }
                 return Err(refusal(
@@ -685,5 +703,30 @@ fn built(kind: ProviderKind) -> bool {
 }
 
 fn refusal(code: &'static str, message: String) -> Problem {
-    Problem::Credentials { code, message }
+    Problem::Refused { code, message }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn saved(config: &[(&str, &str)], secrets: &[(&str, &str)]) -> Saved {
+        Saved {
+            config: config.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+            secrets: secrets.iter().map(|(k, v)| ((*k).to_owned(), Secret::new(*v))).collect(),
+        }
+    }
+
+    #[test]
+    fn aws_keys_come_from_pasted_keys_then_a_named_profile_then_as_a_developer_has_them() {
+        let pasted = saved(&[("region", "eu-west-1")], &[("access_key_id", "id-1"), ("secret_access_key", "secret-1")]);
+        assert!(matches!(ec2_settings(Some(&pasted)).1, AwsKeys::Saved(_)));
+        let named = saved(&[("region", "eu-west-1"), ("profile", "work")], &[]);
+        assert!(matches!(ec2_settings(Some(&named)).1, AwsKeys::Profile(p) if p == "work"));
+        // a region alone names no profile: the environment's keys still sign
+        let region_only = saved(&[("region", "eu-west-1")], &[]);
+        assert!(matches!(ec2_settings(Some(&region_only)).1, AwsKeys::Env(_)));
+        assert_eq!(ec2_settings(Some(&region_only)).0.region, "eu-west-1");
+    }
 }

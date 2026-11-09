@@ -64,7 +64,7 @@ impl Refused {
     /// The sentence a person reads. AWS's own message stays out: its code says enough.
     pub fn problem(&self) -> Problem {
         let code = self.code.as_str();
-        let credentials = |kind: &'static str, message: String| Problem::Credentials { code: kind, message };
+        let credentials = |kind: &'static str, message: String| Problem::Refused { code: kind, message };
         match code {
             "AuthFailure" | "InvalidClientTokenId" | "SignatureDoesNotMatch" => return credentials("bad_key", format!("AWS didn't take these keys ({code}). Check the access key and its secret, and this Mac's clock.")),
             "ExpiredToken" | "RequestExpired" => return credentials("expired", format!("AWS says these keys' session has ended ({code}). Sign in again, or use an access key that doesn't expire, and check this Mac's clock.")),
@@ -121,7 +121,7 @@ fn down(what: &str) -> Problem {
 impl Api {
     pub fn new(region: &str, keys: Arc<dyn Keys>) -> Result<Self> {
         if !region_ok(region) {
-            return Err(Problem::Credentials { code: "region", message: format!("{region:?} isn't an AWS region, like ap-southeast-1.") });
+            return Err(Problem::Refused { code: "region", message: format!("{region:?} isn't an AWS region, like ap-southeast-1.") });
         }
         Ok(Self { region: region.to_owned(), endpoint: None, keys, tls: tls()? })
     }

@@ -131,7 +131,7 @@ fn pick(key: &str, bot: &str, home: &Home) {
         return crate::computer::open_remote(bot);
     }
     if !home.built {
-        return;
+        return crate::toast::show(format!("{} isn't available in this build yet.", home.label));
     }
     if home.ready() {
         run_check(key.to_owned(), home.kind.clone());

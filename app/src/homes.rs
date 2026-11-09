@@ -512,12 +512,21 @@ impl KeyForm {
     /// Sends what's typed for `home`. A yes clears the form and goes to `then`; a no keeps it
     /// open with the broker's sentence.
     pub(crate) fn submit(&self, home: &Home, then: Rc<dyn Fn()>) {
+        self.submit_clearing(home, &[], then);
+    }
+
+    /// [`KeyForm::submit`], emptying the saved `fields` too: how a saved key is let go on purpose,
+    /// since a blank box keeps it.
+    pub(crate) fn submit_clearing(&self, home: &Home, fields: &[&str], then: Rc<dyn Fn()>) {
         let f = *self;
         if f.busy.get_untracked() {
             return;
         }
         let kind = home.kind.clone();
-        let body = f.body(home);
+        let mut body = f.body(home);
+        if let Some(clear) = body["clear"].as_array_mut() {
+            clear.extend(fields.iter().map(|k| json!(k)));
+        }
         let turn = f.turn.get_untracked();
         f.note.set(String::new());
         f.busy.set(true);
@@ -614,8 +623,18 @@ pub(crate) fn key_form(form: KeyForm, home: Home, saved: Rc<dyn Fn()>, cancelled
             .justify_center()
             .bg(theme::TEXT)
             .child(text(move || if busy.get() { "Checking…".to_owned() } else { "Check and save".to_owned() }).text_size(px(12.0)).text_color(theme::MAIN))
-            .on_press(move || form.submit(&h, saved.clone())),
+            .on_press({
+                let saved = saved.clone();
+                move || form.submit(&h, saved.clone())
+            }),
     );
+    // an AWS home with a pasted key: the way to sign with a profile instead, said as it is
+    if home.kind == "ec2" && home.fields.iter().any(|f| f.secret && f.set) {
+        let (h, saved) = (home.clone(), saved.clone());
+        buttons = buttons.child(small_button("Use the AWS profile instead of the saved key".to_owned(), "Use the profile instead".to_owned(), move || {
+            form.submit_clearing(&h, &["access_key_id", "secret_access_key"], saved.clone());
+        }));
+    }
     if !home.launch.is_empty() {
         let launch = home.launch.clone();
         buttons = buttons.child(small_button("Launch the AWS stack".to_owned(), "Launch the AWS stack".to_owned(), move || {
@@ -1019,7 +1038,12 @@ async fn act(line: Line, h: &Homes) {
             Some(b) => crate::computer::open_remote(&b.id),
             None => say("Open a Bot's chat first.".to_owned()),
         },
-        Line::Setup(Some(k)) => local_card("key", &k),
+        Line::Setup(Some(k)) => match h.get(&k) {
+            Some(home) if !home.built => say(format!("{} isn't available in this build yet.", home.label)),
+            // nothing to type for it: what's left is to see that it works
+            Some(home) if home.fields.is_empty() => local_card("check", &k),
+            _ => local_card("key", &k),
+        },
         Line::Check(k) => local_card("check", &k),
         Line::Status => {
             let Some(b) = bot else { return open_page(None) };

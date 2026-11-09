@@ -513,7 +513,7 @@ pub enum Problem {
     /// the keys or settings a person gave for a provider didn't work, or can't be changed now:
     /// `code` says how (`bad_key`, `expired`, `no_key`, `sso_profile`, `region`, `not_allowed`,
     /// `no_template`, `in_use`, …), and `message` is already the sentence a person reads
-    Credentials { code: &'static str, message: String },
+    Refused { code: &'static str, message: String },
     Failed(String),
 }
 
@@ -533,7 +533,7 @@ impl Problem {
             Self::PersonOn => "person_on",
             Self::Unwalled(_) => "unwalled",
             Self::Remote(_) => "remote",
-            Self::Credentials { code, .. } => code,
+            Self::Refused { code, .. } => code,
             Self::Failed(_) => "failed",
         }
     }
@@ -553,7 +553,7 @@ impl Problem {
             Self::PersonOn => "A person is still using this screen, so nothing was done. Try again later, or ask them when they'll be finished.".to_owned(),
             Self::Unwalled(why) => format!("The computer didn't start, because it couldn't be walled off from this Mac: {why}"),
             Self::Remote(why) => why.clone(),
-            Self::Credentials { message, .. } => message.clone(),
+            Self::Refused { message, .. } => message.clone(),
             Self::Failed(why) => format!("The computer failed: {why}"),
         }
     }

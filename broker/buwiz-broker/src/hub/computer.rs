@@ -498,7 +498,7 @@ impl Computers {
             Err(e) => {
                 // past its checks it may have left a part behind, and with no record nothing
                 // would find it: the sweep does, by its label
-                if !matches!(e, Problem::ProviderDown(_) | Problem::ProviderMissing(_) | Problem::ImageMissing(_) | Problem::NotBuilt(_) | Problem::Credentials { .. }) {
+                if !matches!(e, Problem::ProviderDown(_) | Problem::ProviderMissing(_) | Problem::ImageMissing(_) | Problem::NotBuilt(_) | Problem::Refused { .. }) {
                     let at = policy::now(ctx);
                     let _ = ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, created_for, gone_at) VALUES(?,?,?,?,?)", rusqlite::params![id, kind.as_str(), at, bot, at]));
                 } else {
@@ -1345,7 +1345,7 @@ impl Computers {
         } else {
             match record {
                 Ok(m) => {
-                    out["provider"] = json!(m.provider.label());
+                    out["provider"] = json!(homes::label(m.provider));
                     match self.provider_of(ctx, &m).power(&m).await {
                         Ok(Power::Broken(why)) => {
                             out["message"] = json!(why);
@@ -1804,9 +1804,9 @@ async fn remove_provider(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// The kind a body names, `None` for `null`: `Err` for a word that isn't one.
 fn kind_in(body: &Value) -> Result<Option<ProviderKind>, Problem> {
     match body.get("kind") {
-        None => Err(Problem::Credentials { code: "not_offered", message: "Say where: a kind, or null for the default.".to_owned() }),
+        None => Err(Problem::Refused { code: "not_offered", message: "Say where: a kind, or null for the default.".to_owned() }),
         Some(Value::Null) => Ok(None),
-        Some(v) => v.as_str().and_then(ProviderKind::parse).map(Some).ok_or_else(|| Problem::Credentials { code: "not_offered", message: "That isn't a place computers can be made.".to_owned() }),
+        Some(v) => v.as_str().and_then(ProviderKind::parse).map(Some).ok_or_else(|| Problem::Refused { code: "not_offered", message: "That isn't a place computers can be made.".to_owned() }),
     }
 }
 
@@ -1819,7 +1819,7 @@ async fn set_default(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let kind = match kind_in(&body) {
         Ok(Some(kind)) => kind,
-        Ok(None) => return refused(&Problem::Credentials { code: "not_offered", message: "Name the place new computers should go.".to_owned() }),
+        Ok(None) => return refused(&Problem::Refused { code: "not_offered", message: "Name the place new computers should go.".to_owned() }),
         Err(p) => return refused(&p),
     };
     match computers.set_default(&ctx, kind) {
