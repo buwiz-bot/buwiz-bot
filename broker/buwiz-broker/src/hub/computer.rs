@@ -487,11 +487,27 @@ impl Computers {
         let dir = Self::dir(ctx, &id);
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
         let spec = Spec { id: id.clone(), dir: dir.clone() };
-        // the Bot's own choice, else the Mac's default: only a person sets either
-        let (kind, _) = homes::home_of(ctx, bot);
+        // the Bot's own choice, else the Mac's default: only a person sets either. Held until its
+        // record is written: a removal of these keys waits, and then sees it. Read again once held:
+        // a removal just before put the choice back to the default, and a computer is never made
+        // with keys a person took away
+        let mut kind = homes::home_of(ctx, bot).0;
+        let mut tries = 0;
+        let _keys = loop {
+            let held = self.homes.lock(kind).read().await;
+            let now = homes::home_of(ctx, bot).0;
+            if now == kind {
+                break held;
+            }
+            drop(held);
+            tries += 1;
+            if tries == 3 {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(Problem::Refused { code: "in_use", message: "Where this Bot's computers are made kept changing while it was made. Try again.".to_owned() });
+            }
+            kind = now;
+        };
         let provider = self.provider_of_kind(ctx, kind);
-        // until its record is written: a removal of these keys waits, and then sees it
-        let _keys = self.homes.lock(kind).read().await;
         let made = provider.create(&spec).await;
         let machine = match made {
             Ok(m) => m,
@@ -947,13 +963,18 @@ impl Computers {
             if remote && !keys(ctx).is_ok_and(|k| k.remove_computer_key(id).is_ok()) {
                 return;
             }
-            let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
-            Self::forget_jobs(ctx, id);
-            self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-            self.now().problems.remove(id);
-            if valid_id(id) {
-                let _ = std::fs::remove_dir_all(Self::dir(ctx, id));
-            }
+            self.drop_record(ctx, id);
+        }
+    }
+
+    /// Everything this broker keeps of computer `id`: its row, jobs, record and folder.
+    fn drop_record(&self, ctx: &HubCtx, id: &str) {
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
+        Self::forget_jobs(ctx, id);
+        self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        self.now().problems.remove(id);
+        if valid_id(id) {
+            let _ = std::fs::remove_dir_all(Self::dir(ctx, id));
         }
     }
 
@@ -1801,6 +1822,18 @@ async fn remove_provider(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
+/// `POST /v1/host/computer/providers/{kind}/forget {id}`: a person looked, and computer `id`, on its
+/// way out, has nothing left on the platform.
+async fn forget_leaving(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, kind) = provider_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+    match computers.forget_leaving(&ctx, kind, id).await {
+        Ok(provider) => types::json(StatusCode::OK, &json!({"ok": true, "provider": provider})),
+        Err(p) => refused(&p),
+    }
+}
+
 /// The kind a body names, `None` for `null`: `Err` for a word that isn't one.
 fn kind_in(body: &Value) -> Result<Option<ProviderKind>, Problem> {
     match body.get("kind") {
@@ -1861,6 +1894,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Put, S("/v1/host/computer/providers/*"), save_provider);
     routes.route(Verb::Post, S("/v1/host/computer/providers/*/check"), check_provider);
     routes.route(Verb::Post, S("/v1/host/computer/providers/*/remove"), remove_provider);
+    routes.route(Verb::Post, S("/v1/host/computer/providers/*/forget"), forget_leaving);
     routes.route(Verb::Put, S("/v1/host/computer/bot/*/provider"), set_bot_home);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/test"), test_remote);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote"), add_remote);

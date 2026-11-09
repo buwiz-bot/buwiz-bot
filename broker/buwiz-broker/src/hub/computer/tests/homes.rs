@@ -24,6 +24,10 @@ struct Platform {
     first_shared: std::sync::atomic::AtomicBool,
     /// every computer is gone, whatever the key
     all_gone: std::sync::atomic::AtomicBool,
+    /// the good key was revoked: the platform refuses everything asked with it
+    good_revoked: std::sync::atomic::AtomicBool,
+    /// what each sweep was asked to delete
+    swept: Mutex<Vec<String>>,
 }
 
 struct FakeCloud {
@@ -35,6 +39,13 @@ struct FakeCloud {
 impl FakeCloud {
     fn key(&self) -> Option<String> {
         self.settings.get().key.map(|k| k.expose().to_owned())
+    }
+
+    fn revoked(&self) -> buwiz_computer::Result<()> {
+        if self.key().as_deref() == Some(GOOD) && self.platform.good_revoked.load(Ordering::SeqCst) {
+            return Err(Problem::Refused { code: "bad_key", message: "E2B didn't take this API key.".into() });
+        }
+        Ok(())
     }
 }
 
@@ -74,6 +85,7 @@ impl Provider for FakeCloud {
 
     /// The computers made with the good key's account are only seen with it.
     async fn power(&self, machine: &Machine) -> buwiz_computer::Result<Power> {
+        self.revoked()?;
         let shared = matches!(&machine.reach, Reach::Sandbox { id } if id.contains("shared-"));
         Ok(if self.platform.all_gone.load(Ordering::SeqCst) || (self.key().as_deref() == Some(OTHER) && !shared) { Power::Absent } else { Power::Asleep })
     }
@@ -87,6 +99,12 @@ impl Provider for FakeCloud {
     }
 
     async fn destroy(&self, _machine: &Machine) -> buwiz_computer::Result<()> {
+        self.revoked()
+    }
+
+    async fn sweep(&self, id: &str, _last: Option<&Reach>) -> buwiz_computer::Result<()> {
+        self.revoked()?;
+        self.platform.swept.lock().unwrap().push(id.to_owned());
         Ok(())
     }
 }
@@ -254,10 +272,9 @@ async fn keys_with_computers_still_on_them_arent_removed_or_swapped_for_another_
     assert!(keys(&b.ctx).unwrap().get_provider_cred("e2b").unwrap().unwrap().contains(GOOD));
     // with the computer gone, the keys go
     b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
-    // retired, it's still there until the sweep has its provider delete it: its keys are still needed
-    assert_eq!(b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap_err().code(), "in_use");
-    b.computers.sleep_the_idle(&b.ctx).await;
+    // retired, it's deleted with these keys first, and then they go
     b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap();
+    assert_eq!(b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM computers", [], |r| r.get::<_, i64>(0))).unwrap(), 0);
     assert_eq!(keys(&b.ctx).unwrap().get_provider_cred("e2b").unwrap(), None);
 }
 
@@ -402,13 +419,97 @@ async fn keys_that_cant_be_read_make_a_home_refuse_and_never_sign_with_this_macs
     assert!(b.computers.providers_json(&b.ctx)["providers"].as_array().unwrap().iter().any(|h| h["kind"] == "ec2" && h["configured"] == false));
 }
 
+/// A failed make's leftover: a row on its way out, with no record to ask about.
+fn leftover(b: &Bed, id: &str) {
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES(?, 'e2b', 1, 1)", [id])).unwrap();
+}
+
+fn rows(b: &Bed) -> i64 {
+    b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM computers", [], |r| r.get(0))).unwrap()
+}
+
 #[tokio::test]
-async fn a_computer_being_made_or_removed_holds_off_new_keys() {
-    let (b, _) = homes_bed("being-removed");
+async fn a_computer_whose_record_cant_be_read_holds_off_new_keys() {
+    let (b, _) = homes_bed("being-made");
     save_e2b(&b, GOOD).await.unwrap();
-    // a failed create's leftover: a row on its way out, with no record to ask about
-    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES('cmp_0abc', 'e2b', 1, 1)", [])).unwrap();
+    // in use, with its record missing for now: nothing can say the new keys see it
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at) VALUES('cmp_0abc', 'e2b', 1)", [])).unwrap();
     assert_eq!(save_e2b(&b, OTHER).await.unwrap_err().code(), "in_use");
+}
+
+#[tokio::test]
+async fn a_leftover_the_keys_in_use_can_delete_is_deleted_and_holds_nothing_up() {
+    let (b, platform) = homes_bed("leftover-swept");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    save_e2b(&b, OTHER).await.unwrap();
+    assert_eq!(*platform.swept.lock().unwrap(), ["cmp_0abc"], "deleted with the keys that made it, before they were replaced");
+    assert_eq!(rows(&b), 0);
+}
+
+#[tokio::test]
+async fn a_leftover_no_key_can_reach_says_where_to_look_and_a_person_can_forget_it() {
+    let (b, platform) = homes_bed("leftover-stuck");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    // the key was rotated on E2B's side before the sweep could delete what the failed make left
+    platform.good_revoked.store(true, Ordering::SeqCst);
+    for p in [save_e2b(&b, OTHER).await.unwrap_err(), b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap_err()] {
+        assert_eq!(p.code(), "stuck", "{}", p.sentence());
+        assert!(p.sentence().contains("cmp_0abc") && p.sentence().contains("buwiz-computer=cmp_0abc") && p.sentence().contains("Forget"), "{}", p.sentence());
+    }
+    let shown = b.computers.providers_json(&b.ctx);
+    let listed = &provider_of(&shown, "e2b")["computers"][0];
+    assert_eq!((listed["id"].as_str(), listed["leaving"].as_bool()), (Some("cmp_0abc"), Some(true)));
+    assert!(listed["look"].as_str().unwrap().contains("buwiz-computer=cmp_0abc"));
+    // a person looked: it's forgotten, and the new key goes in
+    b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, "cmp_0abc").await.unwrap();
+    assert_eq!(rows(&b), 0);
+    save_e2b(&b, OTHER).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_deleted_computer_no_key_can_reach_can_be_forgotten_but_one_in_use_cant() {
+    let (b, platform) = homes_bed("retired-stuck");
+    save_e2b(&b, GOOD).await.unwrap();
+    b.computers.set_bot_home(&b.ctx, &b.ann.0, Some(ProviderKind::E2b)).unwrap();
+    b.computers.click(&b.ctx, &b.ann.0).await.unwrap();
+    for _ in 0..400 {
+        if b.computers.status(&b.ctx, &b.ann.0).await["state"] != "waking" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let id: String = b.ctx.db.with(|c| c.query_row("SELECT id FROM computers", [], |r| r.get(0))).unwrap();
+    // in use: it goes with its Bot, never by Forget
+    assert_eq!(b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, &id).await.unwrap_err().code(), "not_leaving");
+    // revoked, then deleted with its Bot: the delete can't reach it
+    platform.good_revoked.store(true, Ordering::SeqCst);
+    b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
+    assert_eq!(rows(&b), 1);
+    assert_eq!(save_e2b(&b, OTHER).await.unwrap_err().code(), "stuck");
+    b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, &id).await.unwrap();
+    assert_eq!(rows(&b), 0);
+    save_e2b(&b, OTHER).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_computer_is_never_made_on_a_home_whose_keys_were_removed_while_it_waited() {
+    let (b, platform) = homes_bed("removed-while-waiting");
+    save_e2b(&b, GOOD).await.unwrap();
+    b.computers.set_bot_home(&b.ctx, &b.ann.0, Some(ProviderKind::E2b)).unwrap();
+    // a removal holds E2B's lock; the Bot's choice of E2B is taken back meanwhile
+    let held = b.computers.homes.lock(ProviderKind::E2b).write().await;
+    let computers = b.computers.clone();
+    let (ctx, ann) = (b.ctx.clone(), b.ann.0.clone());
+    let made = tokio::spawn(async move { computers.make(&ctx, &ann).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    b.computers.set_bot_home(&b.ctx, &b.ann.0, None).unwrap();
+    drop(held);
+    let id = made.await.unwrap().unwrap();
+    assert!(platform.created.lock().unwrap().is_empty(), "nothing was made on E2B");
+    let kind: String = b.ctx.db.with(|c| c.query_row("SELECT provider FROM computers WHERE id=?", [&id], |r| r.get(0))).unwrap();
+    assert_eq!(kind, "docker");
 }
 
 #[tokio::test]

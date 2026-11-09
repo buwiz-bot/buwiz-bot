@@ -206,6 +206,28 @@ fn a_refusal_keeps_the_form_open_with_its_sentence() {
     wait_for_text(&mut app, "empty=true");
 }
 
+#[test]
+fn a_computer_being_deleted_shows_where_to_look_and_forget_sends_its_id() {
+    if !in_child("a_computer_being_deleted_shows_where_to_look_and_forget_sends_its_id") {
+        return;
+    }
+    let mut stuck = e2b(true);
+    stuck["computers"] = json!([{"id": "cmp_cd34", "bots": [], "leaving": true, "look": "In the E2B dashboard, kill any sandbox whose metadata has buwiz-computer=cmp_cd34"}]);
+    let mut list = providers(true);
+    list["providers"][2] = stuck;
+    route("GET", "/v1/host/computer/providers", 200, list);
+    route("POST", "/v1/host/computer/providers/e2b/forget", 200, json!({"ok": true, "provider": e2b(true)}));
+    let mut app = start::<Page>((900.0, 1600.0));
+    wait_for_text(&mut app, "cmp_cd34 is being deleted");
+    assert!(shows(&mut app, "buwiz-computer=cmp_cd34, then press Forget cmp_cd34."), "{:?}", app.texts());
+    app.press("Forget cmp_cd34 on E2B");
+    let sent = wait_for_change(&mut app, 1);
+    assert_eq!((sent[0].0.as_str(), sent[0].1.as_str()), ("POST", "/v1/host/computer/providers/e2b/forget"));
+    assert_eq!(sent[0].2, json!({"id": "cmp_cd34"}));
+    wait_for_text(&mut app, "cmp_cd34 is forgotten.");
+    assert!(!shows(&mut app, "cmp_cd34 is being deleted"), "{:?}", app.texts());
+}
+
 #[component]
 fn Composer() -> impl IntoElement {
     let _ = crate::live::store();

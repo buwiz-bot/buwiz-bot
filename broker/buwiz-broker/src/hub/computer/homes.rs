@@ -17,6 +17,10 @@
 //!   may only suggest a setup (`computer_setup`), which posts a card.
 //! - A key isn't removed while a computer made with it is still there: nothing could sleep or
 //!   delete that computer then, and it would keep costing.
+//! - A computer on its way out (deleted, or a make that failed part way) goes once its platform
+//!   deletes it, with the keys in use. When those keys can't reach it any more (rotated, revoked,
+//!   expired), a save or a removal says where to look, and a person who looked can forget it: no
+//!   key change is ever held up by a row nothing can clear.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -522,18 +526,48 @@ fn default_json(ctx: &HubCtx) -> Value {
     json!({"kind": kind.as_str(), "label": label(kind), "source": source})
 }
 
-/// The computers made on `kind` that are still there, with the names of the Bots at each. One on its
-/// way out counts: its keys are what delete it.
-fn computers_on(ctx: &HubCtx, kind: ProviderKind) -> Result<Vec<(String, Vec<String>)>, Problem> {
-    let ids: Vec<String> = ctx
+/// A computer made on a home that is still there.
+struct On {
+    id: String,
+    /// the names of the Bots at it
+    bots: Vec<String>,
+    /// on its way out: deleted, or a make that failed part way. Its keys are what delete it
+    leaving: bool,
+}
+
+/// The computers made on `kind` that are still there. One on its way out counts.
+fn computers_on(ctx: &HubCtx, kind: ProviderKind) -> Result<Vec<On>, Problem> {
+    let rows: Vec<(String, bool)> = ctx
         .db
         .with(|c| {
-            let mut q = c.prepare("SELECT id FROM computers WHERE provider=? ORDER BY created_at, id")?;
-            let rows = q.query_map([kind.as_str()], |r| r.get(0))?;
+            let mut q = c.prepare("SELECT id, gone_at IS NOT NULL FROM computers WHERE provider=? ORDER BY created_at, id")?;
+            let rows = q.query_map([kind.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect()
         })
         .map_err(db_problem)?;
-    ids.into_iter().map(|id| Ok((id.clone(), Computers::seats(ctx, &id)?.iter().map(|s| bot_name(ctx, &s.bot)).collect()))).collect()
+    rows.into_iter().map(|(id, leaving)| Ok(On { bots: Computers::seats(ctx, &id)?.iter().map(|s| bot_name(ctx, &s.bot)).collect(), id, leaving })).collect()
+}
+
+/// Where a person finds what's left of computer `id` on `kind`'s platform, to delete it.
+fn look_for(kind: ProviderKind, id: &str) -> String {
+    match kind {
+        ProviderKind::Ec2 => format!("In the EC2 console, in each region you've used, terminate any instance tagged {}={id}", ec2::api::ID_TAG),
+        ProviderKind::E2b => format!("In the E2B dashboard, kill any sandbox whose metadata has buwiz-computer={id}"),
+        ProviderKind::Boat => format!("In boat.dev, delete any sandbox labelled buwiz-computer={id}"),
+        _ => format!("Delete anything made for {id} on that platform"),
+    }
+}
+
+/// Computer `id` is on its way out, and the keys in use can't delete it.
+fn stuck(kind: ProviderKind, id: &str) -> Problem {
+    refusal(
+        "stuck",
+        format!(
+            "Computer {id} on {} is being deleted, and the keys in use can't reach it any more, so it may still be there and costing. {}. Then press Forget {id} in Settings › Computers, and try again.",
+            label(kind),
+            look_for(kind, id)
+        ),
+    )
 }
 
 /// The last 4 characters of a secret long enough that they say little.
@@ -568,7 +602,18 @@ impl Computers {
                 o
             })
             .collect();
-        let computers: Vec<Value> = computers_on(ctx, kind).unwrap_or_default().into_iter().map(|(id, bots)| json!({"id": id, "bots": bots})).collect();
+        let computers: Vec<Value> = computers_on(ctx, kind)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|o| {
+                let mut c = json!({"id": o.id, "bots": o.bots});
+                if o.leaving {
+                    c["leaving"] = json!(true);
+                    c["look"] = json!(look_for(kind, &o.id));
+                }
+                c
+            })
+            .collect();
         let (default, _) = default_home(ctx);
         let built = built(kind);
         let mut o = json!({
@@ -653,16 +698,26 @@ impl Computers {
         // (none saved, or a keystore that didn't answer) say nothing about the computer
         let gone = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone));
         let live = self.homes.provider(ctx, kind);
-        for (id, _) in computers_on(ctx, kind)? {
-            // a computer whose record can't be read now (being made, or being removed) may still be
-            // there: nothing can say these keys see it, so they wait
+        let on = self.settle_leaving(ctx, kind).await?;
+        for o in on {
+            let id = o.id;
             let Ok(machine) = self.machine(ctx, &id) else {
+                // on its way out with no record (a make that failed part way): the keys in use
+                // couldn't delete it just now, and nothing can say the new ones see it
+                if o.leaving {
+                    return Err(stuck(kind, &id));
+                }
+                // a record that can't be read now may be back: nothing can say these keys see it
                 return Err(refusal("in_use", format!("A computer on {} is being made or removed right now. Try again in a minute.", label(kind))));
             };
             let seen = candidate.power(&machine).await;
             if unseen(&seen) {
                 if gone(&live.power(&machine).await) {
                     continue;
+                }
+                // deleted, and neither key can reach it: a person may know it's gone
+                if o.leaving {
+                    return Err(stuck(kind, &id));
                 }
                 return Err(refusal(
                     "other_account",
@@ -672,6 +727,43 @@ impl Computers {
             seen?;
         }
         Ok(())
+    }
+
+    /// The computers on `kind`, after the keys in use have deleted the ones on their way out that
+    /// they still can: what [`Computers::finish_retire`] does each minute, now.
+    async fn settle_leaving(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<Vec<On>, Problem> {
+        let on = computers_on(ctx, kind)?;
+        if !on.iter().any(|o| o.leaving) {
+            return Ok(on);
+        }
+        for o in on.iter().filter(|o| o.leaving) {
+            // a wake in flight could put back what this removes, as for the sweep
+            if !self.now().waking.contains(&o.id) {
+                self.finish_retire(ctx, &o.id).await;
+            }
+        }
+        computers_on(ctx, kind)
+    }
+
+    /// A person looked, and computer `id` on `kind`, on its way out, has nothing left on the
+    /// platform: the keys in use try once more, and then it's forgotten. Only one on its way out:
+    /// a computer in use is deleted with its Bot first.
+    pub async fn forget_leaving(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<Value, Problem> {
+        if fields(kind).is_empty() {
+            return Err(refusal("nothing_to_set", format!("{} has nothing to forget here.", label(kind))));
+        }
+        let _saving = self.homes.lock(kind).write().await;
+        let leaving = computers_on(ctx, kind)?.into_iter().any(|o| o.leaving && o.id == id);
+        if !leaving {
+            return Err(refusal("not_leaving", format!("{id} isn't a computer on {} that's being deleted. Delete its Bot first.", label(kind))));
+        }
+        if !self.now().waking.contains(id) {
+            self.finish_retire(ctx, id).await;
+        }
+        if computers_on(ctx, kind)?.iter().any(|o| o.id == id) {
+            self.drop_record(ctx, id);
+        }
+        Ok(self.provider_json(ctx, kind))
     }
 
     /// A person's Check of what `kind` has now. `Ok` is the sentence to show.
@@ -696,9 +788,13 @@ impl Computers {
             return Err(refusal("nothing_to_set", format!("{} has no keys to remove.", label(kind))));
         }
         let _saving = self.homes.lock(kind).write().await;
-        let left = computers_on(ctx, kind)?;
+        let left = self.settle_leaving(ctx, kind).await?;
+        // one on its way out that the keys couldn't delete: where to look, and Forget
+        if let Some(o) = left.iter().find(|o| o.leaving) {
+            return Err(stuck(kind, &o.id));
+        }
         if !left.is_empty() {
-            let names: Vec<String> = left.iter().flat_map(|(_, bots)| bots.clone()).collect();
+            let names: Vec<String> = left.iter().flat_map(|o| o.bots.clone()).collect();
             let whose = if names.is_empty() { format!("{} of them", left.len()) } else { names.join(", ") };
             return Err(refusal(
                 "in_use",
