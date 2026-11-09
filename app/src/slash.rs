@@ -161,6 +161,14 @@ const BUILTINS: &[Builtin] = &[
         menu: Some(crate::messages::menu),
         run: crate::messages::run,
     },
+    Builtin {
+        name: "computer",
+        args: "setup <home> | use <home> | default <home> | check [<home>] | status",
+        description: "Where computers are made, and their keys",
+        menu: Some(crate::homes::menu),
+        // its cards and Settings › Computers (no model call)
+        run: crate::homes::run,
+    },
 ];
 
 /// The built-ins whose names start with `q`, as popup rows.
@@ -1087,6 +1095,14 @@ mod tests {
         assert!(super::builtin_rows("").iter().any(|r| r.label == "/tools"), "`/` alone lists it");
         // it opens the sheet (`tools::sheet_for` is tested there)
         assert_eq!(super::BUILTINS.iter().find(|b| b.name == "tools").map(|b| b.args), Some(""));
+    }
+
+    #[test]
+    fn computer_is_a_builtin_with_a_menu() {
+        let rows = super::builtin_rows("comp");
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["/computer"]);
+        let b = super::BUILTINS.iter().find(|b| b.name == "computer").unwrap();
+        assert!(b.menu.is_some() && b.args.contains("default <home>"));
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod design;
 mod dotgrid;
 mod files;
 mod history;
+mod homes;
 mod hot;
 mod icons;
 pub mod identity;
@@ -221,6 +222,8 @@ pub fn App() -> impl IntoElement {
 
 #[cfg(test)]
 mod computer_ui_tests;
+#[cfg(test)]
+mod homes_ui_tests;
 #[cfg(test)]
 mod botmodal_ui_tests;
 #[cfg(test)]

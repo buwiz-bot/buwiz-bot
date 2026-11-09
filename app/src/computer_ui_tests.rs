@@ -513,3 +513,31 @@ fn cancelling_the_form_drops_what_was_typed_and_a_no_stays_on_it() {
     wait_for(&mut app, "empty=true");
     assert!(shows(&mut app, "Connect a remote computer"));
 }
+
+#[test]
+fn with_no_computer_the_tab_says_where_the_next_one_is_made() {
+    if !in_child("with_no_computer_the_tab_says_where_the_next_one_is_made") {
+        return;
+    }
+    let home = Some(crate::homes::Next { kind: "e2b".to_owned(), label: "E2B".to_owned(), source: "bot".to_owned() });
+    let parsed = Status::parse(&json!({"state": "absent", "home": {"kind": "e2b", "label": "E2B", "source": "bot"}}));
+    assert_eq!(parsed.home, home);
+    let mut app = on_the_tab();
+    put(&mut app, "b1", Status { home, ..in_state("absent") }, None);
+    assert!(shows(&mut app, "New computers for this Bot: E2B"), "{:?}", app.texts());
+}
+
+#[test]
+fn set_up_a_computer_opens_the_pick_a_home_card_in_the_tab() {
+    if !in_child("set_up_a_computer_opens_the_pick_a_home_card_in_the_tab") {
+        return;
+    }
+    let mut config = EngineConfig::new(App::Rust(Root::new::<RemoteForm>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(900.0), px(700.0));
+    let mut form = run(config);
+    form.press("on b1");
+    assert!(form.has("Connect a remote computer"));
+    form.press("Set up a computer");
+    wait_for(&mut form, "Where should a new computer be made?");
+    assert!(form.has("Docker on this Mac") && form.has("A remote computer"), "{:?}", form.texts());
+}

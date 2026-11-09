@@ -14,7 +14,7 @@ use crate::keys::{self, COMMANDS, Scope};
 use crate::live::store;
 use crate::theme;
 
-const PAGES: [(&str, &str); 2] = [("keyboard", "Keyboard"), ("logins", "Logins")];
+const PAGES: [(&str, &str); 3] = [("keyboard", "Keyboard"), ("logins", "Logins"), ("computers", "Computers")];
 
 /// The order Keyboard lists the places in: the broad ones first.
 const LIST_ORDER: [Scope; 12] = [
@@ -144,6 +144,8 @@ pub(crate) fn layer() -> impl IntoElement {
                         let page = store().settings_page.get();
                         if page == "logins" {
                             crate::vault::settings_page().into_element()
+                        } else if page == "computers" {
+                            crate::homes::settings_page().into_element()
                         } else {
                             keyboard_page().into_element()
                         }
