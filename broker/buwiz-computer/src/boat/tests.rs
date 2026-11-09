@@ -331,11 +331,6 @@ async fn a_key_is_checked_before_a_call_and_missing_it_is_a_sentence() {
     assert!(err.sentence().contains("API key"));
 }
 
-#[test]
-fn the_label_says_the_regions_are_eu_only() {
-    assert!(ProviderKind::Boat.label().contains("EU"));
-}
-
 #[tokio::test]
 async fn a_check_proves_the_key_with_a_read() {
     let fake = serve(|req: &Seen| match (req.method.as_str(), req.path.as_str(), req.header("authorization")) {

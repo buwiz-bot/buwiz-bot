@@ -90,14 +90,10 @@ fn fields(kind: ProviderKind) -> &'static [Field] {
     }
 }
 
-/// What a person calls a home.
+/// What a person calls a home: the kind's own name, but Docker is the one on this Mac.
 pub fn label(kind: ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Docker => "Docker on this Mac",
-        ProviderKind::Ec2 => "AWS EC2",
-        ProviderKind::E2b => "E2B",
-        ProviderKind::Boat => "boat.dev",
-        ProviderKind::Remote => "A remote computer",
         other => other.label(),
     }
 }

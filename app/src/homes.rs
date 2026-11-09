@@ -372,9 +372,12 @@ pub(crate) async fn save(kind: &str, body: Value) -> Said {
     reply
 }
 
-/// Checks a home's saved key: `POST providers/{kind}/check`.
-pub(crate) async fn check(kind: &str) -> Said {
-    ask("POST", &provider_path(kind, "/check"), None).await
+/// Checks a home's saved key: `POST providers/{kind}/check`. Ok is the sentence to show, Err why not.
+pub(crate) async fn check(kind: &str) -> Result<String, String> {
+    match ask("POST", &provider_path(kind, "/check"), None).await {
+        Said::Yes(v) => Ok(v.get("message").and_then(Value::as_str).unwrap_or("It works.").to_owned()),
+        Said::No(why) => Err(why),
+    }
 }
 
 /// Forgets a home's key: `POST providers/{kind}/remove`. The broker refuses while computers are on it.
@@ -554,7 +557,9 @@ pub(crate) fn page_form() -> KeyForm {
     PAGE_FORM.with(|f| *f)
 }
 
-fn small_button(label: String, words: String, press: impl Fn() + 'static) -> impl IntoElement {
+/// A small rounded button: `words` on it, `label` for a screen reader. The Computer tab uses it too.
+pub(crate) fn small_button(label: impl Into<String>, words: impl Into<String>, press: impl Fn() + 'static) -> View {
+    let (label, words) = (label.into(), words.into());
     view()
         .label(label)
         .h(px(28.0))
@@ -567,7 +572,8 @@ fn small_button(label: String, words: String, press: impl Fn() + 'static) -> imp
         .on_press(press)
 }
 
-fn line(words: String) -> Text {
+/// A muted 12-point line, for a page or a tab. A card's line is `cards::note`, which is a little brighter.
+pub(crate) fn line(words: String) -> Text {
     text(words).text_size(px(12.0)).line_height(px(16.0)).text_color(theme::MUTED)
 }
 
@@ -673,8 +679,8 @@ fn run_check(kind: String) {
     set_note(&kind, true, "Checking…".to_owned());
     spawn_detached(async move {
         match check(&kind).await {
-            Said::Yes(v) => set_note(&kind, true, v.get("message").and_then(Value::as_str).unwrap_or("It works.").to_owned()),
-            Said::No(why) => set_note(&kind, false, why),
+            Ok(words) => set_note(&kind, true, words),
+            Err(why) => set_note(&kind, false, why),
         }
     });
 }

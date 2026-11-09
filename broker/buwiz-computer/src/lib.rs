@@ -213,7 +213,7 @@ impl ProviderKind {
             Self::Ec2 => "AWS EC2",
             Self::Remote => "A remote computer",
             Self::E2b => "E2B",
-            Self::Boat => "boat.dev (EU regions only today)",
+            Self::Boat => "boat.dev",
             Self::Fly => "Fly.io",
         }
     }
