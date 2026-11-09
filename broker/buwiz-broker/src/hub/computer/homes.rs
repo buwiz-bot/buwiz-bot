@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use buwiz_computer::ec2::{self, creds, sigv4::Credentials};
 use buwiz_computer::{cloud, provider_for, BoatProvider, DockerProvider, E2bProvider, Ec2Provider, Power, Problem, Provider, ProviderKind, Secret, Shared};
@@ -47,6 +48,9 @@ fn launch_stack(region: &str) -> String {
     format!("https://console.aws.amazon.com/cloudformation/home?region={region}#/stacks/quickcreate?templateURL={template}&stackName=buwiz-computer")
 }
 const E2B_BUILD: &str = "https://github.com/buwiz-bot/computer/tree/main/deploy/e2b";
+
+/// How long a keystore that didn't answer is left before it's asked again.
+const UNREAD_WAIT: Duration = Duration::from_secs(30);
 
 /// The longest value a field takes.
 const MAX_VALUE: usize = 4096;
@@ -149,11 +153,22 @@ impl Saved {
 
 /// Where the AWS keys come from: the ones a person pasted, a profile they named, or (nothing saved)
 /// the environment and the broker's profile, as a developer has it.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum AwsKeys {
     Saved(Credentials),
     Profile(String),
     Env(String),
+}
+
+/// Says which source, never the keys: an access key ID is kept as secret as its secret.
+impl std::fmt::Debug for AwsKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Saved(_) => f.write_str("AwsKeys::Saved(..)"),
+            Self::Profile(p) => write!(f, "AwsKeys::Profile({p:?})"),
+            Self::Env(p) => write!(f, "AwsKeys::Env({p:?})"),
+        }
+    }
 }
 
 /// [`creds::Keys`] over a person's choice, read at each call.
@@ -212,11 +227,11 @@ fn ec2_settings(saved: Option<&Saved>) -> (ec2::Config, AwsKeys) {
         let profile = env.profile.clone();
         return (env, AwsKeys::Env(profile));
     };
-    let d = ec2::Config::default();
+    // what a person left blank is as the environment says, or its default
     let config = ec2::Config {
-        region: s.get("region").unwrap_or(d.region),
-        template: s.get("template").unwrap_or(d.template),
-        profile: s.get("profile").unwrap_or(d.profile),
+        region: s.get("region").unwrap_or(env.region),
+        template: s.get("template").unwrap_or(env.template),
+        profile: s.get("profile").unwrap_or(env.profile),
         user: env.user,
         image: env.image,
     };
@@ -232,16 +247,27 @@ pub struct Homes {
     providers: Mutex<HashMap<ProviderKind, Arc<dyn Provider>>>,
     handles: Mutex<HashMap<ProviderKind, Handles>>,
     factory: Factory,
-    /// a save or a removal holds it to write, and the making of a computer to read: a key can't be
-    /// removed while a computer is being made with it, nor two saves cross
-    pub(super) saving: tokio::sync::RwLock<()>,
+    /// when each kind's keystore last didn't answer
+    unread: Mutex<HashMap<ProviderKind, Instant>>,
+    /// by kind: a save or a removal holds it to write, and the making of a computer to read. A key
+    /// can't be removed while a computer is being made with it, nor two saves cross, and one home's
+    /// save never waits on another's launch
+    locks: HashMap<ProviderKind, tokio::sync::RwLock<()>>,
+    /// for a kind `locks` lacks, which `ProviderKind::ALL` rules out
+    fallback_lock: tokio::sync::RwLock<()>,
 }
 
 impl Homes {
     /// `first` serves its own kind: Docker's provider, or a test's.
     pub fn new(first: Arc<dyn Provider>) -> Self {
         let providers = HashMap::from([(first.kind(), first)]);
-        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), saving: tokio::sync::RwLock::new(()) }
+        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), unread: Mutex::default(), locks: ProviderKind::ALL.into_iter().map(|k| (k, tokio::sync::RwLock::new(()))).collect(), fallback_lock: tokio::sync::RwLock::new(()) }
+    }
+
+    /// `kind`'s lock: [`Homes::locks`].
+    pub(super) fn lock(&self, kind: ProviderKind) -> &tokio::sync::RwLock<()> {
+        // every kind has one; a missing one would be a new kind not in `ALL`
+        self.locks.get(&kind).unwrap_or(&self.fallback_lock)
     }
 
     /// Makes providers with `factory` (tests).
@@ -258,53 +284,55 @@ impl Homes {
         }
         let made: Arc<dyn Provider> = match kind {
             ProviderKind::Docker => Arc::new(DockerProvider::from_env()),
-            ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat => {
-                let saved = match load(ctx, kind) {
-                    Ok(saved) => saved,
-                    // the keystore didn't answer: a provider for this call alone, and the next one
-                    // reads again. Kept, it would stand for "no keys" until the next save
-                    Err(p) => {
-                        eprintln!("buwiz-broker: {}'s keys couldn't be read: {}", kind.as_str(), p.code());
-                        return self.uncached(kind);
-                    }
-                };
-                let handles = self.handles_for(kind, saved.as_ref());
-                match handles {
-                    Handles::Cloud(s) => (self.factory)(Made::Cloud(kind, s)),
-                    Handles::Ec2(c, k) => (self.factory)(Made::Ec2(c, Arc::new(StoreKeys(k)))),
-                }
-            }
+            ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat => match self.handles_of(ctx, kind) {
+                Ok(Handles::Cloud(s)) => (self.factory)(Made::Cloud(kind, s)),
+                Ok(Handles::Ec2(c, k)) => (self.factory)(Made::Ec2(c, Arc::new(StoreKeys(k)))),
+                // the keystore didn't answer: a provider with nothing set, for this call alone. Kept,
+                // it would stand for "no keys" until the next save
+                Err(_) => return self.candidate(kind, &Saved::default()),
+            },
             other => provider_for(other),
         };
         self.providers.lock().unwrap_or_else(|e| e.into_inner()).entry(kind).or_insert(made).clone()
     }
 
-    /// A provider of `kind` with nothing set, kept nowhere.
-    fn uncached(&self, kind: ProviderKind) -> Arc<dyn Provider> {
-        self.candidate(kind, &Saved::default())
-    }
-
-    /// The live handles of `kind`, made from `saved` the first time.
-    fn handles_for(&self, kind: ProviderKind, saved: Option<&Saved>) -> Handles {
+    /// The live handles of `kind`, made from what's saved the first time. The read is under the
+    /// handles' lock, which [`Homes::apply`] takes too: a save that lands meanwhile is either read
+    /// here or applied after. A keystore that didn't answer is asked again only after
+    /// [`UNREAD_WAIT`], since each try can take seconds.
+    fn handles_of(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<Handles, Problem> {
         let mut all = self.handles.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(h) = all.get(&kind) {
-            return h.clone();
+            return Ok(h.clone());
         }
+        let mut unread = self.unread.lock().unwrap_or_else(|e| e.into_inner());
+        if unread.get(&kind).is_some_and(|at| at.elapsed() < UNREAD_WAIT) {
+            return Err(Problem::Failed("the keystore didn't answer a moment ago".to_owned()));
+        }
+        let saved = match load(ctx, kind) {
+            Ok(saved) => saved,
+            Err(p) => {
+                eprintln!("buwiz-broker: {}'s keys couldn't be read: {}", kind.as_str(), p.code());
+                unread.insert(kind, Instant::now());
+                return Err(p);
+            }
+        };
+        unread.remove(&kind);
         let h = if kind == ProviderKind::Ec2 {
-            let (config, keys) = ec2_settings(saved);
+            let (config, keys) = ec2_settings(saved.as_ref());
             Handles::Ec2(Shared::new(config), Shared::new(keys))
         } else {
-            Handles::Cloud(Shared::new(cloud_settings(kind, saved)))
+            Handles::Cloud(Shared::new(cloud_settings(kind, saved.as_ref())))
         };
-        hide(kind, saved);
+        hide(kind, saved.as_ref());
         all.insert(kind, h.clone());
-        h
+        Ok(h)
     }
 
     /// Puts `saved` (or the environment's, for `None`) in front of `kind`'s live provider.
     fn apply(&self, kind: ProviderKind, saved: Option<&Saved>) {
-        let handles = self.handles.lock().unwrap_or_else(|e| e.into_inner()).get(&kind).cloned();
-        match handles {
+        let all = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+        match all.get(&kind).cloned() {
             Some(Handles::Cloud(s)) => s.set(cloud_settings(kind, saved)),
             Some(Handles::Ec2(c, k)) => {
                 let (config, keys) = ec2_settings(saved);
@@ -503,7 +531,7 @@ impl Computers {
         if fields(kind).is_empty() {
             return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", label(kind))));
         }
-        let _saving = self.homes.saving.write().await;
+        let _saving = self.homes.lock(kind).write().await;
         let mut next = load(ctx, kind)?.unwrap_or_default();
         let typed_of = |key: &str| values.get(key).and_then(Value::as_str).map(str::trim).unwrap_or("");
         // a new profile named with both keys left blank: the profile is what's meant, and pasted
@@ -556,17 +584,24 @@ impl Computers {
 
     /// A key that can't see the computers already made on `kind` isn't kept: with it, nothing could
     /// sleep or delete them, and they'd go on costing.
+    /// Every one of them is asked about. One that the keys in use can't see either is already gone,
+    /// and doesn't count against the new ones.
     async fn sees_its_computers(&self, ctx: &HubCtx, kind: ProviderKind, candidate: &dyn Provider) -> Result<(), Problem> {
+        let unseen = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone) | Err(Problem::Credentials { .. }));
+        let live = self.homes.provider(ctx, kind);
         for (id, _) in computers_on(ctx, kind)? {
             let Ok(machine) = self.machine(ctx, &id) else { continue };
-            return match candidate.power(&machine).await {
-                Ok(Power::Absent) | Err(Problem::Gone) | Err(Problem::Credentials { .. }) => Err(refusal(
+            let seen = candidate.power(&machine).await;
+            if unseen(&seen) {
+                if unseen(&live.power(&machine).await) {
+                    continue;
+                }
+                return Err(refusal(
                     "other_account",
-                    format!("These keys can't see the computers already made on {} (they may be another account's). Nothing was changed: delete those Bots' computers first, or use keys of the same account.", label(kind)),
-                )),
-                Ok(_) => Ok(()),
-                Err(p) => Err(p),
-            };
+                    format!("These keys can't see a computer already made on {} (they may be another account's). Nothing was changed: delete those Bots' computers first, or use keys of the same account.", label(kind)),
+                ));
+            }
+            seen?;
         }
         Ok(())
     }
@@ -592,7 +627,7 @@ impl Computers {
         if fields(kind).is_empty() {
             return Err(refusal("nothing_to_set", format!("{} has no keys to remove.", label(kind))));
         }
-        let _saving = self.homes.saving.write().await;
+        let _saving = self.homes.lock(kind).write().await;
         let left = computers_on(ctx, kind)?;
         if !left.is_empty() {
             let names: Vec<String> = left.iter().flat_map(|(_, bots)| bots.clone()).collect();

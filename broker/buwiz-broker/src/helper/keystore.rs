@@ -365,10 +365,22 @@ impl Keystore {
     pub fn get_provider_cred(&self, kind: &str) -> Result<Option<String>, String> {
         check_provider(kind)?;
         Ok(match self {
-            Keystore::File(dir) => std::fs::read_to_string(Self::provider_file(dir, kind)).ok(),
+            Keystore::File(dir) => match std::fs::read_to_string(Self::provider_file(dir, kind)) {
+                Ok(text) => Some(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("the keys file can't be read: {e}")),
+            },
             Keystore::Keychain => match PROVIDER_ITEMS.read(&format!("{kind}/default"))? {
                 None => None,
-                Some(b) => Some(buwiz_protocol::keys::unb64(&b).ok().and_then(|b| String::from_utf8(b).ok()).ok_or("the Keychain's copy of these keys can't be read")?),
+                // a copy that doesn't decode is no keys, and a save replaces it: refused, it could
+                // never be replaced or removed
+                Some(b) => {
+                    let text = buwiz_protocol::keys::unb64(&b).ok().and_then(|b| String::from_utf8(b).ok());
+                    if text.is_none() {
+                        eprintln!("buwiz-broker: the Keychain's copy of {kind}'s keys doesn't decode; it's taken as none");
+                    }
+                    text
+                }
             },
         })
     }
@@ -427,7 +439,6 @@ fn security_stdin(line: &str) -> Result<(), String> {
     }
 }
 
-/// `security <args>`'s stdout, or `None` on failure or after 10 s.
 /// `security` with `args`: its output, `Ok(None)` for exit 44 (the item isn't there), and `Err` for
 /// any other failure or after 10 seconds.
 fn security_status(args: &[&str]) -> Result<Option<String>, String> {
@@ -457,6 +468,7 @@ fn security_status(args: &[&str]) -> Result<Option<String>, String> {
     }
 }
 
+/// `security <args>`'s stdout, or `None` on failure or after 10 s.
 pub(crate) fn security(args: &[&str]) -> Option<String> {
     let mut child = Command::new(SECURITY).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let deadline = Instant::now() + Duration::from_secs(10);

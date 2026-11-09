@@ -243,6 +243,25 @@ thread_local! {
     static BOT_HOME: Signal<HashMap<String, Next>> = Owner::detached().run(|| keep("homes.bot", HashMap::new));
     /// The Bot Details picker: open, and what its last press said.
     static PICKER: (Signal<bool>, Signal<String>) = Owner::detached().run(|| (signal(false), signal(String::new())));
+    /// When a view last asked the broker for each thing it shows: a view built again soon after
+    /// doesn't ask again
+    static ASKED: std::cell::RefCell<HashMap<String, std::time::Instant>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// How soon a view that's built again may ask the broker again. A press always asks.
+const ASK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether a view may ask the broker for `what` now; if so, that's noted.
+fn due(what: &str) -> bool {
+    ASKED.with(|a| {
+        let mut a = a.borrow_mut();
+        let now = std::time::Instant::now();
+        let due = a.get(what).is_none_or(|t| now.duration_since(*t) >= ASK_EVERY);
+        if due {
+            a.insert(what.to_owned(), now);
+        }
+        due
+    })
 }
 
 /// The homes as last heard (tracked); `None` before the broker has said.
@@ -323,8 +342,11 @@ pub(crate) async fn load() -> bool {
     true
 }
 
-/// [`load`], in the background.
+/// [`load`], in the background, unless a view asked a moment ago.
 pub(crate) fn refresh() {
+    if !due("providers") {
+        return;
+    }
     spawn_detached(async {
         load().await;
     });
@@ -788,10 +810,17 @@ pub(crate) fn settings_page() -> impl IntoElement {
 pub(crate) fn bot_row(bot: &str) -> impl IntoElement {
     let (open, note) = PICKER.with(|p| *p);
     let b = bot.to_owned();
-    spawn_detached(async move {
-        load().await;
-        bot_home(&b).await;
-    });
+    let (list, home) = (due("providers"), due(&format!("bot:{bot}")));
+    if list || home {
+        spawn_detached(async move {
+            if list {
+                load().await;
+            }
+            if home {
+                bot_home(&b).await;
+            }
+        });
+    }
     let bot = bot.to_owned();
     dynamic(move || {
         let h = homes().unwrap_or_else(fallback);

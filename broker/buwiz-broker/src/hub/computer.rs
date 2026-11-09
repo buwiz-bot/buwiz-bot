@@ -491,7 +491,7 @@ impl Computers {
         let (kind, _) = homes::home_of(ctx, bot);
         let provider = self.provider_of_kind(ctx, kind);
         // until its record is written: a removal of these keys waits, and then sees it
-        let _keys = self.homes.saving.read().await;
+        let _keys = self.homes.lock(kind).read().await;
         let made = provider.create(&spec).await;
         let machine = match made {
             Ok(m) => m,
@@ -933,8 +933,9 @@ impl Computers {
                 (Ok(true), _) => Ok(()),
                 (Ok(false), Ok(reach)) => match Self::kind_of(ctx, id) {
                     Ok(Some(kind)) => self.provider_of_kind(ctx, kind).sweep(id, reach.as_ref()).await,
-                    // a kind this build doesn't know: nothing here can find it
-                    Ok(None) => Ok(()),
+                    // a kind this build doesn't know: nothing here can delete it, so its row and
+                    // folder stay for a build that can
+                    Ok(None) => Err(Problem::Failed("this computer's kind isn't one this build knows".to_owned())),
                     Err(e) => Err(e),
                 },
                 // the next look tries again, with the name that finds its files

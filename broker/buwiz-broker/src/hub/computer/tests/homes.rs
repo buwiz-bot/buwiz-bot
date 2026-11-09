@@ -20,6 +20,10 @@ struct Platform {
     /// the settings each provider was made with, in order: the live one first
     made: Mutex<Vec<Shared<cloud::Settings>>>,
     created: Mutex<Vec<String>>,
+    /// the first computer made is one every key can see
+    first_shared: std::sync::atomic::AtomicBool,
+    /// every computer is gone, whatever the key
+    all_gone: std::sync::atomic::AtomicBool,
 }
 
 struct FakeCloud {
@@ -53,10 +57,12 @@ impl Provider for FakeCloud {
 
     async fn create(&self, spec: &Spec) -> buwiz_computer::Result<Machine> {
         self.check().await?;
+        let first = self.platform.created.lock().unwrap().is_empty();
         self.platform.created.lock().unwrap().push(spec.id.clone());
+        let shared = first && self.platform.first_shared.load(Ordering::SeqCst);
         Ok(Machine {
             provider: self.kind,
-            reach: Reach::Sandbox { id: format!("sbx-{}", spec.id) },
+            reach: Reach::Sandbox { id: format!("sbx-{}{}", if shared { "shared-" } else { "" }, spec.id) },
             image: self.settings.get().image,
             token: Secret::new("tok-fake"),
             viewer_password: Secret::new("pw-fake"),
@@ -67,8 +73,9 @@ impl Provider for FakeCloud {
     }
 
     /// The computers made with the good key's account are only seen with it.
-    async fn power(&self, _machine: &Machine) -> buwiz_computer::Result<Power> {
-        Ok(if self.key().as_deref() == Some(OTHER) { Power::Absent } else { Power::Asleep })
+    async fn power(&self, machine: &Machine) -> buwiz_computer::Result<Power> {
+        let shared = matches!(&machine.reach, Reach::Sandbox { id } if id.contains("shared-"));
+        Ok(if self.platform.all_gone.load(Ordering::SeqCst) || (self.key().as_deref() == Some(OTHER) && !shared) { Power::Absent } else { Power::Asleep })
     }
 
     async fn wake(&self, _machine: &Machine) -> buwiz_computer::Result<Woke> {
@@ -317,4 +324,61 @@ fn a_bots_choice_must_be_named_and_only_null_means_the_default() {
     assert_eq!(kind_in(&json!({"kind": null})).unwrap(), None);
     assert_eq!(kind_in(&json!({"kind": "e2b"})).unwrap(), Some(ProviderKind::E2b));
     assert!(kind_in(&json!({})).is_err() && kind_in(&Value::Null).is_err() && kind_in(&json!({"kind": "nope"})).is_err());
+}
+
+/// Two Bots at their own E2B computers.
+async fn two_on_e2b(b: &Bed) {
+    save_e2b(b, GOOD).await.unwrap();
+    for bot in [&b.ann.0, &b.bea.0] {
+        b.computers.set_bot_home(&b.ctx, bot, Some(ProviderKind::E2b)).unwrap();
+        b.computers.click(&b.ctx, bot).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_new_key_must_see_every_computer_not_only_the_first() {
+    let (b, platform) = homes_bed("sees-every");
+    platform.first_shared.store(true, Ordering::SeqCst);
+    two_on_e2b(&b).await;
+    // the other account's key sees Ann's (the first) but not Bea's
+    assert_eq!(save_e2b(&b, OTHER).await.unwrap_err().code(), "other_account");
+}
+
+#[tokio::test]
+async fn a_computer_neither_key_can_see_is_already_gone_and_doesnt_count() {
+    let (b, platform) = homes_bed("gone-for-both");
+    two_on_e2b(&b).await;
+    platform.all_gone.store(true, Ordering::SeqCst);
+    save_e2b(&b, OTHER).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_keys_file_that_cant_be_read_is_an_error_not_no_keys() {
+    let (b, _) = homes_bed("unreadable-file");
+    save_e2b(&b, GOOD).await.unwrap();
+    // its file swapped for something that can't be read as one
+    let file = b.ctx.data.join("keys/provider-creds/e2b~default.json");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir_all(&file).unwrap();
+    assert!(keys(&b.ctx).unwrap().get_provider_cred("e2b").is_err());
+    // and a save doesn't go on to act on "there are none"
+    assert!(b.computers.save_provider(&b.ctx, ProviderKind::E2b, &values(&[("template", "tpl-2")]), &[]).await.is_err());
+    assert!(file.is_dir(), "nothing was removed");
+}
+
+#[tokio::test]
+async fn a_retired_computer_of_a_kind_this_build_doesnt_know_keeps_its_row() {
+    let (b, _) = homes_bed("unknown-kind");
+    let id = "cmp_00ff";
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES(?, 'quantum', 1, 1)", [id])).unwrap();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    let left: i64 = b.ctx.db.with(|c| c.query_row("SELECT COUNT(*) FROM computers WHERE id=?", [id], |r| r.get(0))).unwrap();
+    assert_eq!(left, 1, "nothing here could delete it, so its record stays for a build that can");
+}
+
+#[test]
+fn an_aws_keys_debug_says_where_they_are_from_and_never_the_key() {
+    use crate::hub::computer::homes::AwsKeys;
+    let saved = AwsKeys::Saved(buwiz_computer::ec2::sigv4::Credentials { access_key: "AKID-shown-nowhere".into(), secret: Secret::new("s"), token: None });
+    assert!(!format!("{saved:?}").contains("AKID-shown-nowhere"));
 }
