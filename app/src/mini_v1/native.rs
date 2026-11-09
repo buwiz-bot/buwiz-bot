@@ -253,8 +253,7 @@ impl HostUi for MacUi {
                 if let Err(e) = &saved {
                     log::info!("mini v1: a file saved nothing: {:?}", e.kind());
                 }
-                let said = if saved.is_ok() { "Saved to Downloads" } else { "Buwiz Bot couldn't save that file to Downloads" };
-                super::to_store(move |_| crate::toast::show(said));
+                super::to_store(move |_| crate::toast::show(save_said(saved.is_ok())));
             });
         });
     }
@@ -431,6 +430,12 @@ fn shows_within(key: &str, live: &Live, wait: std::time::Duration) -> bool {
         let _ = tx.send(st.v1_on_top(&key, live()));
     });
     rx.recv_timeout(wait).unwrap_or(false)
+}
+
+/// What a save that ran says: a copy that failed and a Downloads folder that
+/// isn't there are refusals like any other ([`bridge::SAVE_REFUSED`]).
+fn save_said(saved: bool) -> &'static str {
+    if saved { "Saved to Downloads" } else { bridge::SAVE_REFUSED }
 }
 
 /// Logs how a hand-off of `what` that copies went, nothing of the file, and
@@ -631,4 +636,15 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
         });
     });
     V1Open { slot, n: id }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_save_says_it_saved_or_says_the_one_refusal() {
+        assert_eq!(save_said(true), "Saved to Downloads");
+        assert_eq!(save_said(false), bridge::SAVE_REFUSED, "no wording of its own for a missing Downloads");
+    }
 }

@@ -934,15 +934,14 @@ impl OpenContext {
         }
     }
 
-    /// A hand-off `who` made refused for `why`: the person hears of it if a
-    /// press of theirs made the call and the screen is still there. An app's
-    /// own code, with no press, gets the log line alone. Whether it told.
-    fn say_refused(&self, who: &CallActor, why: Refused, said: &'static str) -> bool {
-        let told = who.press.is_some() && who.actor == Actor::Person && why != Refused::Closed;
-        if told {
+    /// A document `who` asked for refused for `why`: the person hears of it if
+    /// a press of theirs made the call and the screen is still there. An app's
+    /// own code, with no press, gets the log line alone (a hand-off to the
+    /// system or Downloads always tells: [`Self::hand_file`]).
+    fn say_refused(&self, who: &CallActor, why: Refused, said: &'static str) {
+        if who.press.is_some() && who.actor == Actor::Person && why != Refused::Closed {
             self.ui.file_refused(said);
         }
-        told
     }
 
     /// A result's `_meta["buwiz/open_with"]` or `_meta["buwiz/save"]`, from a
@@ -950,9 +949,11 @@ impl OpenContext {
     /// takes `buwiz/document`, and with the person's own press just before
     /// the call, which this spends: "no agent has acted" alone is what an
     /// app's code at load or on a timer gets too. Nothing of the path goes to
-    /// the log. A card refuses out loud, before any press is spent. Whether
-    /// the person heard of it, by the file handed off or a refusal: a second
-    /// hand-off from the same result (`after`) is then the log's alone, not a
+    /// the log. Every refusal is said, whatever stopped it (no press, a card,
+    /// a check), but for a screen that closed: the person pressed for a file
+    /// and must not wait on one that never comes. A card refuses before any
+    /// press is spent. Whether the person heard of it, by the file handed off
+    /// or a refusal: a second hand-off from the same result (`after`) is then the log's alone, not a
     /// second message beside the first ("couldn't save" by a file that
     /// opened).
     fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand, after: bool) -> bool {
@@ -981,10 +982,11 @@ impl OpenContext {
             }
             Err(why) => {
                 log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app);
-                if after {
+                if after || why == Refused::Closed {
                     return false;
                 }
-                self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED })
+                self.ui.file_refused(if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+                true
             }
         }
     }
