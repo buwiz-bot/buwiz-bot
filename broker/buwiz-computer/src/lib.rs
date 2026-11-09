@@ -19,7 +19,9 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod cloud;
 pub mod docker;
+pub mod e2b;
 pub mod gate;
 pub mod guest;
 pub mod job;
@@ -37,6 +39,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use docker::DockerProvider;
+pub use e2b::E2bProvider;
 pub use gate::{Gate, Mode};
 pub use guest::BoxGuest;
 pub use planned::Planned;
@@ -101,10 +104,16 @@ pub enum ProviderKind {
     Ec2,
     /// a machine a person points at: a box over SSH or TLS, or a plain SSH host
     Remote,
+    /// an E2B sandbox, from a template built on the computer image ([`e2b`])
+    E2b,
+    /// a boat.dev sandbox: its slot only, until it's built
+    Boat,
+    /// a Fly Machine: its slot only, until it's built
+    Fly,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 5] = [Self::Docker, Self::Lume, Self::Sbx, Self::Ec2, Self::Remote];
+    pub const ALL: [ProviderKind; 8] = [Self::Docker, Self::Lume, Self::Sbx, Self::Ec2, Self::Remote, Self::E2b, Self::Boat, Self::Fly];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -113,6 +122,9 @@ impl ProviderKind {
             Self::Sbx => "sbx",
             Self::Ec2 => "ec2",
             Self::Remote => "remote",
+            Self::E2b => "e2b",
+            Self::Boat => "boat",
+            Self::Fly => "fly",
         }
     }
 
@@ -128,6 +140,9 @@ impl ProviderKind {
             Self::Sbx => "Docker Sandboxes",
             Self::Ec2 => "AWS EC2",
             Self::Remote => "A remote computer",
+            Self::E2b => "E2B",
+            Self::Boat => "boat.dev",
+            Self::Fly => "Fly.io",
         }
     }
 }
@@ -139,6 +154,8 @@ pub enum Reach {
     Container { name: String },
     /// a box behind TLS, at `https://<name>`: see [`remote`]
     Url { url: String },
+    /// a sandbox a platform's API names by `id`: see [`cloud`] and [`e2b`]
+    Sandbox { id: String },
     Ssh { host: String, user: Option<String>, port: Option<u16> },
 }
 
@@ -443,7 +460,7 @@ impl Problem {
             Self::ProviderMissing(what) => format!("{what} isn't installed on this Mac. Install it, then click the computer again."),
             Self::ProviderDown(what) => format!("{what} isn't running. Open it, wait until it says it's running, then click the computer again."),
             Self::ImageMissing(image) => format!("This Mac doesn't have the computer's image ({image}). Build or pull it, then click the computer again."),
-            Self::NotBuilt(kind) => format!("{} computers aren't built yet. Docker on this Mac and remote computers work today.", kind.label()),
+            Self::NotBuilt(kind) => format!("{} computers aren't built yet. Docker on this Mac, E2B and remote computers work today.", kind.label()),
             Self::Gone => "This computer is gone. Click it to make a new one.".to_owned(),
             Self::Unsupported(what) => format!("This computer can't {what}."),
             Self::Guest { message, .. } => format!("The computer said: {message}"),
@@ -607,14 +624,24 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// The provider for `kind`: Docker's, a remote one, or the slot of one that isn't built. A remote
-/// provider holds its connections, so the hub keeps one and doesn't ask here for each call.
+/// The provider for `kind`: Docker's, a remote one, E2B's, or the slot of one that isn't built. A
+/// remote or cloud provider holds its connections, so the hub keeps one and doesn't ask here for each call.
 pub fn provider_for(kind: ProviderKind) -> std::sync::Arc<dyn Provider> {
     match kind {
         ProviderKind::Docker => std::sync::Arc::new(DockerProvider::from_env()),
         ProviderKind::Remote => std::sync::Arc::new(RemoteProvider::new()),
+        ProviderKind::E2b => std::sync::Arc::new(E2bProvider::from_env()),
         other => std::sync::Arc::new(Planned(other)),
     }
+}
+
+/// The env word that picks the provider new computers are made with.
+pub const PROVIDER_ENV: &str = "BUWIZ_COMPUTER_PROVIDER";
+
+/// The kind new computers are made with: `BUWIZ_COMPUTER_PROVIDER`, else Docker. A word this build
+/// doesn't know is Docker too, so a typo never makes a computer somewhere nobody chose.
+pub fn creating_kind() -> ProviderKind {
+    std::env::var(PROVIDER_ENV).ok().and_then(|word| ProviderKind::parse(word.trim())).unwrap_or(ProviderKind::Docker)
 }
 
 #[cfg(test)]

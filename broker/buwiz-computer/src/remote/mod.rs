@@ -478,7 +478,7 @@ impl RemoteProvider {
                 let guest = guest_at(&ports, machine.token.clone())?.named(&names[&EXEC_PORT], &names[&HOST_PORT]);
                 Open { way: Way::Tls(relays), guest: Some(guest), ports, names, silent: AtomicBool::new(false) }
             }
-            Reach::Container { .. } => return Err(Problem::Failed("that's a container".to_owned())),
+            Reach::Container { .. } | Reach::Sandbox { .. } => return Err(Problem::Failed("that computer is not reached over a remote connection".to_owned())),
         };
         let open = Arc::new(open);
         if let Err(p) = answers(&open).await {
