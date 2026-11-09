@@ -97,13 +97,13 @@ export function stripMeta(r) {
 const ACCOUNT_USE = "buwiz/account_use";
 
 /** A tool result as the Bot gets it from an app's call: stripped, but for
- * `_meta["buwiz/document"]` and `buwiz/account_use`, the keys the Bot itself
- * acts on. The Bot is the host's other half and judges them
- * (`mini_v1::document`, `mini_v1::bridge`); the app and the model still never
- * see them (16.5). */
+ * `_meta["buwiz/document"]`, `buwiz/open_with`, `buwiz/save` and
+ * `buwiz/account_use`, the keys the Bot itself acts on. The Bot is the host's
+ * other half and judges them (`mini_v1::document`, `mini_v1::system_open`,
+ * `mini_v1::bridge`); the app and the model still never see them (16.5). */
 export function hostResult(r) {
   const out = stripMeta(r);
-  const kept = Object.fromEntries(["buwiz/document", ACCOUNT_USE].filter((k) => r?._meta?.[k] !== undefined).map((k) => [k, r._meta[k]]));
+  const kept = Object.fromEntries(["buwiz/document", "buwiz/open_with", "buwiz/save", ACCOUNT_USE].filter((k) => r?._meta?.[k] !== undefined).map((k) => [k, r._meta[k]]));
 
   if (Object.keys(kept).length) out._meta = kept;
 

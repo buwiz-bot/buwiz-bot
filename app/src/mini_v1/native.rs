@@ -42,6 +42,7 @@ use super::{
     load::Prepared,
     screens,
     session::{self, Ended, Session},
+    system_open::{self, LocalFile},
 };
 
 /// Runs `f` on the main thread, later.
@@ -165,6 +166,48 @@ impl HostUi for MacUi {
         }
         let key = self.key.clone();
         super::to_store(move |st| st.v1_document(&key, &doc, live()));
+    }
+
+    /// On `open_document`'s terms. Marked and opened on the main thread, as
+    /// `open_url` opens.
+    fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+        if self.inline {
+            return log::info!("mini v1: a card's file opened nothing");
+        }
+        let key = self.key.clone();
+        super::to_store(move |st| {
+            if !st.v1_on_top(&key, live()) {
+                return log::info!("mini v1: a file came after its screen left the top: nothing opened");
+            }
+            on_main(move || {
+                if !system_open::open(&file) {
+                    log::info!("mini v1: a file opened nothing: it couldn't be marked or opened");
+                }
+            });
+        });
+    }
+
+    /// On `open_document`'s terms. The copy runs on a thread of its own (an
+    /// attachment can be large), then a toast says how it went.
+    fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+        if self.inline {
+            return log::info!("mini v1: a card's file saved nothing");
+        }
+        let key = self.key.clone();
+        super::to_store(move |st| {
+            if !st.v1_on_top(&key, live()) {
+                return log::info!("mini v1: a file came after its screen left the top: nothing saved");
+            }
+            std::thread::spawn(move || {
+                let saved = system_open::downloads().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound)).and_then(|d| system_open::save_in(&file, &d));
+                // the error's kind only: its text may hold a path
+                if let Err(e) = &saved {
+                    log::info!("mini v1: a file saved nothing: {:?}", e.kind());
+                }
+                let said = if saved.is_ok() { "Saved to Downloads" } else { "Buwiz Bot couldn't save that file to Downloads" };
+                super::to_store(move |_| crate::toast::show(said));
+            });
+        });
     }
 
     fn fit(&self, height: f32) {

@@ -47,6 +47,7 @@ use super::{
     perms,
     session::{self, Ended, Session},
     storage::AppStorage,
+    system_open::{self, LocalFile},
 };
 use crate::agent_hub::{
     hold::{self, Answer, Card},
@@ -116,6 +117,17 @@ pub trait HostUi: Send + Sync {
     /// without a viewer ignore it.
     fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
         let _ = (doc, live);
+    }
+    /// Opens `file`, already checked, in the system's default app for its
+    /// kind, if `live()` holds and the open is still what the person sees.
+    /// Hosts that can't ignore it.
+    fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+        let _ = (file, live);
+    }
+    /// Copies `file`, already checked, to the person's Downloads folder and
+    /// says so, on the same terms as [`HostUi::open_with`].
+    fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+        let _ = (file, live);
     }
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
@@ -203,6 +215,15 @@ pub struct PickRequest {
     pub multiple: bool,
     /// Larger files are not offered.
     pub max_bytes: u64,
+}
+
+/// What a result's file key asks of the Bot besides its own viewer.
+#[derive(Debug, Clone, Copy)]
+enum Hand {
+    /// `buwiz/open_with`: the system's default app.
+    OpenWith,
+    /// `buwiz/save`: the person's Downloads folder.
+    Save,
 }
 
 /// A document `buwiz.preview` shows: its title and the page, sealed
@@ -841,6 +862,8 @@ impl OpenContext {
             }
             let result = result?;
             let document = result.pointer("/_meta/buwiz~1document").cloned();
+            let open_with = result.pointer("/_meta/buwiz~1open_with").cloned();
+            let save = result.pointer("/_meta/buwiz~1save").cloned();
             let account = result.pointer("/_meta/buwiz~1account_use").cloned();
             let mut answer = tool_result(result, max)?;
             if let Some(field) = account
@@ -851,6 +874,8 @@ impl OpenContext {
                 fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
             me.open_document(document, who.actor);
+            me.hand_file(open_with, who.actor, Hand::OpenWith);
+            me.hand_file(save, who.actor, Hand::Save);
             Ok(answer)
         });
     }
@@ -869,6 +894,31 @@ impl OpenContext {
                 self.ui.open_document(doc, Box::new(move || session.check_live().is_ok()));
             }
             Err(why) => log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app),
+        }
+    }
+
+    /// A result's `_meta["buwiz/open_with"]` or `_meta["buwiz/save"]`, from a
+    /// call `actor` made (`mini_v1::system_open`), as [`Self::open_document`]
+    /// takes `buwiz/document`. Nothing of the path goes to the log.
+    fn hand_file(&self, field: Option<Value>, actor: Actor, hand: Hand) {
+        let Some(field) = field else { return };
+        let p = &self.prepared;
+        let live = self.session.check_live().map_err(|_| Refused::Closed);
+        let folder = self.ui.plugin_folder(&p.plugin.id);
+        let check = match hand {
+            Hand::OpenWith => system_open::check_open,
+            Hand::Save => system_open::check_save,
+        };
+        match live.and_then(|()| check(p.plugin.first_party, actor, folder.as_deref(), &field)) {
+            Ok(file) => {
+                let session = self.session.clone();
+                let live = Box::new(move || session.check_live().is_ok());
+                match hand {
+                    Hand::OpenWith => self.ui.open_with(file, live),
+                    Hand::Save => self.ui.save(file, live),
+                }
+            }
+            Err(why) => log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app),
         }
     }
 

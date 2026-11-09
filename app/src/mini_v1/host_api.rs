@@ -79,7 +79,9 @@ pub fn session_close(b: &dyn Broker, open_id: &str) -> Result<(), RoxError> {
 }
 
 /// `POST /v1/host/call`: the tool result (its `_meta` stripped, but for
-/// `buwiz/document`, which is the host's: `tool_result` keeps it from the app).
+/// `buwiz/document`, `buwiz/open_with`, `buwiz/save` and
+/// `buwiz/account_use`, which are the host's: `tool_result` keeps them from
+/// the app).
 pub fn call(b: &dyn Broker, envelope: &Value, sig: &str, timeout: Duration) -> Result<Value, RoxError> {
     let v = post(b, "/v1/host/call", json!({"envelope": envelope, "sig": sig}), timeout)?;
     Ok(v.get("result").cloned().unwrap_or(Value::Null))

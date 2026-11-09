@@ -1,11 +1,12 @@
 //! `_meta["buwiz/document"] = {path, name, mime}`: a file a first-party
-//! plugin hands to the Bot's own Word or Spreadsheet viewer. No permission
-//! key grants this and the plugin's word proves nothing, so [`check`] decides
-//! from what the Bot knows and the disk says. Its checks go in the contract's
-//! order: first-party, the person's surface and not the AI's, a real file in
-//! that plugin's own folder, a kind the viewer takes. What passes opens by the path found
-//! on disk, under the name found there: the field's `name` and `mime` are
-//! never read, so they can't launder a kind.
+//! plugin hands to the Bot's own viewers: Word or Spreadsheet, the lightbox
+//! for a picture, the PDF view. No permission key grants this and the
+//! plugin's word proves nothing, so [`check`] decides from what the Bot knows
+//! and the disk says. Its checks go in the contract's order: first-party, the
+//! person's surface and not the AI's, a real file in that plugin's own folder,
+//! a kind a viewer takes. What passes opens by the path found on disk, under
+//! the name found there, and goes to its viewer by the extension there: the
+//! field's `name` and `mime` are never read, so they can't launder a kind.
 //!
 //! A refusal opens nothing and carries no part of the path: [`Refused`] has
 //! no data, so a log line can't hold one.
@@ -72,12 +73,31 @@ pub struct Document {
     name: String,
 }
 
+/// The pictures the lightbox shows.
+const IMAGES: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "heic"];
+
+/// The extension of the file name `name`, lowercased: none for `.docx` or
+/// `noextension`.
+pub(super) fn ext(name: &str) -> String {
+    Path::new(name).extension().and_then(OsStr::to_str).map(str::to_lowercase).unwrap_or_default()
+}
+
+/// The viewer kind `store.open_file` routes by, from the name on disk:
+/// `image` to the lightbox, `pdf` to the PDF view, `file` for the rest, which
+/// the viewer routes by the extension.
+fn kind_of(name: &str) -> &'static str {
+    match ext(name).as_str() {
+        e if IMAGES.contains(&e) => "image",
+        "pdf" => "pdf",
+        _ => "file",
+    }
+}
+
 impl Document {
-    /// What `store.open_file` takes: `file` lets the viewer route by the
-    /// extension, and no plugin's word can make it a lightbox's image.
+    /// What `store.open_file` takes, its kind from the name on disk only.
     pub fn attach(&self) -> Attach {
         Attach {
-            kind: "file".to_owned(),
+            kind: kind_of(&self.name).to_owned(),
             path: self.path.clone(),
             name: self.name.clone(),
             ext: crate::files::ext_of(&self.name, ""),
@@ -97,6 +117,17 @@ pub fn folder_of(home: Option<&OsStr>, plugin: &str) -> Option<PathBuf> {
 /// `folder`, may open. `first_party` is the plugin's listing, read as
 /// `FirstPartyAnswerCard` reads it.
 pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<Document, Refused> {
+    let (path, name) = checked(first_party, actor, folder, field)?;
+    if !crate::office::native_ext(&path) && kind_of(&name) == "file" {
+        return Err(Refused::Kind);
+    }
+    Ok(Document { path, name })
+}
+
+/// [`check`]'s first three checks, which `buwiz/open_with` and `buwiz/save`
+/// share (`system_open`): the real path of the file `field` names, and its
+/// name there, both UTF-8.
+pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<(String, String), Refused> {
     if consent::ask(consent::inline_card(first_party)) != Ask::Nothing {
         return Err(Refused::ThirdParty);
     }
@@ -106,11 +137,8 @@ pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Val
     let claimed = field.get("path").and_then(Value::as_str).ok_or(Refused::BadField)?;
     let real = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed))?;
     let path = real.to_str().ok_or(Refused::Kind)?.to_owned();
-    if !crate::office::native_ext(&path) {
-        return Err(Refused::Kind);
-    }
     let name = real.file_name().and_then(OsStr::to_str).ok_or(Refused::Kind)?.to_owned();
-    Ok(Document { path, name })
+    Ok((path, name))
 }
 
 /// `claimed` as the real path of a regular file inside `folder`, with no
@@ -353,9 +381,51 @@ mod tests {
     #[test]
     fn a_kind_the_viewer_does_not_take_opens_nothing() {
         let bed = Bed::new();
-        for name in ["run.exe", "a.docx.exe", "a.pptx", "a.pdf", "a.unknown", "noextension", ".docx"] {
+        for name in ["run.exe", "a.docx.exe", "a.pptx", "a.unknown", "noextension", ".docx", "a.png.exe", "a.svg", "a.heif", ".png", "a.png "] {
             assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Kind), "{name}");
         }
+    }
+
+    #[test]
+    fn a_picture_goes_to_the_lightbox_and_a_pdf_to_the_pdf_view() {
+        let bed = Bed::new();
+        let cases = [
+            ("IMG_4250.png", "image"),
+            ("a.jpg", "image"),
+            ("a.JPEG", "image"),
+            ("a.gif", "image"),
+            ("a.webp", "image"),
+            ("IMG_1.HEIC", "image"),
+            ("Invoice.pdf", "pdf"),
+            ("Report.docx", "file"),
+            ("Book.xlsx", "file"),
+        ];
+        for (name, kind) in cases {
+            let a = bed.ask(&bed.file(name)).unwrap().attach();
+            assert_eq!((a.kind.as_str(), a.name.as_str()), (kind, name));
+        }
+    }
+
+    #[test]
+    fn a_png_name_or_mime_cant_make_an_exe_a_picture() {
+        let bed = Bed::new();
+        let exe = json!({"path": bed.file("run.exe"), "name": "IMG_4250.png", "mime": "image/png"});
+        assert_eq!(check(true, Actor::Person, Some(&bed.folder), &exe), Err(Refused::Kind));
+        // and a picture named a pdf is still the picture its name on disk says
+        let png = json!({"path": bed.file("a.png"), "name": "a.pdf", "mime": "application/pdf"});
+        assert_eq!(check(true, Actor::Person, Some(&bed.folder), &png).unwrap().attach().kind, "image");
+    }
+
+    #[test]
+    fn a_picture_or_pdf_still_passes_every_other_check() {
+        let bed = Bed::new();
+        let field = json!({"path": bed.file("a.png")});
+        assert_eq!(check(false, Actor::Person, Some(&bed.folder), &field), Err(Refused::ThirdParty));
+        assert_eq!(check(true, Actor::Agent, Some(&bed.folder), &field), Err(Refused::NotThePerson));
+        assert_eq!(bed.ask(&bed.outside("a.pdf")), Err(Refused::Outside));
+        let link = bed.folder.join("open/1/link.pdf");
+        symlink(bed.outside("b.pdf"), &link).unwrap();
+        assert_eq!(bed.ask(&link), Err(Refused::Link));
     }
 
     #[test]

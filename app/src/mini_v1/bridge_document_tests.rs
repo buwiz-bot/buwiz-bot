@@ -1,6 +1,7 @@
-//! `_meta["buwiz/document"]` through a real call: an app's `buwiz.call`, the
-//! signed envelope, the fake broker's result, the open's checks. The path
-//! rules themselves are `document.rs`'s tests.
+//! `_meta["buwiz/document"]`, `buwiz/open_with` and `buwiz/save` through a
+//! real call: an app's `buwiz.call`, the signed envelope, the fake broker's
+//! result, the open's checks. The path rules themselves are `document.rs`'s
+//! and `system_open.rs`'s tests.
 
 use std::fs;
 
@@ -20,7 +21,7 @@ impl Bed {
         let base = crate::mini_v1::storage::scratch_root("bridge-document");
         let folder = base.join(FIXTURE);
         fs::create_dir_all(folder.join("open/1")).unwrap();
-        for name in ["open/1/a.docx", "open/1/b.xlsx", "../outside.docx"] {
+        for name in ["open/1/a.docx", "open/1/b.xlsx", "open/1/IMG_4250.png", "open/1/Invoice.pdf", "open/1/run.exe", "../outside.docx", "../outside.png"] {
             fs::write(folder.join(name), "x").unwrap();
         }
         Bed { base, folder }
@@ -56,6 +57,28 @@ impl Drop for Bed {
 
 fn opened(o: &Open) -> Vec<String> {
     o.ui.documents.lock().unwrap().iter().map(|d| d.attach().name).collect()
+}
+
+/// What reached the viewer, by kind and name.
+fn viewed(o: &Open) -> Vec<(String, String)> {
+    o.ui.documents.lock().unwrap().iter().map(|d| d.attach()).map(|a| (a.kind, a.name)).collect()
+}
+
+fn opened_with(o: &Open) -> Vec<String> {
+    o.ui.opened_with.lock().unwrap().iter().map(|f| f.name().to_owned()).collect()
+}
+
+fn saved(o: &Open) -> Vec<String> {
+    o.ui.saved.lock().unwrap().iter().map(|f| f.name().to_owned()).collect()
+}
+
+impl Bed {
+    /// A call asking to open `file` in the default app and save it.
+    fn hand(&self, first_party: bool, agent: bool, file: &str) -> Open {
+        let path = self.folder.join(file);
+        let args = json!({"open_with": {"path": path}, "save": {"path": path, "name": "shown.png"}});
+        self.open(first_party, agent, "fx_document", args)
+    }
 }
 
 /// Waits until the fake broker is inside the call.
@@ -185,4 +208,65 @@ fn a_host_that_knows_no_folder_opens_nothing() {
     let mut o = Open::start_with(FIXTURE, json!({"tools": TOOLS}), &script, Limits::default(), |ui| ui.first_party.store(true, Ordering::SeqCst));
     assert_eq!(o.wait("{"), r#"{"opened":true}"#);
     assert!(opened(&o).is_empty());
+}
+
+#[test]
+fn a_picture_goes_to_the_lightbox_and_a_pdf_to_the_pdf_view() {
+    let bed = Bed::new();
+    for (file, kind, name) in [("open/1/IMG_4250.png", "image", "IMG_4250.png"), ("open/1/Invoice.pdf", "pdf", "Invoice.pdf"), ("open/1/a.docx", "file", "a.docx")] {
+        let mut o = bed.call_on_the_persons_surface(file);
+        assert_eq!(o.wait("{"), r#"{"opened":true}"#);
+        assert_eq!(viewed(&o), [(kind.to_owned(), name.to_owned())]);
+    }
+}
+
+#[test]
+fn the_persons_call_opens_and_saves_a_file_by_its_name_on_disk() {
+    let bed = Bed::new();
+    let mut o = bed.hand(true, false, "open/1/IMG_4250.png");
+    assert_eq!(o.wait("{"), r#"{"opened":true}"#, "the app gets its answer, and nothing of the keys");
+    assert_eq!(opened_with(&o), ["IMG_4250.png"]);
+    assert_eq!(saved(&o), ["IMG_4250.png"]);
+    assert!(opened(&o).is_empty(), "the viewer is buwiz/document's alone");
+}
+
+#[test]
+fn the_ais_call_or_a_third_party_plugins_opens_and_saves_nothing() {
+    let bed = Bed::new();
+    for (first_party, agent) in [(true, true), (false, false)] {
+        let mut o = bed.hand(first_party, agent, "open/1/IMG_4250.png");
+        assert_eq!(o.wait("{"), r#"{"opened":true}"#, "its call still answers");
+        assert!(opened_with(&o).is_empty() && saved(&o).is_empty(), "first party {first_party}, agent {agent}");
+    }
+}
+
+#[test]
+fn an_exe_opens_nothing_even_where_it_may_save() {
+    let bed = Bed::new();
+    let mut o = bed.hand(true, false, "open/1/run.exe");
+    o.wait("{");
+    assert!(opened_with(&o).is_empty());
+    assert_eq!(saved(&o), ["run.exe"], "a save is a download: any kind, by its own name");
+}
+
+#[test]
+fn a_link_or_a_file_outside_the_folder_opens_and_saves_nothing() {
+    let bed = Bed::new();
+    std::os::unix::fs::symlink(bed.folder.join("open/1/IMG_4250.png"), bed.folder.join("open/1/link.png")).unwrap();
+    for file in ["../outside.png", "open/1/link.png", "open/1", "open/1/gone.png"] {
+        let mut o = bed.hand(true, false, file);
+        assert_eq!(o.wait("{"), r#"{"opened":true}"#, "{file}");
+        assert!(opened_with(&o).is_empty() && saved(&o).is_empty(), "{file}");
+    }
+}
+
+#[test]
+fn a_file_after_the_screen_closed_opens_and_saves_nothing() {
+    let bed = Bed::new();
+    let path = bed.folder.join("open/1/IMG_4250.png");
+    let mut o = bed.open(true, false, "fx_document", json!({"open_with": {"path": path}, "save": {"path": path}, "ms": 300}));
+    in_flight(&o);
+    o.ctx.close();
+    o.wait("{");
+    assert!(opened_with(&o).is_empty() && saved(&o).is_empty());
 }

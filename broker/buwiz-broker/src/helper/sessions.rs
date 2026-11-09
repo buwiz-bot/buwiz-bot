@@ -156,12 +156,13 @@ pub fn strip_meta(r: &Value) -> Value {
 const ACCOUNT_USE: &str = "buwiz/account_use";
 
 /// A tool result as the Bot gets it from an app's call: stripped, but for
-/// `_meta["buwiz/document"]` and [`ACCOUNT_USE`], the keys the Bot itself acts
-/// on. The Bot is the host's other half and judges them (`mini_v1::document`,
+/// `_meta["buwiz/document"]`, `buwiz/open_with`, `buwiz/save` and
+/// [`ACCOUNT_USE`], the keys the Bot itself acts on. The Bot is the host's
+/// other half and judges them (`mini_v1::document`, `mini_v1::system_open`,
 /// `mini_v1::bridge`); the app and the model still never see them (16.5).
 pub fn host_result(r: &Value) -> Value {
     let mut out = strip_meta(r);
-    let kept: serde_json::Map<String, Value> = ["buwiz/document", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    let kept: serde_json::Map<String, Value> = ["buwiz/document", "buwiz/open_with", "buwiz/save", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
     if let (false, Some(o)) = (kept.is_empty(), out.as_object_mut()) {
         o.insert("_meta".to_owned(), Value::Object(kept));
     }
@@ -847,6 +848,16 @@ mod tests {
         assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}})), json!({"content": [], "_meta": {"buwiz/account_use": switch}}));
         assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}})), json!({"content": []}));
         assert_eq!(host_result(&json!({"content": []})), json!({"content": []}));
+    }
+
+    #[test]
+    fn a_files_open_with_and_save_reach_the_bot_and_nothing_else_of_meta() {
+        let open = json!({"path": "/a/IMG_1.png"});
+        let save = json!({"path": "/a/IMG_1.png", "name": "IMG_1.png"});
+        let r = json!({"content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": true}, "_meta": {"buwiz/open_with": open, "buwiz/save": save, "buwiz/open": {}, "buwiz/suggest": []}});
+        let out = host_result(&r);
+        assert_eq!(out["_meta"], json!({"buwiz/open_with": open, "buwiz/save": save}));
+        assert_eq!(strip_meta(&out), json!({"content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": true}}), "the rest is the result as it was");
     }
 
     #[test]

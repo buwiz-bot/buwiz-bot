@@ -8,7 +8,7 @@ mod tests {
     use super::{child_env_from, tool_path, Spec};
 
     fn spec(inherit_all: bool, env: &[(&str, &str)]) -> Spec {
-        Spec { command: "x".into(), args: vec![], env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), inherit_all, client: "buwiz-broker" }
+        Spec { command: "x".into(), args: vec![], env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), inherit_all, client: "buwiz-broker", capabilities: serde_json::json!({}) }
     }
 
     fn base() -> Vec<(String, String)> {

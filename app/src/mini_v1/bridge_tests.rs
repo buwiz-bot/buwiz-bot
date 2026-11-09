@@ -136,6 +136,11 @@ impl host_api::Broker for FakeBroker {
                         if !args["field"].is_null() {
                             r["_meta"] = json!({"buwiz/document": args["field"]});
                         }
+                        for (arg, key) in [("open_with", "buwiz/open_with"), ("save", "buwiz/save")] {
+                            if !args[arg].is_null() {
+                                r["_meta"][key] = args[arg].clone();
+                            }
+                        }
                         r
                     }
                     "fx_account_use" | "fx_account_fail" | "fx_account_read" => {
@@ -233,6 +238,9 @@ struct TestUi {
     documents: Mutex<Vec<Document>>,
     /// What each was handed to ask, when its job runs, if its open lives.
     lives: Mutex<Vec<Box<dyn FnOnce() -> bool + Send>>>,
+    /// The files handed to the system's default app, and to Downloads.
+    opened_with: Mutex<Vec<LocalFile>>,
+    saved: Mutex<Vec<LocalFile>>,
 }
 
 impl HostUi for TestUi {
@@ -241,6 +249,14 @@ impl HostUi for TestUi {
     }
     fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
         self.documents.lock().unwrap().push(doc);
+        self.lives.lock().unwrap().push(live);
+    }
+    fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+        self.opened_with.lock().unwrap().push(file);
+        self.lives.lock().unwrap().push(live);
+    }
+    fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
+        self.saved.lock().unwrap().push(file);
         self.lives.lock().unwrap().push(live);
     }
     fn hold(&self, _: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {

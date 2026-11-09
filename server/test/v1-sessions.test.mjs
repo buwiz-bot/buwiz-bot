@@ -83,6 +83,18 @@ test("only the Bot's own keys of _meta reach it", () => {
   assert.deepEqual(hostResult({ content: [] }), { content: [] });
 });
 
+test("a file's open_with and save reach the Bot, and nothing else of _meta", () => {
+  const open = { path: "/a/IMG_1.png" };
+  const save = { path: "/a/IMG_1.png", name: "IMG_1.png" };
+  const r = { content: [{ type: "text", text: "ok" }], structuredContent: { ok: true }, _meta: { "buwiz/open_with": open, "buwiz/save": save, "buwiz/open": {}, "buwiz/suggest": [] } };
+
+  assert.deepEqual(hostResult(r), { content: [{ type: "text", text: "ok" }], structuredContent: { ok: true }, _meta: { "buwiz/open_with": open, "buwiz/save": save } });
+});
+
+test("a plugin hears what the Bot does with files at initialize", async () => {
+  assert.deepEqual((await stats()).client, { experimental: { "buwiz/documents": ["word", "sheet", "image", "pdf", "open_with", "save"] } });
+});
+
 test("only a person's call to a first-party plugin may switch an account", () => {
   assert.equal(mayUseAccount("person", true), true);
   assert.equal(mayUseAccount("person", false), false);
