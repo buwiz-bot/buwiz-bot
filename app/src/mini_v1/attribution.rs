@@ -46,11 +46,6 @@
 //! A press made while the agent is still acting is no press: the agent's
 //! own click can't leave one for the surface to spend once it goes quiet.
 //!
-//! An accessibility tool's press is no press either, by default: it reaches
-//! the app as an event another process posted, which can't be told from an
-//! automation's ([`ACCESSIBILITY_PRESS_COUNTS`]). A hand-off it starts is
-//! refused, out loud.
-//!
 //! The Bot's own viewer (`buwiz/document`, `document`) is the one exception:
 //! it needs the person's surface, not a press. It shows the file inside the
 //! Bot and opens no other app, so a screen's code showing a file at load
@@ -74,13 +69,6 @@ use std::{
 /// hand off a file. Room for the app's own async step between the press and
 /// its call, not for a timer.
 pub const PRESS_WINDOW: Duration = Duration::from_secs(2);
-
-/// Whether a press or key another process posted (nsh's `Input::Posted`: an
-/// accessibility tool's, a remote control's, an automation's, alike) counts
-/// as the person's own. Off, it is nothing, as it has always been: it takes
-/// no surface back and makes no press a hand-off may spend. The owner's
-/// call, and this is the one place it is made.
-pub const ACCESSIBILITY_PRESS_COUNTS: bool = false;
 
 /// How long after the agent's last action, or the end of a call of its,
 /// the person's input can't take a surface back: covers the debounce and
@@ -196,14 +184,6 @@ impl Attribution {
         }
     }
 
-    /// Input another process posted to `surface`: the person's
-    /// ([`Self::person_input`]) if `counts`, else nothing.
-    pub fn posted_input(&mut self, surface: u64, gesture: Gesture, now: Instant, counts: bool) {
-        if counts {
-            self.person_input(surface, gesture, now);
-        }
-    }
-
     /// The person typed in `surface`: [`Self::person_pressed`], and no press
     /// there is one to hand off by any more.
     pub fn person_typed(&mut self, surface: u64, now: Instant) {
@@ -296,7 +276,6 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     nsh_platform_macos::on_input(mtm, move |input| match input {
         Input::Agent => with(|a| a.agent_acted(Instant::now())),
         Input::Person { surface } => with(|a| a.person_input(surface, current_gesture(mtm), Instant::now())),
-        Input::Posted { surface } => with(|a| a.posted_input(surface, current_gesture(mtm), Instant::now(), ACCESSIBILITY_PRESS_COUNTS)),
     });
     watch_key_ups(mtm);
     watch_resigns();
@@ -611,19 +590,6 @@ mod tests {
         let a = watched();
         assert_eq!(a.actor(FORM), Actor::Person, "no agent has acted");
         assert_eq!(a.fresh_press(FORM, t), None, "an app's code at load or on a timer");
-    }
-
-    #[test]
-    fn an_accessibility_press_hands_off_nothing_unless_the_switch_says_it_counts() {
-        let t = Instant::now();
-        let mut a = watched();
-        a.agent_acted(t);
-        a.posted_input(FORM, Gesture::Activation, secs(t, 60), ACCESSIBILITY_PRESS_COUNTS);
-        assert_eq!(a.fresh_press(FORM, secs(t, 60)), None, "by default it is no press");
-        assert_eq!(a.actor(FORM), Actor::Agent, "and takes nothing back");
-        a.posted_input(FORM, Gesture::Activation, secs(t, 61), true);
-        assert!(a.fresh_press(FORM, secs(t, 61)).is_some(), "switched on, it is the person's");
-        assert_eq!(a.actor(FORM), Actor::Person);
     }
 
     #[test]

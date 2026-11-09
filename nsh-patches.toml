@@ -230,11 +230,3 @@ kind = "fix"
 pr = 0
 status = "local"
 note = "a file:// source loads by loadFileURL, reading its own folder only: the viewer's PDF of a local copy was blank"
-
-[[topic]]
-branch = "pr/macos-posted-input"
-base = "2b81e7751089cf538ab3826d4b1ce7036e553a45"
-kind = "feature"
-pr = 0
-status = "local"
-note = "Input::Posted: a press another process posted, for the app to count or not (attribution.rs's ACCESSIBILITY_PRESS_COUNTS). Stacked on feat/agent-hub's provenance"
