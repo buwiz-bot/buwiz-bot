@@ -71,7 +71,7 @@ pub enum Refused {
     /// Inside the folder, but not at `open-<hex>/<folder>/<file>`.
     Shape,
     /// A name with a character that makes it show as another
-    /// ([`deceives`]).
+    /// ([`name_deceives`]).
     Name,
     /// Nothing there.
     Missing,
@@ -216,7 +216,7 @@ fn checked_in(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Va
     let (real, file) = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed), legacy)?;
     let path = real.to_str().ok_or(Refused::Kind)?.to_owned();
     let name = real.file_name().and_then(OsStr::to_str).ok_or(Refused::Kind)?.to_owned();
-    if name.chars().any(deceives) {
+    if name_deceives(&name) {
         return Err(Refused::Name);
     }
     Ok((path, name, file))
@@ -261,6 +261,31 @@ const IGNORABLE: [(char, char); 20] = [
 /// another look.
 pub(super) fn deceives(c: char) -> bool {
     IGNORABLE.iter().any(|&(lo, hi)| (lo..=hi).contains(&c)) || c.is_control()
+}
+
+/// Whether `name` shows as another: any character [`deceives`] has, but
+/// the three an emoji is made with, where only an emoji has them. The
+/// emoji and text selectors (U+FE0F, U+FE0E) pass directly after a
+/// non-ASCII character that shows (`❤️`), the zero-width joiner (U+200D)
+/// between two (`👨‍👩‍👧`, a selector before it allowed). None passes in the
+/// extension, after the last dot.
+pub(super) fn name_deceives(name: &str) -> bool {
+    let chars: Vec<char> = name.chars().collect();
+    let dot = chars.iter().rposition(|&c| c == '.');
+    let shows = |at: Option<&char>| at.is_some_and(|&c| !c.is_ascii() && !deceives(c));
+    let selector = |c: char| matches!(c, '\u{FE0E}' | '\u{FE0F}');
+    chars.iter().enumerate().any(|(i, &c)| {
+        if !deceives(c) {
+            return false;
+        }
+        let before = i.checked_sub(1).and_then(|b| chars.get(b));
+        let in_emoji = match c {
+            '\u{FE0E}' | '\u{FE0F}' => shows(before),
+            '\u{200D}' => (shows(before) || before.is_some_and(|&b| selector(b))) && shows(chars.get(i + 1)),
+            _ => false,
+        };
+        !in_emoji || dot.is_some_and(|d| i > d)
+    })
 }
 
 /// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
@@ -627,6 +652,26 @@ mod tests {
             assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Name), "{name:?}");
         }
         assert!(bed.ask(&bed.file("Report (final).docx")).is_ok());
+    }
+
+    #[test]
+    fn an_emoji_in_a_name_opens_and_its_parts_anywhere_else_dont() {
+        let bed = Bed::new();
+        for name in ["\u{2764}\u{FE0F} notes.pdf", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} trip.jpg", "\u{1F441}\u{FE0F}\u{200D}\u{1F5E8}\u{FE0F} eye.png"] {
+            assert!(bed.ask(&bed.file(name)).is_ok(), "{name:?}");
+        }
+        for name in [
+            "invoice\u{FE0F}.pdf",
+            "a\u{200D}b.pdf",
+            "x.p\u{FE0F}df",
+            "\u{FE0F}lead.pdf",
+            "\u{2764}\u{FE0F}\u{FE0F}.pdf",
+            "\u{1F468}\u{200D}.pdf",
+            "a.\u{2764}\u{FE0F}",
+            "\u{2764}\u{200B}.pdf",
+        ] {
+            assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Name), "{name:?}");
+        }
     }
 
     #[test]

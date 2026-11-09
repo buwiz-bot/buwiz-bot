@@ -25,7 +25,7 @@
 //! app that opens it treat it as a file from the internet: a mail's
 //! attachment is a stranger's. The plugin marks what it writes too, but a
 //! copy needn't carry that. A name with a character that makes it show as
-//! another is refused at the check (`document::deceives`), with the person
+//! another is refused at the check (`document::name_deceives`), with the person
 //! told, so a copy keeps the name on disk as it is.
 //!
 //! A refusal carries no part of the path, as `document`'s does ([`Refused`]).
