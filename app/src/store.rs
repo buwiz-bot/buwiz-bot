@@ -813,6 +813,21 @@ fn saved_design(e: &serde_json::Value) -> AvatarCand {
     AvatarCand { name: s(e, "name"), shape: shape_of(e), color: s(e, "color"), why: s(e, "why"), raw: Some(e.clone()) }
 }
 
+/// Wiz's grin hat (`assets/brand/wiz-avatar.json`), the Buwiz mascot: the
+/// shape grids offer it after the kit shapes, so any bot can wear it.
+pub(crate) fn wiz_hat() -> AvatarCand {
+    thread_local! {
+        static HAT: AvatarCand = {
+            let mut v: serde_json::Value =
+                serde_json::from_str(include_str!("../../assets/brand/wiz-avatar.json")).unwrap_or_default();
+            v["shape"] = "custom".into();
+            v["name"] = "Wiz hat".into();
+            saved_design(&v)
+        };
+    }
+    HAT.with(Clone::clone)
+}
+
 /// What came of adding designs: how many went in, how many the list had, how
 /// many the pack held twice, and how many this build can't draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -3363,7 +3378,7 @@ impl Store {
             v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
-            bot_shape: signal("blob".to_owned()),
+            bot_shape: signal(wiz_hat().shape),
             bot_color: signal("#FFFFFF".to_owned()),
             bot_hover: signal(String::new()),
             pane_btn_hover: signal(String::new()),
@@ -6145,16 +6160,16 @@ impl Store {
         self.avatar_reset_ask.set(false);
     }
 
-    /// Reset (after its confirm row): the default ball in the primary ink,
-    /// no photo.
+    /// Reset (after its confirm row): the default avatar, Wiz's hat
+    /// ([`wiz_hat`]), no photo.
     pub fn reset_avatar(&'static self) {
         self.avatar_reset_ask.set(false);
         self.design_was.set(None);
         let Some(b) = self.active_bot_untracked() else { return };
-        self.update_bot(
-            &b.id,
-            serde_json::json!({"shape": "blob", "color": "#FFFFFF", "image": "", "crop": serde_json::Value::Null}),
-        );
+        let mut patch = body_fields(&wiz_hat().shape);
+        patch["image"] = "".into();
+        patch["crop"] = serde_json::Value::Null;
+        self.update_bot(&b.id, patch);
     }
 
     /// Where a picture comes from: "pick" opens the app's own open panel

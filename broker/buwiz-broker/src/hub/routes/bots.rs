@@ -193,10 +193,35 @@ fn apply_avatar(cur: &Avatar, b: &Value) -> Result<Avatar, String> {
     })
 }
 
+/// Wiz's grin hat (`assets/brand/wiz-avatar.json`), the Buwiz mascot: what a
+/// new bot wears when it's sent no shape or outline.
+fn wiz_hat() -> Value {
+    let mut v: Value = serde_json::from_str(include_str!("../../../../../assets/brand/wiz-avatar.json")).unwrap_or_default();
+    v["shape"] = "custom".into();
+    v
+}
+
+/// `b` with Wiz's hat filled in when it names no avatar: its own colour and
+/// fields stay, the hat's take the rest.
+fn with_default_avatar(mut b: Value) -> Value {
+    let named = ["shape", "outline"].iter().any(|k| b.get(*k).is_some_and(js::truthy));
+    if named || !b.is_object() {
+        return b;
+    }
+    if let Value::Object(hat) = wiz_hat() {
+        for (k, v) in hat {
+            if b.get(&k).is_none_or(Value::is_null) {
+                b[k] = v;
+            }
+        }
+    }
+    b
+}
+
 async fn bot_new(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     ready!(ctx);
     let b = match parse(&req.body) {
-        Ok(b) => b,
+        Ok(b) => with_default_avatar(b),
         Err(e) => return refused(&e, false),
     };
     let name = match trimmed(&b, "name") {
@@ -1271,5 +1296,34 @@ mod keep_alive_tests {
         drop(res);
         // the job still runs to its end, and nothing panics
         tokio::time::timeout(Duration::from_secs(2), done_rx).await.unwrap().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod default_avatar_tests {
+    use super::*;
+
+    /// A new bot sent no avatar wears Wiz's hat, whole and as the checks pass it; its own colour stays.
+    #[test]
+    fn a_bot_sent_no_avatar_wears_the_hat() {
+        let blob = Avatar { shape: "blob".into(), color: "#1084FE".into(), ..Default::default() };
+        let av = apply_avatar(&blob, &with_default_avatar(json!({"name": "Ann"}))).unwrap();
+        assert_eq!(av.shape, "custom");
+        assert!(av.outline.is_some_and(|o| !o.is_empty()), "the hat's outline");
+        assert!(av.layers.is_some_and(|l| !l.is_empty()), "the grin");
+        assert!(av.solids.is_some_and(|s| !s.is_empty()), "the brim");
+        assert_eq!(av.color, "#FFFFFF");
+        let tinted = apply_avatar(&blob, &with_default_avatar(json!({"name": "Ann", "color": "#FC2C3E"}))).unwrap();
+        assert_eq!((tinted.shape.as_str(), tinted.color.as_str()), ("custom", "#FC2C3E"));
+    }
+
+    /// A shape or an outline sent is the bot's, as before.
+    #[test]
+    fn a_bot_sent_an_avatar_keeps_it() {
+        let blob = Avatar { shape: "blob".into(), color: "#1084FE".into(), ..Default::default() };
+        let star = apply_avatar(&blob, &with_default_avatar(json!({"name": "Ann", "shape": "star"}))).unwrap();
+        assert_eq!((star.shape.as_str(), star.outline), ("star", None));
+        let sent = json!({"name": "Ann", "outline": "M20 20 L80 20 L80 80 L20 80 Z"});
+        assert_eq!(with_default_avatar(sent.clone()), sent);
     }
 }

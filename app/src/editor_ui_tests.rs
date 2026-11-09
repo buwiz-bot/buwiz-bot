@@ -173,7 +173,9 @@ fn Editor() -> impl IntoElement {
             // spaces would split the probe
             let draft = store().draft.get().replace(' ', "_");
             let editing = store().avatar_editing.get();
-            format!("probe shape={shape} shown={n} loaded={} editing={editing} draft={draft}", store().design_loaded.get())
+            let hat = shape == crate::store::wiz_hat().shape;
+            let shape = shape.replace(' ', "_");
+            format!("probe shape={shape} hat={hat} shown={n} loaded={} editing={editing} draft={draft}", store().design_loaded.get())
         }))
         .child(view().label("add a design").w(px(40.0)).h(px(40.0)).on_press(|| keep("Mine", "cloud")))
         .child(view().label("keep heart").w(px(40.0)).h(px(40.0)).on_press(|| keep("Heart", "heart")))
@@ -346,6 +348,39 @@ fn a_bot_tab_pick_ends_revert() {
     app.wait_for("Use your Mine design");
     app.pump(Duration::from_millis(100));
     assert!(!app.has("Revert avatar"), "Revert would undo the Bot tab's pick");
+}
+
+/// The Bot tab offers Wiz's hat after the kit shapes; a tap puts it on the bot, past Revert.
+#[test]
+fn the_bot_tab_offers_the_wiz_hat() {
+    if !in_child("the_bot_tab_offers_the_wiz_hat") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("Bot tab");
+    app.wait_for("Wiz hat character shape");
+    app.press("Wiz hat character shape");
+    until(&mut app, "the hat on the Bot", |p| p.get("hat").is_some_and(|h| h == "true"));
+    app.pump(Duration::from_millis(100));
+    assert!(!app.has("Revert avatar"), "Revert would undo the hat");
+}
+
+/// Reset puts the default avatar, Wiz's hat, back on the bot.
+#[test]
+fn reset_puts_the_wiz_hat_on() {
+    if !in_child("reset_puts_the_wiz_hat_on") {
+        return;
+    }
+    let broker = stub(json!({"state": null}), 0, Duration::ZERO);
+    let mut app = start_loaded(&broker);
+    app.press("Bot tab");
+    app.wait_for("Reset avatar");
+    assert_eq!(read(&app).get("hat").map(String::as_str), Some("false"), "the bot starts as a blob");
+    app.press("Reset avatar");
+    app.wait_for("Reset");
+    app.press("Reset");
+    until(&mut app, "the hat on the Bot", |p| p.get("hat").is_some_and(|h| h == "true"));
 }
 
 /// An entry this build can't draw isn't shown, and comes through a save whole.

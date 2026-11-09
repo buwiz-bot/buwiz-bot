@@ -501,10 +501,10 @@ fn search_row() -> impl IntoElement {
                 })
                 .on_mouse_enter(|_: &MouseEvent| store().hover_tpl.set(true))
                 .on_mouse_leave(|_: &MouseEvent| store().hover_tpl.set(false))
-                // The app's default mark: black on light, white on dark.
+                // The app's default mark, Wiz's hat.
                 .child(dynamic(|| {
                     crate::avatar::bot_blob(crate::avatar::BotBlobProps {
-                        shape: "blob".into(),
+                        shape: crate::store::wiz_hat().shape,
                         color: "#FFFFFF".into(),
                         size: 20.0,
                         paused: true,

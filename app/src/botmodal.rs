@@ -187,7 +187,7 @@ fn tabs() -> impl IntoElement {
         }))
 }
 
-/// The shape grid (`BOT_SHAPES`): 48pt cells in the picked ink; the
+/// The shape grid (`BOT_SHAPES`, then Wiz's hat): 48pt cells in the picked ink; the
 /// ring marks the pick, a fainter one the hover.
 fn shapes() -> impl IntoElement {
     let color = store().draft_accent();
@@ -199,7 +199,11 @@ fn shapes() -> impl IntoElement {
         .justify_center()
         .gap_2()
         .child(each(
-            || crate::mark::BOT_SHAPES.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            || {
+                let mut all: Vec<String> = crate::mark::BOT_SHAPES.iter().map(|s| s.to_string()).collect();
+                all.push(crate::store::wiz_hat().shape);
+                all
+            },
             |s| s.clone(),
             move |s, _| {
                 let sh = s.get();
@@ -245,7 +249,11 @@ fn shapes() -> impl IntoElement {
                         }
                     })
                     .on_press(move || store().draft_body(sh3.clone(), None))
-                    .label(format!("{sh4} character shape"))
+                    .label(if sh4 == crate::store::wiz_hat().shape {
+                        "Wiz hat character shape".to_owned()
+                    } else {
+                        format!("{sh4} character shape")
+                    })
             },
         ))
 }
