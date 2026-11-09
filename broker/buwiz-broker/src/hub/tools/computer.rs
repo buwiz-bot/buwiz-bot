@@ -74,7 +74,9 @@ pub const ROUTINES_KEY: &str = "computer_routines";
 pub const ASK_PERSON: &str = "computer_ask_person";
 /// The card a hand-over asks on: never `computer`, whose "Allow in this chat" would widen the rest.
 pub const ASK_KEY: &str = "computer_takeover";
-pub const NAMES: [&str; 16] = [
+/// The model's one say in where its computer runs: a card that asks a person. It sees no key.
+pub const SETUP: &str = "computer_setup";
+pub const NAMES: [&str; 17] = [
     "computer_screenshot",
     "computer_click",
     "computer_drag",
@@ -91,9 +93,11 @@ pub const NAMES: [&str; 16] = [
     "computer_job_status",
     "computer_job_stop",
     ASK_PERSON,
+    SETUP,
 ];
-/// The ones that don't need a card first. `computer_ask_person` is its own card.
-pub const READS: [&str; 5] = ["computer_screenshot", "computer_wait", "computer_read_file", "computer_job_status", ASK_PERSON];
+/// The ones that don't need a card first. `computer_ask_person` is its own card, and so is
+/// `computer_setup`, which changes nothing itself.
+pub const READS: [&str; 6] = ["computer_screenshot", "computer_wait", "computer_read_file", "computer_job_status", ASK_PERSON, SETUP];
 
 /// How long a person gets, when the model doesn't say, and the most and least it can say.
 const TAKEOVER_S: u64 = 300;
@@ -133,6 +137,7 @@ pub fn defs() -> Vec<Value> {
         json!({"name": "computer_job_start", "description": "Start a long command on your computer and leave it running after this turn ends, as computer_run's commands run: in your own folder, as your own user, with no display. For anything that can finish within 10 minutes, use computer_run. The computer stays awake for the job until it ends or reaches its time limit, unless a person puts it to sleep, which freezes the job until it's woken. You aren't running meanwhile: look with computer_job_status when you're next here. At most 2 at once. What it prints goes to .jobs/<id>/out in your folder.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "name": {"type": "string", "description": "what it's doing, in a few words, for the person"}, "time_limit_s": {"type": "integer", "description": "stopped after this long: at most 86400; 14400 when left out"}}, "required": ["command"]}}),
         json!({"name": "computer_job_status", "description": "See how your jobs on your computer stand: with an id, that job and the end of what it printed; without, your latest jobs.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}}}),
         json!({"name": "computer_job_stop", "description": "Stop a job of yours on your computer, and everything it started.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}),
+        json!({"name": SETUP, "description": "When you need a computer and have none (or yours is gone), ask the person to set one up: this puts a card in the chat where they pick where it runs and add their own keys. You never see, type or ask for a key, and you can't pick the place or wake it yourself. Say in one line what you need it for.", "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need the computer for, in one line"}}, "required": ["reason"]}}),
         json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. Your commands keep running; whatever you left running on the screen's own desktop is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
     ]
 }
@@ -411,6 +416,9 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     if delegate(run) {
         return Out::err("A computer is for its own Bot's work: an agent working for another can't use it.".to_owned());
     }
+    if name == SETUP {
+        return setup(run, &computers, &bot, input);
+    }
     if !routine_allowed(run, &bot) {
         return Out::err("A routine can use the computer only when a person turns that on.".to_owned());
     }
@@ -444,6 +452,32 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     let out = if name == ASK_PERSON { ask_person(run, &computers, live, input).await } else { act(run, &computers, &live, name, input, since).await };
     Computers::touch(ctx, &computer);
     out
+}
+
+/// `computer_setup`: a card in this chat for the person to pick where the Bot's computer runs. One
+/// per turn, none in a routine (nobody is there to answer), and none for a Bot whose computer is
+/// there: that one only needs waking.
+fn setup(run: &Run, computers: &Computers, bot: &str, input: &Value) -> Out {
+    if run.turn.routine.is_some() {
+        return Out::err("A routine can't set up a computer: say in your report that this needs one, and a person can set it up.".to_owned());
+    }
+    if computers.has_working(&run.ctx, bot) {
+        return Out::err("You already have a computer. If it's asleep, ask the person to wake it from the Computer tab.".to_owned());
+    }
+    if std::mem::replace(&mut run.state().setup_asked, true) {
+        return Out::err("The card is already in the chat: wait for the person.".to_owned());
+    }
+    let reason: String = text(input, "reason").unwrap_or("").trim().chars().take(MAX_REASON).collect();
+    let chat = run.thread_id();
+    let id = format!("cs_{}", buwiz_computer::random_hex(8).unwrap_or_default());
+    let n = json!({
+        "kind": "computer_setup", "id": id, "bot": bot, "botName": crate::hub::computer::bot_name(&run.ctx, bot), "chat": chat,
+        "reason": reason, "state": "pending", "at": crate::hub::policy::now(&run.ctx),
+    });
+    if !crate::hub::tools::miniapps::post_in(&run.ctx, &chat, &n) {
+        return Out::err("The card couldn't be put in this chat. Tell the person they can set up a computer from the Bot's Computer tab.".to_owned());
+    }
+    Out::ok("A card is in the chat for the person to pick where your computer runs and add their own keys. You won't see any key. Wait for them: once it's set up they wake it, and then you can use it.".to_owned())
 }
 
 /// Whether a command may go, for `name`. On a shared computer the other Bots are what's at stake,

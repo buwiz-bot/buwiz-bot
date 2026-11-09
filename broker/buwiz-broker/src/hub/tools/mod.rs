@@ -87,6 +87,8 @@ pub struct RunState {
     pub revise: Option<(String, Option<i64>)>,
     pub link_turn: Option<LinkTurn>,
     pub cards: u64,
+    /// this turn put a `computer_setup` card in the chat: one is enough
+    pub setup_asked: bool,
     pub v1_cards: Vec<Value>,
     pub drive_seen: Vec<(String, Value)>,
     /// the calls the reply's turn keeps (`agent/tool_log.rs`)

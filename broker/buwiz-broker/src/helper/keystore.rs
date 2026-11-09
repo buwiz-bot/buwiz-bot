@@ -22,6 +22,11 @@
 //! A remote computer's SSH key lives beside them too: service
 //! `com.buwiz.bot.computer-key`, account the computer's id, the key's text
 //! as base64url; a file store keeps `computer-keys/<id>.key`.
+//!
+//! So do the keys a person gave a computer provider (an E2B or boat API key,
+//! an AWS access key and secret): service `com.buwiz.bot.provider-cred`,
+//! account `<kind>/default`, the secret fields as JSON in base64url; a file
+//! store keeps `provider-creds/<kind>~default.json`.
 
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -37,6 +42,8 @@ pub const KEYCHAIN_SERVICE: &str = "com.buwiz.bot.plugin-key";
 pub const ACCOUNT_SERVICE: &str = "com.buwiz.bot.account-token";
 /// A remote computer's SSH key.
 pub const COMPUTER_SERVICE: &str = "com.buwiz.bot.computer-key";
+/// A computer provider's keys.
+pub const PROVIDER_SERVICE: &str = "com.buwiz.bot.provider-cred";
 /// Rox's service, before the rename: its keys are moved over once.
 pub const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.plugin-key";
 const SECURITY: &str = "/usr/bin/security";
@@ -51,6 +58,7 @@ struct Items<'a> {
 const ITEMS: Items<'static> = Items { service: KEYCHAIN_SERVICE, keychain: None };
 const ACCOUNT_ITEMS: Items<'static> = Items { service: ACCOUNT_SERVICE, keychain: None };
 const COMPUTER_ITEMS: Items<'static> = Items { service: COMPUTER_SERVICE, keychain: None };
+const PROVIDER_ITEMS: Items<'static> = Items { service: PROVIDER_SERVICE, keychain: None };
 
 impl Items<'_> {
     fn put(&self, id: &str, seed: &str) -> Result<(), String> {
@@ -114,6 +122,13 @@ fn check_id(id: &str) -> Result<(), String> {
 fn check_computer(id: &str) -> Result<(), String> {
     let sound = id.strip_prefix("cmp_").is_some_and(|h| !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit()));
     sound.then_some(()).ok_or_else(|| "not a computer's id".to_owned())
+}
+
+/// A provider's word (`e2b`, `ec2`): lowercase letters and digits. It's part of a file's name and
+/// of a Keychain account on a `security -i` line.
+fn check_provider(kind: &str) -> Result<(), String> {
+    let sound = !kind.is_empty() && kind.len() <= 16 && kind.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    sound.then_some(()).ok_or_else(|| "not a provider's name".to_owned())
 }
 
 /// An account label: `^[A-Za-z0-9][A-Za-z0-9._@+-]{0,59}$` (no spaces or
@@ -303,6 +318,58 @@ impl Keystore {
                 _ => Ok(()),
             },
             Keystore::Keychain => COMPUTER_ITEMS.remove(id).then_some(()).ok_or_else(|| "the Keychain kept this computer's key".to_owned()),
+        }
+    }
+
+    fn provider_file(dir: &Path, kind: &str) -> PathBuf {
+        dir.join("provider-creds").join(format!("{kind}~default.json"))
+    }
+
+    /// Keeps provider `kind`'s keys, `secrets` (a JSON object's text). What the Keychain holds is read
+    /// back: `security -i` takes one line, and keys cut by it mustn't pass for ones that are kept.
+    pub fn put_provider_cred(&self, kind: &str, secrets: &str) -> Result<(), String> {
+        check_provider(kind)?;
+        match self {
+            Keystore::File(dir) => {
+                let sub = dir.join("provider-creds");
+                std::fs::create_dir_all(&sub).map_err(|e| e.to_string())?;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+                let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+                let path = Self::provider_file(dir, kind);
+                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                f.write_all(secrets.as_bytes()).map_err(|e| e.to_string())?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+            }
+            Keystore::Keychain => {
+                let account = format!("{kind}/default");
+                PROVIDER_ITEMS.put(&account, &buwiz_protocol::keys::b64(secrets.as_bytes()))?;
+                if self.get_provider_cred(kind)?.as_deref() != Some(secrets) {
+                    PROVIDER_ITEMS.remove(&account);
+                    return Err("the Keychain didn't keep these keys whole".to_owned());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Provider `kind`'s keys as they were kept, or `None` when there are none (or the Keychain refused).
+    pub fn get_provider_cred(&self, kind: &str) -> Result<Option<String>, String> {
+        check_provider(kind)?;
+        Ok(match self {
+            Keystore::File(dir) => std::fs::read_to_string(Self::provider_file(dir, kind)).ok(),
+            Keystore::Keychain => PROVIDER_ITEMS.get(&format!("{kind}/default")).and_then(|b| buwiz_protocol::keys::unb64(&b).ok()).and_then(|b| String::from_utf8(b).ok()),
+        })
+    }
+
+    /// `Err` when they're still there.
+    pub fn remove_provider_cred(&self, kind: &str) -> Result<(), String> {
+        check_provider(kind)?;
+        match self {
+            Keystore::File(dir) => match std::fs::remove_file(Self::provider_file(dir, kind)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            },
+            Keystore::Keychain => PROVIDER_ITEMS.remove(&format!("{kind}/default")).then_some(()).ok_or_else(|| "the Keychain kept this provider's keys".to_owned()),
         }
     }
 

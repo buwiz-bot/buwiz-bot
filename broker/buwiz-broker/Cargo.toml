@@ -54,4 +54,5 @@ url = "2"
 webpki-roots = "1"
 
 [dev-dependencies]
+async-trait = "0.1"
 buwiz-computer = { path = "../buwiz-computer", features = ["mock"] }

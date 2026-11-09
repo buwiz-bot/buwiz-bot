@@ -154,6 +154,11 @@ const TRIED: &[&str] = &[
     "ALTER TABLE computer_jobs ADD COLUMN stop_owed INTEGER NOT NULL DEFAULT 0",
     // how many cancels a computer that was up didn't take: past a few a person is told
     "ALTER TABLE computer_jobs ADD COLUMN stop_tries INTEGER NOT NULL DEFAULT 0",
+    // where new computers are made (`hub/computer/homes.rs`): a provider's settings, no secret in
+    // them (its keys are in the keystore); the Mac's default; a Bot's own choice, for its next one
+    "CREATE TABLE IF NOT EXISTS computer_providers(kind TEXT PRIMARY KEY, config TEXT NOT NULL, updated_at INTEGER);
+  CREATE TABLE IF NOT EXISTS computer_home(id INTEGER PRIMARY KEY CHECK(id=1), kind TEXT NOT NULL, at INTEGER);
+  CREATE TABLE IF NOT EXISTS bot_computer_home(bot_id TEXT PRIMARY KEY, kind TEXT NOT NULL, at INTEGER);",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but
