@@ -208,6 +208,64 @@ pub(crate) fn accent_of<'a>(shape: &str, color: &'a str) -> &'a str {
     if shape.starts_with(RICH) { "#FFFFFF" } else { color }
 }
 
+/// `shape` as a theme draws it. White (`#FFFFFF`) is the adaptive swatch: on a light theme a
+/// plain shape's white ink turns black (`mark::ink_of`). A rich body paints its own colours, so
+/// one whose shell is that white gets the same rule here: on a light theme every colour in its
+/// recipe takes the opposite lightness, with its hue kept. The white hat goes black and its dark
+/// grin and eyes go light, as the logo's light version is drawn. Every other shape, and every
+/// shape on a dark theme, is drawn as given (`None`).
+pub(crate) fn themed(shape: &str, light: bool) -> Option<Rc<str>> {
+    thread_local! {
+        static LIGHT: RefCell<std::collections::HashMap<String, Option<Rc<str>>>> = RefCell::default();
+    }
+    let recipe = shape.strip_prefix(RICH).filter(|_| light)?;
+    LIGHT.with(|m| {
+        if let Some(done) = m.borrow().get(shape) {
+            return done.clone();
+        }
+        let flipped = serde_json::from_str::<serde_json::Value>(recipe)
+            .ok()
+            .filter(|v| v.get("c").and_then(serde_json::Value::as_str).is_some_and(|c| matches!(mark::norm_color(c).as_str(), "#FFFFFF" | "#FFF")))
+            .map(|mut v| {
+                flip_colours(&mut v);
+                Rc::from(format!("{RICH}{v}"))
+            });
+        m.borrow_mut().insert(shape.to_owned(), flipped.clone());
+        flipped
+    })
+}
+
+/// Every `#rgb` or `#rrggbb` string in a recipe, at the opposite lightness.
+fn flip_colours(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some(c) = flipped_lightness(s.trim()) {
+                *s = c;
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(flip_colours),
+        serde_json::Value::Object(o) => o.values_mut().for_each(flip_colours),
+        _ => {}
+    }
+}
+
+/// `#rgb` or `#rrggbb` with its HSL lightness turned over (L to 1 - L), hue and saturation kept;
+/// `None` for anything that isn't a colour.
+fn flipped_lightness(s: &str) -> Option<String> {
+    let hex = s.strip_prefix('#')?;
+    if !matches!(hex.len(), 3 | 6) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let hex: String = if hex.len() == 3 { hex.chars().flat_map(|c| [c, c]).collect() } else { hex.to_owned() };
+    let v = u32::from_str_radix(&hex, 16).ok()?;
+    let [r, g, b] = [(v >> 16) & 255, (v >> 8) & 255, v & 255].map(|c| c as f64 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    // Turning L over keeps the hue and saturation: each channel moves by the same 1 - max - min.
+    let shift = 1.0 - max - min;
+    let [r, g, b] = [r, g, b].map(|c| ((c + shift).clamp(0.0, 1.0) * 255.0).round() as u32);
+    Some(format!("#{r:02X}{g:02X}{b:02X}"))
+}
+
 /// The mark body for a shape string: a picker name, or `outline:<path>`
 /// (registered once; a path the engine can't use draws the ball).
 pub(crate) fn body_of(shape: &str) -> &'static str {
@@ -309,7 +367,10 @@ impl Inner {
     fn new(props: &BotBlobProps, tab: Rc<mark::Tables>) -> Self {
         #[cfg(test)]
         BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let body = body_of(&props.shape);
+        // Untracked like the state below: `sync`, in the paint, follows a theme flip.
+        let flipped = themed(&props.shape, !untracked(dark));
+        let shape = flipped.as_deref().unwrap_or(&props.shape);
+        let body = body_of(shape);
         let seed = props
             .seed
             .as_deref()
@@ -344,7 +405,7 @@ impl Inner {
             mark,
             dir,
             gs,
-            last_shape: props.shape.clone(),
+            last_shape: shape.to_owned(),
             last_state: state,
             last_compact: box_ < 48.0,
             last_emphasis: false,
@@ -364,13 +425,16 @@ impl Inner {
     fn sync(&mut self, props: &BotBlobProps) -> bool {
         let now = Instant::now();
         let mut dirty = false;
-        if props.shape != self.last_shape {
-            self.mark.set_body(body_of(&props.shape), false);
+        // Reading `dark()` here follows a theme flip, which can change a rich body's colours.
+        let flipped = themed(&props.shape, !dark());
+        let shape = flipped.as_deref().unwrap_or(&props.shape);
+        if shape != self.last_shape {
+            self.mark.set_body(body_of(shape), false);
             if props.morph_shape {
                 self.grace_until = now + Duration::from_millis(1400);
             }
             self.live_until = now + Duration::from_millis(1200);
-            self.last_shape = props.shape.clone();
+            self.last_shape = shape.to_owned();
             dirty = true;
         }
         let state = props
@@ -484,7 +548,7 @@ impl Inner {
         let playing = self.mark.is_playing();
         let now = Instant::now();
         if resting && !playing && self.last_state == "idle" && !self.last_emphasis && now >= self.live_until
-            && let Some(bytes) = mark::rest_bytes(&props.shape) {
+            && let Some(bytes) = mark::rest_bytes(&self.last_shape) {
                 return mark::paint_rest(p, &bytes, &self.gs, x, y, extent, &ink_paint);
         }
         let frame = self.mark.frame();
@@ -759,9 +823,48 @@ pub(crate) fn sleeping_blob(shape: &str, size: f32, ink: &str) -> impl IntoEleme
 
 #[cfg(test)]
 mod tests {
-    use super::{accent_of, body_of, drawable, OUTLINE, RICH};
+    use super::{accent_of, body_of, drawable, flipped_lightness, themed, OUTLINE, RICH};
     use crate::mark;
     use crate::store::{body_fields, body_shape};
+
+    /// Wiz's hat, white on a dark theme, is drawn black on a light one, its dark grin and eyes
+    /// light, as the logo's light version is. A dark theme draws it as it is.
+    #[test]
+    fn the_white_hat_turns_black_on_a_light_theme() {
+        let hat = crate::store::wiz_hat().shape;
+        assert!(themed(&hat, false).is_none(), "a dark theme draws the hat as it is");
+        let light = themed(&hat, true).expect("a light theme turns the white hat over");
+        let recipe: serde_json::Value = serde_json::from_str(light.strip_prefix(RICH).unwrap()).unwrap();
+        assert_eq!(recipe["c"], "#000000", "the hat is black");
+        let dark_bits = "\"#15131C\"";
+        assert!(hat.contains(dark_bits) && !light.contains(dark_bits), "the grin and eyes aren't left dark on a black hat");
+        assert!(drawable(&light), "the light hat is a recipe the engine draws");
+        assert!(std::rc::Rc::ptr_eq(&light, &themed(&hat, true).unwrap()), "it's worked out once, not every frame");
+    }
+
+    /// Only a rich body whose shell is the adaptive white is turned over: a plain shape keeps
+    /// its ink rule, and a rich body of its own colour keeps them.
+    #[test]
+    fn only_a_white_rich_body_is_turned_over() {
+        assert!(themed("blob", true).is_none());
+        assert!(themed("outline:M0 0Z", true).is_none());
+        assert!(themed(&format!(r##"{RICH}{{"o":"M0 0Z","c":"#F9670E"}}"##), true).is_none(), "an orange body keeps its colours");
+        assert!(themed(&format!(r##"{RICH}{{"o":"M0 0Z","c":"#fff"}}"##), true).is_some(), "short white is white");
+    }
+
+    /// Lightness turns over and the hue stays: white and black swap, a dark violet goes light violet.
+    #[test]
+    fn a_colour_takes_the_opposite_lightness() {
+        assert_eq!(flipped_lightness("#FFFFFF").as_deref(), Some("#000000"));
+        assert_eq!(flipped_lightness("#000").as_deref(), Some("#FFFFFF"));
+        assert_eq!(flipped_lightness("#808080").as_deref(), Some("#7F7F7F"));
+        let light = flipped_lightness("#15131C").unwrap();
+        let v = u32::from_str_radix(&light[1..], 16).unwrap();
+        let (r, g, b) = ((v >> 16) & 255, (v >> 8) & 255, v & 255);
+        assert!(r > 200 && g > 200 && b > r && b > g, "light, and still blue-violet: {light}");
+        assert_eq!(flipped_lightness("M0 0Z"), None);
+        assert_eq!(flipped_lightness("#12345"), None);
+    }
 
     /// Effects leave a rich avatar's colour alone and take the primary ink;
     /// a plain shape keeps the colour the person gave it.
