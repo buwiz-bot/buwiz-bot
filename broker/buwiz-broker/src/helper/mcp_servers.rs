@@ -301,7 +301,7 @@ impl McpHost {
             let home = std::env::var("HOME").unwrap_or_default();
             let mut env = vec![("PATH".to_owned(), tool_path(&std::env::var("PATH").unwrap_or_default(), &home))];
             env.extend(row.env.clone());
-            let spec = Spec { command: row.command.clone(), args: row.args.clone(), env, inherit_all: true, client: "buwiz-bot" };
+            let spec = Spec { command: row.command.clone(), args: row.args.clone(), env, inherit_all: true, client: "buwiz-bot", capabilities: json!({}) };
             let conn = Conn::connect(&spec, Arc::new(LogHooks { id: id.to_owned() })).await.map_err(|e| RpcError { message: crate::js::slice_utf16(&e.message, 300), ..e })?;
             (Client::Local(conn), false)
         } else {

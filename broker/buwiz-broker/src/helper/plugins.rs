@@ -49,6 +49,16 @@ pub const RESTART_WINDOW_MS: f64 = 10.0 * 60.0 * 1000.0;
 pub const MAX_RESTARTS: usize = 6;
 const LOG_CAP: u64 = 5 * 1024 * 1024;
 
+/// What the Bot does with a tool result's `_meta` file keys
+/// (`buwiz/document`, `buwiz/open_with`, `buwiz/save`), told to every v1
+/// plugin at `initialize` so a newer one can tell an older Bot apart.
+pub const DOCUMENTS: [&str; 6] = ["word", "sheet", "image", "pdf", "open_with", "save"];
+
+/// A v1 plugin's `capabilities` in the handshake.
+pub fn client_capabilities() -> Value {
+    json!({"experimental": {"buwiz/documents": DOCUMENTS}})
+}
+
 mod accounts;
 pub use accounts::{flow_id, token_ref, AccountRow, AccountsConfig, CLEAR as ACCOUNT_CLEAR, GOOGLE_AUTHORIZE, GOOGLE_TOKEN, NEEDS_GOOGLE_CLIENT, SET as ACCOUNT_SET};
 
@@ -247,6 +257,7 @@ impl Row {
         Spec {
             inherit_all: false,
             client: "buwiz-broker",
+            capabilities: client_capabilities(),
             command: self.command.clone(),
             args: args.as_array().into_iter().flatten().map(js::string_of).collect(),
             env: env.as_object().map(js::ordered).unwrap_or_default().into_iter().map(|(k, v)| (k.clone(), js::string_of(v))).collect(),
@@ -1406,6 +1417,7 @@ pub fn spawn_spec(body: &Value) -> Res<(Spec, (Value, Value))> {
     let spec = Spec {
         inherit_all: false,
         client: "buwiz-broker",
+        capabilities: client_capabilities(),
         command: command.to_owned(),
         args: list.iter().map(js::string_of).collect(),
         env: js::ordered(map).into_iter().map(|(k, v)| (k.clone(), js::string_of(v))).collect(),
@@ -1702,7 +1714,7 @@ mod tests {
             let file = self.root.join(format!("{version}.json"));
             std::fs::write(&file, signed.to_string()).unwrap();
             let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture-plugin.mjs");
-            let mut body = json!({"command": "node", "args": [plugin], "env": {"FX_MANIFEST": file, "FX_HOLD": self.root.join("hold")}});
+            let mut body = json!({"command": "node", "args": [plugin], "env": {"FX_MANIFEST": file, "FX_HOLD": self.root.join("hold"), "FX_INIT": self.root.join("init.json")}});
             body["manifest_sha256"] = self.host.inspect(&body).await.unwrap()["manifest_sha256"].clone();
             body
         }
@@ -1734,6 +1746,15 @@ mod tests {
             self.host.stop_all().await;
             let _ = std::fs::remove_dir_all(self.root);
         }
+    }
+
+    #[tokio::test]
+    async fn a_plugin_hears_what_the_bot_does_with_files_at_initialize() {
+        let b = UpdateBed::new("init").await;
+        let init: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("init.json")).unwrap()).unwrap();
+        assert_eq!(init["capabilities"], json!({"experimental": {"buwiz/documents": ["word", "sheet", "image", "pdf", "open_with", "save"]}}));
+        assert_eq!(init["clientInfo"]["name"], "buwiz-broker");
+        b.done().await;
     }
 
     #[tokio::test]

@@ -136,6 +136,11 @@ impl host_api::Broker for FakeBroker {
                         if !args["field"].is_null() {
                             r["_meta"] = json!({"buwiz/document": args["field"]});
                         }
+                        for (arg, key) in [("open_with", "buwiz/open_with"), ("save", "buwiz/save")] {
+                            if !args[arg].is_null() {
+                                r["_meta"][key] = args[arg].clone();
+                            }
+                        }
                         r
                     }
                     "fx_account_use" | "fx_account_fail" | "fx_account_read" => {
@@ -232,15 +237,51 @@ struct TestUi {
     /// The documents that reached the viewer.
     documents: Mutex<Vec<Document>>,
     /// What each was handed to ask, when its job runs, if its open lives.
-    lives: Mutex<Vec<Box<dyn FnOnce() -> bool + Send>>>,
+    lives: Mutex<Vec<Live>>,
+    /// The files handed to the system's default app, and to Downloads.
+    opened_with: Mutex<Vec<LocalFile>>,
+    saved: Mutex<Vec<LocalFile>>,
+    /// The person's last press in the open, if fresh, and the presses
+    /// hand-offs spent.
+    hand_press: Mutex<Option<u64>>,
+    spent: Mutex<Vec<u64>>,
+    /// What the person was told of hand-offs that did nothing.
+    refusals: Mutex<Vec<&'static str>>,
+    /// The open is a card in the chat, which hands nothing off.
+    inline_card: AtomicBool,
 }
 
 impl HostUi for TestUi {
     fn plugin_folder(&self, _: &str) -> Option<PathBuf> {
         self.folder.lock().unwrap().clone()
     }
-    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_document(&self, doc: Document, live: Live) {
         self.documents.lock().unwrap().push(doc);
+        self.lives.lock().unwrap().push(live);
+    }
+    fn file_refused(&self, said: &'static str) {
+        self.refusals.lock().unwrap().push(said);
+    }
+    fn hands_off(&self) -> bool {
+        !self.inline_card.load(Ordering::SeqCst)
+    }
+    fn fresh_press(&self) -> Option<u64> {
+        *self.hand_press.lock().unwrap()
+    }
+    fn spend_press(&self, press: u64) -> bool {
+        let mut spent = self.spent.lock().unwrap();
+        if spent.contains(&press) {
+            return false;
+        }
+        spent.push(press);
+        true
+    }
+    fn open_with(&self, file: LocalFile, live: Live) {
+        self.opened_with.lock().unwrap().push(file);
+        self.lives.lock().unwrap().push(live);
+    }
+    fn save(&self, file: LocalFile, live: Live) {
+        self.saved.lock().unwrap().push(file);
         self.lives.lock().unwrap().push(live);
     }
     fn hold(&self, _: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {

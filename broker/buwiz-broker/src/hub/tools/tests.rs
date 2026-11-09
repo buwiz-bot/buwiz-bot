@@ -150,6 +150,10 @@ impl PluginView for Arc<Fake> {
                 if let Some(s) = args.get("suggest") {
                     meta["buwiz/suggest"] = s.clone();
                 }
+                // the keys only the Bot acts on, beside the card
+                for (k, v) in args.get("files").and_then(Value::as_object).into_iter().flatten() {
+                    meta[k] = v.clone();
+                }
                 let failed = args.get("fail") == Some(&json!(true));
                 Ok(json!({"content": text(if failed { "failed".into() } else { "Here is the card.".into() }), "isError": failed, "_meta": meta}))
             }
@@ -344,6 +348,18 @@ fn inv_01_a_typed_token_parses_and_the_canonical_form_carries_the_ticket() {
     assert_eq!(v1::typed_tokens("check @fx:item:acme-9 today"), vec![("fx".to_owned(), "item".to_owned())]);
     assert_eq!(v1::canonical(&format!("@fx:item:{TKT}")), Some(("fx".to_owned(), "item".to_owned())));
     assert_eq!(v1::canonical("@fx:item:acme-9"), None, "INV-01: the typed value is no canonical token");
+}
+
+#[tokio::test]
+async fn a_results_file_keys_never_reach_the_model() {
+    let fake = Fake::new("");
+    let ctx = with_plugins("files", &fake);
+    let run = run_in(&ctx, TurnCtx::default());
+    let path = "/Users/someone/Library/Application Support/app.buwiz.fixture/open/1/IMG_4250.png";
+    let files = json!({"buwiz/document": {"path": path, "name": "IMG_4250.png", "mime": "image/png"}, "buwiz/open_with": {"path": path}, "buwiz/save": {"path": path, "name": "IMG_4250.png"}});
+    let r = call(&run, "fx_open", json!({"files": files})).await;
+    assert_eq!(r.content, json!("Here is the card."));
+    assert!(!r.content.to_string().contains("IMG_4250"), "{}", r.content);
 }
 
 #[tokio::test]

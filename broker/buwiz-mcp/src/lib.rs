@@ -49,6 +49,9 @@ pub struct Spec {
     pub inherit_all: bool,
     /// `clientInfo.name` in the handshake.
     pub client: &'static str,
+    /// `capabilities` in the handshake: what this host does for the server
+    /// (`{}` for a v0 server, a v1 plugin's list in `experimental`).
+    pub capabilities: Value,
 }
 
 /// A failed request: a JSON-RPC error, a timeout, a closed connection, or
@@ -187,7 +190,7 @@ impl Conn {
         });
         tokio::spawn(read_loop(conn.clone(), stdout, hooks));
 
-        let init = conn.request("initialize", json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": spec.client, "version": "1.0.0"}}), timeout).await;
+        let init = conn.request("initialize", json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": spec.capabilities, "clientInfo": {"name": spec.client, "version": "1.0.0"}}), timeout).await;
         let init = match init {
             Ok(v) => v,
             Err(e) => {

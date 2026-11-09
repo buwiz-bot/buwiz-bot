@@ -24,7 +24,8 @@
 // buwiz.account.set/clear keep the pushed accounts in
 // memory; fx_stats shows each one's subject, expiry and the first 12 hex
 // of its token's sha256, never the token, and `account_pushes`: each push's
-// method, label and `accounts` list (a first-party plugin's).
+// method, label and `accounts` list (a first-party plugin's); `client` is the
+// capabilities the broker sent at initialize.
 //
 // fx_echo and fx_search answer `args.result_meta` as the result's `_meta`.
 import { randomBytes } from "node:crypto";
@@ -292,7 +293,7 @@ const TOOLS = [
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
   { name: "fx_app_only", description: "A tool for apps only (16.4 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
-  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts), account_pushes: accountPushes }) },
+  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts), account_pushes: accountPushes, client: server.getClientCapabilities() ?? null }) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
     run: async () => (await server.sendResourceListChanged(), ok({ ok: true })),

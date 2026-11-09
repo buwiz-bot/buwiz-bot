@@ -774,13 +774,25 @@ impl Store {
     /// `live` or not. It opens over that screen only: not over another one the
     /// person went to meanwhile, and not over the viewer, which would drop
     /// its unsaved edits. Nothing of the path goes to the log.
+    /// A Word or Sheet file opens by the plugin's path, so it is checked again
+    /// here, just before ([`super::document::Document::still_checked`]).
     pub fn v1_document(&'static self, key: &str, doc: &super::document::Document, live: bool) {
-        let on_top = self.mini_full.with_untracked(|v| v.last().is_some_and(|o| o.key == key));
-        if live && on_top && crate::keys::app_owns_keys(&crate::keys::Shown::now()) {
-            self.open_file(&doc.attach());
-        } else {
+        if !self.v1_on_top(key, live) {
             log::info!("mini v1: a document came after its screen left the top: nothing opened");
+        } else if !doc.still_checked() {
+            log::info!("mini v1: a document changed after its check: nothing opened");
+            crate::toast::show(super::bridge::OPEN_REFUSED);
+        } else {
+            self.open_file(&doc.attach());
         }
+    }
+
+    /// Whether a file the full-screen open `key` handed over, from a call
+    /// that ended `live` or not, may open or save now: that screen is still
+    /// what the person sees, as [`Self::v1_document`] has it.
+    pub fn v1_on_top(&'static self, key: &str, live: bool) -> bool {
+        let on_top = self.mini_full.with_untracked(|v| v.last().is_some_and(|o| o.key == key));
+        live && on_top && crate::keys::app_owns_keys(&crate::keys::Shown::now())
     }
 
     /// Close on an error: the full-screen open goes, an inline card hides.

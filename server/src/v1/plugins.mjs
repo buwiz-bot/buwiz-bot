@@ -31,6 +31,12 @@ import { isApproved, loadTrust } from "./trust.mjs";
 // mount at once
 export const FIRST_PARTY = "app.buwiz";
 
+// what the Bot does with a tool result's `_meta` file keys (`buwiz/document`,
+// `buwiz/open_with`, `buwiz/save`), told to every v1 plugin at `initialize` so
+// a newer one can tell an older Bot apart
+export const DOCUMENTS = ["word", "sheet", "image", "pdf", "open_with", "save"];
+export const CLIENT_CAPABILITIES = { experimental: { "buwiz/documents": DOCUMENTS } };
+
 export const BACKOFF_S = [1, 2, 4, 8, 16, 32, 60];
 export const RESTART_WINDOW_MS = 10 * 60 * 1000;
 export const MAX_RESTARTS = 6;
@@ -168,7 +174,7 @@ export function createPlugins({ db, keys, clock = systemClock, logDir, trust = l
     ]);
 
     const transport = new StdioClientTransport({ command: spec.command, args: spec.args, env: { PATH: process.env.PATH || "", ...spec.env }, stderr: "pipe" });
-    const client = new Client({ name: "buwiz-broker", version: "1.0.0" });
+    const client = new Client({ name: "buwiz-broker", version: "1.0.0" }, { capabilities: CLIENT_CAPABILITIES });
     const conn = { client, transport, closed: false };
 
     const sink = stderrSink(id, seed, () => {

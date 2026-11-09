@@ -1,7 +1,8 @@
 // A mini app plugin for the broker's tests, with nothing to install: MCP over
 // stdio, buwiz.provision and buwiz.session.open, the manifest FX_MANIFEST names.
 // While the file FX_HOLD names is there, provisioning waits, after writing
-// <FX_HOLD>.seen: a test's way to act during a restart.
+// <FX_HOLD>.seen: a test's way to act during a restart. FX_INIT names a file
+// it writes the initialize request's params to.
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -42,7 +43,12 @@ const tools = {
   "buwiz.session.close": () => ok({ ok: true }),
 };
 const reply = {
-  initialize: (p) => ({ protocolVersion: p.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: "fixture-plugin", version: "1.0.0" } }),
+  initialize: (p) => {
+    // the handshake as the broker sent it, for a test to read
+    if (process.env.FX_INIT) writeFileSync(process.env.FX_INIT, JSON.stringify(p));
+
+    return { protocolVersion: p.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: "fixture-plugin", version: "1.0.0" } };
+  },
   "resources/list": () => ({ resources: [{ uri: "buwiz://manifest", name: "manifest", mimeType: "application/json" }] }),
   "resources/read": (p) => ({ contents: [{ uri: p.uri, mimeType: "application/json", text }] }),
   "tools/list": () => ({ tools: Object.keys(tools).map((name) => ({ name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })) }),

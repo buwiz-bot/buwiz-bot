@@ -150,6 +150,10 @@ fn main() -> impl std::process::Termination {
         Ok(done) => log::info!("rox: data dir migration: {done:?}"),
         Err(e) => log::error!("rox: Rox's data dir was not moved (it is used where it is): {e}"),
     }
+    // the copies a plugin's files are opened and shown from go after a day,
+    // at launch and hourly
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(buwiz_bot::mini_v1::system_open::sweep_while_running);
     // the bundled broker, when none answers and this is no test instance
     // (plan 7.2)
     buwiz_bot::broker::ensure_started();

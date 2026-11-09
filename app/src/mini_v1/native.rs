@@ -35,13 +35,14 @@ use serde_json::Value;
 use super::{
     RoxError, V1Key,
     attribution::{self, Actor},
-    bridge::{self, Consent, Emit, HostUi, OpenContext, PickRequest, Press},
+    bridge::{self, Consent, Emit, HostUi, Live, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
     document::{self, Document},
     host_api, load,
     load::Prepared,
     screens,
     session::{self, Ended, Session},
+    system_open::{self, LocalFile},
 };
 
 /// Runs `f` on the main thread, later.
@@ -98,6 +99,14 @@ impl HostUi for MacUi {
 
     fn actor(&self) -> Actor {
         attribution::actor(self.surface)
+    }
+
+    fn fresh_press(&self) -> Option<u64> {
+        attribution::fresh_press(self.surface)
+    }
+
+    fn spend_press(&self, press: u64) -> bool {
+        attribution::spend_press(self.surface, press)
     }
 
     fn agent_call(&self, running: bool) {
@@ -159,12 +168,95 @@ impl HostUi for MacUi {
     /// Only over the full-screen app on top: a hidden chat keeps its cards
     /// running, so a live card may be off the screen. The store decides,
     /// when the job runs, for the person may have left since the call.
-    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+    ///
+    /// A picture or a PDF is copied first, from the file opened at the check,
+    /// on a thread of its own, and shown from the copy (`document`).
+    fn open_document(&self, doc: Document, live: Live) {
         if self.inline {
             return log::info!("mini v1: a card's document opened nothing");
         }
         let key = self.key.clone();
-        super::to_store(move |st| st.v1_document(&key, &doc, live()));
+        if !doc.needs_copy() {
+            return super::to_store(move |st| st.v1_document(&key, &doc, live()));
+        }
+        std::thread::spawn(move || {
+            let shown = doc.clone();
+            let (to, again) = (key.clone(), live.clone());
+            // the store shows it, if its screen is still the person's: the
+            // check and the showing in one job; a miss takes a copy this made
+            let done = move |copy: system_open::Copied| {
+                let doc = shown.with_copy(&copy.path);
+                super::to_store(move |st| {
+                    if st.v1_on_top(&to, again()) {
+                        st.v1_document(&to, &doc, true);
+                    } else if copy.fresh {
+                        system_open::discard(&copy.path);
+                    }
+                });
+            };
+            let copy = || system_open::copy_for_view(doc.file(), doc.name(), &copies()?, system_open::CAP);
+            handed("a document", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
+        });
+    }
+
+    fn file_refused(&self, said: &'static str) {
+        super::to_store(move |_| crate::toast::show(said));
+    }
+
+    /// A card in the chat hands nothing off: the bridge refuses it out loud.
+    fn hands_off(&self) -> bool {
+        !self.inline
+    }
+
+    /// On `open_document`'s terms. A marked copy of the Bot's own is made on
+    /// a thread of its own, then opened on the main thread, as `open_url`
+    /// opens.
+    fn open_with(&self, file: LocalFile, live: Live) {
+        if self.inline {
+            return log::info!("mini v1: a card's file opened nothing");
+        }
+        let key = self.key.clone();
+        std::thread::spawn(move || {
+            let (to, again) = (key.clone(), live.clone());
+            // main asks the store again whether the screen is the person's,
+            // on top (the store's thread alone knows), and opens or takes the
+            // copy away, in one go: while main waits, no input of the
+            // person's can move the screen
+            let done = move |copy: system_open::Copied| {
+                on_main(move || {
+                    let on_top = || shows_within(&to, &again, ON_MAIN_WAIT);
+                    if !system_open::open_or_discard(&copy.path, on_top, system_open::open_copy) {
+                        log::info!("mini v1: a file opened nothing: its screen left the top, its copy wasn't marked, or nothing opened it");
+                        super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
+                    }
+                })
+            };
+            let copy = || system_open::copy_for_open(&file, &copies()?, system_open::CAP).map(system_open::Copied::fresh);
+            handed("a file", system_open::copy_between_checks(&|| shows(&key, &live), copy, done));
+        });
+    }
+
+    /// On `open_document`'s terms. The copy runs on a thread of its own (an
+    /// attachment can be large), then a toast says how it went.
+    fn save(&self, file: LocalFile, live: Live) {
+        if self.inline {
+            return log::info!("mini v1: a card's file saved nothing");
+        }
+        let key = self.key.clone();
+        super::to_store(move |st| {
+            if !st.v1_on_top(&key, live()) {
+                return log::info!("mini v1: a file came after its screen left the top: nothing saved");
+            }
+            std::thread::spawn(move || {
+                let saved = system_open::downloads().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound)).and_then(|d| system_open::save_in(&file, &d));
+                // the error's kind only: its text may hold a path
+                if let Err(e) = &saved {
+                    log::info!("mini v1: a file saved nothing: {:?}", e.kind());
+                }
+                let said = if saved.is_ok() { "Saved to Downloads" } else { "Buwiz Bot couldn't save that file to Downloads" };
+                super::to_store(move |_| crate::toast::show(said));
+            });
+        });
     }
 
     fn fit(&self, height: f32) {
@@ -312,6 +404,45 @@ fn write_pasteboard(text: &str) {
         let board: Retained<AnyObject> = msg_send![class, generalPasteboard];
         let _: isize = msg_send![&*board, clearContents];
         let _: bool = msg_send![&*board, setString: &*s, forType: &*kind];
+    }
+}
+
+/// [`system_open::opened_dir`], or an error to fail a copy with.
+fn copies() -> std::io::Result<PathBuf> {
+    system_open::opened_dir().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+}
+
+/// Whether the open `key` is still the person's screen, on top, and `live`,
+/// as the store has it: what a hand-off that copies asks before and after its
+/// copy, from the copy's own thread. No answer in time is no.
+fn shows(key: &str, live: &Live) -> bool {
+    shows_within(key, live, std::time::Duration::from_secs(10))
+}
+
+/// How long main waits for the store's answer before an open: short, for
+/// main draws nothing meanwhile. No answer is no open.
+const ON_MAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`shows`], waiting at most `wait`.
+fn shows_within(key: &str, live: &Live, wait: std::time::Duration) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (key, live) = (key.to_owned(), live.clone());
+    super::to_store(move |st| {
+        let _ = tx.send(st.v1_on_top(&key, live()));
+    });
+    rx.recv_timeout(wait).unwrap_or(false)
+}
+
+/// Logs how a hand-off of `what` that copies went, nothing of the file, and
+/// tells the person of a copy that failed.
+fn handed(what: &str, how: system_open::Handed) {
+    match how {
+        system_open::Handed::Done => {}
+        system_open::Handed::Failed(kind) => {
+            log::info!("mini v1: {what} opened nothing: {kind:?}");
+            super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
+        }
+        left => log::info!("mini v1: {what} opened nothing: its screen left the top ({left:?})"),
     }
 }
 

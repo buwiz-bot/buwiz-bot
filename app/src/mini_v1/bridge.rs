@@ -47,11 +47,16 @@ use super::{
     perms,
     session::{self, Ended, Session},
     storage::AppStorage,
+    system_open::{self, LocalFile},
 };
 use crate::agent_hub::{
     hold::{self, Answer, Card},
     press::{self, Verdict},
 };
+
+/// Whether the open a hand-off came from still lives: asked when the hand-off
+/// runs, and again after a copy that took a while.
+pub type Live = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// What needs the person, or the app around the bridge.
 pub trait HostUi: Send + Sync {
@@ -71,6 +76,17 @@ pub trait HostUi: Send + Sync {
     /// says the agent.
     fn actor(&self) -> Actor {
         Actor::Agent
+    }
+    /// The person's press in the open that a call made now may hand off a
+    /// file by (`attribution::fresh_press`): `None` when there is none, or a
+    /// host can't tell.
+    fn fresh_press(&self) -> Option<u64> {
+        None
+    }
+    /// Spends `press` on a hand-off: `false` when one did already.
+    fn spend_press(&self, press: u64) -> bool {
+        let _ = press;
+        false
     }
     /// A call of the agent's began (`true`) or ended: what it starts
     /// next is still the agent's.
@@ -114,8 +130,30 @@ pub trait HostUi: Send + Sync {
     /// Shows `doc`, already checked, in the Bot's own viewer over this open,
     /// if `live()` holds and the open is still what the person sees. Hosts
     /// without a viewer ignore it.
-    fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
+    fn open_document(&self, doc: Document, live: Live) {
         let _ = (doc, live);
+    }
+    /// Whether this open may hand a file to the system or to Downloads at
+    /// all: a card in the chat may not, and its press is never spent on one.
+    fn hands_off(&self) -> bool {
+        true
+    }
+    /// Opens `file`, already checked, in the system's default app for its
+    /// kind, if `live()` holds and the open is still what the person sees.
+    /// Hosts that can't ignore it.
+    fn open_with(&self, file: LocalFile, live: Live) {
+        let _ = (file, live);
+    }
+    /// Tells the person that a file their press handed over did nothing:
+    /// `said` is the whole message, with nothing of the file. Hosts that
+    /// can't ignore it.
+    fn file_refused(&self, said: &'static str) {
+        let _ = said;
+    }
+    /// Copies `file`, already checked, to the person's Downloads folder and
+    /// says so, on the same terms as [`HostUi::open_with`].
+    fn save(&self, file: LocalFile, live: Live) {
+        let _ = (file, live);
     }
     /// The open's session ended for `why` (a plugin restart shows
     /// "Reconnecting", 13.7).
@@ -149,6 +187,9 @@ pub trait HostUi: Send + Sync {
 /// A call's actor, for as long as the call lasts, whether it runs or not.
 struct CallActor {
     actor: Actor,
+    /// The person's press a hand-off of its result may spend, as it was
+    /// when the call was made.
+    press: Option<u64>,
     ui: Arc<dyn HostUi>,
     /// It may still write: an agent's call does until its check says it reads.
     writing: AtomicBool,
@@ -162,7 +203,7 @@ impl CallActor {
             ui.agent_call(true);
             ui.agent_write(true);
         }
-        CallActor { actor, ui: ui.clone(), writing: AtomicBool::new(actor == Actor::Agent) }
+        CallActor { actor, press: ui.fresh_press(), ui: ui.clone(), writing: AtomicBool::new(actor == Actor::Agent) }
     }
 
     /// The call turned out to change nothing.
@@ -203,6 +244,20 @@ pub struct PickRequest {
     pub multiple: bool,
     /// Larger files are not offered.
     pub max_bytes: u64,
+}
+
+/// What the person hears when a file their press handed over opens nothing.
+pub const OPEN_REFUSED: &str = "Buwiz Bot couldn't open that file.";
+/// And when one saves nothing.
+pub const SAVE_REFUSED: &str = "Buwiz Bot couldn't save that file.";
+
+/// What a result's file key asks of the Bot besides its own viewer.
+#[derive(Debug, Clone, Copy)]
+enum Hand {
+    /// `buwiz/open_with`: the system's default app.
+    OpenWith,
+    /// `buwiz/save`: the person's Downloads folder.
+    Save,
 }
 
 /// A document `buwiz.preview` shows: its title and the page, sealed
@@ -841,6 +896,8 @@ impl OpenContext {
             }
             let result = result?;
             let document = result.pointer("/_meta/buwiz~1document").cloned();
+            let open_with = result.pointer("/_meta/buwiz~1open_with").cloned();
+            let save = result.pointer("/_meta/buwiz~1save").cloned();
             let account = result.pointer("/_meta/buwiz~1account_use").cloned();
             let mut answer = tool_result(result, max)?;
             if let Some(field) = account
@@ -850,7 +907,9 @@ impl OpenContext {
                 // the tool's work stands: only the switch failed, and it says so apart
                 fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
-            me.open_document(document, who.actor);
+            me.open_document(document, &who);
+            let heard = me.hand_file(open_with, &who, Hand::OpenWith, false);
+            me.hand_file(save, &who, Hand::Save, heard);
             Ok(answer)
         });
     }
@@ -858,17 +917,75 @@ impl OpenContext {
     /// A result's `_meta["buwiz/document"]`, from a call `actor` made
     /// (`mini_v1::document`): `None`, from an older plugin, changes nothing.
     /// Nothing of the path goes to the log.
-    fn open_document(&self, field: Option<Value>, actor: Actor) {
+    fn open_document(&self, field: Option<Value>, who: &CallActor) {
         let Some(field) = field else { return };
         let p = &self.prepared;
         let live = self.session.check_live().map_err(|_| Refused::Closed);
         let folder = self.ui.plugin_folder(&p.plugin.id);
-        match live.and_then(|()| document::check(p.plugin.first_party, actor, folder.as_deref(), &field)) {
+        match live.and_then(|()| document::check(p.plugin.first_party, who.actor, folder.as_deref(), &field)) {
             Ok(doc) => {
                 let session = self.session.clone();
-                self.ui.open_document(doc, Box::new(move || session.check_live().is_ok()));
+                self.ui.open_document(doc, Arc::new(move || session.check_live().is_ok()));
             }
-            Err(why) => log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app),
+            Err(why) => {
+                log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app);
+                self.say_refused(who, why, OPEN_REFUSED);
+            }
+        }
+    }
+
+    /// A hand-off `who` made refused for `why`: the person hears of it if a
+    /// press of theirs made the call and the screen is still there. An app's
+    /// own code, with no press, gets the log line alone. Whether it told.
+    fn say_refused(&self, who: &CallActor, why: Refused, said: &'static str) -> bool {
+        let told = who.press.is_some() && who.actor == Actor::Person && why != Refused::Closed;
+        if told {
+            self.ui.file_refused(said);
+        }
+        told
+    }
+
+    /// A result's `_meta["buwiz/open_with"]` or `_meta["buwiz/save"]`, from a
+    /// call `who` made (`mini_v1::system_open`), as [`Self::open_document`]
+    /// takes `buwiz/document`, and with the person's own press just before
+    /// the call, which this spends: "no agent has acted" alone is what an
+    /// app's code at load or on a timer gets too. Nothing of the path goes to
+    /// the log. A card refuses out loud, before any press is spent. Whether
+    /// the person heard of it, by the file handed off or a refusal: a second
+    /// hand-off from the same result (`after`) is then the log's alone, not a
+    /// second message beside the first ("couldn't save" by a file that
+    /// opened).
+    fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand, after: bool) -> bool {
+        let Some(field) = field else { return false };
+        let p = &self.prepared;
+        let live = self.session.check_live().map_err(|_| Refused::Closed);
+        let folder = self.ui.plugin_folder(&p.plugin.id);
+        let check = match hand {
+            Hand::OpenWith => system_open::check_open,
+            Hand::Save => system_open::check_save,
+        };
+        let pressed = |file| match who.press {
+            Some(press) if self.ui.spend_press(press) => Ok(file),
+            _ => Err(Refused::NoPress),
+        };
+        let card = |file| if self.ui.hands_off() { Ok(file) } else { Err(Refused::Card) };
+        match live.and_then(|()| check(p.plugin.first_party, who.actor, folder.as_deref(), &field)).and_then(card).and_then(pressed) {
+            Ok(file) => {
+                let session = self.session.clone();
+                let live: Live = Arc::new(move || session.check_live().is_ok());
+                match hand {
+                    Hand::OpenWith => self.ui.open_with(file, live),
+                    Hand::Save => self.ui.save(file, live),
+                }
+                true
+            }
+            Err(why) => {
+                log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app);
+                if after {
+                    return false;
+                }
+                self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED })
+            }
         }
     }
 
