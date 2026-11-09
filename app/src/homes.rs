@@ -82,6 +82,8 @@ pub(crate) struct Home {
     pub notes: Vec<String>,
     /// the computers on it: (id, the Bots at it)
     pub computers: Vec<(String, Vec<String>)>,
+    /// the ones on it being deleted, apart: (id, where a person looks for what's left of it)
+    pub leaving: Vec<(String, String)>,
     /// a limited policy to copy, as JSON text; "" for none
     pub policy: String,
     /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
@@ -97,13 +99,16 @@ impl Home {
         if kind.is_empty() {
             return None;
         }
-        let computers = list("computers")
-            .iter()
-            .filter_map(|c| {
+        let (mut computers, mut leaving) = (Vec::new(), Vec::new());
+        for c in list("computers") {
+            let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
+            if c.get("leaving").and_then(Value::as_bool) == Some(true) {
+                leaving.push((id, c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned()));
+            } else {
                 let bots = c.get("bots").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
-                Some((c.get("id")?.as_str()?.to_owned(), bots))
-            })
-            .collect();
+                computers.push((id, bots));
+            }
+        }
         Some(Self {
             label: Some(text("label")).filter(|l| !l.is_empty()).unwrap_or_else(|| label_of(&kind)),
             built: v.get("built").and_then(Value::as_bool).unwrap_or(true),
@@ -113,6 +118,7 @@ impl Home {
             fields: list("fields").iter().filter_map(Field::parse).collect(),
             notes: list("notes").iter().filter_map(Value::as_str).filter(|n| !n.is_empty()).map(str::to_owned).collect(),
             computers,
+            leaving,
             policy: text("policy"),
             // only a web page: it's opened in the browser
             launch: Some(text("launch")).filter(|u| u.starts_with("https://")).unwrap_or_default(),
@@ -383,6 +389,18 @@ pub(crate) async fn check(kind: &str) -> Result<String, String> {
 /// Forgets a home's key: `POST providers/{kind}/remove`. The broker refuses while computers are on it.
 pub(crate) async fn remove(kind: &str) -> Said {
     let reply = ask("POST", &provider_path(kind, "/remove"), None).await;
+    if let Said::Yes(v) = &reply
+        && let Some(home) = v.get("provider").and_then(Home::parse)
+    {
+        set_homes(|h| h.replace(home));
+    }
+    reply
+}
+
+/// Forgets computer `id`, being deleted, once a person checked nothing of it is left:
+/// `POST providers/{kind}/forget`. The broker tries the keys in use once more first.
+pub(crate) async fn forget(kind: &str, id: &str) -> Said {
+    let reply = ask("POST", &provider_path(kind, "/forget"), Some(json!({"id": id}))).await;
     if let Said::Yes(v) = &reply
         && let Some(home) = v.get("provider").and_then(Home::parse)
     {
@@ -695,6 +713,16 @@ fn run_remove(kind: String) {
     });
 }
 
+fn run_forget(kind: String, id: String) {
+    clear_note(&kind);
+    spawn_detached(async move {
+        match forget(&kind, &id).await {
+            Said::Yes(_) => set_note(&kind, true, format!("{id} is forgotten.")),
+            Said::No(why) => set_note(&kind, false, why),
+        }
+    });
+}
+
 fn run_default(kind: String) {
     clear_note("default");
     spawn_detached(async move {
@@ -773,6 +801,14 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
     let on = home.computers_words();
     if !on.is_empty() {
         col = col.child(line(on));
+    }
+    for (id, look) in &home.leaving {
+        let mut words = format!("{id} is being deleted. If it stays listed, the keys in use can't reach it, and it may still be there and costing.");
+        if !look.is_empty() {
+            words.push_str(&format!(" {look}, then press Forget {id}."));
+        }
+        let (kind, id) = (home.kind.clone(), id.clone());
+        col = col.child(line(words)).child(view().flex_row().child(small_button(format!("Forget {id} on {}", home.label), format!("Forget {id}"), move || run_forget(kind.clone(), id.clone()))));
     }
     if home.built && home.kind != "remote" {
         let mut buttons = view().flex_row().flex_wrap().gap_2().pt(px(4.0));
@@ -1151,6 +1187,15 @@ mod tests {
         let fills: Vec<_> = rows("default e", &h, true).0.into_iter().map(|r| r.pick).collect();
         assert!(fills == [crate::slash::Pick::Fill("/computer default ec2".into()), crate::slash::Pick::Fill("/computer default e2b".into())]);
         assert_eq!(rows("use ", &h, false).1, "Open a Bot's chat first.");
+    }
+
+    #[test]
+    fn a_computer_being_deleted_is_listed_with_where_to_look() {
+        let mut v = ec2();
+        v["computers"] = json!([{"id": "cmp_ab12", "bots": ["Ann"]}, {"id": "cmp_cd34", "bots": [], "leaving": true, "look": "Terminate any instance tagged buwiz:computer-id=cmp_cd34"}]);
+        let h = Home::parse(&v).unwrap();
+        assert_eq!(h.leaving, vec![("cmp_cd34".to_owned(), "Terminate any instance tagged buwiz:computer-id=cmp_cd34".to_owned())]);
+        assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as being deleted");
     }
 
     #[test]

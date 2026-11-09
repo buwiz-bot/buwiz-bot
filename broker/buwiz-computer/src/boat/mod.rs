@@ -108,7 +108,8 @@ const STAGE_PATIENCE: Duration = Duration::from_secs(60);
 const LOGIN_TRIES: usize = 4;
 const MAX_PAGES: usize = 10;
 const DROPPED: &str = "The connection to this computer dropped. Click it to connect again.";
-const LABEL: &str = "buwiz-computer";
+/// The label each sandbox carries, with its computer's id: what a sweep looks for.
+pub const LABEL: &str = "buwiz-computer";
 
 /// Makes the container and its volumes, as root of the VM's Docker: the same hardening as
 /// docker-compose.yml, the same ports on loopback, and the staging folder for the secrets. Run once
