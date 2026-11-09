@@ -77,6 +77,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::cloud::{Api, Reply, Settings};
+use crate::Shared;
 use crate::remote::ssh;
 use crate::remote::{
     answers, beat, clean, free_ports, guest_at, guest_ports, Open, Way, BEAT, CHECK_PATIENCE,
@@ -243,8 +244,8 @@ struct Login {
 /// boat.dev's sandboxes, one per computer, and their logins. The hub keeps one, because it holds
 /// the connections.
 pub struct BoatProvider {
-    key: Option<Secret>,
-    image: String,
+    /// the key and the image, read at each use: a person can change them
+    settings: Shared<Settings>,
     api: Api,
     ssh: PathBuf,
     links: Mutex<HashMap<PathBuf, Arc<Open>>>,
@@ -255,10 +256,14 @@ impl BoatProvider {
     /// The provider with its settings (see [`crate::cloud::settings`]). Nothing is read from the
     /// environment here. An unset image is the default computer image.
     pub fn new(settings: Settings) -> Self {
-        let image = settings.image.unwrap_or_else(|| DEFAULT_IMAGE.to_owned());
+        Self::shared(Shared::new(settings))
+    }
+
+    /// The provider reading its settings from `settings`, which the broker changes when a person
+    /// saves new ones.
+    pub fn shared(settings: Shared<Settings>) -> Self {
         Self {
-            key: settings.key,
-            image,
+            settings,
             api: Api::new(),
             ssh: PathBuf::from(ssh::SSH),
             links: Mutex::default(),
@@ -278,8 +283,13 @@ impl BoatProvider {
         self
     }
 
-    fn key(&self) -> Result<&Secret> {
-        self.key.as_ref().ok_or_else(|| Problem::Failed("boat needs an API key before it can make a computer. Add it in the broker's settings.".to_owned()))
+    fn key(&self) -> Result<Secret> {
+        self.settings.get().key.ok_or_else(|| Problem::Credentials { code: "no_key", message: "boat needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
+    }
+
+    /// What its computers are made from: the default computer image when none is set.
+    fn image(&self) -> String {
+        self.settings.get().image.unwrap_or_else(|| DEFAULT_IMAGE.to_owned())
     }
 
     /// One call to boat's API with the bearer and any extra headers. The key goes only after the
@@ -654,6 +664,17 @@ impl Provider for BoatProvider {
         Ok(())
     }
 
+    /// The key works: boat lists this account's sandboxes for it.
+    async fn verify(&self) -> Result<()> {
+        self.check().await?;
+        let reply = self.call(Method::GET, "/sandboxes", &[], None, CALL_PATIENCE).await?;
+        match reply.status {
+            200 => Ok(()),
+            401 | 403 => Err(Problem::Credentials { code: "bad_key", message: "boat didn't take this API key. Copy it again from boat.dev, then check again.".to_owned() }),
+            _ => Err(outcome(&reply)),
+        }
+    }
+
     /// Makes the sandbox, sets the box up in its Docker, checks the box once, and stops it. Any
     /// failure on the way deletes the sandbox.
     async fn create(&self, spec: &Spec) -> Result<Machine> {
@@ -678,12 +699,13 @@ impl Provider for BoatProvider {
             ));
         };
         safe_id(&sandbox)?;
+        let image = self.image();
         let machine = Machine {
             provider: ProviderKind::Boat,
             reach: Reach::Sandbox {
                 id: sandbox.clone(),
             },
-            image: Some(self.image.clone()),
+            image: Some(image.clone()),
             token: Secret::fresh(24)?,
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
@@ -697,7 +719,7 @@ impl Provider for BoatProvider {
             Self::step(
                 &login,
                 PREP,
-                &[self.image.as_str(), name.as_str(), spec.id.as_str()],
+                &[image.as_str(), name.as_str(), spec.id.as_str()],
                 None,
                 PREP_PATIENCE,
                 "make the computer",

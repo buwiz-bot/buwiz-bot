@@ -45,6 +45,7 @@ pub mod remote;
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -103,11 +104,51 @@ pub fn random_hex(bytes: usize) -> Result<String> {
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+fn hidden_keys() -> &'static RwLock<std::collections::HashMap<String, Vec<Secret>>> {
+    static HIDDEN: std::sync::OnceLock<RwLock<std::collections::HashMap<String, Vec<Secret>>>> = std::sync::OnceLock::new();
+    HIDDEN.get_or_init(RwLock::default)
+}
+
+/// Makes [`Machine::scrub`] hide `secrets` too: the keys `owner` (a provider's word) holds in
+/// memory. Each call replaces what that owner had, so an old key stops being one to look for.
+pub fn hide(owner: &str, secrets: Vec<Secret>) {
+    hidden_keys().write().unwrap_or_else(|e| e.into_inner()).insert(owner.to_owned(), secrets);
+}
+
+fn hidden() -> Vec<Secret> {
+    hidden_keys().read().unwrap_or_else(|e| e.into_inner()).values().flatten().cloned().collect()
+}
+
+/// Settings a person can change while the provider runs. The provider reads them at each use, so
+/// a new key takes effect at once and no connection is dropped for it.
+#[derive(Debug, Default)]
+pub struct Shared<T>(Arc<RwLock<T>>);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(RwLock::new(value)))
+    }
+
+    pub fn get(&self) -> T {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set(&self, value: T) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = value;
+    }
+}
+
 /// Names the provider new computers are made with ([`ProviderKind::from_env`]).
 pub const PROVIDER_ENV: &str = "BUWIZ_COMPUTER_PROVIDER";
 
 /// Who runs the computer. The saved word survives a build that doesn't know the provider yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     /// a container on this Mac
@@ -250,11 +291,17 @@ pub struct Seen {
 }
 
 impl Machine {
-    /// `text` without this computer's secrets: the last check on anything bound for the model.
+    /// `text` without this computer's secrets, or any provider's keys ([`hide`]): the last check on
+    /// anything bound for the model.
     pub fn scrub(&self, text: &str) -> String {
         let mut out = text.to_owned();
         let key = self.link.as_ref().and_then(|l| l.key.as_ref());
         for s in [&self.token, &self.viewer_password].into_iter().chain(key) {
+            if !s.expose().is_empty() {
+                out = out.replace(s.expose(), "[hidden]");
+            }
+        }
+        for s in hidden() {
             if !s.expose().is_empty() {
                 out = out.replace(s.expose(), "[hidden]");
             }
@@ -463,6 +510,10 @@ pub enum Problem {
     Unwalled(String),
     /// a connection to a remote computer: already the sentence a person reads
     Remote(String),
+    /// the keys or settings a person gave for a provider didn't work, or can't be changed now:
+    /// `code` says how (`bad_key`, `expired`, `no_key`, `sso_profile`, `region`, `not_allowed`,
+    /// `no_template`, `in_use`, …), and `message` is already the sentence a person reads
+    Credentials { code: &'static str, message: String },
     Failed(String),
 }
 
@@ -482,6 +533,7 @@ impl Problem {
             Self::PersonOn => "person_on",
             Self::Unwalled(_) => "unwalled",
             Self::Remote(_) => "remote",
+            Self::Credentials { code, .. } => code,
             Self::Failed(_) => "failed",
         }
     }
@@ -501,6 +553,7 @@ impl Problem {
             Self::PersonOn => "A person is still using this screen, so nothing was done. Try again later, or ask them when they'll be finished.".to_owned(),
             Self::Unwalled(why) => format!("The computer didn't start, because it couldn't be walled off from this Mac: {why}"),
             Self::Remote(why) => why.clone(),
+            Self::Credentials { message, .. } => message.clone(),
             Self::Failed(why) => format!("The computer failed: {why}"),
         }
     }
@@ -528,6 +581,11 @@ pub trait Provider: Send + Sync {
 
     /// Whether a computer could run at all, and the reason when not.
     async fn check(&self) -> Result<()>;
+    /// A person's Check of the keys and settings this provider has: [`Provider::check`], and a call
+    /// to the platform that proves the key works and a computer could be made, with nothing made.
+    async fn verify(&self) -> Result<()> {
+        self.check().await
+    }
 
     /// Makes a computer, asleep: [`Provider::wake`] starts it.
     async fn create(&self, spec: &Spec) -> Result<Machine>;
@@ -657,14 +715,13 @@ pub trait Provider: Send + Sync {
 }
 
 /// The provider for `kind`: Docker's, EC2's, a remote one, E2B's, boat.dev's, or the slot of one
-/// that isn't built. A remote or cloud provider holds its connections, so the hub keeps one and
-/// doesn't ask here for each call. EC2's holds them too, so there is one of it for this process,
-/// whoever asks.
+/// that isn't built, each with its settings from the environment (a developer's). A remote or
+/// cloud provider holds its connections, so the hub keeps one of each kind, with a person's
+/// settings, and doesn't ask here for each call.
 pub fn provider_for(kind: ProviderKind) -> std::sync::Arc<dyn Provider> {
-    static EC2: std::sync::OnceLock<std::sync::Arc<Ec2Provider>> = std::sync::OnceLock::new();
     match kind {
         ProviderKind::Docker => std::sync::Arc::new(DockerProvider::from_env()),
-        ProviderKind::Ec2 => EC2.get_or_init(|| std::sync::Arc::new(Ec2Provider::from_env())).clone(),
+        ProviderKind::Ec2 => std::sync::Arc::new(Ec2Provider::from_env()),
         ProviderKind::Remote => std::sync::Arc::new(RemoteProvider::new()),
         ProviderKind::E2b => std::sync::Arc::new(E2bProvider::new(cloud::settings(kind))),
         ProviderKind::Boat => std::sync::Arc::new(BoatProvider::new(cloud::settings(kind))),
@@ -695,6 +752,15 @@ mod tests {
         let m = machine();
         let shown = format!("{m:?}");
         assert!(!shown.contains("tok-123") && !shown.contains("pw-456"), "{shown}");
+    }
+
+    #[test]
+    fn scrub_hides_a_providers_keys_and_forgets_the_old_ones() {
+        hide("test-owner", vec![Secret::new("prov-key-1")]);
+        assert_eq!(machine().scrub("a prov-key-1 b"), "a [hidden] b");
+        hide("test-owner", vec![Secret::new("prov-key-2")]);
+        assert_eq!(machine().scrub("prov-key-1 prov-key-2"), "prov-key-1 [hidden]");
+        hide("test-owner", Vec::new());
     }
 
     #[test]

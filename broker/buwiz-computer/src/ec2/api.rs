@@ -64,9 +64,15 @@ impl Refused {
     /// The sentence a person reads. AWS's own message stays out: its code says enough.
     pub fn problem(&self) -> Problem {
         let code = self.code.as_str();
+        let credentials = |kind: &'static str, message: String| Problem::Credentials { code: kind, message };
+        match code {
+            "AuthFailure" | "InvalidClientTokenId" | "SignatureDoesNotMatch" => return credentials("bad_key", format!("AWS didn't take these keys ({code}). Check the access key and its secret, and this Mac's clock.")),
+            "ExpiredToken" | "RequestExpired" => return credentials("expired", format!("AWS says these keys' session has ended ({code}). Sign in again, or use an access key that doesn't expire, and check this Mac's clock.")),
+            "UnauthorizedOperation" | "AccessDenied" | "AccessDeniedException" => return credentials("not_allowed", format!("These AWS keys may not do that ({code}). Give their user the limited policy (Copy the limited policy), and check that the launch template, its subnet and its security group carry the tag buwiz:managed=true: a stack or module applied before that tag was needed doesn't have it, so apply it again. Then check again.")),
+            "OptInRequired" => return credentials("region", "This AWS account hasn't turned this region on. Pick another region, or enable it in the AWS console.".to_owned()),
+            _ => {}
+        }
         Problem::Remote(match code {
-            "AuthFailure" | "InvalidClientTokenId" | "SignatureDoesNotMatch" | "ExpiredToken" | "RequestExpired" => format!("AWS didn't take the broker's keys ({code}). Check the buwiz-broker profile's access key, and this Mac's clock."),
-            "UnauthorizedOperation" | "AccessDenied" | "AccessDeniedException" => format!("The broker's AWS user may not do that ({code}). Its policy is deploy/aws/broker-policy.json in the computer repo."),
             "InsufficientInstanceCapacity" | "InstanceLimitExceeded" | "VcpuLimitExceeded" => format!("AWS has no room for this computer right now ({code}). Try again later, or in another zone."),
             c if c.starts_with("InvalidLaunchTemplate") => "The launch template isn't there. Apply deploy/aws (OpenTofu) in this region first.".to_owned(),
             "RequestLimitExceeded" | "Throttling" => "AWS is turning away requests for now. Try again in a minute.".to_owned(),
@@ -115,7 +121,7 @@ fn down(what: &str) -> Problem {
 impl Api {
     pub fn new(region: &str, keys: Arc<dyn Keys>) -> Result<Self> {
         if !region_ok(region) {
-            return Err(Problem::Remote(format!("{region:?} isn't an AWS region.")));
+            return Err(Problem::Credentials { code: "region", message: format!("{region:?} isn't an AWS region, like ap-southeast-1.") });
         }
         Ok(Self { region: region.to_owned(), endpoint: None, keys, tls: tls()? })
     }
@@ -222,18 +228,24 @@ impl Api {
     /// One instance of computer `id` from the template, its tags on it and its root volume from the
     /// start. `client_token` makes a repeat of this call the same launch.
     pub async fn run(&self, template: &str, id: &str, user_data: &str, client_token: &str) -> Result<String> {
-        let mut params = vec![template_param(template, "LaunchTemplate."), p("MinCount", "1"), p("MaxCount", "1"), p("ClientToken", client_token), p("UserData", &base64::engine::general_purpose::STANDARD.encode(user_data))];
-        for (n, kind) in ["instance", "volume"].iter().enumerate() {
-            let at = format!("TagSpecification.{}", n + 1);
-            params.push(p(&format!("{at}.ResourceType"), kind));
-            for (m, (k, v)) in tags(id).iter().enumerate() {
-                params.push(p(&format!("{at}.Tag.{}.Key", m + 1), k));
-                params.push(p(&format!("{at}.Tag.{}.Value", m + 1), v));
-            }
-        }
+        let mut params = run_params(template, id);
+        params.push(p("ClientToken", client_token));
+        params.push(p("UserData", &base64::engine::general_purpose::STANDARD.encode(user_data)));
         let doc = self.ask("RunInstances", &params).await?;
         let id = doc.items(&["instancesSet"]).next().and_then(|i| i.text_at(&["instanceId"])).map(str::to_owned);
         id.ok_or_else(|| Problem::Failed("RunInstances named no instance".to_owned()))
+    }
+
+    /// A launch from the template as [`Api::run`] makes one, tags and all, sent as a dry run: AWS
+    /// answers `DryRunOperation` when it would have launched, and launches nothing.
+    pub async fn run_dry(&self, template: &str) -> Result<()> {
+        let mut params = run_params(template, "check");
+        params.push(p("DryRun", "true"));
+        match self.call("RunInstances", &params).await? {
+            Called::Refused(r) if r.code == "DryRunOperation" => Ok(()),
+            Called::Refused(r) => Err(r.problem()),
+            Called::Done(_) => Ok(()),
+        }
     }
 
     pub async fn start(&self, id: &str) -> Result<()> {
@@ -275,6 +287,20 @@ impl Api {
 
 fn p(k: &str, v: &str) -> (String, String) {
     (k.to_owned(), v.to_owned())
+}
+
+/// What a launch of computer `id` from `template` says: one instance, and the tags on it and its volume.
+fn run_params(template: &str, id: &str) -> Vec<(String, String)> {
+    let mut params = vec![template_param(template, "LaunchTemplate."), p("MinCount", "1"), p("MaxCount", "1")];
+    for (n, kind) in ["instance", "volume"].iter().enumerate() {
+        let at = format!("TagSpecification.{}", n + 1);
+        params.push(p(&format!("{at}.ResourceType"), kind));
+        for (m, (k, v)) in tags(id).iter().enumerate() {
+            params.push(p(&format!("{at}.Tag.{}.Key", m + 1), k));
+            params.push(p(&format!("{at}.Tag.{}.Value", m + 1), v));
+        }
+    }
+    params
 }
 
 fn template_param(template: &str, prefix: &str) -> (String, String) {
