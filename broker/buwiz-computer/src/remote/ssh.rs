@@ -45,7 +45,7 @@ const MAX_SCAN: usize = 64 * 1024;
 const SIGNED_KEY_TYPES: [&str; 5] = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa"];
 const WRONG_HOST_KEY: &str = "This machine's SSH key isn't the one you trusted, so nothing was sent. If it changed on purpose, remove this computer and add it again.";
 const NOT_ACCEPTED: &str = "That machine didn't accept this key.";
-const UNREACHED: &str = "That machine can't be reached.";
+pub(crate) const UNREACHED: &str = "That machine can't be reached.";
 const WENT_DOWN: &str = "The connection to this computer dropped. Click it to connect again.";
 
 /// The far end of a connection, each part checked already.
@@ -167,7 +167,7 @@ fn ssh(program: &Path, dir: &Path, args: &[String]) -> Command {
 }
 
 /// `value` as one word to a POSIX shell.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 

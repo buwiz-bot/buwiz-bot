@@ -74,7 +74,7 @@ const IDLE_ENV: &str = "BUWIZ_COMPUTER_IDLE_SECS";
 const DEEP_ENV: &str = "BUWIZ_COMPUTER_DEEP_SECS";
 const QUIET_ENV: &str = "BUWIZ_COMPUTER_QUIET_SECS";
 /// Idle this long, it sleeps. Asleep this long, it lets go of its memory.
-const IDLE: Duration = Duration::from_secs(15 * 60);
+const IDLE: Duration = Duration::from_secs(30 * 60);
 const DEEP: Duration = Duration::from_secs(2 * 60 * 60);
 /// A person with a drive viewer open and no input for this long has gone. Until then they're there,
 /// between clicks: the agent mustn't land where they're about to press.
@@ -1382,6 +1382,8 @@ fn where_of(reach: &Reach) -> String {
             format!("{user}{host}{port}")
         }
         Reach::Container { name } => name.clone(),
+        Reach::Instance { id, region } => format!("{region}/{id}"),
+        Reach::Sandbox { id } => format!("sandbox {id}"),
     }
 }
 
@@ -1701,7 +1703,7 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// Puts the computers in `ctx.ext`, with their routes and the timer that puts them to sleep.
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.ext.get::<Arc<Computers>>().is_none() {
-        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::Docker))));
+        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::from_env()))));
     }
     routes.route(Verb::Get, X("/v1/host/computers"), list);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/test"), test_remote);
