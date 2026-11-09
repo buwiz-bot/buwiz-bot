@@ -813,6 +813,21 @@ fn saved_design(e: &serde_json::Value) -> AvatarCand {
     AvatarCand { name: s(e, "name"), shape: shape_of(e), color: s(e, "color"), why: s(e, "why"), raw: Some(e.clone()) }
 }
 
+/// Wiz's grin hat (`assets/brand/wiz-avatar.json`), the Buwiz mascot: the
+/// shape grids offer it after the kit shapes, so any bot can wear it.
+pub(crate) fn wiz_hat() -> AvatarCand {
+    thread_local! {
+        static HAT: AvatarCand = {
+            let mut v: serde_json::Value =
+                serde_json::from_str(include_str!("../../assets/brand/wiz-avatar.json")).unwrap_or_default();
+            v["shape"] = "custom".into();
+            v["name"] = "Wiz hat".into();
+            saved_design(&v)
+        };
+    }
+    HAT.with(Clone::clone)
+}
+
 /// What came of adding designs: how many went in, how many the list had, how
 /// many the pack held twice, and how many this build can't draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

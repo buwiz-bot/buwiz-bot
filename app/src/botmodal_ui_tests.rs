@@ -89,8 +89,9 @@ fn Sheet() -> impl IntoElement {
             // spaces would split the probe
             let draft = st.draft.get().replace(' ', "_");
             format!(
-                "probe shape={} modal={} tab={:?} draft={draft} loaded={}",
-                st.bot_shape.get(),
+                "probe shape={} hat={} modal={} tab={:?} draft={draft} loaded={}",
+                st.bot_shape.get().replace(' ', "_"),
+                st.bot_shape.get() == crate::store::wiz_hat().shape,
                 st.bot_modal.get(),
                 st.bot_sheet_tab.get(),
                 st.design_loaded.get()
@@ -139,6 +140,19 @@ fn the_sheet_opens_on_default() {
     app.press("open the sheet");
     app.wait_for("star character shape");
     assert_eq!(read(&app).get("tab").map(String::as_str), Some("Default"), "opened on Custom");
+}
+
+/// Default offers Wiz's hat after the kit shapes, and a tap puts it on the draft.
+#[test]
+fn default_offers_the_wiz_hat() {
+    if !in_child("default_offers_the_wiz_hat") {
+        return;
+    }
+    let (mut app, _) = start(mine());
+    app.wait_for("Wiz hat character shape");
+    assert!(app.has("star character shape"), "the kit shapes stay");
+    app.press("Wiz hat character shape");
+    until(&mut app, "the hat on the draft", |p| p.get("hat").is_some_and(|h| h == "true"));
 }
 
 /// Custom lists the custom avatars, not the shape grid, and a tap puts one on the draft.

@@ -1735,6 +1735,44 @@ fn editor_body() -> impl IntoElement {
 
 /// `Bot` — 48pt shapes five per row, 32pt swatches six per row
 /// (App.tsx:3215).
+/// Wiz's hat in the Bot tab's shape grid, after the kit shapes: a tap puts
+/// it on the bot as a Custom avatar would, and it paints its own colours.
+fn wiz_hat_cell() -> impl IntoElement {
+    let hat = crate::store::wiz_hat();
+    let shape = hat.shape.clone();
+    let on = shape.clone();
+    view()
+        .size(px(48.0))
+        .items_center()
+        .justify_center()
+        .label("Wiz hat character shape")
+        .on_press(move || {
+            let st = store();
+            st.design_use(hat.clone(), false, false);
+            // this is the avatar now: Revert mustn't undo it
+            st.design_was.set(None);
+        })
+        .child(when(
+            move || store().active_bot().is_some_and(|b| b.image.is_empty() && b.shape == on),
+            || {
+                view()
+                    .absolute()
+                    .size(px(46.0))
+                    .rounded(px(23.0))
+                    .border_1()
+                    .border_color(theme::BORDER_S)
+                    .into_element()
+            },
+        ))
+        .child(crate::avatar::bot_blob(crate::avatar::BotBlobProps {
+            shape,
+            color: "#FFFFFF".to_owned(),
+            size: 44.0,
+            paused: true,
+            ..Default::default()
+        }))
+}
+
 fn bot_tab() -> impl IntoElement {
     let st = store();
     view()
@@ -1813,7 +1851,8 @@ fn bot_tab() -> impl IntoElement {
                             .into_element()
                         }))
                         .into_element()
-                })),
+                }))
+                .child(wiz_hat_cell()),
         )
         .child(
             view()
