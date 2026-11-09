@@ -151,7 +151,7 @@ async fn every_home_is_listed_and_docker_is_the_default_until_a_person_picks() {
     let kinds: Vec<&str> = list["providers"].as_array().unwrap().iter().map(|p| p["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["docker", "ec2", "e2b", "boat", "remote"]);
     let labels: Vec<&str> = list["providers"].as_array().unwrap().iter().map(|p| p["label"].as_str().unwrap()).collect();
-    assert_eq!(labels, ["Docker on this Mac", "AWS EC2", "E2B", "boat.dev", "A remote computer"], "the app's fallback names match");
+    assert_eq!(labels, ["Docker on this Mac", "AWS EC2", "E2B", "boat.dev", "A remote computer"], "ProviderKind::label() names every home; app/src/homes.rs KINDS repeats these for before the broker answers");
     assert!(provider_of(&list, "boat")["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("EU")), "boat.dev says it's EU only");
     assert_eq!(list["default"]["kind"], "docker");
     assert_eq!(provider_of(&list, "remote")["canDefault"], false);

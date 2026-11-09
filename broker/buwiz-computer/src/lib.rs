@@ -207,7 +207,7 @@ impl ProviderKind {
     /// What a person calls it.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Docker => "Docker",
+            Self::Docker => "Docker on this Mac",
             Self::Lume => "Lume",
             Self::Sbx => "Docker Sandboxes",
             Self::Ec2 => "AWS EC2",
