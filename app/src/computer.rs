@@ -453,9 +453,9 @@ pub(crate) fn delete_layer() -> impl IntoElement {
                         .p(px(18.0))
                         .gap_2()
                         .rounded(px(14.0))
-                        .bg(tc("#232323"))
-                        .child(text(format!("Delete {}?", ask.name)).text_size(px(15.0)).font_weight(FontWeight::MEDIUM).text_color(tc("#f5f5f5")))
-                        .child(text(ask.words).number_of_lines(6).text_size(px(13.0)).text_color(tc("#f5f5f5c8")))
+                        .bg(theme::POPOVER)
+                        .child(text(format!("Delete {}?", ask.name)).text_size(px(15.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                        .child(text(ask.words).number_of_lines(6).text_size(px(13.0)).text_color(theme::DIM))
                         .child(
                             view()
                                 .flex_row()

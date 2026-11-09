@@ -24,9 +24,8 @@ use crate::live::keep;
 use crate::store::spawn_detached;
 use crate::theme;
 
-/// The homes, in the broker's order, for when it hasn't said yet: (kind, label). The names copy
-/// `ProviderKind::label()` in buwiz-computer, which the app doesn't link: keep the two in step.
-pub(crate) const KINDS: [(&str, &str); 5] = [("docker", "Docker on this Mac"), ("ec2", "AWS EC2"), ("e2b", "E2B"), ("boat", "boat.dev"), ("remote", "A remote computer")];
+/// The homes, in the broker's order, for when it hasn't said yet: (kind, label).
+pub(crate) use buwiz_protocol::homes::HOMES as KINDS;
 
 const PROVIDERS: &str = "/v1/host/computer/providers";
 const NO_ANSWER: &str = "The broker didn't answer.";
