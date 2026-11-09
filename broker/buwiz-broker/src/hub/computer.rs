@@ -1383,6 +1383,7 @@ fn where_of(reach: &Reach) -> String {
         }
         Reach::Container { name } => name.clone(),
         Reach::Instance { id, region } => format!("{region}/{id}"),
+        Reach::Sandbox { id } => format!("sandbox {id}"),
     }
 }
 

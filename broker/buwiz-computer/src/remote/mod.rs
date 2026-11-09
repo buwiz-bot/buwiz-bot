@@ -46,9 +46,9 @@ pub mod tls;
 /// Where a plain SSH host keeps what the Bots make, under that login's home.
 const SHELL_ROOT: &str = "buwiz-computer";
 /// How long a box or a plain host gets to prove it's there before anyone uses it.
-const CHECK_PATIENCE: Duration = Duration::from_secs(5);
+pub(crate) const CHECK_PATIENCE: Duration = Duration::from_secs(5);
 /// How long a box gets to answer once the tunnel is up.
-const FIRST_ANSWER: Duration = Duration::from_secs(15);
+pub(crate) const FIRST_ANSWER: Duration = Duration::from_secs(15);
 /// The biggest key file a person can mean.
 const MAX_KEY: u64 = 64 * 1024;
 /// The most of a command's output or a file that comes back over plain SSH.
@@ -58,7 +58,7 @@ const MAX_FILE: usize = 8 * 1024 * 1024;
 const FILE_PATIENCE: Duration = Duration::from_secs(30);
 const SERVICES: usize = 2 + VIEWER_PORTS.len();
 /// How often a box is asked if it's there, and how many misses in a row mean it isn't.
-const BEAT: Duration = Duration::from_secs(15);
+pub(crate) const BEAT: Duration = Duration::from_secs(15);
 const MISSES: u32 = 3;
 
 const NOT_THIS_WAY: &str = "A remote computer isn't made here: add it in the Computer tab.";
@@ -227,24 +227,24 @@ pub enum Probed {
 }
 
 /// One open connection.
-struct Open {
-    way: Way,
-    guest: Option<BoxGuest>,
+pub(crate) struct Open {
+    pub(crate) way: Way,
+    pub(crate) guest: Option<BoxGuest>,
     /// guest port → port here
-    ports: HashMap<u16, u16>,
+    pub(crate) ports: HashMap<u16, u16>,
     /// what a viewer is asked for by, at this guest port
-    names: HashMap<u16, String>,
+    pub(crate) names: HashMap<u16, String>,
     /// a box stopped answering ([`beat`])
-    silent: AtomicBool,
+    pub(crate) silent: AtomicBool,
 }
 
-enum Way {
+pub(crate) enum Way {
     Ssh(Box<ssh::Master>),
     Tls(tls::Relays),
 }
 
 impl Open {
-    fn alive(&self) -> bool {
+    pub(crate) fn alive(&self) -> bool {
         !self.silent.load(Ordering::Relaxed)
             && match &self.way {
                 Way::Ssh(master) => master.alive(),
@@ -252,14 +252,14 @@ impl Open {
             }
     }
 
-    async fn close(&self) {
+    pub(crate) async fn close(&self) {
         match &self.way {
             Way::Ssh(master) => master.close().await,
             Way::Tls(relays) => relays.stop(),
         }
     }
 
-    fn master(&self) -> Result<&ssh::Master> {
+    pub(crate) fn master(&self) -> Result<&ssh::Master> {
         match &self.way {
             Way::Ssh(master) => Ok(master),
             Way::Tls(_) => Err(Problem::Failed("this computer has no SSH connection".to_owned())),
@@ -270,7 +270,7 @@ impl Open {
 /// Asks a box if it's there, every `every`, for as long as its connection lasts: [`Provider::power`]
 /// is read too often to ask, and a relay stays up with nothing behind it. A few misses in a row and
 /// it's not alive, so the tab shows it and a click connects again.
-fn beat(open: Weak<Open>, every: Duration) {
+pub(crate) fn beat(open: Weak<Open>, every: Duration) {
     tokio::spawn(async move {
         let mut misses = 0;
         loop {
@@ -478,7 +478,7 @@ impl RemoteProvider {
                 let guest = guest_at(&ports, machine.token.clone())?.named(&names[&EXEC_PORT], &names[&HOST_PORT]);
                 Open { way: Way::Tls(relays), guest: Some(guest), ports, names, silent: AtomicBool::new(false) }
             }
-            Reach::Container { .. } | Reach::Instance { .. } => return Err(Problem::Failed("that isn't a remote computer".to_owned())),
+            Reach::Container { .. } | Reach::Instance { .. } | Reach::Sandbox { .. } => return Err(Problem::Failed("that computer is not reached over a remote connection".to_owned())),
         };
         let open = Arc::new(open);
         if let Err(p) = answers(&open).await {
@@ -502,7 +502,7 @@ pub(crate) fn guest_at(ports: &HashMap<u16, u16>, token: Secret) -> Result<BoxGu
 
 /// A box answers, takes the token and says it's a box. What it says is good for this much: it
 /// widens nothing.
-async fn answers(open: &Open) -> Result<()> {
+pub(crate) async fn answers(open: &Open) -> Result<()> {
     let Some(guest) = &open.guest else { return Ok(()) };
     let info = tokio::time::timeout(FIRST_ANSWER, guest.info()).await.unwrap_or(Err(Problem::Guest { status: 504, message: String::new() }));
     let info = match info {

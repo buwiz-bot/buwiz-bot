@@ -154,6 +154,25 @@ fn server_name(name: &str) -> Result<ServerName<'static>> {
     ServerName::try_from(name.to_owned()).map_err(|_| Problem::Remote("That name can't be used for TLS.".to_owned()))
 }
 
+/// A connector that takes the public roots (and `extra`, a test's own root) and checks the name.
+/// For a cloud platform's own names, whose certificates renew: no pin, but no word taken without
+/// the roots' say-so either.
+pub(crate) fn web_connector(extra: Option<&[u8]>) -> Result<TlsConnector> {
+    Ok(TlsConnector::from(config(None, extra)?))
+}
+
+/// A verified TLS stream to `name:port` (or `to`). Nothing may be written to it until this has
+/// come back: a handshake that fails, or a name that doesn't check, is an error here.
+pub(crate) async fn verified(name: &str, port: u16, to: Option<SocketAddr>, extra: Option<&[u8]>) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tcp = dial(name, port, to).await?;
+    let connector = web_connector(extra)?;
+    let shaken = tokio::time::timeout(HANDSHAKE_PATIENCE, connector.connect(server_name(name)?, tcp)).await;
+    match shaken {
+        Ok(Ok(tls)) => Ok(tls),
+        _ => Err(Problem::Failed(format!("{name} didn't finish a TLS handshake that checks its name, so nothing was sent to it."))),
+    }
+}
+
 /// What the far end's certificate is to this computer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
@@ -197,14 +216,19 @@ pub struct Relays {
 impl Relays {
     /// A relay for each service of `names`: guest port → name. Comes back with guest port → port here.
     pub async fn open(far: &Far, names: &HashMap<u16, String>, pin: &str, to: Option<SocketAddr>) -> Result<(Self, HashMap<u16, u16>)> {
-        let connector = TlsConnector::from(config(Some(pin), None)?);
+        Self::open_on(far.port, names, TlsConnector::from(config(Some(pin), None)?), to).await
+    }
+
+    /// [`Relays::open`] with any connector and port: how a platform's own names are reached, with
+    /// the public roots checked and no pin.
+    pub(crate) async fn open_on(port: u16, names: &HashMap<u16, String>, connector: TlsConnector, to: Option<SocketAddr>) -> Result<(Self, HashMap<u16, u16>)> {
         let (stop, stopped) = watch::channel(());
         let mut ports = HashMap::new();
         for (guest, name) in names {
             let listener = bind().await?;
             let here = listener.local_addr().map_err(|e| Problem::Failed(format!("a relay's port: {}", e.kind())))?.port();
             ports.insert(*guest, here);
-            tokio::spawn(relay(listener, name.clone(), far.port, connector.clone(), to, stopped.clone()));
+            tokio::spawn(relay(listener, name.clone(), port, connector.clone(), to, stopped.clone()));
         }
         Ok((Self { stop }, ports))
     }

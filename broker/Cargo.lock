@@ -492,6 +492,7 @@ dependencies = [
  "jpeg-encoder",
  "png",
  "quick-xml 0.41.0",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
