@@ -1,8 +1,9 @@
 # App icons
 
-The app's icon is the Buwiz logo: buwiz.com's white hand-drawn "b" mark on
-its green square (`#0f5b46`, corners of 22% of the side), placed as the
-site's own 512 px icon places it.
+The app's icon is the Buwiz logo: Wiz's grin hat, a wizard hat with Wiz's
+eyes and a smile, leaning back as Wiz rests, in white on the green square
+(`#0f5b46`, corners of 22% of the side). The same hat on a transparent
+ground is in `assets/brand/logo-*`.
 
 - `AppIcon.svg`: the vector source, 1024x1024.
 - `AppIcon.png`: the 1024x1024 master rendered from it.
