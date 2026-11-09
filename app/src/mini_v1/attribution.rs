@@ -31,16 +31,29 @@
 //! person pressing in that surface in the gap. Closing it needs the app to
 //! say which press a call belongs to.
 //!
+//! **A hand-off needs a press.** A file a call hands to the system or to
+//! Downloads (`system_open`) takes more than "the person's": the person's own
+//! press or key in that surface within [`PRESS_WINDOW`] before the call, which
+//! the hand-off spends ([`Attribution::fresh_press`],
+//! [`Attribution::spend_press`]). Until an agent has acted every call is the
+//! person's, so an app's code at load or on a timer would pass the actor
+//! alone; it can't make a press. One press, one hand-off.
+//!
 //! A call takes its actor when the app makes it, not when it is signed: a
 //! queued call of the agent's stays the agent's. The broker turns the
 //! actor into the origin the plugin sees, and reads still go out as the
 //! app's: the screen stays alive (`broker/.../helper/sessions.rs`).
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::Mutex,
     time::{Duration, Instant},
 };
+
+/// How long after the person's press in a surface a call from it may still
+/// hand off a file. Room for the app's own async step between the press and
+/// its call, not for a timer.
+pub const PRESS_WINDOW: Duration = Duration::from_secs(2);
 
 /// How long after the agent's last action, or the end of a call of its,
 /// the person's input can't take a surface back: covers the debounce and
@@ -81,6 +94,13 @@ pub struct Attribution {
     last_write_end: Option<Instant>,
     /// The surfaces the person has taken back since the agent's last action.
     person: HashSet<u64>,
+    /// Each surface's last press of the person's: its number and when. An
+    /// agent's action clears them.
+    presses: HashMap<u64, (u64, Instant)>,
+    /// Each surface's last press a hand-off spent.
+    spent: HashMap<u64, u64>,
+    /// The number the next press gets.
+    next_press: u64,
 }
 
 impl Attribution {
@@ -93,6 +113,7 @@ impl Attribution {
     pub fn agent_acted(&mut self, now: Instant) {
         self.last_action = Some(now);
         self.person.clear();
+        self.presses.clear();
     }
 
     /// A call of the agent's left the app.
@@ -122,6 +143,26 @@ impl Attribution {
         if self.quiet(now) {
             self.person.insert(surface);
         }
+        self.next_press += 1;
+        self.presses.insert(surface, (self.next_press, now));
+    }
+
+    /// The person's press in `surface` that a call made `now` may hand off a
+    /// file by: one within [`PRESS_WINDOW`], no hand-off has spent yet.
+    pub fn fresh_press(&self, surface: u64, now: Instant) -> Option<u64> {
+        let &(n, at) = self.presses.get(&surface).filter(|_| self.watching)?;
+        let unspent = self.spent.get(&surface).is_none_or(|&s| s < n);
+        (unspent && now.saturating_duration_since(at) <= PRESS_WINDOW).then_some(n)
+    }
+
+    /// Spends press `n` of `surface` on a hand-off: `false` when one has spent
+    /// it, or a later one, already.
+    pub fn spend_press(&mut self, surface: u64, n: u64) -> bool {
+        if self.spent.get(&surface).is_some_and(|&s| s >= n) {
+            return false;
+        }
+        self.spent.insert(surface, n);
+        true
     }
 
     /// Whether what the agent started has had time to finish.
@@ -149,6 +190,16 @@ fn with<R>(f: impl FnOnce(&mut Attribution) -> R) -> R {
 /// [`Attribution::actor`] of this process's input.
 pub fn actor(surface: u64) -> Actor {
     with(|a| a.actor(surface))
+}
+
+/// [`Attribution::fresh_press`] of this process's input, now.
+pub fn fresh_press(surface: u64) -> Option<u64> {
+    with(|a| a.fresh_press(surface, Instant::now()))
+}
+
+/// [`Attribution::spend_press`] of this process's input.
+pub fn spend_press(surface: u64, n: u64) -> bool {
+    with(|a| a.spend_press(surface, n))
 }
 
 /// How many calls of the agent's are out, in this process.
@@ -345,6 +396,56 @@ mod tests {
         a.person_pressed(FORM, secs(t, 5));
         // the app's timer fires now, from the AI's press
         assert_eq!(a.actor(FORM), Actor::Person);
+    }
+
+    #[test]
+    fn with_no_press_no_call_may_hand_off_a_file_though_it_is_the_persons() {
+        let t = Instant::now();
+        let a = watched();
+        assert_eq!(a.actor(FORM), Actor::Person, "no agent has acted");
+        assert_eq!(a.fresh_press(FORM, t), None, "an app's code at load or on a timer");
+    }
+
+    #[test]
+    fn one_press_allows_exactly_one_hand_off() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_pressed(FORM, t);
+        let n = a.fresh_press(FORM, t + Duration::from_millis(300)).unwrap();
+        assert!(a.spend_press(FORM, n));
+        assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(400)), None);
+        assert!(!a.spend_press(FORM, n), "two calls the press made spend it once");
+        a.person_pressed(FORM, secs(t, 1));
+        let m = a.fresh_press(FORM, secs(t, 1)).unwrap();
+        assert!(a.spend_press(FORM, m), "the next press is a new one");
+    }
+
+    #[test]
+    fn a_press_past_the_window_or_in_another_surface_hands_off_nothing() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_pressed(CHAT, t);
+        assert_eq!(a.fresh_press(FORM, t), None);
+        a.person_pressed(FORM, t);
+        assert!(a.fresh_press(FORM, t + PRESS_WINDOW).is_some());
+        assert_eq!(a.fresh_press(FORM, t + PRESS_WINDOW + Duration::from_millis(1)), None);
+    }
+
+    #[test]
+    fn an_agents_action_after_the_press_takes_it_away() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_pressed(FORM, t);
+        a.agent_acted(t + Duration::from_millis(100));
+        assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(200)), None);
+    }
+
+    #[test]
+    fn with_nothing_watching_no_press_counts() {
+        let t = Instant::now();
+        let mut a = Attribution::default();
+        a.person_pressed(FORM, t);
+        assert_eq!(a.fresh_press(FORM, t), None);
     }
 
     #[test]

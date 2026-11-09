@@ -185,9 +185,11 @@ fn start() -> Headless {
 /// A checked document of a plugin's folder, on this disk.
 fn document(name: &str) -> Document {
     let folder = crate::mini_v1::storage::scratch_root("mini-ui-document");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join(name), "a,b\n").unwrap();
-    check(true, Actor::Person, Some(&folder), &json!({"path": folder.join(name)})).unwrap()
+    // where a plugin hands its files over
+    let at = folder.join("open-1f/1");
+    std::fs::create_dir_all(&at).unwrap();
+    std::fs::write(at.join(name), "a,b\n").unwrap();
+    check(true, Actor::Person, Some(&folder), &json!({"path": at.join(name)})).unwrap()
 }
 
 /// The Connect Apps page of failed eBIRForms.

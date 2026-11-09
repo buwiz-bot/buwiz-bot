@@ -73,6 +73,17 @@ pub trait HostUi: Send + Sync {
     fn actor(&self) -> Actor {
         Actor::Agent
     }
+    /// The person's press in the open that a call made now may hand off a
+    /// file by (`attribution::fresh_press`): `None` when there is none, or a
+    /// host can't tell.
+    fn fresh_press(&self) -> Option<u64> {
+        None
+    }
+    /// Spends `press` on a hand-off: `false` when one did already.
+    fn spend_press(&self, press: u64) -> bool {
+        let _ = press;
+        false
+    }
     /// A call of the agent's began (`true`) or ended: what it starts
     /// next is still the agent's.
     fn agent_call(&self, running: bool) {
@@ -161,6 +172,9 @@ pub trait HostUi: Send + Sync {
 /// A call's actor, for as long as the call lasts, whether it runs or not.
 struct CallActor {
     actor: Actor,
+    /// The person's press a hand-off of its result may spend, as it was
+    /// when the call was made.
+    press: Option<u64>,
     ui: Arc<dyn HostUi>,
     /// It may still write: an agent's call does until its check says it reads.
     writing: AtomicBool,
@@ -174,7 +188,7 @@ impl CallActor {
             ui.agent_call(true);
             ui.agent_write(true);
         }
-        CallActor { actor, ui: ui.clone(), writing: AtomicBool::new(actor == Actor::Agent) }
+        CallActor { actor, press: ui.fresh_press(), ui: ui.clone(), writing: AtomicBool::new(actor == Actor::Agent) }
     }
 
     /// The call turned out to change nothing.
@@ -874,8 +888,8 @@ impl OpenContext {
                 fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
             me.open_document(document, who.actor);
-            me.hand_file(open_with, who.actor, Hand::OpenWith);
-            me.hand_file(save, who.actor, Hand::Save);
+            me.hand_file(open_with, &who, Hand::OpenWith);
+            me.hand_file(save, &who, Hand::Save);
             Ok(answer)
         });
     }
@@ -898,9 +912,12 @@ impl OpenContext {
     }
 
     /// A result's `_meta["buwiz/open_with"]` or `_meta["buwiz/save"]`, from a
-    /// call `actor` made (`mini_v1::system_open`), as [`Self::open_document`]
-    /// takes `buwiz/document`. Nothing of the path goes to the log.
-    fn hand_file(&self, field: Option<Value>, actor: Actor, hand: Hand) {
+    /// call `who` made (`mini_v1::system_open`), as [`Self::open_document`]
+    /// takes `buwiz/document`, and with the person's own press just before
+    /// the call, which this spends: "no agent has acted" alone is what an
+    /// app's code at load or on a timer gets too. Nothing of the path goes to
+    /// the log.
+    fn hand_file(&self, field: Option<Value>, who: &CallActor, hand: Hand) {
         let Some(field) = field else { return };
         let p = &self.prepared;
         let live = self.session.check_live().map_err(|_| Refused::Closed);
@@ -909,7 +926,11 @@ impl OpenContext {
             Hand::OpenWith => system_open::check_open,
             Hand::Save => system_open::check_save,
         };
-        match live.and_then(|()| check(p.plugin.first_party, actor, folder.as_deref(), &field)) {
+        let pressed = |file| match who.press {
+            Some(press) if self.ui.spend_press(press) => Ok(file),
+            _ => Err(Refused::NoPress),
+        };
+        match live.and_then(|()| check(p.plugin.first_party, who.actor, folder.as_deref(), &field)).and_then(pressed) {
             Ok(file) => {
                 let session = self.session.clone();
                 let live = Box::new(move || session.check_live().is_ok());

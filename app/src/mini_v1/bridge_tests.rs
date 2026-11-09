@@ -241,6 +241,10 @@ struct TestUi {
     /// The files handed to the system's default app, and to Downloads.
     opened_with: Mutex<Vec<LocalFile>>,
     saved: Mutex<Vec<LocalFile>>,
+    /// The person's last press in the open, if fresh, and the presses
+    /// hand-offs spent.
+    hand_press: Mutex<Option<u64>>,
+    spent: Mutex<Vec<u64>>,
 }
 
 impl HostUi for TestUi {
@@ -250,6 +254,17 @@ impl HostUi for TestUi {
     fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
         self.documents.lock().unwrap().push(doc);
         self.lives.lock().unwrap().push(live);
+    }
+    fn fresh_press(&self) -> Option<u64> {
+        *self.hand_press.lock().unwrap()
+    }
+    fn spend_press(&self, press: u64) -> bool {
+        let mut spent = self.spent.lock().unwrap();
+        if spent.contains(&press) {
+            return false;
+        }
+        spent.push(press);
+        true
     }
     fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
         self.opened_with.lock().unwrap().push(file);

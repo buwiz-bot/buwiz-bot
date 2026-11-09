@@ -3,8 +3,9 @@
 //! for a picture, the PDF view. No permission key grants this and the
 //! plugin's word proves nothing, so [`check`] decides from what the Bot knows
 //! and the disk says. Its checks go in the contract's order: first-party, the
-//! person's surface and not the AI's, a real file in that plugin's own folder,
-//! a kind a viewer takes. What passes opens by the path found on disk, under
+//! person's surface and not the AI's, a real file in one of that plugin's
+//! hand-off folders (`open-<hex>/<folder>/<file>` in its own folder, never its
+//! state or caches), a kind a viewer takes. What passes opens by the path found on disk, under
 //! the name found there, and goes to its viewer by the extension there: the
 //! field's `name` and `mime` are never read, so they can't launder a kind.
 //!
@@ -58,12 +59,17 @@ pub enum Refused {
     Outside,
     /// A symlink or a second hard link on the way.
     Link,
+    /// Inside the folder, but not at `open-<hex>/<folder>/<file>`.
+    Shape,
     /// Nothing there.
     Missing,
     /// There, but no regular file.
     NotAFile,
     /// A kind the viewer doesn't take.
     Kind,
+    /// No press of the person's in the open just before the call, or a
+    /// hand-off spent it (`attribution`'s `fresh_press`).
+    NoPress,
 }
 
 /// A file that passed [`check`]: its real path, and the name it has there.
@@ -79,7 +85,8 @@ const IMAGES: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "heic"];
 /// The extension of the file name `name`, lowercased: none for `.docx` or
 /// `noextension`.
 pub(super) fn ext(name: &str) -> String {
-    Path::new(name).extension().and_then(OsStr::to_str).map(str::to_lowercase).unwrap_or_default()
+    // ASCII only: Unicode folds the Kelvin sign to `k`, and `.\u{212A}ey` is no `.key`
+    Path::new(name).extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase).unwrap_or_default()
 }
 
 /// The viewer kind `store.open_file` routes by, from the name on disk:
@@ -117,7 +124,7 @@ pub fn folder_of(home: Option<&OsStr>, plugin: &str) -> Option<PathBuf> {
 /// `folder`, may open. `first_party` is the plugin's listing, read as
 /// `FirstPartyAnswerCard` reads it.
 pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<Document, Refused> {
-    let (path, name) = checked(first_party, actor, folder, field)?;
+    let (path, name, _) = checked(first_party, actor, folder, field)?;
     if !crate::office::native_ext(&path) && kind_of(&name) == "file" {
         return Err(Refused::Kind);
     }
@@ -125,9 +132,9 @@ pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Val
 }
 
 /// [`check`]'s first three checks, which `buwiz/open_with` and `buwiz/save`
-/// share (`system_open`): the real path of the file `field` names, and its
-/// name there, both UTF-8.
-pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<(String, String), Refused> {
+/// share (`system_open`): the real path of the file `field` names, its name
+/// there, both UTF-8, and the file itself, opened as it was checked.
+pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<(String, String, fs::File), Refused> {
     if consent::ask(consent::inline_card(first_party)) != Ask::Nothing {
         return Err(Refused::ThirdParty);
     }
@@ -135,18 +142,32 @@ pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, fi
         return Err(Refused::NotThePerson);
     }
     let claimed = field.get("path").and_then(Value::as_str).ok_or(Refused::BadField)?;
-    let real = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed))?;
+    let (real, file) = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed))?;
     let path = real.to_str().ok_or(Refused::Kind)?.to_owned();
     let name = real.file_name().and_then(OsStr::to_str).ok_or(Refused::Kind)?.to_owned();
-    Ok((path, name))
+    Ok((path, name, file))
 }
 
-/// `claimed` as the real path of a regular file inside `folder`, with no
-/// symlink from the folder down. Canonicalizing alone would follow a link
-/// that stays inside, so each step is looked at unfollowed. What is above
-/// the folder is the account's own: only that part may be a link (`/var`
-/// is one), and `claimed` may spell it either way.
-fn file_in(folder: &Path, claimed: &Path) -> Result<PathBuf, Refused> {
+/// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
+/// where a plugin hands its files over, and the only place the Bot takes one.
+fn handed_over(rest: &Path) -> bool {
+    let parts: Vec<Component> = rest.components().collect();
+    let hex = |s: &OsStr| s.to_str().and_then(|s| s.strip_prefix("open-")).is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    matches!(parts.as_slice(), [Component::Normal(first), Component::Normal(_), Component::Normal(_)] if hex(first))
+}
+
+/// `claimed` as the real path of a regular file at a hand-off place inside
+/// `folder` ([`handed_over`]), with no symlink from the folder down, and that
+/// file opened. Canonicalizing alone would follow a link that stays inside,
+/// so each step is looked at unfollowed. What is above the folder is the
+/// account's own: only that part may be a link (`/var` is one), and `claimed`
+/// may spell it either way.
+///
+/// The file is opened without following a link and must be the very file the
+/// walk found (its device and inode): a step swapped for a link after the walk
+/// opens something else, and is refused. What reads from the open file, not
+/// the path, reads what was checked.
+fn file_in(folder: &Path, claimed: &Path) -> Result<(PathBuf, fs::File), Refused> {
     let linked = fs::symlink_metadata(folder).map_err(|_| Refused::NoFolder)?.file_type().is_symlink();
     if linked {
         return Err(Refused::Link);
@@ -168,6 +189,9 @@ fn file_in(folder: &Path, claimed: &Path) -> Result<PathBuf, Refused> {
     if !meta.file_type().is_file() {
         return Err(Refused::NotAFile);
     }
+    if !handed_over(rest) {
+        return Err(Refused::Shape);
+    }
     // this stops the viewer showing a file from elsewhere under a second name,
     // as the symlink rule does. Reading is all it reaches: a save renames over
     // this name, so the other name keeps the old file
@@ -178,7 +202,14 @@ fn file_in(folder: &Path, claimed: &Path) -> Result<PathBuf, Refused> {
     if real != at || !real.starts_with(&root) {
         return Err(Refused::Outside);
     }
-    Ok(real)
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // non-blocking: a FIFO swapped in can't hang the open
+    let file = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&real).map_err(|_| Refused::Link)?;
+    let opened = file.metadata().map_err(|_| Refused::Missing)?;
+    if !opened.file_type().is_file() || opened.nlink() != 1 || (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
+        return Err(Refused::Link);
+    }
+    Ok((real, file))
 }
 
 #[cfg(test)]
@@ -189,7 +220,7 @@ mod tests {
 
     use super::*;
 
-    /// A plugin's folder with `open/1/` in it, and a folder beside it.
+    /// A plugin's folder with `open-1f/1/` in it, and a folder beside it.
     struct Bed {
         base: PathBuf,
         folder: PathBuf,
@@ -199,14 +230,14 @@ mod tests {
         fn new() -> Bed {
             let base = crate::mini_v1::storage::scratch_root("document");
             let folder = base.join("app.buwiz.fixture");
-            fs::create_dir_all(folder.join("open/1")).unwrap();
+            fs::create_dir_all(folder.join("open-1f/1")).unwrap();
             fs::create_dir_all(base.join("elsewhere")).unwrap();
             Bed { base, folder }
         }
 
-        /// Writes `open/1/<name>`: its path as the plugin would send it.
+        /// Writes `open-1f/1/<name>`: its path as the plugin would send it.
         fn file(&self, name: &str) -> PathBuf {
-            let path = self.folder.join("open/1").join(name);
+            let path = self.folder.join("open-1f/1").join(name);
             fs::write(&path, "x").unwrap();
             path
         }
@@ -234,7 +265,7 @@ mod tests {
         let bed = Bed::new();
         for name in ["Report.docx", "Book.xlsx", "LOUD.DOCX"] {
             let doc = bed.ask(&bed.file(name)).unwrap();
-            let real = fs::canonicalize(bed.folder.join("open/1").join(name)).unwrap();
+            let real = fs::canonicalize(bed.folder.join("open-1f/1").join(name)).unwrap();
             assert_eq!(doc.path, real.to_str().unwrap());
             let a = doc.attach();
             assert_eq!((a.kind.as_str(), a.name.as_str(), a.path.as_str()), ("file", name, doc.path.as_str()));
@@ -249,7 +280,7 @@ mod tests {
         let above = bed.base.join("above");
         symlink(&bed.base, &above).unwrap();
         let folder = above.join("app.buwiz.fixture");
-        let literal = folder.join("open/1/a.docx");
+        let literal = folder.join("open-1f/1/a.docx");
         let real = fs::canonicalize(&literal).unwrap();
         for path in [&literal, &real] {
             let doc = check(true, Actor::Person, Some(&folder), &json!({"path": path})).unwrap();
@@ -293,7 +324,7 @@ mod tests {
     fn a_path_outside_the_folder_opens_nothing() {
         let bed = Bed::new();
         assert_eq!(bed.ask(&bed.outside("a.docx")), Err(Refused::Outside));
-        assert_eq!(bed.ask(Path::new("open/1/a.docx")), Err(Refused::Outside), "relative");
+        assert_eq!(bed.ask(Path::new("open-1f/1/a.docx")), Err(Refused::Outside), "relative");
         // a folder whose name only starts the same
         let twin = bed.base.join("app.buwiz.fixture-two");
         fs::create_dir_all(&twin).unwrap();
@@ -306,19 +337,19 @@ mod tests {
         let bed = Bed::new();
         bed.outside("a.docx");
         bed.file("b.docx");
-        assert_eq!(bed.ask(&bed.folder.join("open/../../elsewhere/a.docx")), Err(Refused::Outside));
+        assert_eq!(bed.ask(&bed.folder.join("open-1f/../../elsewhere/a.docx")), Err(Refused::Outside));
         assert_eq!(bed.ask(&bed.folder.join("../elsewhere/a.docx")), Err(Refused::Outside));
         // it stays inside, and still isn't what the plugin was told to send
-        assert_eq!(bed.ask(&bed.folder.join("open/1/../1/b.docx")), Err(Refused::Outside));
+        assert_eq!(bed.ask(&bed.folder.join("open-1f/1/../1/b.docx")), Err(Refused::Outside));
     }
 
     #[test]
     fn a_symlinked_file_opens_nothing_wherever_it_points() {
         let bed = Bed::new();
-        let link = bed.folder.join("open/1/out.docx");
+        let link = bed.folder.join("open-1f/1/out.docx");
         symlink(bed.outside("a.docx"), &link).unwrap();
         assert_eq!(bed.ask(&link), Err(Refused::Link));
-        let inner = bed.folder.join("open/1/in.docx");
+        let inner = bed.folder.join("open-1f/1/in.docx");
         symlink(bed.file("b.docx"), &inner).unwrap();
         assert_eq!(bed.ask(&inner), Err(Refused::Link), "a link that stays inside is still a link");
     }
@@ -327,11 +358,11 @@ mod tests {
     fn a_symlinked_folder_on_the_way_opens_nothing_wherever_it_points() {
         let bed = Bed::new();
         bed.outside("a.docx");
-        symlink(bed.base.join("elsewhere"), bed.folder.join("open/2")).unwrap();
-        assert_eq!(bed.ask(&bed.folder.join("open/2/a.docx")), Err(Refused::Link));
+        symlink(bed.base.join("elsewhere"), bed.folder.join("open-1f/2")).unwrap();
+        assert_eq!(bed.ask(&bed.folder.join("open-1f/2/a.docx")), Err(Refused::Link));
         bed.file("b.docx");
-        symlink(bed.folder.join("open/1"), bed.folder.join("open/3")).unwrap();
-        assert_eq!(bed.ask(&bed.folder.join("open/3/b.docx")), Err(Refused::Link));
+        symlink(bed.folder.join("open-1f/1"), bed.folder.join("open-1f/3")).unwrap();
+        assert_eq!(bed.ask(&bed.folder.join("open-1f/3/b.docx")), Err(Refused::Link));
     }
 
     #[test]
@@ -348,7 +379,7 @@ mod tests {
     #[test]
     fn a_hard_link_to_a_file_elsewhere_opens_nothing() {
         let bed = Bed::new();
-        let link = bed.folder.join("open/1/a.docx");
+        let link = bed.folder.join("open-1f/1/a.docx");
         fs::hard_link(bed.outside("a.docx"), &link).unwrap();
         assert_eq!(bed.ask(&link), Err(Refused::Link));
     }
@@ -358,7 +389,7 @@ mod tests {
     fn a_save_replaces_a_hard_linked_name_and_leaves_the_other_alone() {
         let bed = Bed::new();
         let other = bed.outside("a.docx");
-        let link = bed.folder.join("open/1/a.docx");
+        let link = bed.folder.join("open-1f/1/a.docx");
         fs::hard_link(&other, &link).unwrap();
         crate::office::session::write_atomic(&link, b"saved").unwrap();
         assert_eq!(fs::read(&link).unwrap(), b"saved");
@@ -368,11 +399,11 @@ mod tests {
     #[test]
     fn a_directory_or_a_missing_file_opens_nothing() {
         let bed = Bed::new();
-        let dir = bed.folder.join("open/1/dir.docx");
+        let dir = bed.folder.join("open-1f/1/dir.docx");
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(bed.ask(&dir), Err(Refused::NotAFile));
         assert_eq!(bed.ask(&bed.folder), Err(Refused::NotAFile), "the folder itself");
-        assert_eq!(bed.ask(&bed.folder.join("open/1/gone.docx")), Err(Refused::Missing));
+        assert_eq!(bed.ask(&bed.folder.join("open-1f/1/gone.docx")), Err(Refused::Missing));
         // a file where a folder should be
         let file = bed.file("a.docx");
         assert_eq!(bed.ask(&file.join("b.docx")), Err(Refused::Missing));
@@ -384,6 +415,41 @@ mod tests {
         for name in ["run.exe", "a.docx.exe", "a.pptx", "a.unknown", "noextension", ".docx", "a.png.exe", "a.svg", "a.heif", ".png", "a.png "] {
             assert_eq!(bed.ask(&bed.file(name)), Err(Refused::Kind), "{name}");
         }
+    }
+
+    #[test]
+    fn only_a_file_in_a_hand_off_folder_opens() {
+        let bed = Bed::new();
+        let at = |rel: &str| {
+            let path = bed.folder.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "x").unwrap();
+            path
+        };
+        for rel in [
+            "a.docx",
+            "store/a.docx",
+            "cache/1/a.docx",
+            "open/1/a.docx",
+            "open-/1/a.docx",
+            "open-xyz/1/a.docx",
+            "open-1f/a.docx",
+            "open-1f/1/2/a.docx",
+            "Open-1f/1/a.docx",
+        ] {
+            assert_eq!(bed.ask(&at(rel)), Err(Refused::Shape), "{rel}");
+        }
+        for rel in ["open-1f/1/a.docx", "open-0123456789abcdefABCDEF/x/a.docx"] {
+            assert!(bed.ask(&at(rel)).is_ok(), "{rel}");
+        }
+    }
+
+    #[test]
+    fn a_kelvin_sign_cant_pass_for_a_k() {
+        assert_eq!(ext("x.\u{212A}EY"), "\u{212A}ey");
+        assert_eq!(ext("x.JPEG"), "jpeg");
+        let bed = Bed::new();
+        assert_eq!(bed.ask(&bed.file("a.\u{212A}EY")), Err(Refused::Kind));
     }
 
     #[test]
@@ -423,7 +489,7 @@ mod tests {
         assert_eq!(check(false, Actor::Person, Some(&bed.folder), &field), Err(Refused::ThirdParty));
         assert_eq!(check(true, Actor::Agent, Some(&bed.folder), &field), Err(Refused::NotThePerson));
         assert_eq!(bed.ask(&bed.outside("a.pdf")), Err(Refused::Outside));
-        let link = bed.folder.join("open/1/link.pdf");
+        let link = bed.folder.join("open-1f/1/link.pdf");
         symlink(bed.outside("b.pdf"), &link).unwrap();
         assert_eq!(bed.ask(&link), Err(Refused::Link));
     }

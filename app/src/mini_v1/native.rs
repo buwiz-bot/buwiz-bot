@@ -101,6 +101,14 @@ impl HostUi for MacUi {
         attribution::actor(self.surface)
     }
 
+    fn fresh_press(&self) -> Option<u64> {
+        attribution::fresh_press(self.surface)
+    }
+
+    fn spend_press(&self, press: u64) -> bool {
+        attribution::spend_press(self.surface, press)
+    }
+
     fn agent_call(&self, running: bool) {
         attribution::agent_call(running);
     }
@@ -168,8 +176,9 @@ impl HostUi for MacUi {
         super::to_store(move |st| st.v1_document(&key, &doc, live()));
     }
 
-    /// On `open_document`'s terms. Marked and opened on the main thread, as
-    /// `open_url` opens.
+    /// On `open_document`'s terms. A marked copy of the Bot's own is made on
+    /// a thread of its own, then opened on the main thread, as `open_url`
+    /// opens.
     fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
         if self.inline {
             return log::info!("mini v1: a card's file opened nothing");
@@ -179,10 +188,14 @@ impl HostUi for MacUi {
             if !st.v1_on_top(&key, live()) {
                 return log::info!("mini v1: a file came after its screen left the top: nothing opened");
             }
-            on_main(move || {
-                if !system_open::open(&file) {
-                    log::info!("mini v1: a file opened nothing: it couldn't be marked or opened");
-                }
+            std::thread::spawn(move || match system_open::copy_for_open(&file, &system_open::opened_dir()) {
+                Ok(copy) => on_main(move || {
+                    if !system_open::open_copy(&copy) {
+                        log::info!("mini v1: a file opened nothing: its copy wasn't marked, or nothing opened it");
+                    }
+                }),
+                // the error's kind only: its text may hold a path
+                Err(e) => log::info!("mini v1: a file opened nothing: {:?}", e.kind()),
             });
         });
     }

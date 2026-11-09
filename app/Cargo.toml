@@ -21,6 +21,9 @@ ed25519-dalek = "2.2"
 sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
+# A plugin's file opened without following a link (`O_NOFOLLOW`), and its
+# downloaded mark read back. Already in the lockfile.
+libc = "0.2"
 # the protocol pieces shared with the broker (JCS, keys, ids, tokens)
 buwiz-protocol = { path = "../broker/buwiz-protocol" }
 # The Agent Hub's messages (`agent_hub/`), shared with the broker.
