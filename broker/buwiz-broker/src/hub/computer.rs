@@ -492,20 +492,19 @@ impl Computers {
         // a removal just before put the choice back to the default, and a computer is never made
         // with keys a person took away
         let mut kind = homes::home_of(ctx, bot).0;
-        let mut tries = 0;
-        let _keys = loop {
+        let mut keys = None;
+        for _ in 0..3 {
             let held = self.homes.lock(kind).read().await;
             let now = homes::home_of(ctx, bot).0;
             if now == kind {
-                break held;
-            }
-            drop(held);
-            tries += 1;
-            if tries == 3 {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(Problem::Refused { code: "in_use", message: "Where this Bot's computers are made kept changing while it was made. Try again.".to_owned() });
+                keys = Some(held);
+                break;
             }
             kind = now;
+        }
+        let Some(_keys) = keys else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Problem::Refused { code: "in_use", message: "Where this Bot's computers are made kept changing while it was made. Try again.".to_owned() });
         };
         let provider = self.provider_of_kind(ctx, kind);
         let made = provider.create(&spec).await;
@@ -525,9 +524,16 @@ impl Computers {
         };
         // from here a container exists: no record means nothing would ever remove it
         if let Err(e) = Self::record(ctx, &id, &machine, bot) {
-            let _ = provider.destroy(&machine).await;
-            let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [&id]));
-            let _ = std::fs::remove_dir_all(&dir);
+            if provider.destroy(&machine).await.is_ok() {
+                let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [&id]));
+                let _ = std::fs::remove_dir_all(&dir);
+            } else {
+                // still there: a row on its way out, with where it is, and its folder, so the sweep
+                // and a person can find it
+                let at = policy::now(ctx);
+                let reach = serde_json::to_string(&machine.reach).ok();
+                let _ = ctx.db.with(|c| c.execute("INSERT OR REPLACE INTO computers(id, provider, created_at, created_for, gone_at, reach) VALUES(?,?,?,?,?,?)", rusqlite::params![id, kind.as_str(), at, bot, at, reach]));
+            }
             return Err(e);
         }
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), machine);
@@ -950,7 +956,12 @@ impl Computers {
                 // its record is all there is here
                 (Ok(true), _) => Ok(()),
                 (Ok(false), Ok(reach)) => match Self::kind_of(ctx, id) {
-                    Ok(Some(kind)) => self.provider_of_kind(ctx, kind).sweep(id, reach.as_ref()).await,
+                    Ok(Some(kind)) => match self.provider_of_kind(ctx, kind).sweep(id, reach.as_ref()).await {
+                        // a platform can take a while to list what was just made (EC2's tags are
+                        // eventually consistent): finding nothing yet isn't its word that it's gone
+                        Ok(()) if Self::just_gone(ctx, id)? => Err(Problem::Remote("It was made a moment ago, and its platform can take a minute to list it, so it's looked for again then.".to_owned())),
+                        swept => swept,
+                    },
                     // a kind this build doesn't know: nothing here can delete it, so its row and
                     // folder stay for a build that can
                     Ok(None) => Err(Problem::Failed("this computer's kind isn't one this build knows".to_owned())),
@@ -968,19 +979,26 @@ impl Computers {
         if remote && !keys(ctx).is_ok_and(|k| k.remove_computer_key(id).is_ok()) {
             return Err(Problem::Failed("its key couldn't be removed from this Mac's Keychain".to_owned()));
         }
-        self.drop_record(ctx, id);
-        Ok(())
+        self.drop_record(ctx, id)
     }
 
-    /// Everything this broker keeps of computer `id`: its row, jobs, record and folder.
-    fn drop_record(&self, ctx: &HubCtx, id: &str) {
-        let _ = ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id]));
+    /// Whether computer `id` went on its way out within [`JUST_GONE_MS`].
+    fn just_gone(ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+        let at: Option<i64> = ctx.db.with(|c| c.query_row("SELECT gone_at FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).map_err(db_problem)?.flatten();
+        Ok(at.is_some_and(|at| policy::now(ctx) - at < JUST_GONE_MS))
+    }
+
+    /// Everything this broker keeps of computer `id`: its row, jobs, record and folder. A row that
+    /// stays is an `Err`, and the rest stays with it, for the next try.
+    fn drop_record(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+        ctx.db.with(|c| c.execute("DELETE FROM computers WHERE id=?", [id])).map_err(db_problem)?;
         Self::forget_jobs(ctx, id);
         self.machines.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         self.now().problems.remove(id);
         if valid_id(id) {
             let _ = std::fs::remove_dir_all(Self::dir(ctx, id));
         }
+        Ok(())
     }
 
     // ---- remote computers ----
@@ -1533,6 +1551,10 @@ fn sight_in(known: &HashMap<String, bool>, model: &str) -> Option<bool> {
 }
 
 /// `cmp_` and hex: what [`Computers::make`] writes.
+/// How long a computer that went on its way out with no record is looked for before a sweep that
+/// finds nothing of it counts as its platform's word that it's gone.
+pub(super) const JUST_GONE_MS: i64 = 2 * 60 * 1000;
+
 fn valid_id(id: &str) -> bool {
     id.strip_prefix("cmp_").is_some_and(|h| !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
 }

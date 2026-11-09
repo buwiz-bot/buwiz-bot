@@ -435,9 +435,11 @@ async fn keys_that_cant_be_read_make_a_home_refuse_and_never_sign_with_this_macs
     assert!(b.computers.providers_json(&b.ctx)["providers"].as_array().unwrap().iter().any(|h| h["kind"] == "ec2" && h["configured"] == false));
 }
 
-/// A failed make's leftover: a row on its way out, with no record to ask about.
+/// A failed make's leftover: a row on its way out, with no record to ask about, long enough ago
+/// that a sweep's finding nothing counts.
 fn leftover(b: &Bed, id: &str) {
-    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES(?, 'e2b', 1, 1)", [id])).unwrap();
+    let at = crate::hub::policy::now(&b.ctx) - JUST_GONE_MS - 1;
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, gone_at) VALUES(?1, 'e2b', ?2, ?2)", rusqlite::params![id, at])).unwrap();
 }
 
 fn rows(b: &Bed) -> i64 {
@@ -592,4 +594,45 @@ async fn a_home_with_no_keys_offers_no_forget() {
     let listed = &provider_of(&shown, "docker")["computers"][0];
     assert_eq!(listed["id"], "cmp_0abc");
     assert!(listed.get("leaving").is_none() && listed.get("look").is_none(), "{listed}");
+}
+
+#[tokio::test]
+async fn a_computer_made_whose_record_wont_write_and_wont_delete_stays_findable() {
+    let (b, platform) = homes_bed("record-wont-write");
+    save_e2b(&b, GOOD).await.unwrap();
+    b.computers.set_bot_home(&b.ctx, &b.ann.0, Some(ProviderKind::E2b)).unwrap();
+    // its record can't be written, and the platform doesn't answer the delete that would undo it
+    b.ctx.db.with(|c| c.execute_batch("CREATE TRIGGER no_record BEFORE INSERT ON computers WHEN NEW.gone_at IS NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END;")).unwrap();
+    platform.deletes_down.store(true, Ordering::SeqCst);
+    assert!(b.computers.make(&b.ctx, &b.ann.0).await.is_err());
+    let left: Vec<(String, Option<String>)> = b.ctx.db.with(|c| {
+        let mut q = c.prepare("SELECT id, reach FROM computers WHERE gone_at IS NOT NULL")?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }).unwrap();
+    assert_eq!(left.len(), 1, "a sandbox that's still there keeps a row the sweep finds it by");
+    assert!(left[0].1.as_deref().is_some_and(|r| r.contains("sbx-")), "with where it is: {left:?}");
+}
+
+#[tokio::test]
+async fn a_save_refused_for_what_was_typed_or_a_bad_key_deletes_nothing() {
+    let (b, platform) = homes_bed("refused-touches-nothing");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    let typed = b.computers.save_provider(&b.ctx, ProviderKind::E2b, &values(&[("template", "bad\u{7}name")]), &[]).await.unwrap_err();
+    assert_eq!(typed.code(), "invalid");
+    assert_eq!(save_e2b(&b, "e2b_not_a_key_anyone_takes").await.unwrap_err().code(), "bad_key");
+    assert!(platform.swept.lock().unwrap().is_empty(), "a refused save changed something on the platform");
+    assert_eq!(rows(&b), 1);
+}
+
+#[tokio::test]
+async fn a_record_that_wont_delete_isnt_taken_as_forgotten() {
+    let (b, platform) = homes_bed("row-wont-delete");
+    save_e2b(&b, GOOD).await.unwrap();
+    leftover(&b, "cmp_0abc");
+    platform.good_revoked.store(true, Ordering::SeqCst);
+    b.ctx.db.with(|c| c.execute_batch("CREATE TRIGGER keep_rows BEFORE DELETE ON computers BEGIN SELECT RAISE(ABORT, 'disk full'); END;")).unwrap();
+    assert!(b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, "cmp_0abc").await.is_err());
+    assert_eq!(rows(&b), 1);
 }

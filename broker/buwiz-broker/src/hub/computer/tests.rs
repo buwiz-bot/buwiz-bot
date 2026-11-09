@@ -321,6 +321,7 @@ async fn leaving_with_the_record_lost_is_leaving() {
     let fresh = Computers::new(b.mock.clone());
     fresh.detach(&b.ctx, &b.ann.0).await.unwrap();
     assert!(seated(&b.ctx, &b.ann.0).is_none());
+    past_just_gone(&b);
     fresh.sleep_the_idle(&b.ctx).await;
     assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
 }
@@ -757,6 +758,11 @@ async fn a_hung_docker_doesnt_hold_up_other_bots() {
     assert!(b.mock.calls().contains(&"destroy".to_owned()));
 }
 
+/// Moves the clock past [`JUST_GONE_MS`]: a sweep that finds nothing now counts.
+fn past_just_gone(b: &Bed) {
+    b.ctx.clock.manual_step(Some(b.ctx.clock.now() + JUST_GONE_MS as f64 + 1.0), false);
+}
+
 #[tokio::test]
 async fn a_computer_that_fails_part_way_is_swept_by_its_id() {
     let b = bed("part-way");
@@ -766,6 +772,10 @@ async fn a_computer_that_fails_part_way_is_swept_by_its_id() {
     *b.mock.create_problem.lock().unwrap() = None;
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(b.mock.calls().contains(&format!("sweep {id}")), "{:?}", b.mock.calls());
+    // just made, a platform may not list it yet: finding nothing isn't its word that it's gone
+    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), [id.clone()]);
+    past_just_gone(&b);
+    b.computers.sleep_the_idle(&b.ctx).await;
     assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
 }
 

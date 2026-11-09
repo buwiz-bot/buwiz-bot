@@ -647,47 +647,24 @@ impl Computers {
         if fields(kind).is_empty() {
             return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", kind.label())));
         }
-        // before the lock: a platform that hangs mustn't hold up the Bots' clicks
+        // what a person typed, and whether the keys work, first: a save refused for either changes
+        // nothing anywhere. With no lock held: a platform that hangs mustn't hold up the Bots
+        let checked = next_of(kind, &load(ctx, kind)?.unwrap_or_default(), values, clear)?;
+        let candidate = self.homes.candidate(kind, &checked);
+        candidate.verify().await?;
         let settled = self.settle_leaving(ctx, kind).await?;
         let _saving = self.homes.lock(kind).write().await;
         let before = load(ctx, kind)?.unwrap_or_default();
-        let mut next = before.clone();
-        for f in fields(kind) {
-            let typed = values.get(f.key).and_then(Value::as_str).map(str::trim);
-            if let Some(v) = typed {
-                if v.len() > MAX_VALUE || v.chars().any(char::is_control) {
-                    return Err(refusal("invalid", format!("{} isn't something {} takes.", f.label, kind.label())));
-                }
-            }
-            match (f.secret, typed) {
-                (true, Some(v)) if !v.is_empty() => {
-                    next.secrets.insert(f.key.to_owned(), Secret::new(v));
-                }
-                (false, Some(v)) if !v.is_empty() => {
-                    next.config.insert(f.key.to_owned(), v.to_owned());
-                }
-                (false, Some(_)) => {
-                    next.config.remove(f.key);
-                }
-                _ => {}
-            }
-            if clear.iter().any(|c| c == f.key) {
-                next.secrets.remove(f.key);
-                next.config.remove(f.key);
-            }
-        }
-        for f in fields(kind).iter().filter(|f| f.required) {
-            let has = if f.secret { next.secret(f.key).is_some() } else { next.get(f.key).is_some() };
-            if !has {
-                return Err(refusal("missing", format!("{} needs its {} first.", kind.label(), f.label.to_lowercase())));
-            }
-        }
-        if kind == ProviderKind::Ec2 && next.secret("access_key_id").is_some() != next.secret("secret_access_key").is_some() {
-            return Err(refusal("missing", "An AWS access key needs both its ID and its secret. Paste both, or leave both blank to use a profile.".to_owned()));
-        }
-        // the new settings on a provider of their own: the live one goes on as it was until they work
-        let candidate = self.homes.candidate(kind, &next);
-        candidate.verify().await?;
+        let next = next_of(kind, &before, values, clear)?;
+        // the new settings on a provider of their own: the live one goes on as it was until they work.
+        // Made and checked again only when a save landed meanwhile and made them other than the ones checked
+        let candidate = if next == checked {
+            candidate
+        } else {
+            let other = self.homes.candidate(kind, &next);
+            other.verify().await?;
+            other
+        };
         self.sees_its_computers(ctx, kind, &*candidate, &settled).await?;
         store(ctx, kind, &next, &before)?;
         self.homes.apply(kind, Some(&next));
@@ -774,7 +751,7 @@ impl Computers {
         }
         let _saving = self.homes.lock(kind).write().await;
         if leaving(ctx)? && !self.now().waking.contains(id) {
-            self.drop_record(ctx, id);
+            self.drop_record(ctx, id)?;
         }
         Ok(self.provider_json(ctx, kind))
     }
@@ -858,6 +835,46 @@ impl Computers {
         }
         Ok(())
     }
+}
+
+/// What `kind` keeps once `values` (the fields a person filled in; a blank secret keeps the one
+/// there) and `clear` (the ones to empty) are put over `before`, or why they can't be.
+fn next_of(kind: ProviderKind, before: &Saved, values: &Map<String, Value>, clear: &[String]) -> Result<Saved, Problem> {
+    let mut next = before.clone();
+    for f in fields(kind) {
+        let typed = values.get(f.key).and_then(Value::as_str).map(str::trim);
+        if let Some(v) = typed {
+            if v.len() > MAX_VALUE || v.chars().any(char::is_control) {
+                return Err(refusal("invalid", format!("{} isn't something {} takes.", f.label, kind.label())));
+            }
+        }
+        match (f.secret, typed) {
+            (true, Some(v)) if !v.is_empty() => {
+                next.secrets.insert(f.key.to_owned(), Secret::new(v));
+            }
+            (false, Some(v)) if !v.is_empty() => {
+                next.config.insert(f.key.to_owned(), v.to_owned());
+            }
+            (false, Some(_)) => {
+                next.config.remove(f.key);
+            }
+            _ => {}
+        }
+        if clear.iter().any(|c| c == f.key) {
+            next.secrets.remove(f.key);
+            next.config.remove(f.key);
+        }
+    }
+    for f in fields(kind).iter().filter(|f| f.required) {
+        let has = if f.secret { next.secret(f.key).is_some() } else { next.get(f.key).is_some() };
+        if !has {
+            return Err(refusal("missing", format!("{} needs its {} first.", kind.label(), f.label.to_lowercase())));
+        }
+    }
+    if kind == ProviderKind::Ec2 && next.secret("access_key_id").is_some() != next.secret("secret_access_key").is_some() {
+        return Err(refusal("missing", "An AWS access key needs both its ID and its secret. Paste both, or leave both blank to use a profile.".to_owned()));
+    }
+    Ok(next)
 }
 
 /// Whether this build makes computers of `kind`: not a slot with no code yet.
