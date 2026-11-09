@@ -11,6 +11,7 @@
 
 pub mod broker_dir;
 pub mod env;
+pub mod homes;
 pub mod ids;
 pub mod jcs;
 pub mod keys;
