@@ -1382,6 +1382,7 @@ fn where_of(reach: &Reach) -> String {
             format!("{user}{host}{port}")
         }
         Reach::Container { name } => name.clone(),
+        Reach::Instance { id, region } => format!("{region}/{id}"),
     }
 }
 
@@ -1701,7 +1702,7 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// Puts the computers in `ctx.ext`, with their routes and the timer that puts them to sleep.
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.ext.get::<Arc<Computers>>().is_none() {
-        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::Docker))));
+        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::from_env()))));
     }
     routes.route(Verb::Get, X("/v1/host/computers"), list);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/test"), test_remote);
