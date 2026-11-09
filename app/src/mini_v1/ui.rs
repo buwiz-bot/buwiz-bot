@@ -774,11 +774,16 @@ impl Store {
     /// `live` or not. It opens over that screen only: not over another one the
     /// person went to meanwhile, and not over the viewer, which would drop
     /// its unsaved edits. Nothing of the path goes to the log.
+    /// A Word or Sheet file opens by the plugin's path, so it is checked again
+    /// here, just before ([`super::document::Document::still_checked`]).
     pub fn v1_document(&'static self, key: &str, doc: &super::document::Document, live: bool) {
-        if self.v1_on_top(key, live) {
-            self.open_file(&doc.attach());
-        } else {
+        if !self.v1_on_top(key, live) {
             log::info!("mini v1: a document came after its screen left the top: nothing opened");
+        } else if !doc.still_checked() {
+            log::info!("mini v1: a document changed after its check: nothing opened");
+            crate::toast::show(super::bridge::OPEN_REFUSED);
+        } else {
+            self.open_file(&doc.attach());
         }
     }
 

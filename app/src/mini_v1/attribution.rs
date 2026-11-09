@@ -33,9 +33,12 @@
 //!
 //! **A hand-off needs a press.** A file a call hands to the system or to
 //! Downloads (`system_open`) takes more than "the person's": the person's own
-//! press or key in that surface within [`PRESS_WINDOW`] before the call, which
+//! activation in that surface within [`PRESS_WINDOW`] before the call, which
 //! the hand-off spends ([`Attribution::fresh_press`],
-//! [`Attribution::spend_press`]). Until an agent has acted every call is the
+//! [`Attribution::spend_press`]). An activation is a click, or Return, Enter
+//! or Space anywhere but in text ([`activates`]). Typing is none, and takes
+//! back any press before it: a timer that fires while the person types in a
+//! search field hands off nothing. Until an agent has acted every call is the
 //! person's, so an app's code at load or on a timer would pass the actor
 //! alone; it can't make a press. One press, one hand-off.
 //!
@@ -143,8 +146,21 @@ impl Attribution {
         if self.quiet(now) {
             self.person.insert(surface);
         }
+    }
+
+    /// The person activated something in `surface`: [`Self::person_pressed`],
+    /// and a press a hand-off may spend.
+    pub fn person_activated(&mut self, surface: u64, now: Instant) {
+        self.person_pressed(surface, now);
         self.next_press += 1;
         self.presses.insert(surface, (self.next_press, now));
+    }
+
+    /// The person typed in `surface`: [`Self::person_pressed`], and no press
+    /// there is one to hand off by any more.
+    pub fn person_typed(&mut self, surface: u64, now: Instant) {
+        self.person_pressed(surface, now);
+        self.presses.remove(&surface);
     }
 
     /// The person's press in `surface` that a call made `now` may hand off a
@@ -229,11 +245,38 @@ pub fn agent_opened() {
 #[cfg(target_os = "macos")]
 pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     use nsh_platform_macos::Input;
-    nsh_platform_macos::on_input(mtm, |input| match input {
+    nsh_platform_macos::on_input(mtm, move |input| match input {
         Input::Agent => with(|a| a.agent_acted(Instant::now())),
-        Input::Person { surface } => with(|a| a.person_pressed(surface, Instant::now())),
+        Input::Person { surface } if activates(mtm) => with(|a| a.person_activated(surface, Instant::now())),
+        Input::Person { surface } => with(|a| a.person_typed(surface, Instant::now())),
     });
     with(Attribution::watch);
+}
+
+/// Whether the event the app is handling now, which nsh just said is the
+/// person's, is an activation: a left click, or Return, Enter or Space with no
+/// text taking keys. Any other key is typing.
+#[cfg(target_os = "macos")]
+fn activates(mtm: nsh_platform_macos::objc2::MainThreadMarker) -> bool {
+    use nsh_platform_macos::{
+        objc2::{ClassType, runtime::NSObjectProtocol},
+        objc2_app_kit::{NSApplication, NSEventType, NSText},
+    };
+    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else { return false };
+    match event.r#type() {
+        NSEventType::LeftMouseDown => true,
+        NSEventType::KeyDown => {
+            let in_text = event.window(mtm).and_then(|w| w.firstResponder()).is_some_and(|r| r.isKindOfClass(NSText::class()));
+            activation_key(event.keyCode()) && !in_text
+        }
+        _ => false,
+    }
+}
+
+/// Return (36), keypad Enter (76) and Space (49): the keys that press what
+/// has the focus.
+fn activation_key(code: u16) -> bool {
+    matches!(code, 36 | 76 | 49)
 }
 
 #[cfg(test)]
@@ -410,12 +453,12 @@ mod tests {
     fn one_press_allows_exactly_one_hand_off() {
         let t = Instant::now();
         let mut a = watched();
-        a.person_pressed(FORM, t);
+        a.person_activated(FORM, t);
         let n = a.fresh_press(FORM, t + Duration::from_millis(300)).unwrap();
         assert!(a.spend_press(FORM, n));
         assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(400)), None);
         assert!(!a.spend_press(FORM, n), "two calls the press made spend it once");
-        a.person_pressed(FORM, secs(t, 1));
+        a.person_activated(FORM, secs(t, 1));
         let m = a.fresh_press(FORM, secs(t, 1)).unwrap();
         assert!(a.spend_press(FORM, m), "the next press is a new one");
     }
@@ -424,9 +467,9 @@ mod tests {
     fn a_press_past_the_window_or_in_another_surface_hands_off_nothing() {
         let t = Instant::now();
         let mut a = watched();
-        a.person_pressed(CHAT, t);
+        a.person_activated(CHAT, t);
         assert_eq!(a.fresh_press(FORM, t), None);
-        a.person_pressed(FORM, t);
+        a.person_activated(FORM, t);
         assert!(a.fresh_press(FORM, t + PRESS_WINDOW).is_some());
         assert_eq!(a.fresh_press(FORM, t + PRESS_WINDOW + Duration::from_millis(1)), None);
     }
@@ -435,7 +478,7 @@ mod tests {
     fn an_agents_action_after_the_press_takes_it_away() {
         let t = Instant::now();
         let mut a = watched();
-        a.person_pressed(FORM, t);
+        a.person_activated(FORM, t);
         a.agent_acted(t + Duration::from_millis(100));
         assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(200)), None);
     }
@@ -444,8 +487,32 @@ mod tests {
     fn with_nothing_watching_no_press_counts() {
         let t = Instant::now();
         let mut a = Attribution::default();
-        a.person_pressed(FORM, t);
+        a.person_activated(FORM, t);
         assert_eq!(a.fresh_press(FORM, t), None);
+    }
+
+    #[test]
+    fn a_keystroke_then_a_timer_call_hands_off_nothing() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_typed(FORM, t);
+        assert_eq!(a.actor(FORM), Actor::Person);
+        assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(500)), None);
+        // typing after a click takes the click's press back
+        a.person_activated(FORM, secs(t, 1));
+        a.person_typed(FORM, secs(t, 1) + Duration::from_millis(100));
+        assert_eq!(a.fresh_press(FORM, secs(t, 1) + Duration::from_millis(500)), None);
+    }
+
+    #[test]
+    fn only_return_enter_and_space_activate() {
+        for code in [36, 76, 49] {
+            assert!(activation_key(code), "{code}");
+        }
+        // a, s, Tab, Escape, Delete, the arrows
+        for code in [0, 1, 48, 53, 51, 123, 124, 125, 126] {
+            assert!(!activation_key(code), "{code}");
+        }
     }
 
     #[test]

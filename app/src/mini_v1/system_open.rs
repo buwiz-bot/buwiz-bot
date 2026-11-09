@@ -145,11 +145,26 @@ fn create_marked(to: &Path) -> io::Result<fs::File> {
     Ok(out)
 }
 
-/// Copies what was checked into `out`, at `to`, which goes again if the copy
-/// fails.
+/// Copies all of `from` into `out`, at `to`, which goes again if the copy
+/// fails. It reads by offset from the start, never the file's own position,
+/// which every holder of the open file shares: a second copy reads it all
+/// too.
 #[cfg(target_os = "macos")]
-fn fill(file: &LocalFile, mut out: fs::File, to: &Path) -> io::Result<()> {
-    let copied = io::copy(&mut &*file.file, &mut out).and_then(|_| out.sync_all());
+fn fill(from: &fs::File, mut out: fs::File, to: &Path) -> io::Result<()> {
+    use std::{io::Write, os::unix::fs::FileExt};
+    let mut copy = || -> io::Result<()> {
+        let mut buf = vec![0; 1 << 16];
+        let mut at = 0;
+        loop {
+            let n = from.read_at(&mut buf, at)?;
+            if n == 0 {
+                return out.sync_all();
+            }
+            out.write_all(&buf[..n])?;
+            at += n as u64;
+        }
+    };
+    let copied = copy();
     if copied.is_err() {
         drop(out);
         let _ = fs::remove_file(to);
@@ -170,7 +185,7 @@ pub fn save_in(file: &LocalFile, dir: &Path) -> io::Result<PathBuf> {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         };
-        return fill(file, out, &to).map(|()| to);
+        return fill(&file.file, out, &to).map(|()| to);
     }
     Err(io::Error::from(io::ErrorKind::AlreadyExists))
 }
@@ -187,13 +202,26 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 /// `base`, under its own name, cleaned: the copy's path, for [`open_copy`].
 #[cfg(target_os = "macos")]
 pub fn copy_for_open(file: &LocalFile, base: &Path) -> io::Result<PathBuf> {
+    copy_file(&file.file, &file.name, base)
+}
+
+/// Copies all of `from`, named `name` on disk, into a new folder of its own
+/// in `base`, under that name, cleaned and marked: the copy's path. The
+/// viewers' pictures and PDFs are shown from such a copy too. A copy that
+/// fails takes its folder with it.
+#[cfg(target_os = "macos")]
+pub fn copy_file(from: &fs::File, name: &str, base: &Path) -> io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     private_dir(base)?;
     let dir = base.join(super::keys::random_id());
     fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    let to = dir.join(clean_name(&file.name));
-    let out = create_marked(&to)?;
-    fill(file, out, &to).map(|()| to)
+    let to = dir.join(clean_name(name));
+    let copied = create_marked(&to).and_then(|out| fill(from, out, &to));
+    if let Err(e) = copied {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(e);
+    }
+    Ok(to)
 }
 
 /// Takes away the copies in `base` older than [`OPENED_FOR`] at `now`.
@@ -208,10 +236,25 @@ pub fn sweep(base: &Path, now: SystemTime) {
     }
 }
 
-/// [`sweep`] of [`opened_dir`] now: at launch, on a thread of its own.
+/// How often the Bot sweeps [`opened_dir`] while it runs.
 #[cfg(target_os = "macos")]
-pub fn sweep_at_launch() {
-    sweep(&opened_dir(), SystemTime::now());
+pub const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// [`sweep`]s `base` now and every `every` after, for good: a thread's whole
+/// work.
+#[cfg(target_os = "macos")]
+pub fn sweep_every(base: &Path, every: Duration) {
+    loop {
+        sweep(base, SystemTime::now());
+        std::thread::sleep(every);
+    }
+}
+
+/// [`sweep_every`] of [`opened_dir`], from launch, hourly: on a thread of its
+/// own.
+#[cfg(target_os = "macos")]
+pub fn sweep_while_running() {
+    sweep_every(&opened_dir(), SWEEP_EVERY);
 }
 
 /// Marks `path` as a browser's download (`com.apple.quarantine`), through
@@ -522,9 +565,54 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&bed.opened()), 0o700);
         assert_eq!(mode(copy.parent().unwrap()), 0o700);
-        // a second open of the same name gets a folder of its own
-        let again = copy_for_open(&file, &bed.opened());
-        assert!(again.is_ok_and(|a| a != copy && a.file_name().unwrap() == "Invoice.pdf"));
+        // a second open of the same name gets a folder of its own, and all of the file
+        let again = copy_for_open(&file, &bed.opened()).unwrap();
+        assert!(again != copy && again.file_name().unwrap() == "Invoice.pdf");
+        assert_eq!(fs::read(&copy).unwrap(), b"Invoice.pdf");
+        assert_eq!(fs::read(&again).unwrap(), b"Invoice.pdf", "the second copy reads from the start too");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_save_and_an_open_of_one_checked_file_both_get_all_of_it() {
+        let bed = Bed::new();
+        let file = bed.save(&bed.file("Invoice.pdf")).unwrap();
+        let twin = file.clone();
+        assert_eq!(fs::read(save_in(&file, &bed.downloads()).unwrap()).unwrap(), b"Invoice.pdf");
+        assert_eq!(fs::read(save_in(&twin, &bed.downloads()).unwrap()).unwrap(), b"Invoice.pdf");
+        assert_eq!(fs::read(copy_for_open(&twin, &bed.opened()).unwrap()).unwrap(), b"Invoice.pdf");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_that_fails_leaves_no_folder_behind() {
+        let bed = Bed::new();
+        let path = bed.file("a.pdf");
+        // a file that can't be read from fails the copy after its folder is made
+        let unreadable = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(copy_file(&unreadable, "a.pdf", &bed.opened()).is_err());
+        assert_eq!(fs::read_dir(bed.opened()).unwrap().count(), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sweep_runs_again_while_the_bot_runs() {
+        let bed = Bed::new();
+        let base = bed.opened();
+        fs::create_dir_all(&base).unwrap();
+        let swept = base.clone();
+        std::thread::spawn(move || sweep_every(&swept, Duration::from_millis(20)));
+        // a copy made after the first sweep, a day old by its time
+        std::thread::sleep(Duration::from_millis(60));
+        let old = base.join("old");
+        fs::create_dir_all(&old).unwrap();
+        fs::File::open(&old).unwrap().set_modified(SystemTime::now() - OPENED_FOR - Duration::from_secs(60)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while old.exists() {
+            assert!(std::time::Instant::now() < deadline, "no later sweep took it");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(SWEEP_EVERY <= Duration::from_secs(60 * 60), "at least hourly");
     }
 
     #[cfg(target_os = "macos")]

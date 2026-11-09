@@ -5,7 +5,8 @@
 //! and the disk says. Its checks go in the contract's order: first-party, the
 //! person's surface and not the AI's, a real file in one of that plugin's
 //! hand-off folders (`open-<hex>/<folder>/<file>` in its own folder, never its
-//! state or caches), a kind a viewer takes. What passes opens by the path found on disk, under
+//! state or caches; a Word or Sheet file also at 1.4.0's `open/<n>/<file>`),
+//! a kind a viewer takes. What passes opens by the path found on disk, under
 //! the name found there, and goes to its viewer by the extension there: the
 //! field's `name` and `mime` are never read, so they can't launder a kind.
 //!
@@ -17,7 +18,15 @@
 //! timer passes it too. Nothing here can tell those from a press: only the
 //! engine knows it's inside a press, and it doesn't say.
 //!
-//! **What this can't do.** [`check`] looks once. The viewer goes by the path
+//! A picture or a PDF is never shown from the plugin's path: the Bot copies
+//! the file it checked, from the file it opened at the check, into a marked
+//! copy of its own ([`Document::needs_copy`], `system_open::copy_file`), and
+//! the viewer shows that. Word and Sheet edit the file in place and save back
+//! to its path, so they keep the path: [`Document::still_checked`] looks
+//! again, on the engine thread, just before the viewer opens it.
+//!
+//! **What this can't do.** For Word and Sheet, the checks hold until the
+//! viewer opens the file, and no longer. The viewer goes by the path
 //! for as long as it is open: it reads the file when it starts and at every
 //! reload, and it reloads by itself when the file changes, and every save
 //! finds the path again. So there is no moment when the checks hold for good.
@@ -72,11 +81,24 @@ pub enum Refused {
     NoPress,
 }
 
-/// A file that passed [`check`]: its real path, and the name it has there.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A file that passed [`check`]: its real path, the name it has there, the
+/// file as opened at the check, and where it was checked.
+#[derive(Debug, Clone)]
 pub struct Document {
     path: String,
     name: String,
+    file: std::sync::Arc<fs::File>,
+    folder: PathBuf,
+    /// The checked file's device and inode.
+    id: (u64, u64),
+    /// The Bot's own copy the viewer shows instead, once it is made.
+    copy: Option<String>,
+}
+
+impl PartialEq for Document {
+    fn eq(&self, other: &Document) -> bool {
+        (&self.path, &self.name, self.id, &self.copy) == (&other.path, &other.name, other.id, &other.copy)
+    }
 }
 
 /// The pictures the lightbox shows.
@@ -101,15 +123,50 @@ fn kind_of(name: &str) -> &'static str {
 }
 
 impl Document {
-    /// What `store.open_file` takes, its kind from the name on disk only.
+    /// What `store.open_file` takes, its kind from the name on disk only, at
+    /// the Bot's copy once there is one.
     pub fn attach(&self) -> Attach {
         Attach {
             kind: kind_of(&self.name).to_owned(),
-            path: self.path.clone(),
+            path: self.copy.clone().unwrap_or_else(|| self.path.clone()),
             name: self.name.clone(),
             ext: crate::files::ext_of(&self.name, ""),
             ..Default::default()
         }
+    }
+
+    /// Its name on disk.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The file, as opened at the check.
+    pub fn file(&self) -> &fs::File {
+        &self.file
+    }
+
+    /// Whether the viewer shows a copy of the Bot's, not the plugin's path:
+    /// a picture or a PDF, which no viewer of the Bot's writes back.
+    pub fn needs_copy(&self) -> bool {
+        self.copy.is_none() && kind_of(&self.name) != "file"
+    }
+
+    /// This, shown from the Bot's own copy at `copy`.
+    pub fn with_copy(mut self, copy: &Path) -> Document {
+        self.copy = copy.to_str().map(str::to_owned);
+        self
+    }
+
+    /// Whether what the viewer is about to open is still what was checked: a
+    /// copy of the Bot's is; the plugin's path is if it passes the checks
+    /// again and is the same file.
+    pub fn still_checked(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        if self.copy.is_some() {
+            return true;
+        }
+        let again = file_in(&self.folder, Path::new(&self.path), true).ok().and_then(|(real, f)| Some((real, f.metadata().ok()?)));
+        again.is_some_and(|(real, m)| real == Path::new(&self.path) && (m.dev(), m.ino()) == self.id)
     }
 }
 
@@ -124,17 +181,26 @@ pub fn folder_of(home: Option<&OsStr>, plugin: &str) -> Option<PathBuf> {
 /// `folder`, may open. `first_party` is the plugin's listing, read as
 /// `FirstPartyAnswerCard` reads it.
 pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<Document, Refused> {
-    let (path, name, _) = checked(first_party, actor, folder, field)?;
+    use std::os::unix::fs::MetadataExt;
+    let (path, name, file) = checked_in(first_party, actor, folder, field, true)?;
     if !crate::office::native_ext(&path) && kind_of(&name) == "file" {
         return Err(Refused::Kind);
     }
-    Ok(Document { path, name })
+    let m = file.metadata().map_err(|_| Refused::Missing)?;
+    let folder = folder.ok_or(Refused::NoFolder)?.to_owned();
+    Ok(Document { path, name, file: std::sync::Arc::new(file), folder, id: (m.dev(), m.ino()), copy: None })
 }
 
 /// [`check`]'s first three checks, which `buwiz/open_with` and `buwiz/save`
 /// share (`system_open`): the real path of the file `field` names, its name
 /// there, both UTF-8, and the file itself, opened as it was checked.
 pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<(String, String, fs::File), Refused> {
+    checked_in(first_party, actor, folder, field, false)
+}
+
+/// [`checked`], taking Word and Sheet files at 1.4.0's `open/<n>/<file>`
+/// too when `legacy`.
+fn checked_in(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value, legacy: bool) -> Result<(String, String, fs::File), Refused> {
     if consent::ask(consent::inline_card(first_party)) != Ask::Nothing {
         return Err(Refused::ThirdParty);
     }
@@ -142,7 +208,7 @@ pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, fi
         return Err(Refused::NotThePerson);
     }
     let claimed = field.get("path").and_then(Value::as_str).ok_or(Refused::BadField)?;
-    let (real, file) = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed))?;
+    let (real, file) = file_in(folder.ok_or(Refused::NoFolder)?, Path::new(claimed), legacy)?;
     let path = real.to_str().ok_or(Refused::Kind)?.to_owned();
     let name = real.file_name().and_then(OsStr::to_str).ok_or(Refused::Kind)?.to_owned();
     Ok((path, name, file))
@@ -150,10 +216,14 @@ pub(super) fn checked(first_party: bool, actor: Actor, folder: Option<&Path>, fi
 
 /// Whether `rest`, below a plugin's folder, is `open-<hex>/<folder>/<file>`:
 /// where a plugin hands its files over, and the only place the Bot takes one.
-fn handed_over(rest: &Path) -> bool {
+/// With `legacy`, a Word or Sheet file at `open/<n>/<file>` passes too:
+/// where plugin 1.4.0 hands them over, and it runs beside this Bot until
+/// 1.5.0 reaches the person.
+fn handed_over(rest: &Path, legacy: bool) -> bool {
     let parts: Vec<Component> = rest.components().collect();
     let hex = |s: &OsStr| s.to_str().and_then(|s| s.strip_prefix("open-")).is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()));
-    matches!(parts.as_slice(), [Component::Normal(first), Component::Normal(_), Component::Normal(_)] if hex(first))
+    let old = |s: &OsStr, file: &OsStr| legacy && s == "open" && file.to_str().is_some_and(crate::office::native_ext);
+    matches!(parts.as_slice(), [Component::Normal(first), Component::Normal(_), Component::Normal(file)] if hex(first) || old(first, file))
 }
 
 /// `claimed` as the real path of a regular file at a hand-off place inside
@@ -167,7 +237,7 @@ fn handed_over(rest: &Path) -> bool {
 /// walk found (its device and inode): a step swapped for a link after the walk
 /// opens something else, and is refused. What reads from the open file, not
 /// the path, reads what was checked.
-fn file_in(folder: &Path, claimed: &Path) -> Result<(PathBuf, fs::File), Refused> {
+fn file_in(folder: &Path, claimed: &Path, legacy: bool) -> Result<(PathBuf, fs::File), Refused> {
     let linked = fs::symlink_metadata(folder).map_err(|_| Refused::NoFolder)?.file_type().is_symlink();
     if linked {
         return Err(Refused::Link);
@@ -189,7 +259,7 @@ fn file_in(folder: &Path, claimed: &Path) -> Result<(PathBuf, fs::File), Refused
     if !meta.file_type().is_file() {
         return Err(Refused::NotAFile);
     }
-    if !handed_over(rest) {
+    if !handed_over(rest, legacy) {
         return Err(Refused::Shape);
     }
     // this stops the viewer showing a file from elsewhere under a second name,
@@ -430,7 +500,8 @@ mod tests {
             "a.docx",
             "store/a.docx",
             "cache/1/a.docx",
-            "open/1/a.docx",
+            "open/a.docx",
+            "open/1/2/a.docx",
             "open-/1/a.docx",
             "open-xyz/1/a.docx",
             "open-1f/a.docx",
@@ -441,6 +512,54 @@ mod tests {
         }
         for rel in ["open-1f/1/a.docx", "open-0123456789abcdefABCDEF/x/a.docx"] {
             assert!(bed.ask(&at(rel)).is_ok(), "{rel}");
+        }
+    }
+
+    #[test]
+    fn a_word_or_sheet_file_also_opens_where_plugin_1_4_0_hands_it_over() {
+        let bed = Bed::new();
+        fs::create_dir_all(bed.folder.join("open/3")).unwrap();
+        let at = |name: &str| {
+            let path = bed.folder.join("open/3").join(name);
+            fs::write(&path, "x").unwrap();
+            path
+        };
+        for name in ["a.docx", "b.xlsx", "c.csv"] {
+            assert!(bed.ask(&at(name)).is_ok(), "{name}");
+        }
+        for name in ["a.png", "b.pdf"] {
+            assert_eq!(bed.ask(&at(name)), Err(Refused::Shape), "{name}: only the new place");
+        }
+        // and nothing but the viewer takes the old place
+        let field = json!({"path": at("d.docx")});
+        assert_eq!(checked(true, Actor::Person, Some(&bed.folder), &field).err(), Some(Refused::Shape));
+    }
+
+    #[test]
+    fn a_word_file_swapped_after_the_check_doesnt_open() {
+        let bed = Bed::new();
+        let path = bed.file("a.docx");
+        let doc = bed.ask(&path).unwrap();
+        assert!(doc.still_checked());
+        fs::remove_file(&path).unwrap();
+        symlink(bed.outside("secret.docx"), &path).unwrap();
+        assert!(!doc.still_checked(), "a link now");
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, "another").unwrap();
+        assert!(!doc.still_checked(), "another file under the name");
+        assert!(!doc.needs_copy(), "Word saves back to the path");
+    }
+
+    #[test]
+    fn a_picture_or_pdf_is_shown_from_a_copy() {
+        let bed = Bed::new();
+        for name in ["a.png", "b.pdf"] {
+            let doc = bed.ask(&bed.file(name)).unwrap();
+            assert!(doc.needs_copy(), "{name}");
+            let copy = bed.base.join("copy").join(name);
+            let shown = doc.with_copy(&copy);
+            assert!(!shown.needs_copy() && shown.still_checked());
+            assert_eq!(shown.attach().path, copy.to_str().unwrap());
         }
     }
 

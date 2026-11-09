@@ -331,3 +331,34 @@ fn a_file_after_the_screen_closed_opens_and_saves_nothing() {
     o.wait("{");
     assert!(opened_with(&o).is_empty() && saved(&o).is_empty());
 }
+
+fn told(o: &Open) -> Vec<&'static str> {
+    o.ui.refusals.lock().unwrap().clone()
+}
+
+#[test]
+fn a_hand_off_the_persons_press_made_that_does_nothing_says_so() {
+    let bed = Bed::new();
+    let mut o = bed.open_with(true, false, "open-1f/1/run.exe");
+    o.wait("{");
+    assert_eq!(told(&o), [OPEN_REFUSED]);
+    let mut o = bed.save(true, false, "open-1f/1/gone.png");
+    o.wait("{");
+    assert_eq!(told(&o), [SAVE_REFUSED]);
+    let mut o = bed.pressed(true, false, Some(1), json!({"field": bed.field("open-1f/1/run.exe")}));
+    o.wait("{");
+    assert_eq!(told(&o), [OPEN_REFUSED], "the viewer's too");
+}
+
+#[test]
+fn a_refusal_with_no_press_behind_it_is_only_logged() {
+    let bed = Bed::new();
+    let path = bed.folder.join("open-1f/1/run.exe");
+    let mut o = bed.pressed(true, false, None, json!({"open_with": {"path": path}, "save": {"path": path}, "field": bed.field("open-1f/1/run.exe")}));
+    o.wait("{");
+    assert!(told(&o).is_empty(), "an app's own code can't put up the Bot's errors");
+    // nor the AI's call
+    let mut o = bed.open_with(true, true, "open-1f/1/run.exe");
+    o.wait("{");
+    assert!(told(&o).is_empty());
+}

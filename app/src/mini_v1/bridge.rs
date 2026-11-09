@@ -135,6 +135,12 @@ pub trait HostUi: Send + Sync {
     fn open_with(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
         let _ = (file, live);
     }
+    /// Tells the person that a file their press handed over did nothing:
+    /// `said` is the whole message, with nothing of the file. Hosts that
+    /// can't ignore it.
+    fn file_refused(&self, said: &'static str) {
+        let _ = said;
+    }
     /// Copies `file`, already checked, to the person's Downloads folder and
     /// says so, on the same terms as [`HostUi::open_with`].
     fn save(&self, file: LocalFile, live: Box<dyn FnOnce() -> bool + Send>) {
@@ -230,6 +236,11 @@ pub struct PickRequest {
     /// Larger files are not offered.
     pub max_bytes: u64,
 }
+
+/// What the person hears when a file their press handed over opens nothing.
+pub const OPEN_REFUSED: &str = "Buwiz Bot couldn't open that file.";
+/// And when one saves nothing.
+pub const SAVE_REFUSED: &str = "Buwiz Bot couldn't save that file.";
 
 /// What a result's file key asks of the Bot besides its own viewer.
 #[derive(Debug, Clone, Copy)]
@@ -887,7 +898,7 @@ impl OpenContext {
                 // the tool's work stands: only the switch failed, and it says so apart
                 fields.insert("account_use".to_owned(), json!({"code": e.code, "message": e.message}));
             }
-            me.open_document(document, who.actor);
+            me.open_document(document, &who);
             me.hand_file(open_with, &who, Hand::OpenWith);
             me.hand_file(save, &who, Hand::Save);
             Ok(answer)
@@ -897,17 +908,29 @@ impl OpenContext {
     /// A result's `_meta["buwiz/document"]`, from a call `actor` made
     /// (`mini_v1::document`): `None`, from an older plugin, changes nothing.
     /// Nothing of the path goes to the log.
-    fn open_document(&self, field: Option<Value>, actor: Actor) {
+    fn open_document(&self, field: Option<Value>, who: &CallActor) {
         let Some(field) = field else { return };
         let p = &self.prepared;
         let live = self.session.check_live().map_err(|_| Refused::Closed);
         let folder = self.ui.plugin_folder(&p.plugin.id);
-        match live.and_then(|()| document::check(p.plugin.first_party, actor, folder.as_deref(), &field)) {
+        match live.and_then(|()| document::check(p.plugin.first_party, who.actor, folder.as_deref(), &field)) {
             Ok(doc) => {
                 let session = self.session.clone();
                 self.ui.open_document(doc, Box::new(move || session.check_live().is_ok()));
             }
-            Err(why) => log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app),
+            Err(why) => {
+                log::info!("mini v1: {}/{} a document opened nothing: {why:?}", p.plugin.id, p.key.app);
+                self.say_refused(who, why, OPEN_REFUSED);
+            }
+        }
+    }
+
+    /// A hand-off `who` made refused for `why`: the person hears of it if a
+    /// press of theirs made the call and the screen is still there. An app's
+    /// own code, with no press, gets the log line alone.
+    fn say_refused(&self, who: &CallActor, why: Refused, said: &'static str) {
+        if who.press.is_some() && who.actor == Actor::Person && why != Refused::Closed {
+            self.ui.file_refused(said);
         }
     }
 
@@ -939,7 +962,10 @@ impl OpenContext {
                     Hand::Save => self.ui.save(file, live),
                 }
             }
-            Err(why) => log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app),
+            Err(why) => {
+                log::info!("mini v1: {}/{} a file's {hand:?} did nothing: {why:?}", p.plugin.id, p.key.app);
+                self.say_refused(who, why, if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+            }
         }
     }
 

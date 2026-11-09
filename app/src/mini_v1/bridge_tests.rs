@@ -245,6 +245,8 @@ struct TestUi {
     /// hand-offs spent.
     hand_press: Mutex<Option<u64>>,
     spent: Mutex<Vec<u64>>,
+    /// What the person was told of hand-offs that did nothing.
+    refusals: Mutex<Vec<&'static str>>,
 }
 
 impl HostUi for TestUi {
@@ -254,6 +256,9 @@ impl HostUi for TestUi {
     fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
         self.documents.lock().unwrap().push(doc);
         self.lives.lock().unwrap().push(live);
+    }
+    fn file_refused(&self, said: &'static str) {
+        self.refusals.lock().unwrap().push(said);
     }
     fn fresh_press(&self) -> Option<u64> {
         *self.hand_press.lock().unwrap()

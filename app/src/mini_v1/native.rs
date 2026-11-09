@@ -168,12 +168,29 @@ impl HostUi for MacUi {
     /// Only over the full-screen app on top: a hidden chat keeps its cards
     /// running, so a live card may be off the screen. The store decides,
     /// when the job runs, for the person may have left since the call.
+    ///
+    /// A picture or a PDF is copied first, from the file opened at the check,
+    /// on a thread of its own, and shown from the copy (`document`).
     fn open_document(&self, doc: Document, live: Box<dyn FnOnce() -> bool + Send>) {
         if self.inline {
             return log::info!("mini v1: a card's document opened nothing");
         }
         let key = self.key.clone();
-        super::to_store(move |st| st.v1_document(&key, &doc, live()));
+        if !doc.needs_copy() {
+            return super::to_store(move |st| st.v1_document(&key, &doc, live()));
+        }
+        std::thread::spawn(move || match system_open::copy_file(doc.file(), doc.name(), &system_open::opened_dir()) {
+            Ok(copy) => super::to_store(move |st| st.v1_document(&key, &doc.with_copy(&copy), live())),
+            Err(e) => {
+                // the error's kind only: its text may hold a path
+                log::info!("mini v1: a document opened nothing: {:?}", e.kind());
+                super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
+            }
+        });
+    }
+
+    fn file_refused(&self, said: &'static str) {
+        super::to_store(move |_| crate::toast::show(said));
     }
 
     /// On `open_document`'s terms. A marked copy of the Bot's own is made on
@@ -192,10 +209,14 @@ impl HostUi for MacUi {
                 Ok(copy) => on_main(move || {
                     if !system_open::open_copy(&copy) {
                         log::info!("mini v1: a file opened nothing: its copy wasn't marked, or nothing opened it");
+                        super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
                     }
                 }),
-                // the error's kind only: its text may hold a path
-                Err(e) => log::info!("mini v1: a file opened nothing: {:?}", e.kind()),
+                Err(e) => {
+                    // the error's kind only: its text may hold a path
+                    log::info!("mini v1: a file opened nothing: {:?}", e.kind());
+                    super::to_store(|_| crate::toast::show(bridge::OPEN_REFUSED));
+                }
             });
         });
     }
