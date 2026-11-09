@@ -37,7 +37,15 @@ pub const OFFERED: [ProviderKind; 5] = [ProviderKind::Docker, ProviderKind::Ec2,
 /// copy of `deploy/aws/broker-policy.json` in buwiz-bot/computer, which is the one to change: keep
 /// this copy in step with it. A JSON file holds no comment, so this is where that's said.
 const AWS_POLICY: &str = include_str!("broker-policy.json");
-const CLOUDFORMATION: &str = "https://github.com/buwiz-bot/computer/blob/main/deploy/aws/cloudformation/buwiz-computer.yaml";
+/// The stack's template, in the owner's public bucket. It's the same in every region: the console's
+/// region is the one it's made in.
+const STACK_TEMPLATE: &str = "https://buwiz-computer-templates.s3.ap-southeast-1.amazonaws.com/buwiz-computer/buwiz-computer.yaml";
+
+/// The AWS console's quick-create page for the stack, in `region`.
+fn launch_stack(region: &str) -> String {
+    let template: String = url::form_urlencoded::byte_serialize(STACK_TEMPLATE.as_bytes()).collect();
+    format!("https://console.aws.amazon.com/cloudformation/home?region={region}#/stacks/quickcreate?templateURL={template}&stackName=buwiz-computer")
+}
 const E2B_BUILD: &str = "https://github.com/buwiz-bot/computer/tree/main/deploy/e2b";
 
 /// The longest value a field takes.
@@ -95,7 +103,8 @@ fn notes(kind: ProviderKind) -> Vec<String> {
         ProviderKind::Docker => vec!["Runs on this Mac, walled off from it. Needs Docker Desktop running.".to_owned()],
         ProviderKind::Ec2 => vec![
             "Your own AWS account pays for the computers. Sleep hibernates them, so a sleeping one costs only its disk.".to_owned(),
-            format!("To set up AWS: CloudFormation console › Create stack › Upload a template file, with {CLOUDFORMATION}. Its output BrokerAccessKeyConsole opens the page where you make the access key to paste here, and BrokerPolicyJson is the limited policy filled in for your account."),
+            "To set up AWS, launch the stack (Launch the AWS stack) in the region above. It asks for AllowedSshCidr: this Mac's public address with /32 after it, like 203.0.113.7/32 (search the web for \"what is my IP\" to find it). Its output BrokerAccessKeyConsole opens the page where you make the access key to paste here.".to_owned(),
+            "A stack made from an older template has no buwiz:managed tag on its launch template, subnet and security group, and AWS refuses the launch: update the stack with this template.".to_owned(),
         ],
         ProviderKind::E2b => vec![
             "Your own E2B team pays for the computers.".to_owned(),
@@ -458,6 +467,9 @@ impl Computers {
         if kind == ProviderKind::Ec2 {
             let region = saved.as_ref().and_then(|s| s.get("region")).unwrap_or(env_config.region);
             o["policy"] = json!(AWS_POLICY.replace("<REGION>", &region));
+            if ec2::api::region_ok(&region) {
+                o["launch"] = json!(launch_stack(&region));
+            }
         }
         o
     }

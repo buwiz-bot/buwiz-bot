@@ -146,6 +146,8 @@ async fn every_home_is_listed_and_docker_is_the_default_until_a_person_picks() {
     assert_eq!(provider_of(&list, "remote")["canDefault"], false);
     assert_eq!(provider_of(&list, "docker")["configured"], true);
     assert!(provider_of(&list, "ec2")["policy"].as_str().unwrap().contains("buwiz:managed"), "the Copy button has the limited policy");
+    let launch = provider_of(&list, "ec2")["launch"].as_str().unwrap();
+    assert!(launch.starts_with("https://console.aws.amazon.com/cloudformation/home?region=") && launch.contains("templateURL=https%3A%2F%2Fbuwiz-computer-templates.s3"), "{launch}");
 }
 
 #[tokio::test]

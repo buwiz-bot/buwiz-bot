@@ -84,6 +84,8 @@ pub(crate) struct Home {
     pub computers: Vec<(String, Vec<String>)>,
     /// a limited policy to copy, as JSON text; "" for none
     pub policy: String,
+    /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
+    pub launch: String,
 }
 
 impl Home {
@@ -112,6 +114,8 @@ impl Home {
             notes: list("notes").iter().filter_map(Value::as_str).filter(|n| !n.is_empty()).map(str::to_owned).collect(),
             computers,
             policy: text("policy"),
+            // only a web page: it's opened in the browser
+            launch: Some(text("launch")).filter(|u| u.starts_with("https://")).unwrap_or_default(),
             kind,
         })
     }
@@ -590,6 +594,12 @@ pub(crate) fn key_form(form: KeyForm, home: Home, saved: Rc<dyn Fn()>, cancelled
             .child(text(move || if busy.get() { "Checking…".to_owned() } else { "Check and save".to_owned() }).text_size(px(12.0)).text_color(theme::MAIN))
             .on_press(move || form.submit(&h, saved.clone())),
     );
+    if !home.launch.is_empty() {
+        let launch = home.launch.clone();
+        buttons = buttons.child(small_button("Launch the AWS stack".to_owned(), "Launch the AWS stack".to_owned(), move || {
+            crate::live::store().open_link(&launch);
+        }));
+    }
     if !home.policy.is_empty() {
         let policy = home.policy.clone();
         buttons = buttons.child(small_button("Copy the limited policy".to_owned(), "Copy the limited policy".to_owned(), move || {
@@ -1036,6 +1046,15 @@ mod tests {
             {"kind": "boat", "label": "boat.dev", "configured": false, "canDefault": true, "fields": [{"key": "token", "label": "Token", "secret": true}]},
             {"kind": "remote", "label": "A remote computer", "canDefault": false, "fields": []}
         ]}))
+    }
+
+    #[test]
+    fn a_launch_page_is_kept_only_when_it_is_a_web_page() {
+        let mut v = ec2();
+        v["launch"] = json!("https://console.aws.amazon.com/cloudformation/home?region=ap-southeast-1");
+        assert!(Home::parse(&v).unwrap().launch.starts_with("https://console.aws.amazon.com/"));
+        v["launch"] = json!("file:///etc/passwd");
+        assert_eq!(Home::parse(&v).unwrap().launch, "");
     }
 
     #[test]
