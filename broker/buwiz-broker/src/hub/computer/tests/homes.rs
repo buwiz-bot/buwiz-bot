@@ -91,7 +91,8 @@ fn factory(platform: Arc<Platform>) -> Factory {
                 platform.made.lock().unwrap().push(settings.clone());
                 Arc::new(FakeCloud { kind, settings, platform: platform.clone() })
             }
-            Made::Ec2(..) => Arc::new(buwiz_computer::Planned(ProviderKind::Ec2)),
+            // its keys are what the AWS check reads; this one takes any
+            Made::Ec2(..) => Arc::new(FakeCloud { kind: ProviderKind::Ec2, settings: Shared::new(cloud::Settings::new(Some(Secret::new(GOOD)), None)), platform: platform.clone() }),
         }
     })
 }
@@ -280,4 +281,40 @@ async fn a_model_can_ask_for_a_setup_card_once_and_never_sees_a_key() {
     // a routine has nobody to ask
     let routine = run(&b, &b.ann.1, Some("rt_1"));
     assert!(words(&call(&routine, tools::SETUP, json!({"reason": "x"})).await).contains("routine can't"));
+}
+
+#[tokio::test]
+async fn removing_a_homes_keys_takes_it_off_as_the_default_and_as_a_bots_choice() {
+    let (b, _) = homes_bed("remove-choices");
+    save_e2b(&b, GOOD).await.unwrap();
+    b.computers.set_default(&b.ctx, ProviderKind::E2b).unwrap();
+    b.computers.set_bot_home(&b.ctx, &b.ann.0, Some(ProviderKind::E2b)).unwrap();
+    b.computers.remove_provider(&b.ctx, ProviderKind::E2b).await.unwrap();
+    assert_eq!(b.computers.providers_json(&b.ctx)["default"]["kind"], "docker");
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["home"], json!({"kind": "docker", "label": "Docker on this Mac", "source": "default"}));
+}
+
+#[tokio::test]
+async fn naming_a_new_aws_profile_with_the_keys_left_blank_uses_the_profile() {
+    let (b, _) = homes_bed("aws-profile");
+    let save = |pairs: &'static [(&'static str, &'static str)]| {
+        let (b, v) = (&b, values(pairs));
+        async move { b.computers.save_provider(&b.ctx, ProviderKind::Ec2, &v, &[]).await }
+    };
+    save(&[("access_key_id", "test-access-key-id"), ("secret_access_key", "test-secret-value-long"), ("region", "ap-southeast-1")]).await.unwrap();
+    assert!(keys(&b.ctx).unwrap().get_provider_cred("ec2").unwrap().is_some());
+    // a region changed with the keys left blank keeps them
+    save(&[("access_key_id", ""), ("secret_access_key", ""), ("region", "eu-west-1")]).await.unwrap();
+    assert!(keys(&b.ctx).unwrap().get_provider_cred("ec2").unwrap().is_some());
+    // a profile named with them blank: the keys go, so the profile is what signs
+    let shown = save(&[("access_key_id", ""), ("secret_access_key", ""), ("profile", "work"), ("region", "eu-west-1")]).await.unwrap();
+    assert_eq!(keys(&b.ctx).unwrap().get_provider_cred("ec2").unwrap(), None);
+    assert_eq!((field(&shown, "secret_access_key")["set"].clone(), field(&shown, "profile")["value"].clone()), (json!(false), json!("work")));
+}
+
+#[test]
+fn a_bots_choice_must_be_named_and_only_null_means_the_default() {
+    assert_eq!(kind_in(&json!({"kind": null})).unwrap(), None);
+    assert_eq!(kind_in(&json!({"kind": "e2b"})).unwrap(), Some(ProviderKind::E2b));
+    assert!(kind_in(&json!({})).is_err() && kind_in(&Value::Null).is_err() && kind_in(&json!({"kind": "nope"})).is_err());
 }

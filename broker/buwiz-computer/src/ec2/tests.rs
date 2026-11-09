@@ -31,6 +31,8 @@ struct Fake {
     refuse_hibernate: Option<String>,
     /// what a dry-run launch is refused with, when not `DryRunOperation`
     deny_launch: Option<String>,
+    /// a dry run that launches anyway
+    launch_on_dry: bool,
 }
 
 type Shared = Arc<Mutex<Fake>>;
@@ -92,7 +94,7 @@ fn answer(fake: &Shared, action: &str, q: &HashMap<String, String>) -> (u16, Str
             let items: String = wanted.iter().map(instance_xml).collect();
             ok(format!("<reservationSet><item><reservationId>r-1</reservationId><instancesSet>{items}</instancesSet></item></reservationSet>"))
         }
-        "RunInstances" if q.get("DryRun").map(String::as_str) == Some("true") => {
+        "RunInstances" if q.get("DryRun").map(String::as_str) == Some("true") && !f.launch_on_dry => {
             refused(f.deny_launch.as_deref().unwrap_or("DryRunOperation"))
         }
         "RunInstances" => {
@@ -548,4 +550,16 @@ async fn a_check_launches_nothing_and_says_when_the_keys_may_not() {
     assert!(said.sentence().contains("buwiz:managed=true"), "{}", said.sentence());
     fake.lock().unwrap().deny_launch = Some("AuthFailure".into());
     assert_eq!(p.verify().await.unwrap_err().code(), "bad_key");
+}
+
+#[tokio::test]
+async fn a_check_that_launched_ends_what_it_launched_and_doesnt_pass() {
+    let d = tmp("verify-launched");
+    let fake: Shared = Arc::default();
+    fake.lock().unwrap().launch_on_dry = true;
+    let p = provider(&d, &fake, true).await;
+    let said = p.verify().await.unwrap_err();
+    assert!(said.sentence().contains("terminated at once"), "{}", said.sentence());
+    let f = fake.lock().unwrap();
+    assert!(f.instances.iter().all(|i| i.state == "shutting-down"), "nothing it launched is left running");
 }

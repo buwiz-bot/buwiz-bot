@@ -74,6 +74,14 @@ impl Items<'_> {
         security(&args).map(|out| out.trim().to_owned())
     }
 
+    /// [`Items::get`], telling a missing item (`Ok(None)`) from a Keychain that didn't answer
+    /// (`Err`): locked, refused or slow. A caller that would act on "there are no keys" needs to know.
+    fn read(&self, id: &str) -> Result<Option<String>, String> {
+        let mut args = vec!["find-generic-password", "-s", self.service, "-a", id, "-w"];
+        args.extend(self.keychain);
+        security_status(&args).map(|out| out.map(|o| o.trim().to_owned()))
+    }
+
     /// Whether the item went (or was not there).
     fn remove(&self, id: &str) -> bool {
         let mut args = vec!["delete-generic-password", "-s", self.service, "-a", id];
@@ -352,12 +360,16 @@ impl Keystore {
         }
     }
 
-    /// Provider `kind`'s keys as they were kept, or `None` when there are none (or the Keychain refused).
+    /// Provider `kind`'s keys as they were kept, or `None` when there are none. A Keychain that didn't
+    /// answer is an `Err`, never `None`: "no keys" is what a save acts on.
     pub fn get_provider_cred(&self, kind: &str) -> Result<Option<String>, String> {
         check_provider(kind)?;
         Ok(match self {
             Keystore::File(dir) => std::fs::read_to_string(Self::provider_file(dir, kind)).ok(),
-            Keystore::Keychain => PROVIDER_ITEMS.get(&format!("{kind}/default")).and_then(|b| buwiz_protocol::keys::unb64(&b).ok()).and_then(|b| String::from_utf8(b).ok()),
+            Keystore::Keychain => match PROVIDER_ITEMS.read(&format!("{kind}/default"))? {
+                None => None,
+                Some(b) => Some(buwiz_protocol::keys::unb64(&b).ok().and_then(|b| String::from_utf8(b).ok()).ok_or("the Keychain's copy of these keys can't be read")?),
+            },
         })
     }
 
@@ -416,6 +428,35 @@ fn security_stdin(line: &str) -> Result<(), String> {
 }
 
 /// `security <args>`'s stdout, or `None` on failure or after 10 s.
+/// `security` with `args`: its output, `Ok(None)` for exit 44 (the item isn't there), and `Err` for
+/// any other failure or after 10 seconds.
+fn security_status(args: &[&str]) -> Result<Option<String>, String> {
+    let mut child = Command::new(SECURITY).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                use std::io::Read as _;
+                if let Some(mut o) = child.stdout.take() {
+                    o.read_to_string(&mut out).map_err(|e| e.to_string())?;
+                }
+                return match status.code() {
+                    Some(0) => Ok(Some(out)),
+                    Some(44) => Ok(None),
+                    code => Err(format!("the Keychain didn't answer (security: exit {})", code.unwrap_or(-1))),
+                };
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the Keychain didn't answer in time".to_owned());
+            }
+        }
+    }
+}
+
 pub(crate) fn security(args: &[&str]) -> Option<String> {
     let mut child = Command::new(SECURITY).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let deadline = Instant::now() + Duration::from_secs(10);

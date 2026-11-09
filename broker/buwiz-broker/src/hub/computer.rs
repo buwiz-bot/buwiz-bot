@@ -490,6 +490,8 @@ impl Computers {
         // the Bot's own choice, else the Mac's default: only a person sets either
         let (kind, _) = homes::home_of(ctx, bot);
         let provider = self.provider_of_kind(ctx, kind);
+        // until its record is written: a removal of these keys waits, and then sees it
+        let _keys = self.homes.saving.read().await;
         let made = provider.create(&spec).await;
         let machine = match made {
             Ok(m) => m,
@@ -590,8 +592,12 @@ impl Computers {
         // its record is lost: what's left of the computer gets a new one, files and all
         let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
         // by the kind it was: its files are only where it was made
-        let kind = Self::kind_of(ctx, &seat.computer)?.unwrap_or_else(|| homes::home_of(ctx, bot).0);
-        if let Some(machine) = self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await? {
+        let recovered = match Self::kind_of(ctx, &seat.computer)? {
+            Some(kind) => self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await?,
+            // a kind nothing here knows: there's nowhere to look
+            None => None,
+        };
+        if let Some(machine) = recovered {
             std::fs::create_dir_all(&spec.dir).map_err(|e| Problem::Failed(e.to_string()))?;
             // before the record: once that reads, nothing else says the secrets changed
             std::fs::write(Self::stop_owed(ctx, &seat.computer), "").map_err(|e| Problem::Failed(e.to_string()))?;
@@ -1797,7 +1803,8 @@ async fn remove_provider(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// The kind a body names, `None` for `null`: `Err` for a word that isn't one.
 fn kind_in(body: &Value) -> Result<Option<ProviderKind>, Problem> {
     match body.get("kind") {
-        None | Some(Value::Null) => Ok(None),
+        None => Err(Problem::Credentials { code: "not_offered", message: "Say where: a kind, or null for the default.".to_owned() }),
+        Some(Value::Null) => Ok(None),
         Some(v) => v.as_str().and_then(ProviderKind::parse).map(Some).ok_or_else(|| Problem::Credentials { code: "not_offered", message: "That isn't a place computers can be made.".to_owned() }),
     }
 }
@@ -1841,7 +1848,9 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 /// Puts the computers in `ctx.ext`, with their routes and the timer that puts them to sleep.
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.ext.get::<Arc<Computers>>().is_none() {
-        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::from_env()))));
+        // Docker's: every other kind is made with a person's settings (`homes`), and the env word
+        // only says where new computers go
+        ctx.ext.insert(Arc::new(Computers::new(provider_for(ProviderKind::Docker))));
     }
     routes.route(Verb::Get, X("/v1/host/computers"), list);
     routes.route(Verb::Get, X("/v1/host/computer/providers"), providers);

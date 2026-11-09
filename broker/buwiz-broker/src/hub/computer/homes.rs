@@ -62,7 +62,7 @@ struct Field {
 }
 
 const EC2_FIELDS: &[Field] = &[
-    Field { key: "access_key_id", label: "Access key ID", placeholder: "AKIA…", secret: true, required: false, hint: "The access key of the AWS user made for Buwiz (buwiz-computer-broker). Leave both keys blank to use an AWS profile on this Mac instead." },
+    Field { key: "access_key_id", label: "Access key ID", placeholder: "AKIA…", secret: true, required: false, hint: "The access key of the AWS user made for Buwiz (buwiz-computer-broker). To use an AWS profile on this Mac instead, leave both keys blank and name the profile below." },
     Field { key: "secret_access_key", label: "Secret access key", placeholder: "", secret: true, required: false, hint: "Shown once by AWS when the access key is made." },
     Field { key: "profile", label: "AWS profile", placeholder: "buwiz-broker", secret: false, required: false, hint: "Used when no access key is pasted: a profile in ~/.aws with an access key. A profile that signs in through the browser (SSO, aws login) doesn't work yet." },
     Field { key: "region", label: "Region", placeholder: ec2::DEFAULT_REGION, secret: false, required: true, hint: "Where the computers run, like ap-southeast-1. The launch template must be in this region." },
@@ -232,15 +232,16 @@ pub struct Homes {
     providers: Mutex<HashMap<ProviderKind, Arc<dyn Provider>>>,
     handles: Mutex<HashMap<ProviderKind, Handles>>,
     factory: Factory,
-    /// one save or removal at a time: a check between a read and a write mustn't see another's
-    saving: tokio::sync::Mutex<()>,
+    /// a save or a removal holds it to write, and the making of a computer to read: a key can't be
+    /// removed while a computer is being made with it, nor two saves cross
+    pub(super) saving: tokio::sync::RwLock<()>,
 }
 
 impl Homes {
     /// `first` serves its own kind: Docker's provider, or a test's.
     pub fn new(first: Arc<dyn Provider>) -> Self {
         let providers = HashMap::from([(first.kind(), first)]);
-        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), saving: tokio::sync::Mutex::new(()) }
+        Self { providers: Mutex::new(providers), handles: Mutex::default(), factory: Arc::new(real), saving: tokio::sync::RwLock::new(()) }
     }
 
     /// Makes providers with `factory` (tests).
@@ -258,7 +259,15 @@ impl Homes {
         let made: Arc<dyn Provider> = match kind {
             ProviderKind::Docker => Arc::new(DockerProvider::from_env()),
             ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat => {
-                let saved = load(ctx, kind).unwrap_or_else(|_| Some(Saved::default()));
+                let saved = match load(ctx, kind) {
+                    Ok(saved) => saved,
+                    // the keystore didn't answer: a provider for this call alone, and the next one
+                    // reads again. Kept, it would stand for "no keys" until the next save
+                    Err(p) => {
+                        eprintln!("buwiz-broker: {}'s keys couldn't be read: {}", kind.as_str(), p.code());
+                        return self.uncached(kind);
+                    }
+                };
                 let handles = self.handles_for(kind, saved.as_ref());
                 match handles {
                     Handles::Cloud(s) => (self.factory)(Made::Cloud(kind, s)),
@@ -268,6 +277,11 @@ impl Homes {
             other => provider_for(other),
         };
         self.providers.lock().unwrap_or_else(|e| e.into_inner()).entry(kind).or_insert(made).clone()
+    }
+
+    /// A provider of `kind` with nothing set, kept nowhere.
+    fn uncached(&self, kind: ProviderKind) -> Arc<dyn Provider> {
+        self.candidate(kind, &Saved::default())
     }
 
     /// The live handles of `kind`, made from `saved` the first time.
@@ -315,23 +329,24 @@ impl Homes {
 
     /// Whether `kind` has what a computer needs, as far as can be told without asking the platform.
     fn configured(&self, ctx: &HubCtx, kind: ProviderKind) -> bool {
-        match kind {
-            ProviderKind::Docker | ProviderKind::Remote => true,
-            ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat => {
-                let saved = load(ctx, kind).ok().flatten();
-                match kind {
-                    ProviderKind::Ec2 => match ec2_settings(saved.as_ref()).1 {
-                        AwsKeys::Saved(_) | AwsKeys::Profile(_) => true,
-                        env @ AwsKeys::Env(_) => creds::Keys::read(&StoreKeys(Shared::new(env))).is_ok(),
-                    },
-                    _ => {
-                        let s = cloud_settings(kind, saved.as_ref());
-                        s.key.is_some() && (kind != ProviderKind::E2b || s.image.is_some())
-                    }
-                }
-            }
-            _ => false,
+        configured_with(kind, &load(ctx, kind))
+    }
+}
+
+/// [`Homes::configured`] with what was read for `kind`. A keystore that didn't answer is a no.
+fn configured_with(kind: ProviderKind, read: &Result<Option<Saved>, Problem>) -> bool {
+    let Ok(saved) = read else { return false };
+    match kind {
+        ProviderKind::Docker | ProviderKind::Remote => true,
+        ProviderKind::Ec2 => match ec2_settings(saved.as_ref()).1 {
+            AwsKeys::Saved(_) | AwsKeys::Profile(_) => true,
+            env @ AwsKeys::Env(_) => creds::Keys::read(&StoreKeys(Shared::new(env))).is_ok(),
+        },
+        ProviderKind::E2b | ProviderKind::Boat => {
+            let s = cloud_settings(kind, saved.as_ref());
+            s.key.is_some() && (kind != ProviderKind::E2b || s.image.is_some())
         }
+        _ => false,
     }
 }
 
@@ -434,7 +449,9 @@ fn last4(s: &Secret) -> Option<String> {
 
 impl Computers {
     fn provider_json(&self, ctx: &HubCtx, kind: ProviderKind) -> Value {
-        let saved = load(ctx, kind).ok().flatten();
+        // one read of the keystore for the whole answer, and none for a home with nothing to keep
+        let read = if fields(kind).is_empty() { Ok(None) } else { load(ctx, kind) };
+        let saved = read.as_ref().ok().cloned().flatten();
         let (env_config, _) = ec2_settings(None);
         let shown: Vec<Value> = fields(kind)
             .iter()
@@ -460,7 +477,7 @@ impl Computers {
         let (default, _) = default_home(ctx);
         let built = built(kind);
         let mut o = json!({
-            "kind": kind.as_str(), "label": label(kind), "built": built, "configured": built && self.homes.configured(ctx, kind),
+            "kind": kind.as_str(), "label": label(kind), "built": built, "configured": built && configured_with(kind, &read),
             "canDefault": can_default(kind), "isDefault": default == kind, "fields": shown, "notes": notes(kind), "computers": computers,
             "source": if saved.is_some() { "saved" } else if fields(kind).is_empty() { "none" } else { "env" },
         });
@@ -486,8 +503,15 @@ impl Computers {
         if fields(kind).is_empty() {
             return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", label(kind))));
         }
-        let _saving = self.homes.saving.lock().await;
+        let _saving = self.homes.saving.write().await;
         let mut next = load(ctx, kind)?.unwrap_or_default();
+        let typed_of = |key: &str| values.get(key).and_then(Value::as_str).map(str::trim).unwrap_or("");
+        // a new profile named with both keys left blank: the profile is what's meant, and pasted
+        // keys would win over it
+        if kind == ProviderKind::Ec2 && !typed_of("profile").is_empty() && next.get("profile").as_deref() != Some(typed_of("profile")) && typed_of("access_key_id").is_empty() && typed_of("secret_access_key").is_empty() {
+            next.secrets.remove("access_key_id");
+            next.secrets.remove("secret_access_key");
+        }
         for f in fields(kind) {
             let typed = values.get(f.key).and_then(Value::as_str).map(str::trim);
             if let Some(v) = typed {
@@ -568,7 +592,7 @@ impl Computers {
         if fields(kind).is_empty() {
             return Err(refusal("nothing_to_set", format!("{} has no keys to remove.", label(kind))));
         }
-        let _saving = self.homes.saving.lock().await;
+        let _saving = self.homes.saving.write().await;
         let left = computers_on(ctx, kind)?;
         if !left.is_empty() {
             let names: Vec<String> = left.iter().flat_map(|(_, bots)| bots.clone()).collect();
@@ -579,6 +603,10 @@ impl Computers {
             ));
         }
         forget(ctx, kind)?;
+        // with its keys gone it can't be where new computers go: the Mac's default and any Bot's
+        // own choice of it go back to the default
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_home WHERE kind=?", [kind.as_str()]));
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM bot_computer_home WHERE kind=?", [kind.as_str()]));
         self.homes.apply(kind, None);
         Ok(self.provider_json(ctx, kind))
     }

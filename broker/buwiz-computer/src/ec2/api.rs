@@ -244,7 +244,15 @@ impl Api {
         match self.call("RunInstances", &params).await? {
             Called::Refused(r) if r.code == "DryRunOperation" => Ok(()),
             Called::Refused(r) => Err(r.problem()),
-            Called::Done(_) => Ok(()),
+            // a launch that went: it's ended at once, and the check doesn't pass on it
+            Called::Done(doc) => {
+                let ids: Vec<String> = doc.items(&["instancesSet"]).filter_map(|i| i.text_at(&["instanceId"]).map(str::to_owned)).collect();
+                let ended = self.terminate(&ids).await;
+                Err(Problem::Failed(match ended {
+                    Ok(()) => "AWS launched an instance for what was only a check. It was terminated at once; check again.".to_owned(),
+                    Err(_) => format!("AWS launched an instance for what was only a check, and it couldn't be terminated: end {} in the EC2 console.", ids.join(", ")),
+                }))
+            }
         }
     }
 

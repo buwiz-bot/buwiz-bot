@@ -464,7 +464,7 @@ fn setup(run: &Run, computers: &Computers, bot: &str, input: &Value) -> Out {
     if computers.has_working(&run.ctx, bot) {
         return Out::err("You already have a computer. If it's asleep, ask the person to wake it from the Computer tab.".to_owned());
     }
-    if std::mem::replace(&mut run.state().setup_asked, true) {
+    if run.state().setup_asked {
         return Out::err("The card is already in the chat: wait for the person.".to_owned());
     }
     let reason: String = text(input, "reason").unwrap_or("").trim().chars().take(MAX_REASON).collect();
@@ -477,6 +477,8 @@ fn setup(run: &Run, computers: &Computers, bot: &str, input: &Value) -> Out {
     if !crate::hub::tools::miniapps::post_in(&run.ctx, &chat, &n) {
         return Out::err("The card couldn't be put in this chat. Tell the person they can set up a computer from the Bot's Computer tab.".to_owned());
     }
+    // only once it's there: a card that wasn't posted can be asked for again
+    run.state().setup_asked = true;
     Out::ok("A card is in the chat for the person to pick where your computer runs and add their own keys. You won't see any key. Wait for them: once it's set up they wake it, and then you can use it.".to_owned())
 }
 
