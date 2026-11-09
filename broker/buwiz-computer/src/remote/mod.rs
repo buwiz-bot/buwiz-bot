@@ -46,9 +46,9 @@ pub mod tls;
 /// Where a plain SSH host keeps what the Bots make, under that login's home.
 const SHELL_ROOT: &str = "buwiz-computer";
 /// How long a box or a plain host gets to prove it's there before anyone uses it.
-const CHECK_PATIENCE: Duration = Duration::from_secs(5);
+pub(crate) const CHECK_PATIENCE: Duration = Duration::from_secs(5);
 /// How long a box gets to answer once the tunnel is up.
-const FIRST_ANSWER: Duration = Duration::from_secs(15);
+pub(crate) const FIRST_ANSWER: Duration = Duration::from_secs(15);
 /// The biggest key file a person can mean.
 const MAX_KEY: u64 = 64 * 1024;
 /// The most of a command's output or a file that comes back over plain SSH.
@@ -58,7 +58,7 @@ const MAX_FILE: usize = 8 * 1024 * 1024;
 const FILE_PATIENCE: Duration = Duration::from_secs(30);
 const SERVICES: usize = 2 + VIEWER_PORTS.len();
 /// How often a box is asked if it's there, and how many misses in a row mean it isn't.
-const BEAT: Duration = Duration::from_secs(15);
+pub(crate) const BEAT: Duration = Duration::from_secs(15);
 const MISSES: u32 = 3;
 
 const NOT_THIS_WAY: &str = "A remote computer isn't made here: add it in the Computer tab.";
@@ -227,24 +227,24 @@ pub enum Probed {
 }
 
 /// One open connection.
-struct Open {
-    way: Way,
-    guest: Option<BoxGuest>,
+pub(crate) struct Open {
+    pub(crate) way: Way,
+    pub(crate) guest: Option<BoxGuest>,
     /// guest port → port here
-    ports: HashMap<u16, u16>,
+    pub(crate) ports: HashMap<u16, u16>,
     /// what a viewer is asked for by, at this guest port
-    names: HashMap<u16, String>,
+    pub(crate) names: HashMap<u16, String>,
     /// a box stopped answering ([`beat`])
-    silent: AtomicBool,
+    pub(crate) silent: AtomicBool,
 }
 
-enum Way {
+pub(crate) enum Way {
     Ssh(Box<ssh::Master>),
     Tls(tls::Relays),
 }
 
 impl Open {
-    fn alive(&self) -> bool {
+    pub(crate) fn alive(&self) -> bool {
         !self.silent.load(Ordering::Relaxed)
             && match &self.way {
                 Way::Ssh(master) => master.alive(),
@@ -252,14 +252,14 @@ impl Open {
             }
     }
 
-    async fn close(&self) {
+    pub(crate) async fn close(&self) {
         match &self.way {
             Way::Ssh(master) => master.close().await,
             Way::Tls(relays) => relays.stop(),
         }
     }
 
-    fn master(&self) -> Result<&ssh::Master> {
+    pub(crate) fn master(&self) -> Result<&ssh::Master> {
         match &self.way {
             Way::Ssh(master) => Ok(master),
             Way::Tls(_) => Err(Problem::Failed("this computer has no SSH connection".to_owned())),
@@ -270,7 +270,7 @@ impl Open {
 /// Asks a box if it's there, every `every`, for as long as its connection lasts: [`Provider::power`]
 /// is read too often to ask, and a relay stays up with nothing behind it. A few misses in a row and
 /// it's not alive, so the tab shows it and a click connects again.
-fn beat(open: Weak<Open>, every: Duration) {
+pub(crate) fn beat(open: Weak<Open>, every: Duration) {
     tokio::spawn(async move {
         let mut misses = 0;
         loop {
@@ -491,18 +491,18 @@ impl RemoteProvider {
 }
 
 /// Every guest port a box has, in one order.
-fn guest_ports() -> impl Iterator<Item = u16> {
+pub(crate) fn guest_ports() -> impl Iterator<Item = u16> {
     [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS)
 }
 
-fn guest_at(ports: &HashMap<u16, u16>, token: Secret) -> Result<BoxGuest> {
+pub(crate) fn guest_at(ports: &HashMap<u16, u16>, token: Secret) -> Result<BoxGuest> {
     let at = |p: u16| ports.get(&p).map(|here| format!("http://127.0.0.1:{here}")).ok_or_else(|| Problem::Failed("a port isn't forwarded".to_owned()));
     Ok(BoxGuest::connect(&at(EXEC_PORT)?, &at(HOST_PORT)?, token))
 }
 
 /// A box answers, takes the token and says it's a box. What it says is good for this much: it
 /// widens nothing.
-async fn answers(open: &Open) -> Result<()> {
+pub(crate) async fn answers(open: &Open) -> Result<()> {
     let Some(guest) = &open.guest else { return Ok(()) };
     let info = tokio::time::timeout(FIRST_ANSWER, guest.info()).await.unwrap_or(Err(Problem::Guest { status: 504, message: String::new() }));
     let info = match info {
@@ -522,7 +522,7 @@ fn link_of(machine: &Machine) -> Result<&Link> {
 }
 
 /// Anything from a box, with this computer's secrets out of what it said.
-fn clean<T>(machine: &Machine, got: Result<T>) -> Result<T> {
+pub(crate) fn clean<T>(machine: &Machine, got: Result<T>) -> Result<T> {
     got.map_err(|p| match p {
         Problem::Guest { status, message } => Problem::Guest { status, message: machine.scrub(&message) },
         other => other,
