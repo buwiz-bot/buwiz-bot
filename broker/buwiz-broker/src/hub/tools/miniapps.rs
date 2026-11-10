@@ -335,6 +335,10 @@ pub async fn review_update(ctx: &HubCtx, host: &Host, id: &str, chat: &str) -> R
     if f.id != id {
         return V1Error::err("plugin_unavailable", format!("the release is {}, not {id}", js::slice_utf16(&f.id, 80)));
     }
+    // the tag may have moved since the check: review only what was announced
+    if crate::v1::manifest::compare_semver(&f.version, &version) != Some(0) {
+        return V1Error::err("plugin_unavailable", format!("{tag} is now {}, not the {version} announced; check for updates again", js::slice_utf16(&f.version, 40)));
+    }
     // an older card for this plugin can't install what is reviewed now
     crate::hub::routines::store_host::settle_notices(ctx, Some(chat), "app_install", id, "declined");
     let n = install_notice(host, &f, &spec, &i);
@@ -899,12 +903,25 @@ mod tests {
         }
         assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
         assert_eq!(b.host.update_of(FX), None);
+        // its manifest can't be fetched: the access it adds is unknown, so nothing is announced
+        publish_1_1(&b);
+        b.files.lock().unwrap().remove("/obj/v1.1.0/manifest.signed.json");
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
+        assert_eq!(b.host.update_of(FX), None);
         // a good one is known, then GitHub is unreachable: it stays known
         publish_1_1(&b);
         assert_eq!(check_updates(&b.ctx, &b.host).await, 1);
         b.files.lock().unwrap().remove("/repos/o/r/releases/latest");
         assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
         assert_eq!(b.host.update_of(FX).unwrap()["version"], "1.1.0");
+        // its tag now holds another version: Review posts no card for what wasn't announced
+        let chat = b.ctx.store.read(|s| s.active.clone());
+        let moved = b.files.lock().unwrap()["/repos/o/r/releases/tags/v1.0.0"].clone();
+        let was = b.files.lock().unwrap().insert("/repos/o/r/releases/tags/v1.1.0".into(), moved).unwrap();
+        let e = review_update(&b.ctx, &b.host, FX, &chat).await.unwrap_err();
+        assert_eq!(e.code, "plugin_unavailable", "{}", e.message);
+        assert!(e.message.contains("not the 1.1.0 announced"), "{}", e.message);
+        b.files.lock().unwrap().insert("/repos/o/r/releases/tags/v1.1.0".into(), was);
         // the release goes back to the installed version (pulled): the signal goes
         latest(&b.files, "v1.0.0");
         assert_eq!(check_updates(&b.ctx, &b.host).await, 1);
