@@ -635,9 +635,10 @@ pub trait Provider: Send + Sync {
     }
 
     /// What's left of computers whose box is gone, files and all, whether or not a record names
-    /// them: the caller knows which records it has. Nothing is removed.
-    async fn leftovers(&self) -> Result<Vec<Leftover>> {
-        Ok(Vec::new())
+    /// them: the caller knows which records it has. Nothing is removed. `None` when this provider
+    /// can't say, which is never "none left".
+    async fn leftovers(&self) -> Result<Option<Vec<Leftover>>> {
+        Ok(None)
     }
 
     /// A record for computer `spec.id` from what's left of it, with new secrets, when its saved

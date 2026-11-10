@@ -709,7 +709,8 @@ impl Computers {
                 _ => unnamed |= !matches!(Self::kind_of(ctx, id), Ok(Some(kind)) if kind != ProviderKind::Docker),
             }
         }
-        let found = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await.ok()?;
+        // a provider that can't say has nothing to list: the list goes without
+        let found = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await.ok()??;
         // a computer being made has its volumes before its row: read after Docker answered, the
         // ones being made first, so a make that ends meanwhile is in its row by the second read
         let making: HashSet<String> = self.being_made.lock().unwrap_or_else(|e| e.into_inner()).clone();

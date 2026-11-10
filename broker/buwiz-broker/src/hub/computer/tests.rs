@@ -436,6 +436,19 @@ async fn a_docker_that_hangs_leaves_the_leftovers_out_of_the_list_and_holds_it_u
 }
 
 #[tokio::test]
+async fn a_provider_that_cant_say_what_is_left_gives_no_list_of_leftovers() {
+    let b = bed("leftovers-unknown");
+    b.mock.leftovers_unknown.store(true, Ordering::SeqCst);
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert!(docker.get("leftovers").is_none(), "not an empty list, which would say there are none: {docker}");
+    b.mock.leftovers_unknown.store(false, Ordering::SeqCst);
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]), "Docker's own word that nothing is left: {docker}");
+}
+
+#[tokio::test]
 async fn a_docker_computer_with_no_box_name_to_go_by_hides_the_volumes_from_before_labels() {
     let b = bed("leftovers-unnamed");
     let id = awake(&b, &b.ann.0).await;

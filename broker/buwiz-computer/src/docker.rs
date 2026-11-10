@@ -974,7 +974,7 @@ impl Provider for DockerProvider {
 
     /// Volumes of a computer, by its label or by this provider's naming, whose box container is
     /// gone. A box's own volumes are only ever its two, so its name says whose they were.
-    async fn leftovers(&self) -> Result<Vec<Leftover>> {
+    async fn leftovers(&self) -> Result<Option<Vec<Leftover>>> {
         let format = format!("{{{{.Name}}}}\t{{{{.Label \"{LABEL}.id\"}}}}");
         // both at once: the hub waits on the pair for a few seconds at most
         let (ls, ps) = (["volume", "ls", "--format", format.as_str()], ["ps", "-a", "--format", "{{.Names}}"]);
@@ -990,7 +990,7 @@ impl Provider for DockerProvider {
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
+        Ok(Some(out))
     }
 
     async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
@@ -1591,7 +1591,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         .join("\\n");
         let body = format!("case \"$1 $2\" in 'volume ls') printf '{volumes}\\n';; 'ps -a') printf 'c2-11223344\\nc2-11223344-wall\\nc2-55667788\\nc2-0a1b2c3d-wall\\n';; esac");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
-        let found = p.leftovers().await.unwrap();
+        let found = p.leftovers().await.unwrap().unwrap();
         let shown: Vec<(&str, Option<&str>, &str)> = found.iter().map(|l| (l.name.as_str(), l.id.as_deref(), l.owner.as_str())).collect();
         assert_eq!(
             shown,
@@ -1611,7 +1611,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         // each answers only once both were asked: one after the other, the first never would
         let body = format!("d='{}'; : > \"$d/in-$1\"; i=0; while [ ! -e \"$d/in-volume\" ] || [ ! -e \"$d/in-ps\" ]; do i=$((i+1)); [ $i -gt 100 ] && exit 1; sleep 0.1; done; case \"$1 $2\" in 'volume ls') printf 'c2-deadbeef-home\\t\\n';; esac", dir.display());
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
-        assert_eq!(p.leftovers().await.unwrap().len(), 1);
+        assert_eq!(p.leftovers().await.unwrap().unwrap().len(), 1);
     }
 
     #[tokio::test]
