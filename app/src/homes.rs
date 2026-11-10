@@ -1068,15 +1068,18 @@ fn bot_choice(bot: &str, label: String, kind: Option<String>, chosen: bool) -> i
 // ---------------------------------------------------------------------------
 
 /// The sub-commands, with what each does.
-const SUBS: [(&str, &str); 5] = [
+const SUBS: [(&str, &str); 7] = [
     ("setup", "Enter a home's key"),
     ("use", "Where this Bot's next new computer is made"),
     ("default", "Where new computers are made"),
     ("check", "Check a home's key"),
     ("status", "This Bot's computer, and where its next one is made"),
+    ("takeover", "Take over this Bot's screen yourself"),
+    ("session", "Save or load this Bot's browser sign-ins: session save <name> | session load <name>"),
 ];
 
-const USAGE: &str = "/computer setup <home> | use <home> | default <home> | check [<home>] | status";
+const USAGE: &str = "/computer setup <home> | use <home> | default <home> | check [<home>] | status | takeover | session save|load <name>";
+const SESSION_USAGE: &str = "/computer session save <name> or /computer session load <name>: a name is letters, digits, _ and -.";
 
 /// What follows `/computer`, read whole against the homes there are.
 #[derive(Debug, PartialEq)]
@@ -1091,6 +1094,15 @@ pub(crate) enum Line {
     /// "" checks the default home
     Check(String),
     Say(String),
+    /// the person takes this Bot's screen
+    Takeover,
+    /// `save` or `load`, and the session's name
+    Session(&'static str, String),
+}
+
+/// A session's name as the box takes it: 1 to 64 letters, digits, `_` and `-`.
+fn session_name(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn unknown(word: &str, h: &Homes) -> Line {
@@ -1105,6 +1117,15 @@ pub(crate) fn parse(rest: &str, h: &Homes) -> Line {
     match (sub.to_lowercase().as_str(), arg) {
         ("", _) => Line::Page,
         ("status", "") => Line::Status,
+        ("takeover", "") => Line::Takeover,
+        ("session", a) => {
+            let (op, name) = a.split_once(char::is_whitespace).map(|(o, n)| (o, n.trim())).unwrap_or((a, ""));
+            match op.to_lowercase().as_str() {
+                "save" if session_name(name) => Line::Session("save", name.to_owned()),
+                "load" if session_name(name) => Line::Session("load", name.to_owned()),
+                _ => Line::Say(SESSION_USAGE.to_owned()),
+            }
+        }
         ("setup", "") => Line::Setup(None),
         ("check", "") => Line::Check(String::new()),
         ("use", "") => Line::Say("Use which? /computer use <home>, or /computer use default".to_owned()),
@@ -1135,7 +1156,7 @@ pub(crate) fn rows(rest: &str, h: &Homes, in_bot: bool) -> (Vec<crate::slash::Po
     let line = rest.trim_start();
     let starts = |word: &str, q: &str| word.to_lowercase().starts_with(&q.to_lowercase());
     let Some((sub, q)) = line.split_once(char::is_whitespace) else {
-        let rows = SUBS.iter().filter(|(s, _)| starts(s, line)).map(|(s, d)| fill_row(if *s == "status" { "/computer status".to_owned() } else { format!("/computer {s} ") }, s, d)).collect();
+        let rows = SUBS.iter().filter(|(s, _)| starts(s, line)).map(|(s, d)| fill_row(if matches!(*s, "status" | "takeover") { format!("/computer {s}") } else { format!("/computer {s} ") }, s, d)).collect();
         return (rows, String::new());
     };
     let sub = sub.to_lowercase();
@@ -1213,6 +1234,14 @@ async fn act(line: Line, h: &Homes) {
             let next = status.home.as_ref().map(|n| next_words(n, &h.default.label)).unwrap_or_else(|| format!("Default ({})", h.default.label));
             say(format!("{}: {}. New computers for {}: {next}.", b.name, status.headline(), b.name));
         }
+        Line::Takeover => match bot {
+            Some(b) => crate::computer::take_over(&b.id, &b.name),
+            None => say("Open a Bot's chat first.".to_owned()),
+        },
+        Line::Session(op, name) => {
+            let Some(b) = bot else { return say("Open a Bot's chat first.".to_owned()) };
+            say(session(&b.id, &b.name, op, &name).await);
+        }
         Line::Use(_) if bot.is_none() => say("Open a Bot's chat first.".to_owned()),
         Line::Use(Some(k)) if !ready(&k) => local_card("key", &k),
         Line::Use(kind) => {
@@ -1230,6 +1259,25 @@ async fn act(line: Line, h: &Homes) {
             Said::Yes(_) => say(format!("New computers are now made on {}.", label_in(h)(&k))),
             Said::No(why) => say(why),
         },
+    }
+}
+
+/// `POST /v1/host/computer/bot/{bot}/session {op, name}`: the Bot's own screen's sign-ins, kept in
+/// its computer or put back. → what to tell the person; counts only, never a value.
+async fn session(bot: &str, name: &str, op: &str, session: &str) -> String {
+    match client::post_status(&format!("{}/session", bot_path(bot)), json!({"op": op, "name": session})).await {
+        Some((200, v)) => {
+            let cookies = v.get("cookies").and_then(Value::as_u64).unwrap_or(0);
+            if op == "save" {
+                format!("Saved {name}'s browser session as {session} ({cookies} cookies). /computer session load {session} puts it back.")
+            } else {
+                let pending = v.get("pending").and_then(Value::as_u64).unwrap_or(0);
+                let more = if pending > 0 { " Open its sites and load it again for the rest." } else { "" };
+                format!("Loaded {session} into {name}'s browser ({cookies} cookies).{more}")
+            }
+        }
+        Some((_, v)) => v.get("message").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| format!("Couldn't {op} the session {session}.")),
+        None => "Buwiz Bot's broker isn't answering.".to_owned(),
     }
 }
 
@@ -1260,6 +1308,20 @@ mod tests {
             {"kind": "boat", "label": "boat.dev", "configured": false, "canDefault": true, "fields": [{"key": "token", "label": "Token", "secret": true}]},
             {"kind": "remote", "label": "A remote computer", "canDefault": false, "fields": []}
         ]}))
+    }
+
+    #[test]
+    fn takeover_and_sessions_are_read_and_a_bad_name_is_told_how() {
+        let h = listed();
+        assert_eq!(parse("takeover", &h), Line::Takeover);
+        assert_eq!(parse(" session save shop", &h), Line::Session("save", "shop".into()));
+        assert_eq!(parse("session LOAD my_shop-2", &h), Line::Session("load", "my_shop-2".into()));
+        for bad in ["session", "session save", "session save ../x", "session drop shop", "session save a b"] {
+            assert_eq!(parse(bad, &h), Line::Say(SESSION_USAGE.into()), "{bad}");
+        }
+        let (rows, _) = rows("", &h, true);
+        assert!(rows.iter().any(|r| r.label == "takeover" && r.pick == crate::slash::Pick::Fill("/computer takeover".into())));
+        assert!(rows.iter().any(|r| r.label == "session"));
     }
 
     #[test]
@@ -1311,8 +1373,8 @@ mod tests {
     fn the_menu_lists_the_sub_commands_then_the_homes_each_takes() {
         let h = listed();
         let labels = |rest: &str| rows(rest, &h, true).0.into_iter().map(|r| r.label).collect::<Vec<_>>();
-        assert_eq!(labels(""), ["setup", "use", "default", "check", "status"]);
-        assert_eq!(labels("s"), ["setup", "status"]);
+        assert_eq!(labels(""), ["setup", "use", "default", "check", "status", "takeover", "session"]);
+        assert_eq!(labels("s"), ["setup", "status", "session"]);
         assert_eq!(labels("default "), ["Docker on this Mac", "AWS EC2", "E2B", "boat.dev"], "not remote");
         assert_eq!(labels("use "), ["default", "Docker on this Mac", "AWS EC2", "E2B", "boat.dev", "A remote computer"]);
         assert_eq!(labels("setup aw"), ["AWS EC2"]);

@@ -1,8 +1,11 @@
-//! How a card's answer leaves Rox: nativechat's REST bodies, sent as they
-//! are, and its rules for reading the reply. Today's server has none of
-//! these routes, so a missing route (or no server at all) paints the card
-//! as answered here, says "Not connected to an agent server yet", and logs
-//! the body it would have sent — every flow clicks through offline.
+//! How a card's answer leaves Rox, and its rules for reading the reply.
+//! The login card (`user_form.rs`) answers the broker's own routes,
+//! `POST /v1/host/computer/login/{submit,dismiss,saved}`, with the host
+//! token: a missing route or no broker shows as a failure, never as an
+//! answer, and nothing was typed. The approval and policy bodies are still
+//! nativechat's, which today's broker doesn't serve: a missing route there
+//! says "Not connected to an agent server yet" and logs the body it would
+//! have sent, values redacted.
 
 use nsh_core::prelude::*;
 use serde_json::{Value, json};
@@ -21,15 +24,16 @@ pub(crate) enum Sent {
     Refused(String),
 }
 
-/// The reply to `POST /ag-ui/user-form/submit|dismiss` (nativechat
-/// `user_form_action_from_http`).
+/// The reply to `POST /v1/host/computer/login/submit|dismiss`, read as
+/// nativechat's `user_form_action_from_http` read its own.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UserFormReply {
     /// 403 `{error, message}`: the server's sentence; the card stays open.
     Refused(String),
-    /// 404 `{"error":"form entry missing"}`.
+    /// 404 `{code: "card_missing"}` (or nativechat's `{"error":"form entry missing"}`).
     MissingEntry,
-    /// Any other 404, or no server: painted locally, toasted, logged.
+    /// Any other 404, or no server: nothing was answered or typed. The card
+    /// stays open and says so.
     MissingRoute,
     /// 200 with no `formResolution`: painted "Not filled".
     Empty,
@@ -155,83 +159,86 @@ pub(crate) async fn pin_account(coworker: &str, connector: &str, connection: &st
 }
 
 // ---------------------------------------------------------------------------
-// User forms (the bodies and reply rules C2's card uses)
+// The login card: the broker's routes
 // ---------------------------------------------------------------------------
 
-/// `POST /ag-ui/user-form/submit {entryId, agentId, values, savedLogin?,
-/// savedLoginId?, username?}`. `values` exist only here, on their way out.
-pub(crate) fn submit_body(
-    entry_id: &str,
-    agent_id: &str,
-    values: serde_json::Map<String, Value>,
-    saved_login_id: Option<&str>,
-    username: Option<&str>,
-) -> Value {
-    let mut body = json!({ "entryId": entry_id, "agentId": agent_id, "values": Value::Object(values) });
-    if let Some(id) = saved_login_id.filter(|id| !id.is_empty()) {
+/// `POST /v1/host/computer/login/submit`.
+pub(crate) const SUBMIT_PATH: &str = "/v1/host/computer/login/submit";
+/// `POST /v1/host/computer/login/dismiss`.
+pub(crate) const DISMISS_PATH: &str = "/v1/host/computer/login/dismiss";
+/// `POST /v1/host/computer/login/saved`: may a saved login be used here.
+pub(crate) const SAVED_PATH: &str = "/v1/host/computer/login/saved";
+
+/// The submit's body: `{chat, id, values, savedLogin?, savedLoginId?}`, the
+/// broker's own names for the card. `values` exist only here, on their way
+/// out.
+pub(crate) fn submit_body(chat: &str, id: &str, values: serde_json::Map<String, Value>, saved_login_id: Option<&str>) -> Value {
+    let mut body = json!({ "chat": chat, "id": id, "values": Value::Object(values) });
+    if let Some(login) = saved_login_id.filter(|l| !l.is_empty()) {
         body["savedLogin"] = Value::Bool(true);
-        body["savedLoginId"] = Value::String(id.to_owned());
-    }
-    if let Some(name) = username.filter(|n| !n.is_empty()) {
-        body["username"] = Value::String(name.to_owned());
+        body["savedLoginId"] = Value::String(login.to_owned());
     }
     body
 }
 
-/// `POST /ag-ui/user-form/dismiss {entryId, agentId, mode}`, `mode`
-/// `dismissed` or `escalated`.
-pub(crate) fn dismiss_body(entry_id: &str, agent_id: &str, mode: &str) -> Value {
-    json!({ "entryId": entry_id, "agentId": agent_id, "mode": mode })
+/// `{chat, id, mode}`, `mode` `dismissed` or `escalated` (Open the screen).
+pub(crate) fn dismiss_body(chat: &str, id: &str, mode: &str) -> Value {
+    json!({ "chat": chat, "id": id, "mode": mode })
 }
 
-pub(crate) async fn submit_user_form(body: Value) -> UserFormReply {
-    user_form_send(SUBMIT_PATH, body).await
-}
-
+/// Dismiss, or Open the screen: with the host token, as every `/v1/host`
+/// call. It carries no value.
 pub(crate) async fn dismiss_user_form(body: Value) -> UserFormReply {
-    user_form_send("/ag-ui/user-form/dismiss", body).await
-}
-
-/// A user-form send; a missing route toasts and logs (values redacted).
-async fn user_form_send(path: &str, body: Value) -> UserFormReply {
-    let reply = match call("POST", path, Some(&body)).await {
+    let reply = match call_as("POST", DISMISS_PATH, Some(&body), client::host_token().as_deref()).await {
         Some((status, reply)) => user_form_action_from_http(status, &reply),
         None => UserFormReply::MissingRoute,
     };
     if reply == UserFormReply::MissingRoute {
-        log_unsent("POST", path, &body);
-        not_connected();
+        log_unsent("POST", DISMISS_PATH, &body);
     }
     reply
+}
+
+/// Before Touch ID: whether the broker will use a saved login on this
+/// card's computer (never on one several Bots share). `Err` is the
+/// sentence the card shows; a broker that can't say is a no.
+pub(crate) async fn saved_login_usable(chat: &str, id: &str) -> Result<(), String> {
+    let body = json!({ "chat": chat, "id": id });
+    match call_as("POST", SAVED_PATH, Some(&body), client::host_token().as_deref()).await {
+        Some((200, v)) if v.get("usable").and_then(Value::as_bool) == Some(true) => Ok(()),
+        Some((_, v)) => Err(v
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| "The broker couldn't say whether a saved login may be used here, so none was.".to_owned())),
+        None => Err("The broker isn't answering, so no saved login was used.".to_owned()),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Saved logins: only to a broker that proves itself (GHSA-m7pv-qvp8-4mf2)
 // ---------------------------------------------------------------------------
 
-/// The card's sentence when a saved login stayed in the app.
-pub(crate) const UNPROVEN: &str = "Buwiz Bot couldn't verify its broker, so the saved login wasn't sent.";
+/// The card's sentence when a login stayed in the app.
+pub(crate) const UNPROVEN: &str = "Buwiz Bot couldn't verify its broker, so the login wasn't sent.";
 
 /// The broker's proof route (`buwiz-broker` `hub/routes/host.rs`): no token
 /// on the request, an HMAC of the nonce under the token in the answer.
 pub(crate) const PROVE_PATH: &str = "/v1/host/prove";
 
-const SUBMIT_PATH: &str = "/ag-ui/user-form/submit";
-
-/// A submit whose `values` came from the vault (a saved login's password
+/// A login card's submit, typed or from the vault (a saved login's password
 /// or name, a code minted from a saved seed): sent, with `X-Buwiz-Host`,
 /// only once the server on the broker's port has proven it holds the host
 /// token in the 0600 file. Otherwise nothing leaves the app and the card
-/// says why. Values the person typed go by [`submit_user_form`].
-pub(crate) async fn submit_saved_login(body: Value) -> UserFormReply {
+/// says why.
+pub(crate) async fn submit_user_form(body: Value) -> UserFormReply {
     let nonce = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
     let reply = send_proven(client::host_token(), &nonce, body, |path, body, token| async move {
         call_as("POST", path, Some(&body), token.as_deref()).await
     })
     .await;
     if reply == UserFormReply::MissingRoute {
-        log::info!("rox cards: the broker has no {SUBMIT_PATH}; a saved login went to it and was not used");
-        not_connected();
+        log::info!("rox cards: the broker has no {SUBMIT_PATH}; the login went to it and was not used");
     }
     reply
 }
@@ -246,7 +253,7 @@ where
     Fut: std::future::Future<Output = Option<(u16, Value)>>,
 {
     let Some(token) = token.filter(|t| !t.is_empty()) else {
-        log::warn!("rox cards: no host token to check the broker with; a saved login was not sent");
+        log::warn!("rox cards: no host token to check the broker with; a login was not sent");
         return UserFormReply::Refused(UNPROVEN.to_owned());
     };
     let proven = match post(PROVE_PATH, json!({ "nonce": nonce }), None).await {
@@ -255,13 +262,13 @@ where
             .and_then(Value::as_str)
             .is_some_and(|proof| buwiz_protocol::proof::proof_matches(&token, nonce, proof)),
         Some((status, _)) => {
-            log::warn!("rox cards: the broker answered {PROVE_PATH} {status}; a saved login was not sent");
+            log::warn!("rox cards: the broker answered {PROVE_PATH} {status}; a login was not sent");
             false
         }
         None => false,
     };
     if !proven {
-        log::warn!("rox cards: the broker did not prove itself; a saved login was not sent");
+        log::warn!("rox cards: the broker did not prove itself; a login was not sent");
         return UserFormReply::Refused(UNPROVEN.to_owned());
     }
     match post(SUBMIT_PATH, body, Some(token)).await {
@@ -270,7 +277,10 @@ where
     }
 }
 
-/// nativechat `user_form_action_from_http`.
+/// nativechat `user_form_action_from_http`, over the broker's answers too:
+/// a settled `notice`, `409 stale` for a card answered already, `404
+/// card_missing` for one that's gone; any other 404 is a broker without the
+/// route.
 pub(crate) fn user_form_action_from_http(status: u16, body: &Value) -> UserFormReply {
     if status == 403 {
         return UserFormReply::Refused(
@@ -279,6 +289,9 @@ pub(crate) fn user_form_action_from_http(status: u16, body: &Value) -> UserFormR
     }
     if status == 404 {
         return if is_form_entry_missing(body) { UserFormReply::MissingEntry } else { UserFormReply::MissingRoute };
+    }
+    if status == 409 && body.get("code").and_then(Value::as_str) == Some("stale") {
+        return if notice_settled(body) { UserFormReply::Settled(body.clone()) } else { UserFormReply::AlreadyAnswered };
     }
     if !(200..300).contains(&status) {
         return UserFormReply::Failed(
@@ -292,7 +305,7 @@ pub(crate) fn user_form_action_from_http(status: u16, body: &Value) -> UserFormR
         v.get("formResolution").is_some_and(|r| r.as_str().is_some_and(|s| !s.is_empty()) || r.is_object())
             || v.get("handoffEntryId").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
     };
-    if resolved(body) || body.get("value").is_some_and(resolved) {
+    if resolved(body) || body.get("value").is_some_and(resolved) || notice_settled(body) {
         return UserFormReply::Settled(body.clone());
     }
     if body.get("alreadyAnswered").and_then(Value::as_bool).unwrap_or(false) {
@@ -301,9 +314,15 @@ pub(crate) fn user_form_action_from_http(status: u16, body: &Value) -> UserFormR
     UserFormReply::Empty
 }
 
-/// The 404 body a gone card answers with.
+/// The 404 body a gone card answers with: nativechat's, or the broker's.
 pub(crate) fn is_form_entry_missing(body: &Value) -> bool {
     body.get("error").and_then(Value::as_str).is_some_and(|e| e.eq_ignore_ascii_case("form entry missing"))
+        || body.get("code").and_then(Value::as_str) == Some("card_missing")
+}
+
+/// A broker answer carrying the card's notice with an ending.
+fn notice_settled(body: &Value) -> bool {
+    body.pointer("/notice/state").and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s != "pending")
 }
 
 /// The sentence a refusal carries (nativechat `refusal_words`): `message`
@@ -355,7 +374,7 @@ mod tests {
     fn run(token: Option<&str>, prove: impl Fn(&str) -> Option<(u16, Value)>) -> (UserFormReply, Vec<(String, Option<String>)>) {
         let seen = RefCell::new(Vec::new());
         let nonce = buwiz_protocol::keys::b64(&[9u8; 32]);
-        let body = submit_body("e_1", "cw_1", serde_json::Map::from_iter([("password".to_owned(), json!("s3cret"))]), Some("sl_1"), None);
+        let body = submit_body("c_1", "uf_1", serde_json::Map::from_iter([("password".to_owned(), json!("fake-secret-marker"))]), Some("sl_1"));
         let reply = ready(send_proven(token.map(str::to_owned), &nonce, body, |path, body, token| {
             seen.borrow_mut().push((path.to_owned(), token));
             let out = if path == PROVE_PATH {
@@ -401,6 +420,6 @@ mod tests {
             assert_eq!(reply, unproven);
             assert!(seen.is_empty(), "{seen:?}");
         }
-        assert_eq!(UNPROVEN, "Buwiz Bot couldn't verify its broker, so the saved login wasn't sent.");
+        assert_eq!(UNPROVEN, "Buwiz Bot couldn't verify its broker, so the login wasn't sent.");
     }
 }

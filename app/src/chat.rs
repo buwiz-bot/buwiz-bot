@@ -656,6 +656,9 @@ pub(crate) fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         crate::tools::ask_row(n, chat.to_owned()).into_element()
     } else if let Some(n) = t.computer_setup.clone() {
         crate::cards::computer_setup::row(n).into_element()
+    } else if let Some(spec) = t.user_form.clone() {
+        let key = spec.entry_id.clone();
+        view().w_full().max_w(px(620.0)).child(crate::cards::user_form::card(spec, key)).into_element()
     } else if let Some(said) = t.ui_refused.clone().or_else(|| t.run_ended.clone()) {
         let tone = if t.run_failed { theme::WARN } else { theme::MUTED };
         // a provider's words can run long: it wraps instead of running off both edges

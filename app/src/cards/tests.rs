@@ -292,16 +292,26 @@ fn a_submit_body_carries_a_saved_login_and_a_dismiss_its_mode() {
     let mut values = serde_json::Map::new();
     values.insert("email".into(), json!("ada@example.com"));
     assert_eq!(
-        transport::submit_body("e_1", "cw_1", values.clone(), Some("sl_1"), Some("ada")),
-        json!({"entryId": "e_1", "agentId": "cw_1", "values": {"email": "ada@example.com"},
-               "savedLogin": true, "savedLoginId": "sl_1", "username": "ada"})
+        transport::submit_body("t_1", "uf_1", values.clone(), Some("sl_1")),
+        json!({"chat": "t_1", "id": "uf_1", "values": {"email": "ada@example.com"}, "savedLogin": true, "savedLoginId": "sl_1"})
     );
-    assert_eq!(
-        transport::submit_body("e_1", "cw_1", values, None, None),
-        json!({"entryId": "e_1", "agentId": "cw_1", "values": {"email": "ada@example.com"}})
-    );
-    assert_eq!(
-        transport::dismiss_body("e_1", "cw_1", "escalated"),
-        json!({"entryId": "e_1", "agentId": "cw_1", "mode": "escalated"})
-    );
+    assert_eq!(transport::submit_body("t_1", "uf_1", values, None), json!({"chat": "t_1", "id": "uf_1", "values": {"email": "ada@example.com"}}));
+    assert_eq!(transport::dismiss_body("t_1", "uf_1", "escalated"), json!({"chat": "t_1", "id": "uf_1", "mode": "escalated"}));
+    assert_eq!((transport::SUBMIT_PATH, transport::DISMISS_PATH, transport::SAVED_PATH), ("/v1/host/computer/login/submit", "/v1/host/computer/login/dismiss", "/v1/host/computer/login/saved"));
+}
+
+#[test]
+fn the_brokers_login_answers_are_read_as_settled_refused_stale_or_gone() {
+    let settled = json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "submitted"}});
+    assert!(matches!(transport::user_form_action_from_http(200, &settled), UserFormReply::Settled(_)));
+    let wrong = json!({"ok": false, "code": "wrong-page", "message": "The page in front is evil.test, not shop.example, so nothing was typed."});
+    assert_eq!(transport::user_form_action_from_http(403, &wrong), UserFormReply::Refused("The page in front is evil.test, not shop.example, so nothing was typed.".into()));
+    let stale = json!({"ok": false, "code": "stale", "message": "This card was answered already.", "notice": {"state": "dismissed"}});
+    assert!(matches!(transport::user_form_action_from_http(409, &stale), UserFormReply::Settled(_)));
+    assert_eq!(transport::user_form_action_from_http(409, &json!({"ok": false, "code": "stale", "message": "x"})), UserFormReply::AlreadyAnswered);
+    assert_eq!(transport::user_form_action_from_http(404, &json!({"ok": false, "code": "card_missing", "message": "x"})), UserFormReply::MissingEntry);
+    // an older broker: its /v1/host/ answers a route it hasn't got so
+    assert_eq!(transport::user_form_action_from_http(404, &json!({"ok": false, "code": "not_found", "message": "no route /v1/host/computer/login/submit"})), UserFormReply::MissingRoute);
+    assert!(matches!(transport::user_form_action_from_http(401, &json!({"ok": false, "code": "unauthorized", "message": "X-Buwiz-Host is missing or wrong"})), UserFormReply::Failed(_)));
+    assert!(matches!(transport::user_form_action_from_http(200, &json!({"ok": true, "notice": {"state": "pending"}})), UserFormReply::Empty));
 }

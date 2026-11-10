@@ -247,6 +247,8 @@ mod run_ui_tests;
 #[cfg(test)]
 mod messages_ui_tests;
 #[cfg(test)]
+mod login_ui_tests;
+#[cfg(test)]
 mod boot_ui_tests;
 
 #[cfg(test)]

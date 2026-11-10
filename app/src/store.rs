@@ -1487,6 +1487,8 @@ pub struct Turn {
     pub tool_ask: Option<ToolAskNotice>,
     /// A `notice` turn suggesting a computer be set up (`cards/computer_setup.rs`).
     pub(crate) computer_setup: Option<crate::cards::computer_setup::Notice>,
+    /// A `notice` turn holding the broker's login card (`cards/user_form.rs`).
+    pub(crate) user_form: Option<crate::cards::user_form::UserFormSpec>,
     /// A `notice` turn's sentence: what the Hub refused the AI on a screen.
     pub ui_refused: Option<String>,
     /// A `notice` turn's sentence: why a run ended early (a Stop, a restart).
@@ -2672,6 +2674,7 @@ impl Turn {
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             computer_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::computer_setup::Notice::of)).flatten(),
+            user_form: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::user_form::UserFormSpec::from_notice)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
             // a plugin's failed update ("Google Workspace update failed · still
             // on 1.4.0") is a line as a failed run's is
@@ -6567,7 +6570,7 @@ impl Store {
         // canonical ones before anything is sent; tokens or a command alone
         // never reach the model (mini_v1::ui).
         let resolved = self.v1_resolved.replace(false);
-        let own_command = text.starts_with("/status") || (typed && crate::messages::is_command(&text));
+        let own_command = text.starts_with("/status") || (typed && crate::slash::names_a_builtin(&text).is_some());
         if !resolved && !own_command && self.v1_send(&text) {
             return;
         }

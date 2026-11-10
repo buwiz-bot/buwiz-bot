@@ -33,18 +33,28 @@
 //! Nothing secret is put on a turn, in the store, in a log line or in a
 //! `Debug` print: [`Values`] and [`Field`] redact theirs.
 //!
+//! # The broker's card
+//!
+//! The broker posts the card as a `user_form` notice in the chat
+//! ([`UserFormSpec::from_notice`]): `{id, bot, botName, chat, form, state,
+//! note?, outcomes?, takeoverNote}`. It types the values into the Bot's own
+//! browser itself; the app only sends them.
+//!
 //! # Answers
 //!
-//! `POST /ag-ui/user-form/submit {entryId, agentId, values, savedLogin?,
-//! savedLoginId?}` and `POST /ag-ui/user-form/dismiss {entryId, agentId,
-//! mode}`, sent and read by `cards/transport.rs` (nativechat
-//! `user_form_action_from_http`). Sending is optimistic. A server without
-//! the routes paints the card's own ending, toasts "Not connected to an
-//! agent server yet" and logs the body it would have sent, values
-//! redacted — so every flow can be clicked through offline. Where the card
-//! stands (sending, settled, a failure's sentence) is the cards' shared
-//! state by key (`cards::state_of`), so the composer's "Waiting for you"
-//! and a new message's supersede see it; what is typed stays here.
+//! `POST /v1/host/computer/login/submit {chat, id, values, savedLogin?,
+//! savedLoginId?}` (to a broker that has just proven itself, typed or
+//! saved) and `POST /v1/host/computer/login/dismiss {chat, id, mode}`
+//! (`dismissed`, or `escalated` for Open the screen, the hand-over), sent
+//! and read by `cards/transport.rs`. A saved login is first asked about
+//! (`POST /v1/host/computer/login/saved`), so a refusal never follows a
+//! fingerprint. A missing route or no broker is a failure the card shows,
+//! with nothing typed; never an answer. A typed login is held for the
+//! "Save this login?" offer only until the card settles: past an offer the
+//! broker made, it's dropped (and on a dismiss or a failure). Where the
+//! card stands (sending, settled, a failure's sentence) is the cards'
+//! shared state by key (`cards::state_of`), so the composer's "Waiting for
+//! you" and a new message's supersede see it; what is typed stays here.
 
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -56,7 +66,7 @@ use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use super::transport::{self, UserFormReply};
-use super::{CardState, agent_id, answerable, close_x, error_line, note, save_login, set_state, shell, state_of, title};
+use super::{CardState, answerable, close_x, error_line, note, save_login, set_state, shell, state_of, title};
 use crate::live::store;
 use crate::theme;
 use crate::vault::{self, PendingSave, Secret, SiteLogin, SiteMatch, Unlock, off_main, site_match, site_origin, vault};
@@ -218,9 +228,9 @@ impl FormResolution {
     pub(crate) fn body(self) -> &'static str {
         match self {
             Self::Sending => "Submitting…",
-            Self::Submitted => "Sent to your agent. Secret values were never shown to it.",
+            Self::Submitted => "Typed into the page on the Bot's screen. Secret values were never shown to your agent.",
             Self::FillFailed => "Nothing was filled — the page may have moved or changed. Secret values were never shown to your agent.",
-            Self::Escalated => "Handed to the computer screen to finish there.",
+            Self::Escalated => "The Bot's screen is yours to finish there. Hand it back when you're done.",
             Self::Dismissed => "Dismissed without filling anything.",
             Self::Skipped => "Skipped without filling anything.",
             Self::TimedOut => "Nobody answered in time, so nothing was filled.",
@@ -253,9 +263,45 @@ pub(crate) struct UserFormSpec {
     pub passkey_mode: Option<String>,
     pub resolution: Option<FormResolution>,
     pub widget_dismissed: bool,
+    /// The chat the broker's card is in (its `chat`); "" for a wire frame.
+    pub chat: String,
+    pub bot_name: String,
+    /// What the broker said of how it went (a press left for the person).
+    pub note: Option<String>,
+    /// What Open the screen hands over, as the broker words it.
+    pub takeover_note: Option<String>,
 }
 
 impl UserFormSpec {
+    /// The broker's `user_form` notice; `None` for any other.
+    pub(crate) fn from_notice(n: &Value) -> Option<Self> {
+        let s = |k: &str| n.get(k).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
+        if s("kind") != "user_form" || s("id").is_empty() {
+            return None;
+        }
+        // a reply's notice may carry its ending alone, with no form
+        let mut spec = Self::parse(&json!({ "formRequest": n.get("form").cloned().unwrap_or(Value::Null) }), Some(s("id"))).unwrap_or_default();
+        spec.entry_id = s("id");
+        if spec.title.is_empty() {
+            spec.title = s("title");
+        }
+        spec.agent_id = s("bot");
+        spec.bot_name = s("botName");
+        spec.chat = s("chat");
+        spec.resolution = match s("state").as_str() {
+            "" | "pending" => None,
+            "expired" => Some(FormResolution::TimedOut),
+            other => Some(FormResolution::parse(other)),
+        };
+        spec.note = Some(s("note")).filter(|t| !t.is_empty());
+        spec.takeover_note = Some(s("takeoverNote")).filter(|t| !t.is_empty());
+        // a card's fields never carry a value from the broker: a login card has none
+        for f in &mut spec.fields {
+            f.prefill = None;
+        }
+        Some(spec)
+    }
+
     /// A user form from any wire shape that carries one: the live park
     /// frame, the settled CUSTOM `user-form`, the bare `send-message`
     /// envelope, or a `{tool:"request_user_form", arguments}` call. Any
@@ -503,6 +549,9 @@ impl Values {
 /// as its `value`). A body that carries only a Computer handoff is the
 /// form sent to the screen.
 pub(crate) fn settled_from(body: &Value) -> FormResolution {
+    if let Some(r) = body.get("notice").and_then(UserFormSpec::from_notice).and_then(|s| s.resolution) {
+        return r;
+    }
     [body, body.get("value").unwrap_or(&Value::Null)]
         .into_iter()
         .find_map(|v| UserFormSpec::parse(v, None).and_then(|s| s.effective_resolution()))
@@ -889,8 +938,12 @@ struct Local {
     /// The person asked to see the logins of the site the card's `domain`
     /// names, which is not its page's.
     show_asked: Signal<bool>,
-    /// The ending was painted here because no server answered.
-    offline: Signal<bool>,
+    /// The broker offered to save the typed login.
+    offer: Signal<bool>,
+    /// What the broker said of the fill, until its card says it.
+    said: Signal<String>,
+    /// The chat the broker's card is in.
+    chat: Signal<String>,
     /// Try again on a card the wire settled as not filled.
     retry: Signal<bool>,
 }
@@ -924,11 +977,18 @@ fn local(key: &str) -> Local {
         pick: signal(Pick::None),
         by_hand: signal(false),
         show_asked: signal(false),
-        offline: signal(false),
+        offer: signal(false),
+        said: signal(String::new()),
+        chat: signal(String::new()),
         retry: signal(false),
     });
     reg.borrow_mut().insert(key.to_owned(), l);
     l
+}
+
+/// The chat of the broker's card under `key`, once it was drawn.
+fn chat_of(key: &str) -> Option<String> {
+    Some(local(key).chat.get_untracked()).filter(|c| !c.is_empty())
 }
 
 fn held() -> &'static HeldMap {
@@ -951,10 +1011,6 @@ fn forget_secrets(spec: &UserFormSpec, loc: Local) {
     }
 }
 
-/// The agent the answer is for: the card's own, else the open chat's bot.
-fn agent_of(spec: &UserFormSpec) -> String {
-    if spec.agent_id.is_empty() { agent_id() } else { spec.agent_id.clone() }
-}
 
 // ---------------------------------------------------------------------------
 // Verbs
@@ -986,7 +1042,6 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
     forget_secrets(&spec, loc);
     loc.pick.set(Pick::None);
     set_state(&key, CardState::Sending);
-    let agent = agent_of(&spec);
     Owner::detached().run(|| {
         spawn(async move {
             let mut login_id = None;
@@ -1012,17 +1067,23 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
                 login_id = Some(h.login_id);
             }
             // the values exist from here only inside the body, on its way out
-            let body = transport::submit_body(&spec.entry_id, &agent, values.into_map(), login_id.as_deref(), None);
-            // what came from the vault goes only to a broker that proves itself
-            let reply = if login_id.is_some() {
-                transport::submit_saved_login(body).await
-            } else {
-                transport::submit_user_form(body).await
-            };
+            let body = transport::submit_body(&spec.chat, &spec.entry_id, values.into_map(), login_id.as_deref());
+            // typed or saved, it goes only to a broker that proves itself
+            let reply = transport::submit_user_form(body).await;
             let entry = spec.entry_id.as_str();
             match reply {
                 UserFormReply::Settled(body) => {
                     let r = settled_from(&body);
+                    if let Some(said) = body.pointer("/notice/note").and_then(Value::as_str) {
+                        loc.said.set(said.to_owned());
+                    }
+                    // the typed login is held past here only for the broker's offer to save it
+                    let offered = r == FormResolution::Submitted && login_id.is_none() && body.get("offerSave").is_some_and(Value::is_object);
+                    if offered && vault().has_pending(entry) {
+                        loc.offer.set(true);
+                    } else {
+                        vault().take_pending(entry);
+                    }
                     settle(&key, r);
                     if r == FormResolution::Submitted
                         && let Some(id) = &login_id
@@ -1046,33 +1107,56 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
                     settle(&key, FormResolution::FillFailed);
                 }
                 UserFormReply::MissingRoute => {
-                    // painted here; the transport toasted and logged it
-                    loc.offline.set(true);
-                    settle(&key, FormResolution::Submitted);
+                    vault().take_pending(entry);
+                    set_state(&key, CardState::Error(NO_ROUTE.to_owned()));
                 }
             }
         });
     });
 }
 
+/// A missing route or no broker: nothing was typed, and the card says so.
+pub(crate) const NO_ROUTE: &str = "Buwiz Bot's broker didn't take this, so nothing was typed. Make sure it's running and up to date, then try again.";
+
 fn dismiss(spec: Rc<UserFormSpec>, key: String) {
+    answer_card(spec, key, "dismissed");
+}
+
+/// Open the screen: the broker hands the Bot's screen to the person, as a
+/// hand-over, and the screen opens here.
+fn open_screen(spec: Rc<UserFormSpec>, key: String) {
+    answer_card(spec, key, "escalated");
+}
+
+/// Dismiss or Open the screen. Nothing typed goes with either, and a typed
+/// login held for a save offer is dropped.
+fn answer_card(spec: Rc<UserFormSpec>, key: String, mode: &'static str) {
     let loc = local(&key);
     drop_held(&key);
     forget_secrets(&spec, loc);
+    vault().take_pending(&spec.entry_id);
     loc.pick.set(Pick::None);
-    set_state(&key, CardState::Dismissed);
-    if !spec.has_entry_id() {
-        // a call-only card settles here; there is nothing to POST
+    if !spec.has_entry_id() || spec.chat.is_empty() {
+        // a card with nothing to answer settles here
+        return set_state(&key, CardState::Dismissed);
+    }
+    if !answerable(&key) {
         return;
     }
-    let body = transport::dismiss_body(&spec.entry_id, &agent_of(&spec), "dismissed");
+    set_state(&key, CardState::Sending);
+    let body = transport::dismiss_body(&spec.chat, &spec.entry_id, mode);
     Owner::detached().run(|| {
         spawn(async move {
             match transport::dismiss_user_form(body).await {
-                UserFormReply::Settled(body) => settle(&key, settled_from(&body)),
-                UserFormReply::Empty | UserFormReply::AlreadyAnswered => {}
-                UserFormReply::MissingRoute => loc.offline.set(true),
-                UserFormReply::MissingEntry => reopen(&key),
+                UserFormReply::Settled(body) => {
+                    let r = settled_from(&body);
+                    settle(&key, r);
+                    if r == FormResolution::Escalated {
+                        crate::computer::open_full(&spec.agent_id, &spec.bot_name);
+                    }
+                }
+                UserFormReply::Empty | UserFormReply::AlreadyAnswered | UserFormReply::MissingEntry => set_state(&key, CardState::Dismissed),
+                UserFormReply::MissingRoute => set_state(&key, CardState::Error(NO_ROUTE.to_owned())),
                 UserFormReply::Refused(why) | UserFormReply::Failed(why) => set_state(&key, CardState::Error(why)),
             }
         });
@@ -1099,8 +1183,14 @@ fn use_saved(key: String, row: SiteLogin, target: CardTarget, site: String) {
     let reason = use_reason(&row, &site);
     let reads = target.secret_field().is_some();
     let r = row.clone();
+    let (chat, entry) = (store().active_id.get_untracked(), key.clone());
+    let card_chat = chat_of(&key).unwrap_or(chat);
     Owner::detached().run(|| {
         spawn(async move {
+            // the broker says first whether it would use one here: a refusal never follows a fingerprint
+            if let Err(why) = transport::saved_login_usable(&card_chat, &entry).await {
+                return loc.pick.set(Pick::Unavailable(why));
+            }
             let got = off_main(move || {
                 if reads {
                     vault().unlock(&r, &reason)
@@ -1216,7 +1306,7 @@ fn collapsed(spec: &UserFormSpec, key: &str, r: FormResolution) -> View {
         .child(note(r.body().to_owned()))
 }
 
-fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, local_paint: bool) -> View {
+fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, _local_paint: bool) -> View {
     let loc = local(&key);
     // an ending (a supersede included) takes any held or typed secret with it
     drop_held(&key);
@@ -1233,8 +1323,12 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, local_paint: 
                 .child(button("Stop for now", Kind::Ghost, || true, move || dismiss(s2.clone(), k2.clone()))),
         );
     }
-    // offline, no server will offer to save the login: the card does
-    if local_paint && r == FormResolution::Submitted && loc.offline.get_untracked() {
+    let said = spec.note.clone().unwrap_or_else(|| loc.said.get_untracked());
+    if !said.is_empty() && matches!(r, FormResolution::Submitted | FormResolution::FillFailed) {
+        v = v.child(note(said));
+    }
+    // the broker offered to save the login it typed: the card asks
+    if r == FormResolution::Submitted && loc.offer.get_untracked() {
         let entry = spec.entry_id.clone();
         if let Some((origin, username)) = vault().pending_who(&entry) {
             let offer = save_login::SaveLoginSpec { form_entry_id: entry.clone(), origin, username };
@@ -1246,6 +1340,9 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, local_paint: 
 
 fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     let loc = local(&key);
+    if !spec.chat.is_empty() && loc.chat.with_untracked(|c| c != &spec.chat) {
+        loc.chat.set(spec.chat.clone());
+    }
     let target = card_target(&spec);
     let rows: Vec<SiteLogin> = match (&target, offered_site(&spec)) {
         (Some(t), Some(origin)) => vault().rows_for(&origin, t.kind()),
@@ -1312,7 +1409,17 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
                 .text_color(theme::MUTED),
         );
     }
-    v.child(actions.child(button(spec.continue_label(), Kind::Primary, enabled, move || submit(s_go.clone(), k_go.clone()))))
+    // the broker's card: the person may finish on the Bot's screen instead
+    let screen = spec.has_entry_id() && !spec.chat.is_empty();
+    if screen {
+        let (s_open, k_open) = (spec.clone(), key.clone());
+        actions = actions.child(button("Open the screen", Kind::Ghost, || true, move || open_screen(s_open.clone(), k_open.clone())));
+    }
+    v = v.child(actions.child(button(spec.continue_label(), Kind::Primary, enabled, move || submit(s_go.clone(), k_go.clone()))));
+    if let Some(t) = spec.takeover_note.as_ref().filter(|_| screen) {
+        v = v.child(text(format!("Open the screen: {t}")).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::MUTED));
+    }
+    v
 }
 
 /// The saved logins for the card's site: Use (Touch ID), or Type it by hand.
@@ -1466,6 +1573,7 @@ fn text_input(key: String, f: Field) -> impl IntoElement {
         .justify_center()
         .child(
             input()
+                .label(f.label.clone())
                 .value(move || loc.values.with(|v| v.get(&id1).to_owned()))
                 .placeholder(placeholder)
                 .placeholder_color(|| color(theme::GHOST))
@@ -1780,7 +1888,7 @@ mod tests {
         assert_eq!((save.origin.as_str(), save.username.as_str()), ("accounts.example.com", "ada@example.com"));
         assert!(!format!("{save:?}").contains("hunter2"));
         assert_eq!(Field::checkbox_wire(true), "true");
-        let body = transport::submit_body("e_1", "cw_1", values.into_map(), Some("sl_1"), None);
+        let body = transport::submit_body("t_1", "e_1", values.into_map(), Some("sl_1"));
         assert_eq!(body["values"]["password"], json!("hunter2"), "only the body carries it");
         assert_eq!(body["savedLogin"], json!(true));
         assert_eq!(body["savedLoginId"], json!("sl_1"));

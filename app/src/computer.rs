@@ -789,6 +789,15 @@ fn press_drive(bot: &str, status: &Status) {
     });
 }
 
+/// `/computer takeover`: the person takes `bot`'s screen to drive it, as Take control does, and
+/// it opens full.
+pub(crate) fn take_over(bot: &str, name: &str) {
+    DRIVING.with(|s| s.update(|d| {
+        d.insert(bot.to_owned());
+    }));
+    open_full(bot, name);
+}
+
 pub(crate) fn open_full(bot: &str, name: &str) {
     store().open_mini_token(&key_of(bot), &format!("{name}'s computer"), "");
 }
