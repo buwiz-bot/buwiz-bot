@@ -63,6 +63,7 @@ fn row(id: &str, short: &str, manifest: Value, tools: Vec<Value>) -> Row {
         created_at: 1,
         package: None,
         skills: "[]".into(),
+        source: None,
     }
 }
 
