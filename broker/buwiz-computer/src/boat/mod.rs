@@ -1,6 +1,12 @@
 //! boat.dev: one sandbox per computer. A sandbox is a persistent Ubuntu VM with Docker inside, and
-//! the computer image runs in Docker in that VM, with the same hardening and loopback ports as
-//! `docker-compose.yml`.
+//! the computer image runs in Docker in that VM. The box's container is made as Docker's and EC2's
+//! are: root for box-keeper alone with only the capabilities a box needs, `no-new-privileges`, the
+//! same limits and settings, a volume for `/workspace` and one for all of `/home/box`, and its ports
+//! on the VM's loopback ([`prep`]).
+//!
+//! **What boat lacks next to Docker.** There's no holder container and no network wall: the box
+//! has Docker's default bridge in the VM and reaches whatever the VM reaches, boat's network
+//! included. Out of scope here, and not claimed.
 //!
 //! **Reach: SSH only, no public port.** The VM's ports are never published. The broker logs in over
 //! SSH, the way [`crate::remote`] does with a plain host, and forwards the box's loopback ports
@@ -33,7 +39,8 @@
 //! - *wake*: `POST /sandboxes/{id}/resume` if it is archived, then wait for `ready`, the SSH login,
 //!   the secrets again and `docker start`, and the box checked. **A stop keeps the disk and drops
 //!   memory, so wake is a cold boot of the box**: its processes and screens are gone, and its
-//!   workspace and browser profile are the ones on disk.
+//!   workspace and home (the browser profile in it) are the ones on disk. A computer made before
+//!   the home volume keeps the container it was made with.
 //! - *sleep*: `POST /sandboxes/{id}/stop`. Only Docker containers get a stop signal, with 30 s to
 //!   exit. Both depths are the same, since boat keeps no memory at either.
 //! - *destroy*: `DELETE /sandboxes/{id}` with `X-Ascii-Confirm-Delete: {id}`. Irreversible.
@@ -42,8 +49,9 @@
 //!   are waiting, `error` and `cancelled` are broken.
 //! - *sweep*: `GET /sandboxes?label=buwiz-computer%3D<id>` with its cursor, every one deleted, and
 //!   the one the record names.
-//! - *recover*: nothing. A VM's memory was the box's, and its secrets are regenerated, not kept, so a
-//!   lost record is found and deleted by sweep.
+//! - *recover*: the same listing, else `GET /sandboxes/{id}` for the sandbox the record named, and a
+//!   new token and viewer password for it. Nothing is stopped or deleted: the next start stages the
+//!   new secrets, and the login registers the new token's key.
 //!
 //! **Where it runs: EU only.** boat's sandboxes are in Germany, Finland and France today, and the
 //! provider's label says so. Asia isn't offered.
@@ -77,6 +85,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::cloud::{Api, Reply, Settings};
+use crate::docker::BOX_CAPS;
 use crate::Shared;
 use crate::remote::ssh;
 use crate::remote::{
@@ -108,22 +117,39 @@ const STAGE_PATIENCE: Duration = Duration::from_secs(60);
 const LOGIN_TRIES: usize = 4;
 const MAX_PAGES: usize = 10;
 const DROPPED: &str = "The connection to this computer dropped. Click it to connect again.";
-/// The label each sandbox carries, with its computer's id: what a sweep looks for.
+/// The label each sandbox carries, with its computer's id: what a sweep and a recover look for.
 pub const LABEL: &str = "buwiz-computer";
+/// Below this a port takes a capability, inside the box (`docker.rs`).
+const FIRST_OPEN_PORT: u16 = 6906;
 
-/// Makes the container and its volumes, as root of the VM's Docker: the same hardening as
-/// docker-compose.yml, the same ports on loopback, and the staging folder for the secrets. Run once
-/// per computer, after its image is pulled. Arguments: image, container name, computer id.
-const PREP: &str = r#"set -e
+/// Makes the container and its volumes, as root of the VM's Docker, run once per computer after
+/// its image is pulled. The box itself is set up as Docker and EC2 set theirs up (`docker.rs`
+/// `create_args`, `ec2/instance.rs`): root for box-keeper alone with only [`BOX_CAPS`], which a box
+/// can't start with fewer of, a `1g` `/dev/shm` for Chromium, the same five settings, one volume for
+/// the workspace and one for all of `/home/box`. Everything else is the image's own default. Below
+/// [`FIRST_OPEN_PORT`] a port takes a capability, so no command can listen on a service's port. Its
+/// ports are on the VM's loopback alone. The secrets' folder is mounted writable, unlike Docker's:
+/// box-keeper unlinks the two files, and nothing else here removes them.
+///
+/// A computer made before this layout keeps its container as it was (a `-chrome` volume, the old
+/// settings, and no capabilities, which today's image may not start with): wake only starts what
+/// create made, and nothing here deletes a person's container or volumes. Only new computers get
+/// this one. Arguments: image, container name, computer id.
+fn prep() -> String {
+    let caps: String = BOX_CAPS.iter().map(|c| format!(" --cap-add {c}")).collect();
+    format!(
+        r#"set -e
 sudo install -d -m 0700 -o 1000 -g 1000 /dev/shm/buwiz-start
 docker pull "$1" >/dev/null
-docker create --name "$2" --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 2048 --memory 4g --shm-size 256m \
+docker create --name "$2" --label app.buwiz.computer=1 --label "app.buwiz.computer.id=$3" \
+  --user 0 --cap-drop ALL{caps} --security-opt no-new-privileges:true --pids-limit 2048 --memory 4g --shm-size 1g \
+  --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv4.ip_unprivileged_port_start={FIRST_OPEN_PORT} \
   -e BOX_TOKEN_FILE=/run/buwiz-computer/token -e BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer \
-  -e "BOX_ID=$3" -e WORKSPACE_ROOT=/workspace -e BOX_DESKTOP=1 -e BOX_DESKTOP_REQUIRED=1 -e BOX_DISPLAY=:1 \
-  -e BOX_DISPLAY_GEOM=1280x800x24 -e BOX_CHROME=1 -e BOX_CHROME_PROFILE=/home/box/chrome-profile -e BOX_CDP_PORT=9222 \
-  -e BOX_CUA=1 -e BOX_EXEC_BIND=0.0.0.0:1337 -e BOX_HOST_BIND=0.0.0.0:1340 -e BOX_EGRESS_TUNNEL=0 \
-  -v "$2-workspace:/workspace" -v "$2-chrome:/home/box/chrome-profile" -v /dev/shm/buwiz-start:/run/buwiz-computer \
-  -p 127.0.0.1:1337:1337 -p 127.0.0.1:1340:1340 -p 127.0.0.1:6901-6905:6901-6905 "$1" >/dev/null"#;
+  -e BOX_DESKTOP=1 -e BOX_DESKTOP_REQUIRED=1 -e BOX_CHROME=0 \
+  -v "$2-workspace:/workspace" -v "$2-home:/home/box" -v /dev/shm/buwiz-start:/run/buwiz-computer \
+  -p 127.0.0.1:1337:1337 -p 127.0.0.1:1340:1340 -p 127.0.0.1:6901-6905:6901-6905 "$1" >/dev/null"#
+    )
+}
 
 /// Writes the two secrets from stdin (token, then viewer password, one per line) into the staging
 /// folder, owned by the box's uid, and starts the container. Argument: the container name.
@@ -416,6 +442,55 @@ impl BoatProvider {
             200 | 202 | 404 => Ok(()),
             _ => Err(outcome(&reply)),
         }
+    }
+
+    /// Every sandbox labelled with computer `id`, across boat's pages (at most [`MAX_PAGES`]).
+    async fn labelled(&self, id: &str) -> Result<Vec<String>> {
+        let computer = safe_id(id)?;
+        let mut found = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let mut path = format!("/sandboxes?label={LABEL}%3D{computer}&limit=100");
+            if let Some(next) = &cursor {
+                path.push_str(&format!("&cursor={next}"));
+            }
+            let reply = self
+                .call(Method::GET, &path, &[], None, CALL_PATIENCE)
+                .await?;
+            if reply.status != 200 {
+                return Err(outcome(&reply));
+            }
+            let page = reply.json()?;
+            for item in page
+                .get("sandboxes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(sandbox) = item.get("id").and_then(Value::as_str) {
+                    let sandbox = safe_id(sandbox)?.to_owned();
+                    if !found.contains(&sandbox) {
+                        found.push(sandbox);
+                    }
+                }
+            }
+            match page.pointer("/pageInfo/nextCursor").and_then(Value::as_str) {
+                Some(next)
+                    if next
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_=.".contains(&b)) =>
+                {
+                    cursor = Some(next.to_owned())
+                }
+                Some(_) => {
+                    return Err(Problem::Failed(
+                        "boat's listing came with a cursor the broker won't use.".to_owned(),
+                    ))
+                }
+                None => break,
+            }
+        }
+        Ok(found)
     }
 
     /// Registers `public` as a login key for `id` and returns where and who the machine is now:
@@ -719,7 +794,7 @@ impl Provider for BoatProvider {
             let login = self.login(&machine, &sandbox).await?;
             Self::step(
                 &login,
-                PREP,
+                &prep(),
                 &[image.as_str(), name.as_str(), spec.id.as_str()],
                 None,
                 PREP_PATIENCE,
@@ -796,47 +871,7 @@ impl Provider for BoatProvider {
 
     /// Deletes every sandbox labelled with the computer, and the one the record names.
     async fn sweep(&self, id: &str, last: Option<&Reach>) -> Result<()> {
-        let computer = safe_id(id)?;
-        let mut found = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_PAGES {
-            let mut path = format!("/sandboxes?label={LABEL}%3D{computer}&limit=100");
-            if let Some(next) = &cursor {
-                path.push_str(&format!("&cursor={next}"));
-            }
-            let reply = self
-                .call(Method::GET, &path, &[], None, CALL_PATIENCE)
-                .await?;
-            if reply.status != 200 {
-                return Err(outcome(&reply));
-            }
-            let page = reply.json()?;
-            for item in page
-                .get("sandboxes")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(sandbox) = item.get("id").and_then(Value::as_str) {
-                    found.push(safe_id(sandbox)?.to_owned());
-                }
-            }
-            match page.pointer("/pageInfo/nextCursor").and_then(Value::as_str) {
-                Some(next)
-                    if next
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"-_=.".contains(&b)) =>
-                {
-                    cursor = Some(next.to_owned())
-                }
-                Some(_) => {
-                    return Err(Problem::Failed(
-                        "boat's listing came with a cursor the broker won't use.".to_owned(),
-                    ))
-                }
-                None => break,
-            }
-        }
+        let mut found = self.labelled(id).await?;
         if let Some(Reach::Sandbox { id: last }) = last {
             let last = safe_id(last)?.to_owned();
             if !found.contains(&last) {
@@ -849,9 +884,36 @@ impl Provider for BoatProvider {
         Ok(())
     }
 
-    /// Nothing: a VM's memory was the box's, and its secrets are made again, not kept. Sweep finds it.
-    async fn recover(&self, _: &Spec, _: Option<&Reach>) -> Result<Option<Machine>> {
-        Ok(None)
+    /// The computer's sandbox, found by its label, else the one the record named if boat still has
+    /// it, with new secrets. Its disk kept the workspace and the home, and the secrets are made
+    /// again, not kept: each start stages them anew and the SSH key is rebuilt from the new token
+    /// and registered at the login. Nothing is stopped or deleted here. Of several labelled
+    /// sandboxes, the one the record named is kept if it's among them, else the first by id; the
+    /// others are left as they are. `None` only when boat has nothing for this computer.
+    async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
+        self.check().await?;
+        let mut found = self.labelled(&spec.id).await?;
+        found.sort_unstable();
+        let last = match last {
+            Some(Reach::Sandbox { id }) => Some(safe_id(id)?.to_owned()),
+            _ => None,
+        };
+        let sandbox = match (last, found.first()) {
+            (Some(last), _) if found.contains(&last) => last,
+            (_, Some(first)) => first.clone(),
+            (Some(last), None) if self.sandbox(&last).await?.is_some() => last,
+            _ => return Ok(None),
+        };
+        Ok(Some(Machine {
+            provider: ProviderKind::Boat,
+            reach: Reach::Sandbox { id: sandbox },
+            image: Some(self.image()),
+            token: Secret::fresh(24)?,
+            viewer_password: Secret::fresh(24)?,
+            dir: spec.dir.clone(),
+            link: None,
+            seen: None,
+        }))
     }
 
     async fn guard(&self, machine: &Machine) -> Result<()> {

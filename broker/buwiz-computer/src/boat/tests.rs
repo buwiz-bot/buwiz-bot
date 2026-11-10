@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{ssh_key, BoatProvider};
+use super::{prep, ssh_key, BoatProvider};
 use crate::cloud::fake::{empty, ok, serve, Answer, Fake, Seen, CA};
 use crate::cloud::{Api, Settings};
 use crate::{Machine, Power, Problem, Provider, ProviderKind, Reach, Secret, Sleep, Spec};
@@ -343,4 +343,195 @@ async fn a_check_proves_the_key_with_a_read() {
     provider(fake.addr, ssh.clone()).verify().await.unwrap();
     let wrong = BoatProvider::new(Settings::new(Some(Secret::new("other")), None)).with_api(Api::with_test(fake.addr, Some(CA.to_vec()))).with_ssh(ssh);
     assert_eq!(wrong.verify().await.unwrap_err().code(), "bad_key");
+}
+
+/// boat's listing for computer `comp1`: `first` on the first page, `second` on the page after the
+/// cursor (no second page when it's `None`). `bx_cccc2222` is a sandbox boat still has by id; any
+/// other is gone. A stop or a delete is answered, so a test can see one was asked for.
+fn listing(
+    first: &'static str,
+    second: Option<&'static str>,
+) -> impl Fn(&Seen) -> Answer + Send + Sync + 'static {
+    move |req: &Seen| {
+        let p = req.path.as_str();
+        let page = |ids: &str, next: Option<&str>| {
+            let next = next.map_or("null".to_owned(), |n| format!("\"{n}\""));
+            ok(
+                200,
+                &format!(
+                    r#"{{"ok":true,"sandboxes":[{ids}],"pageInfo":{{"hasMore":{},"nextCursor":{next}}}}}"#,
+                    next != "null"
+                ),
+            )
+        };
+        match req.method.as_str() {
+            "GET" if p.contains("cursor=c2") => page(second.unwrap_or(""), None),
+            "GET" if p.contains("label=buwiz-computer%3Dcomp1") => {
+                page(first, second.map(|_| "c2"))
+            }
+            "GET" if p == "/api/v1/sandboxes/bx_cccc2222" => ok(
+                200,
+                r#"{"ok":true,"sandbox":{"id":"bx_cccc2222","state":"ready"}}"#,
+            ),
+            "DELETE" | "POST" => ok(202, "{}"),
+            _ => ok(404, r#"{"ok":false,"code":"not_found"}"#),
+        }
+    }
+}
+
+fn sandbox_of(machine: &Machine) -> &str {
+    match &machine.reach {
+        Reach::Sandbox { id } => id,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn recover_finds_the_sandbox_by_its_label_with_new_secrets_and_deletes_nothing() {
+    let fake = serve(listing(
+        r#"{"id":"bx_zzzz2222"},{"id":"bx_aaaa2222"}"#,
+        None,
+    ))
+    .await;
+    let (ssh, log) = refusing_ssh("recover");
+    let p = provider(fake.addr, ssh);
+    let spec = spec("recover");
+    let old = record(&spec.dir);
+
+    // of two, the first by id, whatever order boat lists them in
+    let found = p.recover(&spec, None).await.unwrap().unwrap();
+    assert_eq!(sandbox_of(&found), "bx_aaaa2222");
+    assert_eq!(found.provider, ProviderKind::Boat);
+    assert_eq!(found.dir, spec.dir);
+    assert_eq!(found.image.as_deref(), Some("img:1"));
+    assert!(found.token.expose().len() >= 24 && found.viewer_password.expose().len() >= 24);
+    assert_ne!(found.token.expose(), old.token.expose());
+    assert_ne!(found.viewer_password.expose(), old.viewer_password.expose());
+    assert_ne!(found.token.expose(), found.viewer_password.expose());
+
+    // the one the record named, when it's among them
+    let named = p
+        .recover(
+            &spec,
+            Some(&Reach::Sandbox {
+                id: "bx_zzzz2222".to_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sandbox_of(&named), "bx_zzzz2222");
+    assert_ne!(
+        named.token.expose(),
+        found.token.expose(),
+        "each recover mints its own"
+    );
+
+    let got = calls(&fake);
+    assert!(got.iter().all(|c| c.starts_with("GET ")), "{got:?}");
+    assert!(!log.exists(), "recover logged in");
+}
+
+#[tokio::test]
+async fn recover_is_none_when_boat_has_nothing_for_the_computer() {
+    let fake = serve(listing("", None)).await;
+    let (ssh, _) = refusing_ssh("recover-none");
+    let p = provider(fake.addr, ssh);
+    let spec = spec("recover-none");
+    assert!(p.recover(&spec, None).await.unwrap().is_none());
+    let gone = Reach::Sandbox {
+        id: "bx_dddd2222".to_owned(),
+    };
+    assert!(p.recover(&spec, Some(&gone)).await.unwrap().is_none());
+
+    // nothing labelled, but the record's own sandbox is still there
+    let kept = Reach::Sandbox {
+        id: "bx_cccc2222".to_owned(),
+    };
+    let found = p.recover(&spec, Some(&kept)).await.unwrap().unwrap();
+    assert_eq!(sandbox_of(&found), "bx_cccc2222");
+
+    let got = calls(&fake);
+    assert!(got.iter().all(|c| c.starts_with("GET ")), "{got:?}");
+    assert!(
+        got.contains(&"GET /api/v1/sandboxes/bx_dddd2222".to_owned()),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn recover_reads_every_page_of_the_listing() {
+    let fake = serve(listing("", Some(r#"{"id":"bx_bbbb2222"}"#))).await;
+    let (ssh, _) = refusing_ssh("recover-pages");
+    let found = provider(fake.addr, ssh)
+        .recover(&spec("recover-pages"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sandbox_of(&found), "bx_bbbb2222");
+    assert_eq!(
+        calls(&fake),
+        vec![
+            "GET /api/v1/sandboxes?label=buwiz-computer%3Dcomp1&limit=100".to_owned(),
+            "GET /api/v1/sandboxes?label=buwiz-computer%3Dcomp1&limit=100&cursor=c2".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn the_box_is_made_as_docker_and_ec2_make_theirs() {
+    let s = prep();
+    assert!(s.contains(r#"-v "$2-workspace:/workspace""#), "{s}");
+    assert!(s.contains(r#"-v "$2-home:/home/box""#), "{s}");
+    assert!(
+        s.contains("-v /dev/shm/buwiz-start:/run/buwiz-computer"),
+        "{s}"
+    );
+    assert!(s.contains("--user 0 --cap-drop ALL"), "{s}");
+    for cap in crate::docker::BOX_CAPS {
+        assert!(s.contains(&format!("--cap-add {cap}")), "{cap}: {s}");
+    }
+    assert_eq!(
+        s.matches("--cap-add").count(),
+        crate::docker::BOX_CAPS.len(),
+        "{s}"
+    );
+    assert!(
+        s.contains("--security-opt no-new-privileges:true") && s.contains("--shm-size 1g"),
+        "{s}"
+    );
+    assert!(
+        s.contains("ip_unprivileged_port_start=6906") && s.contains("disable_ipv6=1"),
+        "{s}"
+    );
+    for env in [
+        "BOX_TOKEN_FILE=/run/buwiz-computer/token",
+        "BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer",
+        "BOX_DESKTOP=1",
+        "BOX_DESKTOP_REQUIRED=1",
+        "BOX_CHROME=0",
+    ] {
+        assert!(s.contains(&format!("-e {env} ")), "{env}: {s}");
+    }
+    for dropped in [
+        "-chrome",
+        "chrome-profile",
+        "BOX_CDP_PORT",
+        "BOX_CHROME=1",
+        "BOX_CHROME_PROFILE",
+        "256m",
+        "BOX_EXEC_BIND",
+        "BOX_HOST_BIND",
+        "BOX_TOKEN=",
+        "BOX_VIEWER_PASSWORD=",
+    ] {
+        assert!(!s.contains(dropped), "{dropped}: {s}");
+    }
+    assert!(
+        s.contains(
+            "-p 127.0.0.1:1337:1337 -p 127.0.0.1:1340:1340 -p 127.0.0.1:6901-6905:6901-6905"
+        ),
+        "{s}"
+    );
+    assert_eq!(s.matches(" -p ").count(), 3, "{s}");
 }
