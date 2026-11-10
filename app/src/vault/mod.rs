@@ -19,7 +19,7 @@
 //! ([`settings_page`]).
 
 mod db;
-mod keychain;
+pub(crate) mod keychain;
 mod origin;
 mod page;
 pub(crate) mod totp;
@@ -167,6 +167,17 @@ fn move_rox_secrets(dir: &std::path::Path, c: &Connection) {
     }
 }
 
+/// The owner's gate: the real sheet with the Keychain; with the test store, none that a test
+/// instance's run can put up (a sheet takes the screen). A test build's answers what
+/// `BUWIZ_TEST_OWNER` says (`verified`, `cancelled`; else unavailable), so its UI tests drive a
+/// saved login with no sheet.
+fn gate() -> Box<dyn OwnerGate> {
+    match keychain::kind() {
+        keychain::Kind::Keychain => Box::new(touch_id::DeviceOwner),
+        keychain::Kind::Memory => Box::new(touch_id::TestOwner),
+    }
+}
+
 /// The title a row gets when the person gave none.
 pub(crate) fn default_label(username: &str, origin: &str) -> String {
     format!("{username} on {origin}")
@@ -184,9 +195,9 @@ impl Vault {
             .map_err(|e| e.to_string())
             .and_then(|()| Connection::open(dir.join("logins.db")).map_err(|e| e.to_string()))
             .and_then(|c| db::migrate(&c).map(|()| c).map_err(|e| e.to_string()));
-        // never from a test: it would reach the owner's Keychain
+        // never from a test or a test instance: it would reach the owner's Keychain
         #[cfg(all(target_os = "macos", not(test)))]
-        if let Ok(c) = &conn {
+        if let (Ok(c), keychain::Kind::Keychain) = (&conn, keychain::kind()) {
             move_rox_secrets(&dir, c);
         }
         let (db, open_error) = match conn {
@@ -196,7 +207,7 @@ impl Vault {
                 (None, Some(e))
             }
         };
-        Self::with(db, open_error, keychain::open(), Box::new(touch_id::DeviceOwner))
+        Self::with(db, open_error, keychain::open(), gate())
     }
 
     fn with(

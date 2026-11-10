@@ -29,6 +29,23 @@ pub(crate) trait OwnerGate: Send + Sync {
     fn confirm(&self, reason: &str) -> AuthOutcome;
 }
 
+/// The gate with the test store ([`super::keychain::Kind::Memory`]): no sheet. In a test build it
+/// answers `BUWIZ_TEST_OWNER` (`verified`, `cancelled`); anywhere else, and with nothing set, the
+/// Mac can't ask, so nothing saved is used.
+pub(crate) struct TestOwner;
+
+impl OwnerGate for TestOwner {
+    fn confirm(&self, _reason: &str) -> AuthOutcome {
+        #[cfg(test)]
+        match buwiz_protocol::env::var("BUWIZ_TEST_OWNER").as_deref() {
+            Some("verified") => return AuthOutcome::Verified,
+            Some("cancelled") => return AuthOutcome::Cancelled,
+            _ => {}
+        }
+        AuthOutcome::Unavailable("This is a test instance with no Keychain, so saved logins can't be confirmed here.".into())
+    }
+}
+
 /// The real sheet.
 pub(crate) struct DeviceOwner;
 

@@ -23,7 +23,6 @@ pub(crate) trait SecretStore: Send + Sync {
 }
 
 /// Secrets in memory, gone with the process.
-#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 #[derive(Default)]
 pub(crate) struct MemorySecrets {
     inner: Mutex<HashMap<String, Secret>>,
@@ -122,22 +121,65 @@ fn not_found(e: &security_framework::base::Error) -> bool {
     e.code() == -25300
 }
 
-/// The store the app uses: the Keychain on macOS, memory elsewhere (no
-/// secret is ever written to a file).
+/// Which store the app's vault opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// The macOS Keychain, service [`super::KEYCHAIN_SERVICE`].
+    Keychain,
+    /// [`MemorySecrets`]: a test, a test instance, or not macOS.
+    Memory,
+}
+
+/// Whether the environment asks for no Keychain: `BUWIZ_NO_KEYCHAIN` set (anything but empty, `0`
+/// or `false`), or `BUWIZ_KEYSTORE` naming another store (`file:<dir>`, `memory`), as every test
+/// broker and test instance is started with. A test instance must never reach the owner's
+/// `com.buwiz.bot.site-login` items.
+pub(crate) fn no_keychain_by(var: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |k: &str| var(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let off = set("BUWIZ_NO_KEYCHAIN").is_some_and(|v| v != "0" && !v.eq_ignore_ascii_case("false"));
+    let other = set("BUWIZ_KEYSTORE").is_some_and(|v| v != "keychain");
+    off || other
+}
+
+/// The store the vault opens, from the environment: never the Keychain in a test build, nor when
+/// the environment asks for none ([`no_keychain_by`]), nor off macOS.
+pub(crate) fn kind_by(var: impl Fn(&str) -> Option<String>) -> Kind {
+    if cfg!(test) || !cfg!(target_os = "macos") || no_keychain_by(var) { Kind::Memory } else { Kind::Keychain }
+}
+
+/// [`kind_by`] of this process's environment.
+pub(crate) fn kind() -> Kind {
+    kind_by(buwiz_protocol::env::var)
+}
+
+/// The store the app uses: the Keychain on macOS, memory in a test, a test instance or elsewhere
+/// (no secret is ever written to a file).
 pub(crate) fn open() -> Box<dyn SecretStore> {
-    #[cfg(target_os = "macos")]
-    {
-        Box::new(Keychain(super::KEYCHAIN_SERVICE))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Box::new(MemorySecrets::default())
+    match kind() {
+        #[cfg(target_os = "macos")]
+        Kind::Keychain => Box::new(Keychain(super::KEYCHAIN_SERVICE)),
+        _ => Box::new(MemorySecrets::default()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_test_build_and_a_test_instance_never_open_the_keychain() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned());
+        // a test build, whatever the environment says
+        assert_eq!(kind_by(env(&[])), Kind::Memory);
+        assert_eq!(kind(), Kind::Memory);
+        // what a test broker and a test instance are started with
+        for set in [&[("BUWIZ_NO_KEYCHAIN", "1")][..], &[("BUWIZ_KEYSTORE", "file:/tmp/x")], &[("BUWIZ_KEYSTORE", "memory")], &[("BUWIZ_NO_KEYCHAIN", "yes"), ("BUWIZ_KEYSTORE", "keychain")]] {
+            assert!(no_keychain_by(env(set)), "{set:?}");
+        }
+        for set in [&[][..], &[("BUWIZ_NO_KEYCHAIN", "0")], &[("BUWIZ_NO_KEYCHAIN", "")], &[("BUWIZ_KEYSTORE", "keychain")], &[("BUWIZ_NO_KEYCHAIN", "false")]] {
+            assert!(!no_keychain_by(env(set)), "{set:?}");
+        }
+    }
 
     fn accounts(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| (*s).to_owned()).collect()
