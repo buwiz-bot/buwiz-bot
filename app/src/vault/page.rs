@@ -128,7 +128,9 @@ fn close_form() {
     });
 }
 
-/// Saves the form: a new login, or the edit. The secrets leave the form's state at once.
+/// Saves the form: a new login, or the edit. What was typed into its secret
+/// fields leaves the form's state once it saves; a refusal keeps the form
+/// open, masked, to fix.
 fn save_form() {
     let u = ui();
     let Some(Form(id)) = u.form.get_untracked() else { return };
