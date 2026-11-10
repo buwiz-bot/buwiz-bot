@@ -22,7 +22,8 @@
 //!   expired), a save or a removal says where to look, and a person who looked can forget it: no
 //!   key change is ever held up by a row nothing can clear.
 //! - A computer found with its record lost, that nothing of could be found, is listed as lost, with
-//!   where to look. Nothing deletes it but a person's Delete; their Keep looks for it again. Its
+//!   where to look. Nothing deletes it but a person's Delete; their Keep looks for it again, and is
+//!   offered only where one found could be put back in use ([`Provider::cant_keep_lost`]). Its
 //!   keys aren't removed while it's there, and new keys are kept only when they find it by its id,
 //!   as a sweep would (or the keys in use can't find it either). A Delete with keys saved since it
 //!   was made that find nothing keeps its row, with where to look, for a person to Forget: those
@@ -628,8 +629,10 @@ impl Computers {
                 o
             })
             .collect();
-        let computers: Vec<Value> = computers_on(ctx, kind)
-            .unwrap_or_default()
+        let on = computers_on(ctx, kind).unwrap_or_default();
+        // asked of the provider only with a lost one to show
+        let cant_keep = if on.iter().any(|o| o.lost) { self.provider_of_kind(ctx, kind).cant_keep_lost() } else { None };
+        let computers: Vec<Value> = on
             .into_iter()
             .map(|o| {
                 let mut c = json!({"id": o.id, "bots": o.bots});
@@ -642,6 +645,11 @@ impl Computers {
                 if o.lost {
                     c["lost"] = json!(true);
                     c["look"] = json!(look_for(kind, &o.id));
+                    // Keep is offered only where a found one can be put back in use
+                    c["keep"] = json!(cant_keep.is_none());
+                    if let Some(why) = &cant_keep {
+                        c["why"] = json!(why);
+                    }
                 }
                 c
             })
@@ -804,10 +812,11 @@ impl Computers {
         if live.finds(id, last.as_ref()).await == Ok(Some(false)) {
             return Ok(());
         }
+        let what = if live.cant_keep_lost().is_some() { "Delete" } else { "Keep or Delete" };
         Err(refusal(
             "other_account",
             format!(
-                "These keys can't find computer {id} on {}, which was found with its record lost (they may be another account's), so with them it could never be kept or deleted, and it may still be there and costing. Nothing was changed: Keep or Delete it in Settings › Computers first, with the keys in use.",
+                "These keys can't find computer {id} on {}, which was found with its record lost (they may be another account's), so with them it could never be kept or deleted, and it may still be there and costing. Nothing was changed: {what} it in Settings › Computers first, with the keys in use.",
                 kind.label()
             ),
         ))
@@ -864,9 +873,14 @@ impl Computers {
     pub async fn keep_lost(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<(Value, String), Problem> {
         let _making = self.making(&format!("computer {id}")).await;
         self.lost_on(ctx, kind, id)?;
+        let provider = self.provider_of_kind(ctx, kind);
+        // whatever is found, nothing could be put back in use: not a "still can't be found"
+        if let Some(why) = provider.cant_keep_lost() {
+            return Err(refusal("cant_keep", format!("{why} Nothing was deleted.")));
+        }
         let spec = buwiz_computer::Spec { id: id.to_owned(), dir: Self::dir(ctx, id) };
         let last = Self::reach_of(ctx, id)?;
-        let found = match self.provider_of_kind(ctx, kind).recover(&spec, last.as_ref()).await {
+        let found = match provider.recover(&spec, last.as_ref()).await {
             Ok(found) => found,
             Err(why) => return Err(refusal("in_use", format!("{} couldn't be asked about {id} just now: {} Nothing was deleted. Try again in a minute.", kind.label(), why.sentence()))),
         };

@@ -647,6 +647,13 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// Why a computer of this kind found with its record lost can't be kept, as the sentence a
+    /// person reads: [`Provider::recover`] never gives one back, whatever is found. `None` when it
+    /// can, which is what a person is offered Keep for.
+    fn cant_keep_lost(&self) -> Option<String> {
+        None
+    }
+
     /// Whether anything of computer `id`, its saved record lost, is there with these settings: what
     /// [`Provider::sweep`] would find, by its id and `last`. Nothing is changed. `None` when this
     /// provider can't tell.

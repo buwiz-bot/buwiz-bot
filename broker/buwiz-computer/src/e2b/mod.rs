@@ -36,7 +36,8 @@
 //! - *recover*: nothing. A lost record's sandbox can't be kept in use, because it can't be given
 //!   new secrets: they go in only through envd, with the access token from E2B's answer to the
 //!   create call, which nothing here gets again or keeps, and the box has already read and
-//!   unlinked the ones it had. So the sandbox is found, and sweep deletes it (`DELETE
+//!   unlinked the ones it had. So a person is offered only Delete for it
+//!   ([`Provider::cant_keep_lost`]): sweep finds the sandbox and deletes it (`DELETE
 //!   /sandboxes/{id}`, as *destroy*), files and all; it is never just stopped.
 //!
 //! **Reach.** A sandbox's ports are at `https://<port>-<sandboxID>.e2b.app`. The broker runs one
@@ -651,6 +652,13 @@ impl Provider for E2bProvider {
             }
             _ => Ok(Some(false)),
         }
+    }
+
+    fn cant_keep_lost(&self) -> Option<String> {
+        Some(
+            "An E2B computer can't be given new secrets once its record is lost, so it can't be put back in use: it can only be deleted, or left as it is."
+                .to_owned(),
+        )
     }
 
     /// Nothing: a box that has read its secrets can't be given new ones, since envd's token came

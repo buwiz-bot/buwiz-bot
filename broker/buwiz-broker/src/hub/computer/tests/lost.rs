@@ -411,3 +411,41 @@ async fn deleting_the_last_bot_at_a_readable_record_still_deletes_it() {
     );
     assert!(!Computers::ids_where(&b.ctx, "1=1").contains(&old));
 }
+
+/// A kind whose lost computers can't be put back in use (E2B's): only Delete is offered, and a
+/// Keep says why instead of "still can't be found", without looking.
+#[tokio::test]
+async fn a_kind_that_cant_keep_offers_only_delete_and_says_why() {
+    let b = bed("lost-cant-keep");
+    let (old, fresh) = lost_one(&b).await;
+    let why = "This kind can't be given new secrets once its record is lost.";
+    *b.mock.cant_keep.lock().unwrap() = Some(why.to_owned());
+    *b.mock.recoverable.lock().unwrap() = Some(buwiz_computer::Reach::Container {
+        name: "mock-found".into(),
+    });
+    let row = docker_computers(&fresh, &b)
+        .into_iter()
+        .find(|c| c["id"] == old.as_str())
+        .unwrap();
+    assert_eq!((row["lost"].clone(), row["keep"].clone(), row["why"].clone()), (json!(true), json!(false), json!(why)), "{row}");
+    b.mock.calls.lock().unwrap().clear();
+    let refused = fresh
+        .keep_lost(&b.ctx, ProviderKind::Docker, &old)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "cant_keep");
+    assert!(refused.sentence().starts_with(why) && refused.sentence().contains("Nothing was deleted"), "{}", refused.sentence());
+    assert!(
+        !b.mock.calls().iter().any(|c| c.starts_with("recover")) && !deleted_anything(&b),
+        "{:?}",
+        b.mock.calls()
+    );
+    assert!(Computers::is_lost(&b.ctx, &old).unwrap());
+    // where it can, Keep is offered
+    *b.mock.cant_keep.lock().unwrap() = None;
+    let row = docker_computers(&fresh, &b)
+        .into_iter()
+        .find(|c| c["id"] == old.as_str())
+        .unwrap();
+    assert!(row["keep"] == true && row.get("why").is_none(), "{row}");
+}

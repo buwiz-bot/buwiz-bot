@@ -68,6 +68,18 @@ impl Field {
     }
 }
 
+/// A computer found with its record lost, as the broker lists it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Lost {
+    pub id: String,
+    /// where a person looks for it by hand
+    pub look: String,
+    /// whether Keep is offered: a kind whose lost computers can't be put back in use has Delete alone
+    pub keep: bool,
+    /// why it can't be kept, when it can't; "" otherwise
+    pub why: String,
+}
+
 /// A home as the broker lists it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Home {
@@ -84,9 +96,9 @@ pub(crate) struct Home {
     pub computers: Vec<(String, Vec<String>)>,
     /// the ones on it being deleted, apart: (id, where a person looks for what's left of it)
     pub leaving: Vec<(String, String)>,
-    /// the ones found with their record lost and nothing of them found, apart: (id, where a person
-    /// looks). Nothing deletes one until a person presses Delete
-    pub lost: Vec<(String, String)>,
+    /// the ones found with their record lost and nothing of them found, apart. Nothing deletes one
+    /// until a person presses Delete
+    pub lost: Vec<Lost>,
     /// a limited policy to copy, as JSON text; "" for none
     pub policy: String,
     /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
@@ -110,7 +122,10 @@ impl Home {
             let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
             let look = || c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned();
             if c.get("lost").and_then(Value::as_bool) == Some(true) {
-                lost.push((id, look()));
+                // a broker from before says nothing of it: Keep, as it offered then
+                let keep = c.get("keep").and_then(Value::as_bool).unwrap_or(true);
+                let why = if keep { String::new() } else { c.get("why").and_then(Value::as_str).unwrap_or_default().to_owned() };
+                lost.push(Lost { id, look: look(), keep, why });
             } else if c.get("leaving").and_then(Value::as_bool) == Some(true) {
                 leaving.push((id, look()));
             } else {
@@ -896,17 +911,25 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
         let (kind, id) = (home.kind.clone(), id.clone());
         col = col.child(line(words)).child(view().flex_row().child(small_button(format!("Forget {id} on {}", home.label), format!("Forget {id}"), move || run_forget(kind.clone(), id.clone()))));
     }
-    for (id, look) in &home.lost {
-        let mut words = format!("{id} was found with its record lost, and couldn't be reached. It may still be there, with its files, and costing. No Bot sits at it. Keep looks for it again; Delete deletes it there for good. Nothing happens to it until you choose.");
-        if !look.is_empty() {
-            words.push_str(&format!(" To check by hand: {look}."));
+    for lost in &home.lost {
+        let id = &lost.id;
+        let mut words = format!("{id} was found with its record lost, and couldn't be reached. It may still be there, with its files, and costing. No Bot sits at it.");
+        if lost.keep {
+            words.push_str(" Keep looks for it again; Delete deletes it there for good.");
+        } else {
+            words.push_str(&format!(" {} Delete deletes it there for good.", if lost.why.is_empty() { "It can't be kept." } else { lost.why.as_str() }));
         }
-        let (keep_kind, keep_id, delete_kind, delete_id) = (home.kind.clone(), id.clone(), home.kind.clone(), id.clone());
-        let buttons = view()
-            .flex_row()
-            .gap_2()
-            .child(small_button(format!("Keep {id} on {}", home.label), "Keep".to_owned(), move || run_keep(keep_kind.clone(), keep_id.clone())))
-            .child(small_button(format!("Delete {id} on {}", home.label), "Delete".to_owned(), move || run_delete_lost(delete_kind.clone(), delete_id.clone())));
+        words.push_str(" Nothing happens to it until you choose.");
+        if !lost.look.is_empty() {
+            words.push_str(&format!(" To check by hand: {}.", lost.look));
+        }
+        let mut buttons = view().flex_row().gap_2();
+        if lost.keep {
+            let (kind, id) = (home.kind.clone(), id.clone());
+            buttons = buttons.child(small_button(format!("Keep {id} on {}", home.label), "Keep".to_owned(), move || run_keep(kind.clone(), id.clone())));
+        }
+        let (kind, delete_id) = (home.kind.clone(), id.clone());
+        buttons = buttons.child(small_button(format!("Delete {id} on {}", home.label), "Delete".to_owned(), move || run_delete_lost(kind.clone(), delete_id.clone())));
         col = col.child(line(words)).child(buttons);
     }
     if home.built && home.kind != "remote" {
@@ -1320,9 +1343,21 @@ mod tests {
         let mut v = ec2();
         v["computers"] = json!([{"id": "cmp_ab12", "bots": ["Ann"]}, {"id": "cmp_ef56", "bots": [], "lost": true, "look": "Terminate any instance tagged buwiz:computer-id=cmp_ef56"}]);
         let h = Home::parse(&v).unwrap();
-        assert_eq!(h.lost, vec![("cmp_ef56".to_owned(), "Terminate any instance tagged buwiz:computer-id=cmp_ef56".to_owned())]);
+        assert_eq!(h.lost, vec![Lost { id: "cmp_ef56".to_owned(), look: "Terminate any instance tagged buwiz:computer-id=cmp_ef56".to_owned(), keep: true, why: String::new() }]);
         assert!(h.leaving.is_empty());
         assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as lost");
+    }
+
+    #[test]
+    fn a_lost_computer_that_cant_be_kept_says_why_and_one_that_can_says_nothing() {
+        let mut v = ec2();
+        v["computers"] = json!([
+            {"id": "cmp_ef56", "bots": [], "lost": true, "look": "Kill it", "keep": false, "why": "An E2B computer can't be given new secrets once its record is lost."},
+            {"id": "cmp_ef57", "bots": [], "lost": true, "look": "Kill it", "keep": true, "why": "not shown"}
+        ]);
+        let h = Home::parse(&v).unwrap();
+        assert_eq!(h.lost[0], Lost { id: "cmp_ef56".to_owned(), look: "Kill it".to_owned(), keep: false, why: "An E2B computer can't be given new secrets once its record is lost.".to_owned() });
+        assert_eq!((h.lost[1].keep, h.lost[1].why.as_str()), (true, ""));
     }
 
     #[test]

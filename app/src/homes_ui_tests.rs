@@ -263,6 +263,23 @@ fn a_lost_computer_shows_where_to_look_and_keep_and_delete_send_its_id() {
 }
 
 #[test]
+fn a_lost_computer_that_cant_be_kept_offers_only_delete_and_says_why() {
+    if !in_child("a_lost_computer_that_cant_be_kept_offers_only_delete_and_says_why") {
+        return;
+    }
+    let mut found = e2b(true);
+    found["computers"] = json!([{"id": "cmp_ef56", "bots": [], "lost": true, "look": "In the E2B dashboard, kill any sandbox whose metadata has buwiz-computer=cmp_ef56", "keep": false, "why": "An E2B computer can't be given new secrets once its record is lost, so it can't be put back in use: it can only be deleted, or left as it is."}]);
+    let mut list = providers(true);
+    list["providers"][2] = found;
+    route("GET", "/v1/host/computer/providers", 200, list);
+    let mut app = start::<Page>((900.0, 1600.0));
+    wait_for_text(&mut app, "cmp_ef56 was found with its record lost");
+    assert!(shows(&mut app, "it can only be deleted, or left as it is. Delete deletes it there for good."), "{:?}", app.texts());
+    assert!(!shows(&mut app, "Keep looks for it again"), "{:?}", app.texts());
+    assert!(app.has("Delete cmp_ef56 on E2B") && !app.has("Keep cmp_ef56 on E2B"), "only Delete is offered");
+}
+
+#[test]
 fn a_deleted_lost_computer_takes_its_leftovers_off_the_list() {
     if !in_child("a_deleted_lost_computer_takes_its_leftovers_off_the_list") {
         return;
