@@ -2462,9 +2462,11 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                 // cut to one line
                 .child(text(card.title.clone()).flex_auto().min_w(px(0.0)).number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5")))
                 .child(card_meta(&key))
-                // until it mounts, whose app this is (9.7)
+                // until it mounts, whose app this is (9.7). In a narrow
+                // header it gives way before the title does: the update
+                // signal's button takes room the title used to have
                 .when(!auto, |v| {
-                    v.child(text(plugin).flex_shrink(1.0).min_w(px(0.0)).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
+                    v.child(text(plugin).flex_shrink(100.0).min_w(px(0.0)).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5ad")))
                 })
                 .when(as_of.is_some(), |v| v.child(text(cards::as_of_label(as_of.unwrap_or_default())).text_size(px(12.0)).text_color(tc("#f5f5f5ad"))))
                 // a snapshot goes live; a live card reads again. An action
