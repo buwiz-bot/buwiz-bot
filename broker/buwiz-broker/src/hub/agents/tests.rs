@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use super::external::{signature, Externals, Post, BODY_MAX, HOOK_RATE};
 use super::run::{cards_to_chat, history_for, peer_prompt, Runs, PER_AGENT};
 use super::*;
+use crate::hub::agent::runs::tests::until;
 use crate::hub::ctx::HubCtx;
 use crate::hub::store::{Bot, Thread, Turn};
 use crate::hub::types::{BoxFuture, TurnCtx};
@@ -683,12 +684,12 @@ async fn hook_03_an_agents_answer_goes_out_signed_5xx_is_retried_4xx_dropped_wit
     assert_eq!(row("next_at"), rusqlite::types::Value::Integer(START as i64 + 30_000));
     // 500: tried again after a backoff, then 200
     assert!(w.ctx.clock.manual_step(None, true), "one retry timer");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // the row is marked after the POST returns
+    until("the retry was never marked delivered", || row("state") == rusqlite::types::Value::Text("delivered".into())).await;
     assert_eq!(w.posts.lock().unwrap().len(), 2);
-    assert_eq!(row("state"), rusqlite::types::Value::Text("delivered".into()));
     // the next answer gets a 404: dropped, and the conversation says so
     w.send_routed("boss", json!({"conversation": got["conversation"], "to": [format!("ext:{id}")], "text": "One more thing."})).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until("no drop notice", || w.conv(&got["conversation"]).turns.iter().any(|u| notice_kind(u) == Some("agents_undelivered"))).await;
     let t = w.conv(&got["conversation"]);
     let dropped = t.turns.iter().find(|u| notice_kind(u) == Some("agents_undelivered")).expect("the drop notice");
     assert_eq!(dropped.text.as_deref(), Some("Not delivered to CI (HTTP 404)"));
@@ -1185,10 +1186,10 @@ async fn a_sender_that_has_gone_stays_unheard() {
 
 #[tokio::test]
 async fn a_run_in_flight_sends_no_answer_once_its_bot_stops_hearing() {
-    let w = world_with(&["Scout", "Boss"], Stub { answer: Mutex::new(Some("Done".into())), delay_ms: 60, ..Default::default() }, Vec::new());
+    // long enough that a busy machine still turns Boss off while the run is in flight
+    let w = world_with(&["Scout", "Boss"], Stub { answer: Mutex::new(Some("Done".into())), delay_ms: 500, ..Default::default() }, Vec::new());
     let r = w.send_routed("scout", json!({"to": ["boss"], "subject": "Tax check", "text": "Q?", "expects_reply": true})).unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(ran(&w, "request", "boss"), 1, "running");
+    until("the run never started", || ran(&w, "request", "boss") == 1).await;
     none(&w, "boss");
     w.settle().await;
     assert_eq!(w.messages(&r["conversation"]), 1, "no answer");
