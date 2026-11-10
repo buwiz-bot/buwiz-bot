@@ -147,6 +147,25 @@ async fn a_kept_computer_is_never_swept_and_its_first_wake_stops_it_first() {
     assert!(!deleted_anything(&b), "{calls:?}");
 }
 
+/// Nothing of it found, and its Bot taken off before the new one is made: nothing is made, since a
+/// make can be a billed cloud create.
+#[tokio::test]
+async fn a_bot_taken_off_before_the_make_makes_nothing() {
+    let b = bed("lost-off-before-make");
+    let old = awake(&b, &b.ann.0).await;
+    std::fs::remove_file(Computers::dir(&b.ctx, &old).join("machine.json")).unwrap();
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    fresh.set_sight(std::collections::HashMap::new());
+    fresh.detach(&b.ctx, &b.ann.0).await.unwrap();
+    b.mock.calls.lock().unwrap().clear();
+    assert_eq!(fresh.found_again(&b.ctx, &b.ann.0, &old).await.unwrap(), None);
+    assert!(
+        !b.mock.calls().iter().any(|c| c.starts_with("create")),
+        "{:?}",
+        b.mock.calls()
+    );
+}
+
 #[tokio::test]
 async fn keep_that_still_cant_find_it_changes_nothing_and_deletes_nothing() {
     let b = bed("lost-keep-not-found");

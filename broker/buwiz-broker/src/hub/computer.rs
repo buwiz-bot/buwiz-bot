@@ -705,6 +705,11 @@ impl Computers {
             self.adopt(ctx, old, machine)?;
             return Ok(Some(old.to_owned()));
         }
+        // a make can be a billed cloud create: not for a Bot taken off meanwhile. Asked again
+        // after, since the seat can change during the create
+        if !still_there(ctx)? {
+            return Ok(None);
+        }
         let id = self.make(ctx, bot).await?;
         let (moved, spare) = {
             let _seating = self.seating.lock().await;
