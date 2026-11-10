@@ -19,6 +19,14 @@
 //!   fields that aren't secret ([`result_text`]). It looks for itself afterwards.
 //! - A saved login (the app's vault, behind Touch ID) is typed only on a computer this Bot doesn't
 //!   share: OpenGrok's 403 `shared-computer`.
+//! - Who decides what about a saved login. The vault, and which Bots each login is shared with,
+//!   live in the app on the Mac; this broker never sees them, so the app alone decides "shared
+//!   with this Bot" (and share-all), and refuses an unshared login before Touch ID and before
+//!   anything is sent. This broker alone decides "this Bot's own computer": it refuses a saved
+//!   login on a computer several Bots share, whatever the app sends, share-all included. It isn't
+//!   told the shares: a claim from the app would come from the same host-token holder that
+//!   already decides them, so it would check nothing. OpenGrok's `not-shared` 403 has no
+//!   counterpart here for that reason.
 //! - "Open the screen" is the hand-over `computer_ask_person` makes, without a second card: the
 //!   person asked for it on this one.
 //! - Logs name a field by its id and label, and say how long its value was. Never a value.
@@ -1015,7 +1023,8 @@ pub async fn host_dismiss(ctx: &Arc<HubCtx>, b: &Value) -> (u16, Value) {
 
 /// `POST /v1/host/computer/login/saved {chat, id}`: whether a saved login may be used on this
 /// card, asked before Touch ID so a refusal never follows a fingerprint. `{ok, usable, code?,
-/// message?}`.
+/// message?}`. This answers for the computer only (the Bot sits alone on it); whether the login is
+/// shared with the Bot is the app's to decide, and it has by the time it asks.
 pub fn host_saved(ctx: &Arc<HubCtx>, b: &Value) -> (u16, Value) {
     let (chat, id, _) = match waiting_card(ctx, b) {
         Ok(found) => found,
