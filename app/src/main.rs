@@ -126,7 +126,11 @@ mod jank_log {
 
 /// The root the runners mount: the same component every platform shows.
 pub fn app_root() -> nsh_core::element::Root {
-    let root = nsh_core::element::Root::of::<buwiz_bot::App>().app_id(buwiz_bot::identity::APP_ID);
+    // `buwiz://` links the system opens the app with reach `lib.rs`'s
+    // listener (`next_url_scheme_open`) only for a scheme the root claims.
+    let root = nsh_core::element::Root::of::<buwiz_bot::App>()
+        .app_id(buwiz_bot::identity::APP_ID)
+        .url_schemes(["buwiz"]);
     buwiz_bot::fonts().into_iter().fold(root, |root, font| root.font(font))
 }
 

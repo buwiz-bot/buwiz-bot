@@ -3,7 +3,7 @@
 //! checkbox (`FindReplaceDialog`'s `le`/`z`) and tabs (`HyperlinkDialog`'s
 //! `ne`/`H`/`F`). Fields inside a [`super::modal`] join its Tab order.
 
-use nsh_base::{SelectItem, SelectItemState};
+use nsh_base::{SelectEntry, SelectItem};
 use nsh_core::canvas::{FillRule, svg_path};
 use nsh_core::element::StyleRefinement;
 use nsh_core::prelude::*;
@@ -217,15 +217,25 @@ pub fn select_field(
         .offset(px(2.0))
         .popup_style(|s: StyleRefinement| s.bg(p::SURFACE).border_1().border_color(p::BORDER_DARK).rounded(px(FIELD_RADIUS)).p(px(4.0)).min_w(px(160.0)))
         .trigger(trigger)
-        .render_item(|s: &SelectItemState| {
+        // Highlighted: `--doc-primary` under `--doc-on-primary` text. nsh/base
+        // gives an item's state to its row's classes, not to `render_item`.
+        .item_class(Some(SharedString::from(format!(
+            "group rounded-[3px] {}",
+            p::class("focus:", "bg", p::PRIMARY)
+        ))))
+        .render_item(|s: &SelectEntry| {
             text(s.title.clone())
                 .w_full()
                 .px(px(8.0))
                 .py(px(4.0))
-                .rounded(px(3.0))
                 .text_size(px(FIELD_TEXT))
-                .text_color(if s.highlighted { p::ON_PRIMARY } else { p::TEXT })
-                .bg(if s.highlighted { p::PRIMARY } else { AdaptiveColor::TRANSPARENT })
+                // Classes, not `text_color`: a typed style is the inline
+                // one, which would win over the highlight's `group-focus:`.
+                .app_class(Some(SharedString::from(format!(
+                    "{} {}",
+                    p::class("", "text", p::TEXT),
+                    p::class("group-focus:", "text", p::ON_PRIMARY)
+                ))))
                 .into_element()
         })
         .on_change(move |v: &Option<SharedString>| {

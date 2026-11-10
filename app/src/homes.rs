@@ -68,6 +68,18 @@ impl Field {
     }
 }
 
+/// A computer found with its record lost, as the broker lists it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Lost {
+    pub id: String,
+    /// where a person looks for it by hand
+    pub look: String,
+    /// whether Keep is offered: a kind whose lost computers can't be put back in use has Delete alone
+    pub keep: bool,
+    /// why it can't be kept, when it can't; "" otherwise
+    pub why: String,
+}
+
 /// A home as the broker lists it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Home {
@@ -84,10 +96,16 @@ pub(crate) struct Home {
     pub computers: Vec<(String, Vec<String>)>,
     /// the ones on it being deleted, apart: (id, where a person looks for what's left of it)
     pub leaving: Vec<(String, String)>,
+    /// the ones found with their record lost and nothing of them found, apart. Nothing deletes one
+    /// until a person presses Delete
+    pub lost: Vec<Lost>,
     /// a limited policy to copy, as JSON text; "" for none
     pub policy: String,
     /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
     pub launch: String,
+    /// what's left on this Mac of computers that are gone: Docker's volume names, listed only.
+    /// `None` when the reply didn't say (one home's reply, or a Docker that didn't answer in time)
+    pub leftovers: Option<Vec<String>>,
 }
 
 impl Home {
@@ -99,11 +117,17 @@ impl Home {
         if kind.is_empty() {
             return None;
         }
-        let (mut computers, mut leaving) = (Vec::new(), Vec::new());
+        let (mut computers, mut leaving, mut lost) = (Vec::new(), Vec::new(), Vec::new());
         for c in list("computers") {
             let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
-            if c.get("leaving").and_then(Value::as_bool) == Some(true) {
-                leaving.push((id, c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned()));
+            let look = || c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned();
+            if c.get("lost").and_then(Value::as_bool) == Some(true) {
+                // a broker from before says nothing of it: Keep, as it offered then
+                let keep = c.get("keep").and_then(Value::as_bool).unwrap_or(true);
+                let why = if keep { String::new() } else { c.get("why").and_then(Value::as_str).unwrap_or_default().to_owned() };
+                lost.push(Lost { id, look: look(), keep, why });
+            } else if c.get("leaving").and_then(Value::as_bool) == Some(true) {
+                leaving.push((id, look()));
             } else {
                 let bots = c.get("bots").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
                 computers.push((id, bots));
@@ -119,11 +143,22 @@ impl Home {
             notes: list("notes").iter().filter_map(Value::as_str).filter(|n| !n.is_empty()).map(str::to_owned).collect(),
             computers,
             leaving,
+            lost,
             policy: text("policy"),
             // only a web page: it's opened in the browser
             launch: Some(text("launch")).filter(|u| u.starts_with("https://")).unwrap_or_default(),
+            leftovers: v.get("leftovers").map(|_| list("leftovers").iter().filter_map(|l| l.get("name")?.as_str()).map(str::to_owned).collect()),
             kind,
         })
+    }
+
+    /// The sentence naming what's left of computers that are gone; "" when nothing is.
+    pub(crate) fn leftovers_words(&self) -> String {
+        let left = self.leftovers.as_deref().unwrap_or_default();
+        if left.is_empty() {
+            return String::new();
+        }
+        format!("Files from a computer that's gone are still on this Mac, in these Docker volumes: {}. Nothing here deletes them.", left.join(", "))
     }
 
     /// Whether it takes a key of its own.
@@ -220,9 +255,15 @@ impl Homes {
         self.list.iter().filter(|h| h.kind != "remote" && h.ready()).collect()
     }
 
-    fn replace(&mut self, home: Home) {
+    fn replace(&mut self, mut home: Home) {
         match self.list.iter_mut().find(|h| h.kind == home.kind) {
-            Some(h) => *h = home,
+            Some(h) => {
+                // only the full list looks for leftovers: one home's reply doesn't say they went
+                if home.leftovers.is_none() {
+                    home.leftovers = h.leftovers.take();
+                }
+                *h = home;
+            }
             None => self.list.push(home),
         }
     }
@@ -343,7 +384,13 @@ fn bot_path(bot: &str) -> String {
 /// Asks the broker for the homes; whether it answered.
 pub(crate) async fn load() -> bool {
     let Some(v) = client::get_any(PROVIDERS).await.filter(|v| v.get("providers").is_some()) else { return false };
-    let homes = Homes::parse(&v);
+    let mut homes = Homes::parse(&v);
+    // a list whose Docker didn't answer in time doesn't say the leftovers went: what was said stays
+    if let Some(before) = HOMES.with(|s| s.get_untracked()) {
+        for home in homes.list.iter_mut().filter(|h| h.leftovers.is_none()) {
+            home.leftovers = before.get(&home.kind).and_then(|h| h.leftovers.clone());
+        }
+    }
     HOMES.with(|s| s.set(Some(homes)));
     true
 }
@@ -397,16 +444,38 @@ pub(crate) async fn remove(kind: &str) -> Said {
     reply
 }
 
+/// `POST providers/{kind}/{what} {id}`, for one computer on `kind`: a yes puts the home it carries
+/// in place, and asks for the full list again, since what went may have been the leftovers'
+/// computer and only that list says which are left.
+async fn act_on(kind: &str, what: &str, id: &str) -> Said {
+    let reply = ask("POST", &provider_path(kind, &format!("/{what}")), Some(json!({"id": id}))).await;
+    if let Said::Yes(v) = &reply {
+        if let Some(home) = v.get("provider").and_then(Home::parse) {
+            set_homes(|h| h.replace(home));
+        }
+        load().await;
+    }
+    reply
+}
+
 /// Forgets computer `id`, being deleted, once a person checked nothing of it is left:
 /// `POST providers/{kind}/forget`. The broker tries the keys in use once more first.
 pub(crate) async fn forget(kind: &str, id: &str) -> Said {
-    let reply = ask("POST", &provider_path(kind, "/forget"), Some(json!({"id": id}))).await;
-    if let Said::Yes(v) = &reply
-        && let Some(home) = v.get("provider").and_then(Home::parse)
-    {
-        set_homes(|h| h.replace(home));
+    act_on(kind, "forget", id).await
+}
+
+/// Keeps computer `id`, found with its record lost: `POST providers/{kind}/keep`. The broker looks
+/// for it once more; found, it's a computer again with no Bot at it. Ok is the sentence to show.
+pub(crate) async fn keep_lost(kind: &str, id: &str) -> Result<String, String> {
+    match act_on(kind, "keep", id).await {
+        Said::Yes(v) => Ok(v.get("message").and_then(Value::as_str).map_or_else(|| format!("{id} is kept."), str::to_owned)),
+        Said::No(why) => Err(why),
     }
-    reply
+}
+
+/// Deletes computer `id`, found with its record lost, on its platform: `POST providers/{kind}/delete`.
+pub(crate) async fn delete_lost(kind: &str, id: &str) -> Said {
+    act_on(kind, "delete", id).await
 }
 
 /// Makes `kind` the default home: `PUT providers/default`.
@@ -723,6 +792,26 @@ fn run_forget(kind: String, id: String) {
     });
 }
 
+fn run_keep(kind: String, id: String) {
+    clear_note(&kind);
+    spawn_detached(async move {
+        match keep_lost(&kind, &id).await {
+            Ok(words) => set_note(&kind, true, words),
+            Err(why) => set_note(&kind, false, why),
+        }
+    });
+}
+
+fn run_delete_lost(kind: String, id: String) {
+    clear_note(&kind);
+    spawn_detached(async move {
+        match delete_lost(&kind, &id).await {
+            Said::Yes(_) => set_note(&kind, true, format!("{id} is deleted.")),
+            Said::No(why) => set_note(&kind, false, why),
+        }
+    });
+}
+
 fn run_default(kind: String) {
     clear_note("default");
     spawn_detached(async move {
@@ -802,6 +891,10 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
     if !on.is_empty() {
         col = col.child(line(on));
     }
+    let left = home.leftovers_words();
+    if !left.is_empty() {
+        col = col.child(view().test_id(&format!("home-{}-leftovers", home.kind)).child(line(left)));
+    }
     for (id, look) in &home.leaving {
         let mut words = format!("{id} is being deleted. If it stays listed, the keys in use can't reach it, and it may still be there and costing.");
         if !look.is_empty() {
@@ -809,6 +902,27 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
         }
         let (kind, id) = (home.kind.clone(), id.clone());
         col = col.child(line(words)).child(view().flex_row().child(small_button(format!("Forget {id} on {}", home.label), format!("Forget {id}"), move || run_forget(kind.clone(), id.clone()))));
+    }
+    for lost in &home.lost {
+        let id = &lost.id;
+        let mut words = format!("{id} was found with its record lost, and couldn't be reached. It may still be there, with its files, and costing. No Bot sits at it.");
+        if lost.keep {
+            words.push_str(" Keep looks for it again; Delete deletes it there for good.");
+        } else {
+            words.push_str(&format!(" {} Delete deletes it there for good.", if lost.why.is_empty() { "It can't be kept." } else { lost.why.as_str() }));
+        }
+        words.push_str(" Nothing happens to it until you choose.");
+        if !lost.look.is_empty() {
+            words.push_str(&format!(" To check by hand: {}.", lost.look));
+        }
+        let mut buttons = view().flex_row().gap_2();
+        if lost.keep {
+            let (kind, id) = (home.kind.clone(), id.clone());
+            buttons = buttons.child(small_button(format!("Keep {id} on {}", home.label), "Keep".to_owned(), move || run_keep(kind.clone(), id.clone())));
+        }
+        let (kind, delete_id) = (home.kind.clone(), id.clone());
+        buttons = buttons.child(small_button(format!("Delete {id} on {}", home.label), "Delete".to_owned(), move || run_delete_lost(kind.clone(), delete_id.clone())));
+        col = col.child(line(words)).child(buttons);
     }
     if home.built && home.kind != "remote" {
         let mut buttons = view().flex_row().flex_wrap().gap_2().pt(px(4.0));
@@ -1149,6 +1263,24 @@ mod tests {
     }
 
     #[test]
+    fn files_left_by_a_gone_computer_are_named_and_only_named() {
+        let v = json!({"kind": "docker", "label": "Docker on this Mac", "fields": [], "leftovers": [{"name": "buwiz-computer-0a1b2c3d-workspace", "id": "cmp_1"}, {"name": "buwiz-computer-0a1b2c3d-home"}]});
+        let home = Home::parse(&v).unwrap();
+        assert_eq!(home.leftovers.as_deref().unwrap(), ["buwiz-computer-0a1b2c3d-workspace", "buwiz-computer-0a1b2c3d-home"]);
+        assert_eq!(Home::parse(&json!({"kind": "docker", "leftovers": []})).unwrap().leftovers, Some(Vec::new()), "an empty list says none are left");
+        assert_eq!(home.leftovers_words(), "Files from a computer that's gone are still on this Mac, in these Docker volumes: buwiz-computer-0a1b2c3d-workspace, buwiz-computer-0a1b2c3d-home. Nothing here deletes them.");
+        assert_eq!(Home::parse(&json!({"kind": "docker"})).unwrap().leftovers_words(), "");
+        // one home's reply has no list of them: what the full list said stays
+        let mut h = listed();
+        h.replace(home.clone());
+        h.replace(Home::parse(&json!({"kind": "docker", "label": "Docker on this Mac"})).unwrap());
+        assert_eq!(h.get("docker").unwrap().leftovers, home.leftovers);
+        // and a reply that says none are left is believed
+        h.replace(Home::parse(&json!({"kind": "docker", "label": "Docker on this Mac", "leftovers": []})).unwrap());
+        assert_eq!(h.get("docker").unwrap().leftovers_words(), "");
+    }
+
+    #[test]
     fn a_launch_page_is_kept_only_when_it_is_a_web_page() {
         let mut v = ec2();
         v["launch"] = json!("https://console.aws.amazon.com/cloudformation/home?region=ap-southeast-1");
@@ -1196,6 +1328,28 @@ mod tests {
         let h = Home::parse(&v).unwrap();
         assert_eq!(h.leaving, vec![("cmp_cd34".to_owned(), "Terminate any instance tagged buwiz:computer-id=cmp_cd34".to_owned())]);
         assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as being deleted");
+    }
+
+    #[test]
+    fn a_lost_computer_is_listed_apart_with_where_to_look() {
+        let mut v = ec2();
+        v["computers"] = json!([{"id": "cmp_ab12", "bots": ["Ann"]}, {"id": "cmp_ef56", "bots": [], "lost": true, "look": "Terminate any instance tagged buwiz:computer-id=cmp_ef56"}]);
+        let h = Home::parse(&v).unwrap();
+        assert_eq!(h.lost, vec![Lost { id: "cmp_ef56".to_owned(), look: "Terminate any instance tagged buwiz:computer-id=cmp_ef56".to_owned(), keep: true, why: String::new() }]);
+        assert!(h.leaving.is_empty());
+        assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as lost");
+    }
+
+    #[test]
+    fn a_lost_computer_that_cant_be_kept_says_why_and_one_that_can_says_nothing() {
+        let mut v = ec2();
+        v["computers"] = json!([
+            {"id": "cmp_ef56", "bots": [], "lost": true, "look": "Kill it", "keep": false, "why": "An E2B computer can't be given new secrets once its record is lost."},
+            {"id": "cmp_ef57", "bots": [], "lost": true, "look": "Kill it", "keep": true, "why": "not shown"}
+        ]);
+        let h = Home::parse(&v).unwrap();
+        assert_eq!(h.lost[0], Lost { id: "cmp_ef56".to_owned(), look: "Kill it".to_owned(), keep: false, why: "An E2B computer can't be given new secrets once its record is lost.".to_owned() });
+        assert_eq!((h.lost[1].keep, h.lost[1].why.as_str()), (true, ""));
     }
 
     #[test]

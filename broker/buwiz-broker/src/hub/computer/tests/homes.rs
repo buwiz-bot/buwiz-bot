@@ -117,6 +117,13 @@ impl Provider for FakeCloud {
         self.deleting().await
     }
 
+    /// As `power` sees them, by where it last was.
+    async fn finds(&self, _id: &str, last: Option<&Reach>) -> buwiz_computer::Result<Option<bool>> {
+        self.revoked()?;
+        let shared = matches!(last, Some(Reach::Sandbox { id }) if id.contains("shared-"));
+        Ok(Some(!(self.platform.all_gone.load(Ordering::SeqCst) || (self.key().as_deref() == Some(OTHER) && !shared))))
+    }
+
     async fn sweep(&self, id: &str, _last: Option<&Reach>) -> buwiz_computer::Result<()> {
         self.deleting().await?;
         self.platform.swept.lock().unwrap().push(id.to_owned());
@@ -635,4 +642,69 @@ async fn a_record_that_wont_delete_isnt_taken_as_forgotten() {
     b.ctx.db.with(|c| c.execute_batch("CREATE TRIGGER keep_rows BEFORE DELETE ON computers BEGIN SELECT RAISE(ABORT, 'disk full'); END;")).unwrap();
     assert!(b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, "cmp_0abc").await.is_err());
     assert_eq!(rows(&b), 1);
+}
+
+/// A computer on E2B found with its record lost, long enough ago that a sweep's finding nothing
+/// counts: a row, where it last was, and no record.
+fn lost_on_e2b(b: &Bed, id: &str) {
+    let at = crate::hub::policy::now(&b.ctx) - JUST_GONE_MS - 1;
+    let reach = serde_json::to_string(&Reach::Sandbox { id: format!("sbx-{id}") }).unwrap();
+    b.ctx.db.with(|c| c.execute("INSERT INTO computers(id, provider, created_at, lost_at, reach) VALUES(?1, 'e2b', ?2, ?2, ?3)", rusqlite::params![id, at, reach])).unwrap();
+}
+
+#[tokio::test]
+async fn new_keys_that_cant_find_a_lost_computer_arent_kept() {
+    let (b, platform) = homes_bed("lost-other-account");
+    save_e2b(&b, GOOD).await.unwrap();
+    lost_on_e2b(&b, "cmp_0105");
+    // another account's key works, and can't find it: with it, nothing could keep or delete it
+    let p = save_e2b(&b, OTHER).await.unwrap_err();
+    assert_eq!(p.code(), "other_account", "{}", p.sentence());
+    assert!(p.sentence().contains("cmp_0105") && p.sentence().contains("Keep or Delete it") && p.sentence().contains("with the keys in use"), "{}", p.sentence());
+    assert!(keys(&b.ctx).unwrap().get_provider_cred("e2b").unwrap().unwrap().contains(GOOD), "the keys in use stay");
+    assert!(platform.swept.lock().unwrap().is_empty());
+    // the same account's key finds it
+    b.computers.save_provider(&b.ctx, ProviderKind::E2b, &values(&[("api_key", GOOD), ("template", "tpl-2")]), &[]).await.unwrap();
+    // nothing of it is there for either key: the platform's word, and it holds nothing up
+    platform.all_gone.store(true, Ordering::SeqCst);
+    save_e2b(&b, OTHER).await.unwrap();
+    assert!(Computers::is_lost(&b.ctx, "cmp_0105").unwrap(), "still a person's to Delete");
+}
+
+#[tokio::test]
+async fn a_delete_with_keys_saved_since_it_was_made_that_find_nothing_keeps_the_row() {
+    let (b, platform) = homes_bed("lost-delete-other-keys");
+    save_e2b(&b, GOOD).await.unwrap();
+    lost_on_e2b(&b, "cmp_0106");
+    // keys swapped while neither found it, and then it's there again for the old ones only
+    platform.all_gone.store(true, Ordering::SeqCst);
+    save_e2b(&b, OTHER).await.unwrap();
+    platform.all_gone.store(false, Ordering::SeqCst);
+    let p = b.computers.delete_lost(&b.ctx, ProviderKind::E2b, "cmp_0106").await.unwrap_err();
+    assert_eq!(p.code(), "stuck", "{}", p.sentence());
+    assert!(p.sentence().contains("buwiz-computer=cmp_0106") && p.sentence().contains("Forget cmp_0106"), "{}", p.sentence());
+    assert!(platform.swept.lock().unwrap().is_empty(), "{:?}", platform.swept.lock().unwrap());
+    // on its way out, and kept however often the sweep looks, until a person who looked forgets it
+    for _ in 0..3 {
+        past_just_gone(&b);
+        b.computers.sleep_the_idle(&b.ctx).await;
+    }
+    assert_eq!(rows(&b), 1);
+    let shown = b.computers.providers_json(&b.ctx);
+    let listed = &provider_of(&shown, "e2b")["computers"][0];
+    assert_eq!((listed["id"].as_str(), listed["leaving"].as_bool()), (Some("cmp_0106"), Some(true)));
+    b.computers.forget_leaving(&b.ctx, ProviderKind::E2b, "cmp_0106").await.unwrap();
+    assert_eq!(rows(&b), 0);
+}
+
+#[tokio::test]
+async fn a_delete_with_the_keys_it_was_made_with_sweeps_it() {
+    let (b, platform) = homes_bed("lost-delete-same-keys");
+    save_e2b(&b, GOOD).await.unwrap();
+    lost_on_e2b(&b, "cmp_0107");
+    // made after the keys were saved: they're the ones it was made with
+    b.ctx.db.with(|c| c.execute("UPDATE computer_providers SET updated_at=0", [])).unwrap();
+    b.computers.delete_lost(&b.ctx, ProviderKind::E2b, "cmp_0107").await.unwrap();
+    assert_eq!(*platform.swept.lock().unwrap(), ["cmp_0107"]);
+    assert_eq!(rows(&b), 0);
 }

@@ -342,9 +342,15 @@ impl Store {
                 let got = crate::vault::off_main(|| host_api::plugins(&broker())).await;
                 let Some(Ok(list)) = got else {
                     self.v1.loaded.set(true);
-                    // nobody can say what changed: the opens that waited on
-                    // a restart come back, as they always did
-                    for key in self.v1_take_restarted(asked) {
+                    // nobody can say what changed: a full-screen open comes
+                    // back, as it always did; an inline card made with a
+                    // known version may be one an update must leave as it
+                    // is, so it waits for the next list to say
+                    let full: HashSet<String> = self.mini_full.with_untracked(|f| f.iter().map(|o| o.key.clone()).collect());
+                    let made: HashSet<String> = self.v1.made.with_untracked(|m| m.iter().filter(|(_, (_, v))| !v.is_empty()).map(|(k, _)| k.clone()).collect());
+                    let (wait, reopen) = lifecycle::undecided_restarts(self.v1_take_restarted(asked), &full, &made);
+                    self.v1.restarted.borrow_mut().extend(wait.into_iter().map(|k| (k, asked + 1)));
+                    for key in reopen {
                         self.v1_reopen(&key);
                     }
                     return;
@@ -854,16 +860,21 @@ impl Store {
     /// since it last opened.
     pub fn v1_running(&'static self, n: u64, key: &str, fingerprint: &str, version: &str) {
         self.v1.running.borrow_mut().push((n, key.to_owned(), fingerprint.to_owned()));
-        let (k, v) = (key.to_owned(), version.to_owned());
-        self.v1.made.update(|m| {
-            m.insert(k, (n, v));
-        });
+        let mut made = version.to_owned();
         if let Ok(k) = V1Key::parse(key) {
             let fp = fingerprint.to_owned();
-            if let Some(old) = change_records(|r| r.opened(&k.plugin, &k.app, &fp)) {
+            // the version the card was first drawn with, kept across a
+            // relaunch: a card made with 1.4.0 says so on 1.5.0
+            let (changed, first) = change_records(|r| (r.opened(&k.plugin, &k.app, &fp), r.made(key, version)));
+            if let Some(old) = changed {
                 log::info!("mini v1: app_changed {}/{} {old} -> {fingerprint}", k.plugin, k.app);
             }
+            made = first;
         }
+        let k = key.to_owned();
+        self.v1.made.update(|m| {
+            m.insert(k, (n, made));
+        });
     }
 
     /// The inline open `key` settled (`buwiz.settle`): its card is `line`
@@ -904,6 +915,13 @@ impl Store {
         }
     }
 
+    /// Card `key` is drawn again from scratch (Refresh): it was made with
+    /// whatever version it opens with next.
+    pub fn v1_remade(&'static self, key: &str) {
+        // read from the file: the store's copy catches up on a timer
+        change_records(|r| r.remade(key));
+    }
+
     /// Open `n` ended.
     pub fn v1_stopped(&'static self, n: u64) {
         self.v1.running.borrow_mut().retain(|(i, _, _)| *i != n);
@@ -933,6 +951,7 @@ impl Store {
     /// Reload on an error or a stale open: the app's current source, a new
     /// session.
     pub fn v1_reload(&'static self, key: &str) {
+        self.v1_remade(key);
         let k = key.to_owned();
         batch(|| {
             self.v1.error.update(|e| {
@@ -1484,16 +1503,27 @@ impl Store {
         work: impl FnOnce() -> Result<T, RoxError> + Send + 'static,
         then: impl FnOnce(T) + 'static,
     ) {
+        self.v1_job_ended(label, work, move |r| match r {
+            Some(Ok(v)) => then(v),
+            Some(Err(e)) => crate::toast::show(e.message),
+            None => {}
+        });
+    }
+
+    /// [`v1_job`], with `ended` hearing every way it ends: `None` when the
+    /// work never answered.
+    fn v1_job_ended<T: Send + 'static>(
+        &'static self,
+        label: &str,
+        work: impl FnOnce() -> Result<T, RoxError> + Send + 'static,
+        ended: impl FnOnce(Option<Result<T, RoxError>>) + 'static,
+    ) {
         self.v1.busy.set(label.to_owned());
         Owner::detached().run(|| {
             spawn(async move {
                 let r = crate::vault::off_main(work).await;
                 self.v1.busy.set(String::new());
-                match r {
-                    Some(Ok(v)) => then(v),
-                    Some(Err(e)) => crate::toast::show(e.message),
-                    None => {}
-                }
+                ended(r);
                 self.v1_refresh();
             })
         });
@@ -1521,12 +1551,18 @@ impl Store {
     pub fn v1_install(&'static self) {
         let Some(review) = self.v1.review.get_untracked() else { return };
         self.v1_installing(&review.id, true);
-        self.v1_job(
+        let asked = review.clone();
+        self.v1_job_ended(
             "Installing…",
             // a refusal comes back with the review, so the line on the
             // plugin's cards ends whichever way the install went
             move || Ok((connect::install(&broker(), &review), review)),
-            move |(r, review)| {
+            move |done| {
+                // the line on its cards ends even when the install never answered
+                let (r, review) = match done {
+                    Some(Ok(done)) => done,
+                    _ => (Err(RoxError::new("internal", "The install did not finish")), asked),
+                };
                 store().v1_installing(&review.id, false);
                 let r = match r {
                     Ok(r) => r,
@@ -1930,21 +1966,23 @@ impl Store {
             spawn(async move {
                 let r = crate::vault::off_main(move || connect::install_with(&broker(), body)).await;
                 self.v1_installing(&n.id, false);
-                let r = match r {
-                    Some(Ok(connect::Installed::Done)) => Ok("installed"),
+                // a review it still needs (added permissions, an older
+                // version) is no failure: the update waits as it did
+                let (r, failed) = match r {
+                    Some(Ok(connect::Installed::Done)) => (Ok("installed"), Some(None)),
                     Some(Ok(connect::Installed::NeedsApproval(_))) => {
-                        Err("This update adds permissions; ask for the install again to review them".to_owned())
+                        (Err("This update adds permissions; ask for the install again to review them".to_owned()), None)
                     }
                     Some(Ok(connect::Installed::NeedsDowngrade)) => {
-                        Err(format!("This is older than the installed {}; ask for the install again to review it", n.title))
+                        (Err(format!("This is older than the installed {}; ask for the install again to review it", n.title)), None)
                     }
-                    Some(Err(e)) => Err(e.message),
-                    None => Err("The install did not finish".to_owned()),
+                    Some(Err(e)) => (Err(e.message.clone()), Some(Some(e.message))),
+                    None => (Err("The install did not finish".to_owned()), Some(Some("The install did not finish".to_owned()))),
                 };
                 // an update that failed leaves the installed version
                 // running: its cards say so, and the chat gets a line
-                if n.review.from_version.is_some() {
-                    self.v1_update_ended(&n.id, &chat, r.as_ref().err().cloned());
+                if let (Some(failed), true) = (failed, n.review.from_version.is_some()) {
+                    self.v1_update_ended(&n.id, &chat, failed);
                 }
                 self.app_card(&chat, i, |c| c.finish(r));
                 self.v1_refresh();
@@ -2441,6 +2479,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
     let plugin_shown = plugin.clone();
     let (id_shown, id_toggle, id_signal) = (id.clone(), id.clone(), id.clone());
     let (plugin_line, plugin_made, key_made) = (card.plugin.clone(), card.plugin.clone(), key.clone());
+    let live_key = card.live_key().to_key();
     let shown = move || card_shown(&id_shown, auto);
     let open = shown.clone();
     view()
@@ -2474,6 +2513,8 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                 .when(as_of.is_some() || live, |v| {
                     v.child(icon_button("refresh", "Refresh", move || {
                         if as_of.is_some() {
+                            // its live open reads now, whatever it read in an earlier run
+                            store().v1_remade(&live_key);
                             let id = id.clone();
                             store().v1.live.update(|l| {
                                 l.insert(id);

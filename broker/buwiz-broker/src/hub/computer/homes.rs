@@ -21,14 +21,21 @@
 //!   deletes it, with the keys in use. When those keys can't reach it any more (rotated, revoked,
 //!   expired), a save or a removal says where to look, and a person who looked can forget it: no
 //!   key change is ever held up by a row nothing can clear.
+//! - A computer found with its record lost, that nothing of could be found, is listed as lost, with
+//!   where to look. Nothing deletes it but a person's Delete; their Keep looks for it again, and is
+//!   offered only where one found could be put back in use ([`Provider::cant_keep_lost`]). Its
+//!   keys aren't removed while it's there, and new keys are kept only when they find it by its id,
+//!   as a sweep would (or the keys in use can't find it either). A Delete with keys saved since it
+//!   was made that find nothing keeps its row, with where to look, for a person to Forget: those
+//!   keys may be another account's.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use buwiz_computer::ec2::{self, creds, sigv4::Credentials};
-use buwiz_computer::{cloud, provider_for, BoatProvider, DockerProvider, E2bProvider, Ec2Provider, Power, Problem, Provider, ProviderKind, Secret, Shared};
+use buwiz_computer::{cloud, provider_for, BoatProvider, DockerProvider, E2bProvider, Ec2Provider, Power, Problem, Provider, ProviderKind, Reach, Secret, Shared};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Map, Value};
 
@@ -55,6 +62,9 @@ const E2B_BUILD: &str = "https://github.com/buwiz-bot/computer/tree/main/deploy/
 
 /// How long a keystore that didn't answer is left before it's asked again.
 const UNREAD_WAIT: Duration = Duration::from_secs(30);
+/// How long the homes' list waits on Docker for its leftovers: past it the list goes without them.
+/// Settings and every key save ask for the list, and a Docker that hangs mustn't hold them up
+const LEFTOVERS_WAIT: Duration = Duration::from_secs(3);
 
 /// The longest value a field takes.
 const MAX_VALUE: usize = 4096;
@@ -477,6 +487,16 @@ fn forget(ctx: &HubCtx, kind: ProviderKind) -> Result<(), Problem> {
     ctx.db.with(|c| c.execute("DELETE FROM computer_providers WHERE kind=?", [kind.as_str()])).map(|_| ()).map_err(db_problem)
 }
 
+/// Whether what a person saved for computer `id`'s home was saved after it was made: keys that
+/// may not be the ones it was made with. No way to tell for keys from the environment: no.
+pub(super) fn keys_changed_since_made(ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+    let changed: Option<Option<bool>> = ctx
+        .db
+        .with(|c| c.query_row("SELECT p.updated_at > COALESCE(c.created_at, c.gone_at, 0) FROM computers c JOIN computer_providers p ON p.kind = c.provider WHERE c.id=?", [id], |r| r.get(0)).optional())
+        .map_err(db_problem)?;
+    Ok(changed.flatten() == Some(true))
+}
+
 /// Where the Mac's new computers go, and who said: `saved` (a person), `env` or `builtin`.
 pub fn default_home(ctx: &HubCtx) -> (ProviderKind, &'static str) {
     let saved: Option<String> = ctx.db.with(|c| c.query_row("SELECT kind FROM computer_home WHERE id=1", [], |r| r.get(0)).optional()).ok().flatten();
@@ -521,19 +541,22 @@ struct On {
     bots: Vec<String>,
     /// on its way out: deleted, or a make that failed part way. Its keys are what delete it
     leaving: bool,
+    /// found with its record lost, and nothing of it found: a person keeps or deletes it
+    lost: bool,
 }
 
 /// The computers made on `kind` that are still there. One on its way out counts.
 fn computers_on(ctx: &HubCtx, kind: ProviderKind) -> Result<Vec<On>, Problem> {
-    let rows: Vec<(String, bool)> = ctx
+    let rows: Vec<(String, bool, bool)> = ctx
         .db
         .with(|c| {
-            let mut q = c.prepare("SELECT id, gone_at IS NOT NULL FROM computers WHERE provider=? ORDER BY created_at, id")?;
-            let rows = q.query_map([kind.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            // lost is a person's to decide: it's never on its way out until they say
+            let mut q = c.prepare("SELECT id, gone_at IS NOT NULL AND lost_at IS NULL, lost_at IS NOT NULL FROM computers WHERE provider=? ORDER BY created_at, id")?;
+            let rows = q.query_map([kind.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect()
         })
         .map_err(db_problem)?;
-    rows.into_iter().map(|(id, leaving)| Ok(On { bots: Computers::seats(ctx, &id)?.iter().map(|s| bot_name(ctx, &s.bot)).collect(), id, leaving })).collect()
+    rows.into_iter().map(|(id, leaving, lost)| Ok(On { bots: Computers::seats(ctx, &id)?.iter().map(|s| bot_name(ctx, &s.bot)).collect(), id, leaving, lost })).collect()
 }
 
 /// Where a person finds what's left of computer `id` on `kind`'s platform, to delete it.
@@ -542,6 +565,7 @@ fn look_for(kind: ProviderKind, id: &str) -> String {
         ProviderKind::Ec2 => format!("In the EC2 console, in each region you've used, terminate any instance tagged {}={id}", ec2::api::ID_TAG),
         ProviderKind::E2b => format!("In the E2B dashboard, kill any sandbox whose metadata has {}={id}", buwiz_computer::e2b::METADATA_KEY),
         ProviderKind::Boat => format!("In boat.dev, delete any sandbox labelled {}={id}", buwiz_computer::boat::LABEL),
+        ProviderKind::Docker => format!("In Docker, remove any container labelled {l}={id} (docker ps -a --filter label={l}={id}), then its volumes (docker volume ls --filter label={l}={id}; one made before labels has none, and is named after its container: <name>-workspace and <name>-home)", l = buwiz_computer::docker::ID_LABEL),
         _ => format!("Delete anything made for {id} on that platform"),
     }
 }
@@ -605,8 +629,10 @@ impl Computers {
                 o
             })
             .collect();
-        let computers: Vec<Value> = computers_on(ctx, kind)
-            .unwrap_or_default()
+        let on = computers_on(ctx, kind).unwrap_or_default();
+        // asked of the provider only with a lost one to show
+        let cant_keep = if on.iter().any(|o| o.lost) { self.provider_of_kind(ctx, kind).cant_keep_lost() } else { None };
+        let computers: Vec<Value> = on
             .into_iter()
             .map(|o| {
                 let mut c = json!({"id": o.id, "bots": o.bots});
@@ -614,6 +640,16 @@ impl Computers {
                 if o.leaving && !fields(kind).is_empty() {
                     c["leaving"] = json!(true);
                     c["look"] = json!(look_for(kind, &o.id));
+                }
+                // on any home: only a person can say whether it's still there
+                if o.lost {
+                    c["lost"] = json!(true);
+                    c["look"] = json!(look_for(kind, &o.id));
+                    // Keep is offered only where a found one can be put back in use
+                    c["keep"] = json!(cant_keep.is_none());
+                    if let Some(why) = &cant_keep {
+                        c["why"] = json!(why);
+                    }
                 }
                 c
             })
@@ -639,6 +675,55 @@ impl Computers {
     pub fn providers_json(&self, ctx: &HubCtx) -> Value {
         let providers: Vec<Value> = OFFERED.iter().map(|k| self.provider_json(ctx, *k)).collect();
         json!({"default": default_json(ctx), "providers": providers})
+    }
+
+    /// [`Computers::providers_json`], with what's left on this Mac of Docker computers that are
+    /// gone on Docker's entry: `leftovers`, the volumes no computer here names. Files nothing else
+    /// shows, and only listed: a person decides what's in them, so nothing here removes them.
+    /// Without `leftovers` when they can't be told within [`LEFTOVERS_WAIT`]: the app keeps what
+    /// it had, and the list itself never waits longer or fails for them.
+    pub async fn providers_seen(&self, ctx: &HubCtx) -> Value {
+        let mut out = self.providers_json(ctx);
+        let left = tokio::time::timeout(LEFTOVERS_WAIT, self.docker_leftovers(ctx)).await.ok().flatten();
+        if let (Some(left), Some(home)) = (left, out["providers"].as_array_mut().and_then(|l| l.iter_mut().find(|h| h["kind"] == ProviderKind::Docker.as_str()))) {
+            home["leftovers"] = json!(left);
+        }
+        out
+    }
+
+    /// Docker's leftovers that are no computer's here, by its id or its box's name. Not knowing
+    /// which computers there are, any volume could be one's, so then none is listed; not knowing
+    /// a Docker computer's box name, any volume from before labels could be its, so then none of
+    /// those is (a labelled one still says its computer). `None` when Docker or the rows can't say.
+    async fn docker_leftovers(&self, ctx: &HubCtx) -> Option<Vec<Value>> {
+        let ids = Self::try_ids_where(ctx, "1=1").ok()?;
+        let mut boxes = HashSet::new();
+        let mut unnamed = false;
+        for id in &ids {
+            let reach = Self::reach_of(ctx, id).ok()?;
+            match reach.or_else(|| self.machine(ctx, id).ok().map(|m| m.reach)) {
+                Some(Reach::Container { name }) => {
+                    boxes.insert(name);
+                }
+                // a Docker computer, or one whose kind can't be read, with no box name to go by
+                _ => unnamed |= !matches!(Self::kind_of(ctx, id), Ok(Some(kind)) if kind != ProviderKind::Docker),
+            }
+        }
+        // a provider that can't say has nothing to list: the list goes without
+        let found = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await.ok()??;
+        // a computer being made has its volumes before its row: read after Docker answered, the
+        // ones being made first, so a make that ends meanwhile is in its row by the second read
+        let making: HashSet<String> = self.being_made.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let now = Self::try_ids_where(ctx, "1=1").ok()?;
+        let left = found
+            .into_iter()
+            .filter(|l| !boxes.contains(&l.owner) && !(unnamed && l.id.is_none()) && !l.id.as_ref().is_some_and(|id| ids.contains(id) || now.contains(id) || making.contains(id)))
+            .map(|l| match l.id {
+                Some(id) => json!({"name": l.name, "id": id}),
+                None => json!({"name": l.name}),
+            })
+            .collect();
+        Some(left)
     }
 
     /// Saves what a person gave `kind`, once it works. `values` holds the fields they filled in (a
@@ -682,6 +767,12 @@ impl Computers {
         let gone = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone));
         let live = self.homes.provider(ctx, kind);
         for o in computers_on(ctx, kind)? {
+            // a lost one has no record to ask about: it's looked for by its id, as a sweep and a
+            // Keep look for it. Keys that can't find it could never keep or delete it
+            if o.lost {
+                self.sees_lost(ctx, kind, &o.id, candidate, &*live).await?;
+                continue;
+            }
             let id = o.id;
             let Ok(machine) = self.machine(ctx, &id) else {
                 // on its way out with no record (a make that failed part way): the keys in use
@@ -709,6 +800,27 @@ impl Computers {
             seen?;
         }
         Ok(())
+    }
+
+    /// Whether `candidate`'s keys find lost computer `id` on `kind`, by its id and where it last was.
+    /// Not found by them, it counts only when the keys in use can't find it either, by the
+    /// platform's own word: then nothing of it is there to keep or delete.
+    async fn sees_lost(&self, ctx: &HubCtx, kind: ProviderKind, id: &str, candidate: &dyn Provider, live: &dyn Provider) -> Result<(), Problem> {
+        let last = Self::reach_of(ctx, id)?;
+        if candidate.finds(id, last.as_ref()).await? == Some(true) {
+            return Ok(());
+        }
+        if live.finds(id, last.as_ref()).await == Ok(Some(false)) {
+            return Ok(());
+        }
+        let what = if live.cant_keep_lost().is_some() { "Delete" } else { "Keep or Delete" };
+        Err(refusal(
+            "other_account",
+            format!(
+                "These keys can't find computer {id} on {}, which was found with its record lost (they may be another account's), so with them it could never be kept or deleted, and it may still be there and costing. Nothing was changed: {what} it in Settings › Computers first, with the keys in use.",
+                kind.label()
+            ),
+        ))
     }
 
     /// Has the keys in use delete the computers on `kind` on their way out that they still can:
@@ -756,6 +868,74 @@ impl Computers {
         Ok(self.provider_json(ctx, kind))
     }
 
+    /// A person's Keep of computer `id` on `kind`, found with its record lost: the keys in use look
+    /// for it once more. Found, it's a computer again, with no Bot at it, and the stop its old
+    /// secrets are owed comes at its first wake. `Ok` has the sentence to show.
+    pub async fn keep_lost(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<(Value, String), Problem> {
+        let _making = self.making(&format!("computer {id}")).await;
+        self.lost_on(ctx, kind, id)?;
+        let provider = self.provider_of_kind(ctx, kind);
+        // whatever is found, nothing could be put back in use: not a "still can't be found"
+        if let Some(why) = provider.cant_keep_lost() {
+            return Err(refusal("cant_keep", format!("{why} Nothing was deleted.")));
+        }
+        let spec = buwiz_computer::Spec { id: id.to_owned(), dir: Self::dir(ctx, id) };
+        let last = Self::reach_of(ctx, id)?;
+        let found = match provider.recover(&spec, last.as_ref()).await {
+            Ok(found) => found,
+            Err(why) => return Err(refusal("in_use", format!("{} couldn't be asked about {id} just now: {} Nothing was deleted. Try again in a minute.", kind.label(), why.sentence()))),
+        };
+        let Some(machine) = found else {
+            return Err(refusal("still_lost", format!("Computer {id} on {} still can't be found with the keys in use. Nothing was deleted. {}, or try Keep again later; Delete deletes it there for good.", kind.label(), look_for(kind, id))));
+        };
+        {
+            let _seating = self.seating.lock().await;
+            self.adopt(ctx, id, machine)?;
+            ctx.db.with(|c| c.execute("UPDATE computers SET lost_at=NULL WHERE id=?", [id])).map_err(db_problem)?;
+        }
+        let mut said = format!("Computer {id} was found again and kept, with its files. No Bot sits at it: add one from that Bot's Computer tab, or delete it.");
+        // what the platform has of it besides, left alone: a person decides
+        if let Some(note) = provider.take_recover_note(id) {
+            said.push(' ');
+            said.push_str(&note);
+        }
+        Ok((self.provider_json(ctx, kind), said))
+    }
+
+    /// A person's Delete of computer `id` on `kind`, found with its record lost: it's on its way
+    /// out now, and the keys in use delete it on the platform, now and at each look after. Keys
+    /// saved since it was made that find nothing of it leave it listed, with where to look, for a
+    /// person to Forget ([`Computers::sweep_by_id`]).
+    pub async fn delete_lost(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<Value, Problem> {
+        let _making = self.making(&format!("computer {id}")).await;
+        self.lost_on(ctx, kind, id)?;
+        // being woken, it may be coming up right now: as for Forget
+        if self.now().waking.contains(id) {
+            return Err(refusal("in_use", format!("Computer {id} on {} is being woken right now. Try again in a minute.", kind.label())));
+        }
+        {
+            let _seating = self.seating.lock().await;
+            // one step: there's no moment it's neither lost nor on its way out
+            let at = policy::now(ctx);
+            ctx.db.with(|c| c.execute("UPDATE computers SET lost_at=NULL, gone_at=? WHERE id=?", rusqlite::params![at, id])).map_err(db_problem)?;
+            self.mark_retired(ctx, id);
+        }
+        match self.finish_retire(ctx, id).await {
+            Ok(()) => Ok(self.provider_json(ctx, kind)),
+            // on its way out now: the next look tries again, and a person reads why
+            Err(why) => Err(still_leaving(kind, id, &Settled::from([(id.to_owned(), Some(why))]))),
+        }
+    }
+
+    /// `Ok` when `id` is a computer on `kind` found with its record lost.
+    fn lost_on(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<(), Problem> {
+        if computers_on(ctx, kind)?.iter().any(|o| o.lost && o.id == id) {
+            Ok(())
+        } else {
+            Err(refusal("not_lost", format!("{id} isn't a computer on {} that was found with its record lost.", kind.label())))
+        }
+    }
+
     /// A person's Check of what `kind` has now. `Ok` is the sentence to show.
     pub async fn check_provider(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<String, Problem> {
         match kind {
@@ -781,6 +961,10 @@ impl Computers {
         let settled = self.settle_leaving(ctx, kind).await?;
         let _saving = self.homes.lock(kind).write().await;
         let left = computers_on(ctx, kind)?;
+        // lost: without the keys nothing could look for it or delete it
+        if let Some(o) = left.iter().find(|o| o.lost) {
+            return Err(refusal("in_use", format!("Computer {} on {} was found with its record lost, and may still be there and costing. Keep or Delete it in Settings › Computers first, then remove the keys.", o.id, kind.label())));
+        }
         // in use: each goes with its Bot first
         let in_use: Vec<&On> = left.iter().filter(|o| !o.leaving).collect();
         if !in_use.is_empty() {

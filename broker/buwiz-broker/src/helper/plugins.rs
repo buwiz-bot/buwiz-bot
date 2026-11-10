@@ -69,10 +69,13 @@ const SCHEMA: &str = "
     manifest TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, tools TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1, disabled_tools TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS v1_updates(
+    plugin TEXT PRIMARY KEY, version TEXT NOT NULL, tag TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '[]',
+    url TEXT NOT NULL DEFAULT '', access TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL);
 ";
 
 /// Columns a database written before packages lacks.
-const COLUMNS: [(&str, &str); 2] = [("package", "TEXT"), ("skills", "TEXT NOT NULL DEFAULT '[]'")];
+const COLUMNS: [(&str, &str); 3] = [("package", "TEXT"), ("skills", "TEXT NOT NULL DEFAULT '[]'"), ("source", "TEXT")];
 
 type Res<T = Value> = Result<T, V1Error>;
 
@@ -222,6 +225,9 @@ pub struct Row {
     pub package: Option<String>,
     /// `[{name, description, file}]`
     pub skills: String,
+    /// the GitHub repository its release came from
+    /// (`https://github.com/<owner>/<repo>`), when the install said
+    pub source: Option<String>,
 }
 
 impl Row {
@@ -244,6 +250,7 @@ impl Row {
             created_at: r.get::<_, f64>("created_at")? as i64,
             package: r.get("package")?,
             skills: r.get::<_, Option<String>>("skills")?.unwrap_or_else(|| "[]".into()),
+            source: r.get("source")?,
         })
     }
 
@@ -463,11 +470,13 @@ impl Host {
     /// plus `seq` (later snapshots are higher), the process id and the
     /// pending restart (`timer`, `next_delay_ms`).
     pub fn snapshot(&self, id: &str) -> Value {
-        let enabled = self.row(id).is_some_and(|r| r.enabled);
+        let row = self.row(id);
+        let enabled = row.as_ref().is_some_and(|r| r.enabled);
+        let update = row.as_ref().and_then(|r| self.update_for(r)).map(|u| u["version"].clone());
         self.with_rt(id, |rt| {
             json!({
                 "id": id, "seq": self.seq.fetch_add(1, Ordering::SeqCst), "state": rt.state, "code": rt.code, "message": rt.message,
-                "generation": rt.generation, "enabled": enabled, "tools": rt.tools, "instructions": rt.instructions,
+                "generation": rt.generation, "enabled": enabled, "update": update, "tools": rt.tools, "instructions": rt.instructions,
                 "pid": rt.conn.as_ref().and_then(|c| c.pid), "timer": rt.timer, "next_delay_ms": rt.next_delay,
             })
         })
@@ -532,6 +541,73 @@ impl Host {
             rt.message = js::slice_utf16(message, 500);
         });
         self.emit(id);
+    }
+
+    // ── updates ──────────────────────────────────────────────────────────
+
+    /// The newer release known for `row`'s plugin, as the list carries it
+    /// (`update`): none once the installed version is at or above it.
+    pub fn update_for(&self, row: &Row) -> Option<Value> {
+        let (version, notes, url, access, checked_at): (String, String, String, String, f64) = self
+            .sql(|db| db.query_row("SELECT version,notes,url,access,checked_at FROM v1_updates WHERE plugin=?", [&row.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).optional())
+            .ok()
+            .flatten()?;
+        (manifest::compare_semver(&version, &row.version) == Some(1)).then(|| {
+            json!({
+                "version": version, "from_version": row.version, "notes": parse(&notes, json!([])), "url": url,
+                "access": parse(&access, json!([])), "checked_at": checked_at as i64,
+            })
+        })
+    }
+
+    /// [`Self::update_for`] by id.
+    pub fn update_of(&self, id: &str) -> Option<Value> {
+        self.row(id).and_then(|r| self.update_for(&r))
+    }
+
+    /// The release tag of the update known for `id` (what its review fetches).
+    pub fn update_tag(&self, id: &str) -> Option<String> {
+        self.update_of(id)?;
+        self.sql(|db| db.query_row("SELECT tag FROM v1_updates WHERE plugin=?", [id], |r| r.get(0)).optional()).ok().flatten()
+    }
+
+    /// What a check found for `id`: `found` is the newest release when it
+    /// is above the installed version, `None` when there is none. Kept on
+    /// disk; a `plugin` event goes out when what the list says changed.
+    pub fn set_update(&self, id: &str, found: Option<&super::updates::Found>) -> bool {
+        let before = self.update_of(id).map(|mut u| {
+            u.as_object_mut().map(|o| o.shift_remove("checked_at"));
+            u
+        });
+        let now = self.clock.now() as i64;
+        let wrote = match found {
+            Some(f) => self.sql(|db| {
+                db.execute(
+                    "INSERT OR REPLACE INTO v1_updates(plugin,version,tag,notes,url,access,checked_at) VALUES(?,?,?,?,?,?,?)",
+                    params![id, f.version, f.tag, js::stringify(&json!(f.notes)), f.url, js::stringify(&json!(f.access)), now],
+                )
+            }),
+            None => self.sql(|db| db.execute("DELETE FROM v1_updates WHERE plugin=?", [id])),
+        };
+        if wrote.is_err() {
+            return false;
+        }
+        let after = self.update_of(id).map(|mut u| {
+            u.as_object_mut().map(|o| o.shift_remove("checked_at"));
+            u
+        });
+        let changed = before != after;
+        if changed {
+            self.emit(id);
+        }
+        changed
+    }
+
+    /// Drops the update kept for `id` once the installed version reached it.
+    fn prune_update(&self, id: &str) {
+        if self.update_of(id).is_none() {
+            let _ = self.sql(|db| db.execute("DELETE FROM v1_updates WHERE plugin=?", [id]));
+        }
     }
 
     // ── the gate ─────────────────────────────────────────────────────────
@@ -984,7 +1060,7 @@ impl Host {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record(&self, m: &Value, sha256: &str, raw: &(Value, Value), spec: &Spec, public: &str, tools: &[Value], prev: Option<&Row>, pkg: Option<&(PathBuf, Package)>) -> Res<()> {
+    fn record(&self, m: &Value, sha256: &str, raw: &(Value, Value), spec: &Spec, public: &str, tools: &[Value], prev: Option<&Row>, pkg: Option<&(PathBuf, Package)>, source: Option<&str>) -> Res<()> {
         let now = self.clock.now() as i64;
         let tools: Vec<Value> = tools
             .iter()
@@ -999,16 +1075,18 @@ impl Host {
         let skills = pkg.map(|(d, p)| package::skills_of(p, d)).unwrap_or_default();
         self.sql(|db| {
             db.execute(
-                "INSERT OR REPLACE INTO v1_plugins(id,short,command,args,env,version,protocol,publisher_key_id,plugin_pub,manifest,manifest_sha256,tools,enabled,disabled_tools,created_at,updated_at,package,skills)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO v1_plugins(id,short,command,args,env,version,protocol,publisher_key_id,plugin_pub,manifest,manifest_sha256,tools,enabled,disabled_tools,created_at,updated_at,package,skills,source)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 params![
                     s("id"), s("short"), spec.command, js::stringify(&raw.0), js::stringify(&raw.1), s("version"), s("protocol"), key_id, public,
                     js::stringify(m), sha256, js::stringify(&Value::Array(tools)), prev.map_or(true, |p| p.enabled),
                     prev.map_or("[]", |p| p.disabled_tools.as_str()), prev.map_or(now, |p| if p.created_at != 0 { p.created_at } else { now }), now,
-                    folder, js::stringify(&Value::Array(skills)),
+                    folder, js::stringify(&Value::Array(skills)), source.map(str::to_owned).or_else(|| prev.and_then(|p| p.source.clone())),
                 ],
             )
         })?;
+        // an install at or above the update that was waiting: it is no news now
+        self.prune_update(&s("id"));
         Ok(())
     }
 
@@ -1150,7 +1228,8 @@ impl Host {
         };
         // read here, not at the top: a tool's switch takes no lock, and a restart takes seconds
         let prev = self.row(&id);
-        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, prev.as_ref(), pkg.as_ref())?;
+        let source = get(body, "source").and_then(Value::as_str).and_then(super::updates::repository);
+        self.record(&m, &g.sha256, &raw, &spec, &public, &g.tools, prev.as_ref(), pkg.as_ref(), source.as_deref())?;
         self.with_rt(&id, |rt| rt.restarts.clear());
         // a person turned it off: the new version is checked and recorded, and stays off
         if prev.is_some_and(|p| !p.enabled) {
@@ -1262,6 +1341,7 @@ impl Host {
             let _ = std::fs::remove_dir_all(apps.join(id));
         }
         self.sql(|db| db.execute("DELETE FROM v1_plugins WHERE id=?", [id]))?;
+        let _ = self.sql(|db| db.execute("DELETE FROM v1_updates WHERE plugin=?", [id]));
         let generation = self.runtimes.lock().unwrap_or_else(|e| e.into_inner()).remove(id).map_or(0, |rt| rt.generation);
         let gone = json!({
             "id": id, "seq": self.seq.fetch_add(1, Ordering::SeqCst), "state": "uninstalled", "code": null, "message": "",
@@ -1662,6 +1742,7 @@ mod tests {
             created_at: 0,
             package: None,
             skills: "[]".into(),
+            source: None,
         }
     }
 

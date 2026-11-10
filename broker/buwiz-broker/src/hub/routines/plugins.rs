@@ -50,6 +50,10 @@ pub trait PluginView: Send + Sync {
     fn setup(&self, _id: &str) -> Value {
         json!([])
     }
+    /// A newer release waiting (`Host::update_of`), `null` when none is known.
+    fn update(&self, _id: &str) -> Value {
+        Value::Null
+    }
 }
 
 impl PluginView for Arc<Host> {
@@ -80,6 +84,9 @@ impl PluginView for Arc<Host> {
     }
     fn setup(&self, id: &str) -> Value {
         self.setup_view(id)
+    }
+    fn update(&self, id: &str) -> Value {
+        self.update_of(id).unwrap_or(Value::Null)
     }
 }
 
@@ -215,6 +222,8 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
     out.insert("plugin_pub".into(), json!(row.plugin_pub));
     out.insert("first_party".into(), json!(first_party(row, &p.trust())));
     out.insert("manifest_sha256".into(), json!(row.manifest_sha256));
+    // a newer release, or null: nothing of it is installed until the person's Install
+    out.insert("update".into(), p.update(&row.id));
     let apps: Vec<Value> = m
         .get("apps")
         .and_then(Value::as_array)

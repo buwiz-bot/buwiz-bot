@@ -43,19 +43,19 @@ buwiz-spreadsheet = { path = "../crates/spreadsheet" }
 tokio = { version = "1", features = ["sync"] }
 # First-party mini apps' native screens: the screen definition and the
 # bridge a screen gets, from the SDK (its nsh is patched below).
-buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "79883a820597c623c9259cc0fac0c4166bdde093" }
+buwiz-app = { git = "https://github.com/buwiz-app/buwiz-sdk", rev = "369935a8406808786b642c3b4893fbed9c106859" }
 # Books' native screens (`books.quiet`, `books.ledger`), by git rev. Books
 # pins buwiz-app too: bump both together, to the rev Books' is on, or
 # `ScreenDef` is two types.
-books-screens = { git = "https://github.com/buwiz-app/books", rev = "dbc5dce580bdc4c0a9f0373a7c08812d0c537318" }
+books-screens = { git = "https://github.com/buwiz-app/books", rev = "8f71afff11b3f2b5252629307e2379da964459f9" }
 # Google Workspace's native screens (`gws.workspace`). It pins buwiz-app too:
 # the same rule as books-screens.
-gws-screens = { git = "https://github.com/buwiz-app/google-workspace", rev = "0196162ec4e24607ed45cc2706c9d55f903ba7b9" }
+gws-screens = { git = "https://github.com/buwiz-app/google-workspace", rev = "b34aad0438a2f6dbffebe31a20df9efea090cb3e" }
 
 [dev-dependencies]
 # Books' manifest, at books-screens' rev: every native screen it names is
 # one compiled in (`screens::tests`).
-books-mini-app = { git = "https://github.com/buwiz-app/books", rev = "dbc5dce580bdc4c0a9f0373a7c08812d0c537318" }
+books-mini-app = { git = "https://github.com/buwiz-app/books", rev = "8f71afff11b3f2b5252629307e2379da964459f9" }
 # pele::corpus: the port's test inputs, to check the drawing of every one.
 pele = { git = "https://github.com/hexuria/pele-rs", rev = "9af923e41c031b8c7644940685afc201df4f340f", features = ["corpus"] }
 # The office crates' headless driver and test documents, and the engines
