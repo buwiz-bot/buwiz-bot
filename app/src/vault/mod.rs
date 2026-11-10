@@ -132,8 +132,11 @@ pub(crate) enum Refusal {
     NoBot,
     /// Not shared with the card's Bot, and share-all is off.
     NotShared,
-    /// Saved for another site than the card's, or of another kind.
+    /// Saved for another site than the card's.
     OtherSite,
+    /// For the card's site, but not what it asks for: no authenticator seed
+    /// for a code card (`code`), or no password for a password card.
+    WrongKind { code: bool },
     /// The table can't be read: nothing is used.
     Unreadable(String),
 }
@@ -147,6 +150,8 @@ impl Refusal {
             Self::NoBot => "This card doesn't say which Bot it's for, so no saved login is used on it.".to_owned(),
             Self::NotShared => format!("That saved login isn't shared with {bot}, so it wasn't used. Share it in Settings › Logins."),
             Self::OtherSite => "That saved login is for another site than this card's, so it wasn't used.".to_owned(),
+            Self::WrongKind { code: true } => "That saved login has no authenticator code saved, so it wasn't used. Add one in Settings › Logins, or type the code.".to_owned(),
+            Self::WrongKind { code: false } => "That saved login has no password saved, so it wasn't used. Type it by hand.".to_owned(),
             Self::Unreadable(why) => format!("Saved logins can't be read right now ({why}), so none was used."),
         }
     }
@@ -371,8 +376,11 @@ impl Vault {
         if !all && !row.shared_with.contains(bot) {
             return Err(Refusal::NotShared);
         }
-        if !self.fits(&row, code) || !sites.iter().any(|s| site_match(&row.origin, row.exact, s) != SiteMatch::No) {
+        if !sites.iter().any(|s| site_match(&row.origin, row.exact, s) != SiteMatch::No) {
             return Err(Refusal::OtherSite);
+        }
+        if !self.fits(&row, code) {
+            return Err(Refusal::WrongKind { code });
         }
         Ok(row)
     }
@@ -769,6 +777,10 @@ mod tests {
         assert!(v.offered("bank.example", "", false).is_empty(), "never to no Bot");
         v.set_share_all(false).expect("off");
         assert_eq!(v.usable(&bank.id, "orbit", &site("bank.example"), false), Err(Refusal::NotShared));
+        // the right site, but a code card and no seed: its own refusal
+        assert_eq!(v.usable(&shop.id, "nova", &site("shop.example"), true), Err(Refusal::WrongKind { code: true }));
+        assert!(Refusal::WrongKind { code: true }.sentence("Nova").contains("no authenticator code"));
+        assert!(!Refusal::WrongKind { code: true }.sentence("Nova").contains("another site"));
         // unshared again: gone from Nova's cards
         v.share(&shop.id, "nova", false).expect("unshare");
         assert!(v.offered("shop.example", "nova", false).is_empty());
