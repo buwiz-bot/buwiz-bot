@@ -235,6 +235,8 @@ mod sidebar_ui_tests;
 mod mini_ui_tests;
 #[cfg(test)]
 mod update_ui_tests;
+#[cfg(test)]
+mod connect_updates_ui_tests;
 
 #[cfg(test)]
 mod run_ui_tests;
