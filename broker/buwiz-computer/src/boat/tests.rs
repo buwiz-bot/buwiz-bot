@@ -1,5 +1,6 @@
-//! boat.dev against a fake platform (the shared TLS fake, with the test CA) and a fake `ssh` that
-//! refuses every login. Nothing here reaches boat, and no login is ever made.
+//! boat.dev against a fake platform (the shared TLS fake, with the test CA) and a fake `ssh`: one
+//! that refuses every login, or one whose login stays up in front of a fake box. Nothing here
+//! reaches boat or any VM.
 
 use std::path::{Path, PathBuf};
 
@@ -483,8 +484,15 @@ fn the_box_is_made_as_docker_and_ec2_make_theirs() {
     let s = prep();
     assert!(s.contains(r#"-v "$2-workspace:/workspace""#), "{s}");
     assert!(s.contains(r#"-v "$2-home:/home/box""#), "{s}");
+    // read-only, as Docker's and EC2's: nothing in the box can plant a file where its secrets go
     assert!(
-        s.contains("-v /dev/shm/buwiz-start:/run/buwiz-computer"),
+        s.contains("-v /dev/shm/buwiz-start:/run/buwiz-computer:ro "),
+        "{s}"
+    );
+    // the container root's alone: never the box's desktop user, uid 1000 inside a rootful Docker
+    assert!(!s.contains("1000"), "{s}");
+    assert!(
+        s.contains(r#"sudo install -d -m 0700 -o "$o" -g "$g" /dev/shm/buwiz-start"#),
         "{s}"
     );
     assert!(s.contains("--user 0 --cap-drop ALL"), "{s}");
@@ -534,4 +542,129 @@ fn the_box_is_made_as_docker_and_ec2_make_theirs() {
         "{s}"
     );
     assert_eq!(s.matches(" -p ").count(), 3, "{s}");
+}
+
+/// An `ssh` whose login stays up, like EC2's fake: it logs each call's arguments, keeps what it's
+/// fed, and exits 1 for the stage when `stage-fails` is in its folder.
+fn logging_ssh(name: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let d = std::env::temp_dir().join(format!("boat-bin-{name}"));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let body = format!(
+        r#"#!/bin/sh
+d="{d}"
+printf '%s\n' "$*" >> "$d/ssh-calls"
+case "$*" in
+*"-O check"*) [ -e c ] && exit 0; exit 1;;
+*"-O exit"*) /bin/rm -f c; exit 0;;
+*"-M -N"*) : > c; printf '%s\n' "$*" > "$d/master"; exec /bin/sleep 600;;
+esac
+/bin/cat > "$d/stdin-$$"
+case "$*" in
+*buwiz:stage*) [ -e "$d/stage-fails" ] && exit 1;;
+esac
+exit 0
+"#,
+        d = d.display()
+    );
+    let program = d.join("ssh");
+    std::fs::write(&program, body).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    program
+}
+
+/// A box on every port the login forwards, taking only `token`.
+async fn fake_box(d: PathBuf, token: &'static str) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let master = loop {
+        match std::fs::read_to_string(d.join("master")) {
+            Ok(text) if !text.is_empty() => break text,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    };
+    let words: Vec<&str> = master.split_whitespace().collect();
+    for pair in words.windows(2).filter(|w| w[0] == "-L") {
+        let here: u16 = pair[1].split(':').nth(1).unwrap().parse().unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", here)).await.unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16384];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let ours = head
+                        .to_ascii_lowercase()
+                        .contains(&format!("authorization: bearer {token}"));
+                    let body = if head.starts_with("GET /v1/info") {
+                        r#"{"capabilities":{"viewer":{"kind":"voxl"}}}"#
+                    } else if head.starts_with("GET /v1/screens") {
+                        "[]"
+                    } else {
+                        "{}"
+                    };
+                    let status = if ours { "200 OK" } else { "401 No" };
+                    let _ = socket
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+    }
+}
+
+fn ssh_calls(ssh: &Path) -> String {
+    std::fs::read_to_string(ssh.parent().unwrap().join("ssh-calls")).unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_clears_the_staged_secrets_once_the_box_answers() {
+    let fake = serve(api(PIN)).await;
+    let ssh = logging_ssh("clears");
+    let dir = spec("clears").dir;
+    std::fs::create_dir_all(&dir).unwrap();
+    let machine = record(&dir);
+    tokio::spawn(fake_box(ssh.parent().unwrap().to_owned(), "tok-boat"));
+    let p = provider(fake.addr, ssh.clone());
+    p.wake(&machine).await.unwrap();
+    let calls = ssh_calls(&ssh);
+    let at = |mark: &str| {
+        calls
+            .lines()
+            .position(|l| l.contains(mark))
+            .unwrap_or_else(|| panic!("no {mark}: {calls}"))
+    };
+    assert!(at("buwiz:stage") < at("buwiz:clear"), "{calls}");
+    assert!(
+        !calls.contains("tok-boat") && !calls.contains("pw-boat"),
+        "a secret in argv: {calls}"
+    );
+    p.sleep(&machine, Sleep::Light).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_that_fails_leaves_no_secret_staged() {
+    let fake = serve(api(PIN)).await;
+    let ssh = logging_ssh("stage-fails");
+    std::fs::write(ssh.parent().unwrap().join("stage-fails"), "").unwrap();
+    let dir = spec("stage-fails").dir;
+    std::fs::create_dir_all(&dir).unwrap();
+    let machine = record(&dir);
+    let p = provider(fake.addr, ssh.clone());
+    assert!(p.wake(&machine).await.is_err());
+    let calls = ssh_calls(&ssh);
+    let at = |mark: &str| {
+        calls
+            .lines()
+            .position(|l| l.contains(mark))
+            .unwrap_or_else(|| panic!("no {mark}: {calls}"))
+    };
+    assert!(at("buwiz:stage") < at("buwiz:clear"), "{calls}");
 }

@@ -27,9 +27,13 @@
 //!
 //! **Secrets.** `Secret::fresh` for the token and the viewer password. They go to the VM on stdin of
 //! the SSH command, never in argv or the environment, and land in `/dev/shm/buwiz-start` (RAM, not
-//! on the disk boat saves), owned by uid 1000. The container mounts that folder, and box-keeper reads
-//! and unlinks the two files. Each start writes them again, because a stop drops the memory that held
-//! what box-keeper had read.
+//! on the disk boat saves), a folder only the container's root can read: owned by root, or by the
+//! login's own user when the VM's Docker is rootless (its root is that user then). The container
+//! mounts it read-only, as Docker's and EC2's do, so nothing in the box can plant or change a file
+//! there, and box-keeper only reads them. The broker removes them over SSH once the box answers, or
+//! when its start fails, and the VM itself does five minutes on, as on EC2 (`ec2/instance.rs`), so a
+//! broker gone mid-start leaves nothing. Each start writes them again, because a stop drops the
+//! memory that held what box-keeper had read.
 //!
 //! **Lifecycle, on boat's API** (`https://boat.dev/api/v1`, `Authorization: Bearer <boat_…>`):
 //! - *create*: `POST /sandboxes` with `ttlSeconds` (one hour) and a `buwiz-computer` label, then wait
@@ -128,8 +132,8 @@ const FIRST_OPEN_PORT: u16 = 6906;
 /// can't start with fewer of, a `1g` `/dev/shm` for Chromium, the same five settings, one volume for
 /// the workspace and one for all of `/home/box`. Everything else is the image's own default. Below
 /// [`FIRST_OPEN_PORT`] a port takes a capability, so no command can listen on a service's port. Its
-/// ports are on the VM's loopback alone. The secrets' folder is mounted writable, unlike Docker's:
-/// box-keeper unlinks the two files, and nothing else here removes them.
+/// ports are on the VM's loopback alone. The secrets' folder is the container root's alone
+/// ([`STAGE`]), and mounted read-only, as Docker's is: [`CLEAR`] removes the two files.
 ///
 /// A computer made before this layout keeps its container as it was (a `-chrome` volume, the old
 /// settings, and no capabilities, which today's image may not start with): wake only starts what
@@ -139,25 +143,42 @@ fn prep() -> String {
     let caps: String = BOX_CAPS.iter().map(|c| format!(" --cap-add {c}")).collect();
     format!(
         r#"set -e
-sudo install -d -m 0700 -o 1000 -g 1000 /dev/shm/buwiz-start
+o=0; g=0
+if docker info --format '{{{{.SecurityOptions}}}}' 2>/dev/null | grep -q rootless; then o=$(id -u); g=$(id -g); fi
+sudo install -d -m 0700 -o "$o" -g "$g" /dev/shm/buwiz-start
 docker pull "$1" >/dev/null
 docker create --name "$2" --label app.buwiz.computer=1 --label "app.buwiz.computer.id=$3" \
   --user 0 --cap-drop ALL{caps} --security-opt no-new-privileges:true --pids-limit 2048 --memory 4g --shm-size 1g \
   --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv4.ip_unprivileged_port_start={FIRST_OPEN_PORT} \
   -e BOX_TOKEN_FILE=/run/buwiz-computer/token -e BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer \
   -e BOX_DESKTOP=1 -e BOX_DESKTOP_REQUIRED=1 -e BOX_CHROME=0 \
-  -v "$2-workspace:/workspace" -v "$2-home:/home/box" -v /dev/shm/buwiz-start:/run/buwiz-computer \
+  -v "$2-workspace:/workspace" -v "$2-home:/home/box" -v /dev/shm/buwiz-start:/run/buwiz-computer:ro \
   -p 127.0.0.1:1337:1337 -p 127.0.0.1:1340:1340 -p 127.0.0.1:6901-6905:6901-6905 "$1" >/dev/null"#
     )
 }
 
 /// Writes the two secrets from stdin (token, then viewer password, one per line) into the staging
-/// folder, owned by the box's uid, and starts the container. Argument: the container name.
-const STAGE: &str = r#"set -e
+/// folder, the container root's alone (root's, or the login's user's under a rootless Docker, whose
+/// root that is), and starts the container. A failed start removes them, and so does the VM five
+/// minutes on whatever happens; [`CLEAR`] does once the box answers. Argument: the container name.
+const STAGE: &str = r#"# buwiz:stage
+set -e
 d=/dev/shm/buwiz-start
-sudo install -d -m 0700 -o 1000 -g 1000 "$d"
-sudo sh -c 'umask 077 && read -r t && read -r v && printf "%s" "$t" > "$1/token" && printf "%s" "$v" > "$1/viewer" && chown 1000:1000 "$1/token" "$1/viewer"' sh "$d"
-docker start "$1" >/dev/null"#;
+o=0; g=0
+if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then o=$(id -u); g=$(id -g); fi
+sudo install -d -m 0700 -o "$o" -g "$g" "$d"
+sudo sh -c 'umask 077 && read -r t && read -r v && rm -f -- "$1/token" "$1/viewer" && printf "%s" "$t" > "$1/token" && printf "%s" "$v" > "$1/viewer" && chown "$2:$3" "$1/token" "$1/viewer"' sh "$d" "$o" "$g"
+sudo setsid -f /bin/sh -c 'sleep 300; rm -f -- "$0/token" "$0/viewer"' "$d" </dev/null >/dev/null 2>&1
+docker start "$1" >/dev/null || { sudo rm -f -- "$d/token" "$d/viewer"; exit 1; }"#;
+
+/// The staged secrets, gone: box-keeper has read them, or the start failed. Safe to repeat.
+const CLEAR: &str = r#"# buwiz:clear
+sudo rm -f -- /dev/shm/buwiz-start/token /dev/shm/buwiz-start/viewer"#;
+
+/// [`CLEAR`] over `master`. A clear that fails leaves them to the VM's own, five minutes on.
+async fn clear(master: &ssh::Master) {
+    let _ = master.run(CLEAR, &[], None, STAGE_PATIENCE, 4096).await;
+}
 
 fn wire(field: &[u8]) -> Vec<u8> {
     let mut out = (field.len() as u32).to_be_bytes().to_vec();
@@ -619,14 +640,15 @@ impl BoatProvider {
         }
     }
 
-    /// The secrets to the VM, and the container started. The secrets are on stdin only.
+    /// The secrets to the VM, and the container started. The secrets are on stdin only. A failed
+    /// start leaves none of them staged.
     async fn start_box(machine: &Machine, login: &Login, name: &str) -> Result<()> {
         let stdin = format!(
             "{}\n{}\n",
             machine.token.expose(),
             machine.viewer_password.expose()
         );
-        Self::step(
+        let started = Self::step(
             login,
             STAGE,
             &[name],
@@ -634,7 +656,11 @@ impl BoatProvider {
             STAGE_PATIENCE,
             "start the computer",
         )
-        .await
+        .await;
+        if started.is_err() {
+            clear(&login.master).await;
+        }
+        started
     }
 
     /// The box, as a link: forwards, the box's answer checked, polled until it answers or [`BOX_PATIENCE`].
@@ -653,10 +679,17 @@ impl BoatProvider {
                 Ok(()) => break,
                 Err(_) if started.elapsed() < BOX_PATIENCE => tokio::time::sleep(RETRY).await,
                 Err(p) => {
+                    if let Ok(master) = open.master() {
+                        clear(master).await;
+                    }
                     open.close().await;
                     return Err(p);
                 }
             }
+        }
+        // box-keeper read them to answer, and can't unlink them on its read-only mount
+        if let Ok(master) = open.master() {
+            clear(master).await;
         }
         beat(Arc::downgrade(&open), BEAT);
         Ok(open)
