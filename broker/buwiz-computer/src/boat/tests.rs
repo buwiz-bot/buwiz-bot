@@ -390,7 +390,7 @@ fn sandbox_of(machine: &Machine) -> &str {
 #[tokio::test]
 async fn recover_finds_the_sandbox_by_its_label_with_new_secrets_and_deletes_nothing() {
     let fake = serve(listing(
-        r#"{"id":"bx_zzzz2222"},{"id":"bx_aaaa2222"}"#,
+        r#"{"id":"bx_zzzz2222","state":"ready"},{"id":"bx_aaaa2222","state":"archived"}"#,
         None,
     ))
     .await;
@@ -462,7 +462,7 @@ async fn recover_is_none_when_boat_has_nothing_for_the_computer() {
 
 #[tokio::test]
 async fn recover_reads_every_page_of_the_listing() {
-    let fake = serve(listing("", Some(r#"{"id":"bx_bbbb2222"}"#))).await;
+    let fake = serve(listing("", Some(r#"{"id":"bx_bbbb2222","state":"idle"}"#))).await;
     let (ssh, _) = refusing_ssh("recover-pages");
     let found = provider(fake.addr, ssh)
         .recover(&spec("recover-pages"), None)
@@ -682,4 +682,49 @@ async fn finds_looks_by_label_then_by_the_last_sandbox_and_changes_nothing() {
     assert_eq!(p.finds("comp1", Some(&gone)).await.unwrap(), Some(false));
     assert_eq!(p.finds("comp1", None).await.unwrap(), Some(false));
     assert!(calls(&fake).iter().all(|c| c.starts_with("GET ")), "{:?}", calls(&fake));
+}
+
+/// boat's listing for `comp1`: two broken sandboxes that sort first and one usable; by id, an
+/// `error` one the record named and nothing else.
+fn broken_listing(usable: bool) -> impl Fn(&Seen) -> Answer + Send + Sync + 'static {
+    move |req: &Seen| {
+        let p = req.path.as_str();
+        match req.method.as_str() {
+            "GET" if p.contains("label=buwiz-computer%3Dcomp1") => {
+                let ok_one = if usable { r#",{"id":"bx_zzzz2222","state":"ready"}"# } else { "" };
+                ok(200, &format!(r#"{{"ok":true,"sandboxes":[{{"id":"bx_aaaa2222","state":"error"}},{{"id":"bx_bbbb2222","state":"cancelled"}}{ok_one}],"pageInfo":{{"hasMore":false,"nextCursor":null}}}}"#))
+            }
+            "GET" if p == "/api/v1/sandboxes/bx_eeee2222" => ok(200, r#"{"ok":true,"sandbox":{"id":"bx_eeee2222","state":"error"}}"#),
+            _ => ok(404, r#"{"ok":false,"code":"not_found"}"#),
+        }
+    }
+}
+
+#[tokio::test]
+async fn recover_passes_over_broken_sandboxes_and_takes_a_usable_one() {
+    let fake = serve(broken_listing(true)).await;
+    let (ssh, _) = refusing_ssh("recover-broken");
+    let p = provider(fake.addr, ssh);
+    let spec = spec("recover-broken");
+    let found = p.recover(&spec, None).await.unwrap().unwrap();
+    assert_eq!(sandbox_of(&found), "bx_zzzz2222");
+    // the record named a broken one: the usable one still
+    let named = Reach::Sandbox { id: "bx_aaaa2222".to_owned() };
+    assert_eq!(sandbox_of(&p.recover(&spec, Some(&named)).await.unwrap().unwrap()), "bx_zzzz2222");
+    assert!(calls(&fake).iter().all(|c| c.starts_with("GET ")), "{:?}", calls(&fake));
+}
+
+#[tokio::test]
+async fn recover_with_only_broken_sandboxes_finds_none_and_deletes_nothing() {
+    let fake = serve(broken_listing(false)).await;
+    let (ssh, _) = refusing_ssh("recover-only-broken");
+    let p = provider(fake.addr, ssh);
+    let spec = spec("recover-only-broken");
+    assert!(p.recover(&spec, None).await.unwrap().is_none());
+    // the record's own, by id, is broken too
+    let named = Reach::Sandbox { id: "bx_eeee2222".to_owned() };
+    assert!(p.recover(&spec, Some(&named)).await.unwrap().is_none());
+    let got = calls(&fake);
+    assert!(got.contains(&"GET /api/v1/sandboxes/bx_eeee2222".to_owned()), "{got:?}");
+    assert!(got.iter().all(|c| c.starts_with("GET ")), "nothing is stopped or deleted: {got:?}");
 }

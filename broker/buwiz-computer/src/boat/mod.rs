@@ -53,9 +53,10 @@
 //!   are waiting, `error` and `cancelled` are broken.
 //! - *sweep*: `GET /sandboxes?label=buwiz-computer%3D<id>` with its cursor, every one deleted, and
 //!   the one the record names.
-//! - *recover*: the same listing, else `GET /sandboxes/{id}` for the sandbox the record named, and a
-//!   new token and viewer password for it. Nothing is stopped or deleted: the next start stages the
-//!   new secrets, and the login registers the new token's key.
+//! - *recover*: the same listing, else `GET /sandboxes/{id}` for the sandbox the record named,
+//!   passing over any boat calls `error` or `cancelled`, and a new token and viewer password for the
+//!   one taken. Nothing is stopped or deleted: the next start stages the new secrets, and the login
+//!   registers the new token's key.
 //!
 //! **Where it runs: EU only.** boat's sandboxes are in Germany, Finland and France today, and the
 //! provider's label says so. Asia isn't offered.
@@ -465,8 +466,9 @@ impl BoatProvider {
         }
     }
 
-    /// Every sandbox labelled with computer `id`, across boat's pages (at most [`MAX_PAGES`]).
-    async fn labelled(&self, id: &str) -> Result<Vec<String>> {
+    /// Every sandbox labelled with computer `id`, across boat's pages (at most [`MAX_PAGES`]), with
+    /// its state when the listing says it.
+    async fn labelled(&self, id: &str) -> Result<Vec<(String, Option<String>)>> {
         let computer = safe_id(id)?;
         let mut found = Vec::new();
         let mut cursor: Option<String> = None;
@@ -490,8 +492,9 @@ impl BoatProvider {
             {
                 if let Some(sandbox) = item.get("id").and_then(Value::as_str) {
                     let sandbox = safe_id(sandbox)?.to_owned();
-                    if !found.contains(&sandbox) {
-                        found.push(sandbox);
+                    let state = item.get("state").and_then(Value::as_str).map(str::to_owned);
+                    if !found.iter().any(|(s, _)| *s == sandbox) {
+                        found.push((sandbox, state));
                     }
                 }
             }
@@ -762,6 +765,12 @@ fn power_of(state: &str) -> Power {
     }
 }
 
+/// Whether a sandbox in boat's `state` could be woken and used: anything [`power_of`] doesn't call
+/// broken.
+fn usable(state: &str) -> bool {
+    !matches!(power_of(state), Power::Broken(_))
+}
+
 #[async_trait]
 impl Provider for BoatProvider {
     fn kind(&self) -> ProviderKind {
@@ -904,7 +913,7 @@ impl Provider for BoatProvider {
 
     /// Deletes every sandbox labelled with the computer, and the one the record names.
     async fn sweep(&self, id: &str, last: Option<&Reach>) -> Result<()> {
-        let mut found = self.labelled(id).await?;
+        let mut found: Vec<String> = self.labelled(id).await?.into_iter().map(|(s, _)| s).collect();
         if let Some(Reach::Sandbox { id: last }) = last {
             let last = safe_id(last)?.to_owned();
             if !found.contains(&last) {
@@ -933,9 +942,10 @@ impl Provider for BoatProvider {
     /// The computer's sandbox, found by its label, else the one the record named if boat still has
     /// it, with new secrets. Its disk kept the workspace and the home, and the secrets are made
     /// again, not kept: each start stages them anew and the SSH key is rebuilt from the new token
-    /// and registered at the login. Nothing is stopped or deleted here. Of several labelled
-    /// sandboxes, the one the record named is kept if it's among them, else the first by id; the
-    /// others are left as they are. `None` only when boat has nothing for this computer.
+    /// and registered at the login. Nothing is stopped or deleted here. Only a usable sandbox is
+    /// taken: one boat calls broken (`error`, `cancelled`, as [`Provider::power`] reads them) is
+    /// passed over. Of several usable ones, the one the record named, else the first by id; the
+    /// others are left as they are. `None` when boat has nothing usable for this computer.
     async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
         self.check().await?;
         let mut found = self.labelled(&spec.id).await?;
@@ -944,12 +954,29 @@ impl Provider for BoatProvider {
             Some(Reach::Sandbox { id }) => Some(safe_id(id)?.to_owned()),
             _ => None,
         };
-        let sandbox = match (last, found.first()) {
-            (Some(last), _) if found.contains(&last) => last,
-            (_, Some(first)) => first.clone(),
-            (Some(last), None) if self.sandbox(&last).await?.is_some() => last,
-            _ => return Ok(None),
-        };
+        // the one the record named first, then the rest by id; the named one even when it isn't
+        // labelled, if boat still has it
+        if let Some(named) = &last {
+            match found.iter().position(|(s, _)| s == named) {
+                Some(at) => {
+                    let named = found.remove(at);
+                    found.insert(0, named);
+                }
+                None => found.push((named.clone(), None)),
+            }
+        }
+        let mut sandbox = None;
+        for (id, listed) in found {
+            let state = match listed {
+                Some(state) => Some(state),
+                None => self.state(&id).await?,
+            };
+            if state.is_some_and(|s| usable(&s)) {
+                sandbox = Some(id);
+                break;
+            }
+        }
+        let Some(sandbox) = sandbox else { return Ok(None) };
         Ok(Some(Machine {
             provider: ProviderKind::Boat,
             reach: Reach::Sandbox { id: sandbox },
