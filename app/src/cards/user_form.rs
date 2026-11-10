@@ -1274,8 +1274,8 @@ pub(crate) fn card(spec: impl Borrow<UserFormSpec>, key: impl AsRef<str>) -> imp
         // the wire's ending wins, but for a retry of a fill that failed
         let wire = spec.effective_resolution().filter(|r| !(*r == FormResolution::FillFailed && loc.retry.get()));
         match (wire, ph.get()) {
-            (Some(r), _) => settled(spec.clone(), key.clone(), r, false).into_element(),
-            (None, Phase::Settled(r)) => settled(spec.clone(), key.clone(), r, true).into_element(),
+            (Some(r), _) => settled(spec.clone(), key.clone(), r).into_element(),
+            (None, Phase::Settled(r)) => settled(spec.clone(), key.clone(), r).into_element(),
             (None, Phase::Sending) => collapsed(&spec, &key, FormResolution::Sending).into_element(),
             (None, Phase::Idle) => idle(spec.clone(), key.clone()).into_element(),
         }
@@ -1315,7 +1315,7 @@ fn collapsed(spec: &UserFormSpec, key: &str, r: FormResolution) -> View {
         .child(note(r.body().to_owned()))
 }
 
-fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, _local_paint: bool) -> View {
+fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
     let loc = local(&key);
     // an ending (a supersede included) takes any held or typed secret with it
     drop_held(&key);
