@@ -1587,7 +1587,6 @@ fn saved_strip(
                     .py(px(6.0))
                     .rounded(px(8.0))
                     .bg(theme::SUBTLE)
-                    .label(format!("Use {}", row.username))
                     .child(
                         view()
                             .flex_1()
@@ -1600,7 +1599,8 @@ fn saved_strip(
                             )
                             .child(text(saved_for.0).number_of_lines(2).text_size(px(11.0)).text_color(saved_for.1)),
                     )
-                    .child(button("Use", Kind::Secondary, || true, move || {
+                    // its own button, named for the login it uses
+                    .child(button_as(format!("Use {}", row.username), "Use", Kind::Secondary, || true, move || {
                         use_saved(k.clone(), &id, t.clone(), s.clone(), ss.clone(), b.clone(), &bn)
                     })),
             );
@@ -1770,19 +1770,33 @@ enum Kind {
 }
 
 fn button(label: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static) -> impl IntoElement {
+    button_as(label.to_owned(), label, kind, enabled, on)
+}
+
+/// A button a screen reader gets as one: role button, its own `label`, and
+/// disabled while it can't be pressed; `words` are what it shows.
+fn button_as(label: String, words: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static) -> impl IntoElement {
     let hov = signal(false);
     let enabled = Rc::new(enabled);
-    let (e1, e2, e3) = (enabled.clone(), enabled.clone(), enabled);
-    text(label)
-        .text_size(px(12.0))
-        .font_weight(FontWeight::MEDIUM)
+    let (e1, e2, e3, e4) = (enabled.clone(), enabled.clone(), enabled.clone(), enabled);
+    view()
+        .role(AccessibilityRole::Button)
+        .label(label)
+        .disabled(move || !e4())
         .px(px(12.0))
         .py(px(6.0))
         .rounded(px(14.0))
-        .text_color(move || match kind {
-            Kind::Primary => theme::ON_FILL,
-            _ => theme::TEXT,
-        })
+        .items_center()
+        .justify_center()
+        .child(
+            text(words)
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || match kind {
+                    Kind::Primary => theme::ON_FILL,
+                    _ => theme::TEXT,
+                }),
+        )
         .bg(move || match (kind, hov.get()) {
             (Kind::Primary, _) => theme::ACCENT,
             (Kind::Secondary, false) => theme::HOVER,
@@ -1797,19 +1811,18 @@ fn button(label: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static,
                 on()
             }
         })
-        .label(label)
 }
 
 fn link_btn(label: impl Into<String>, on: impl Fn() + 'static) -> impl IntoElement {
     let label: String = label.into();
     let hov = signal(false);
-    text(label.clone())
-        .text_size(px(12.0))
-        .text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT })
+    view()
+        .role(AccessibilityRole::Button)
+        .label(label.clone())
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(on)
-        .label(label)
+        .child(text(label).text_size(px(12.0)).text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }))
 }
 
 #[cfg(test)]

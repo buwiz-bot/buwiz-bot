@@ -362,7 +362,7 @@ fn a_saved_login_is_asked_about_before_touch_id_and_refused_on_a_shared_computer
     on(&mut app, || save_shared("kid@example.com", &["nova"]));
     *seen.saved.lock().unwrap() = (200, json!({"ok": true, "usable": false, "code": "shared-computer", "message": "This computer is shared with other bots or people, so a saved login is not used on it."}));
     with_card(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 1);
     settle(&mut app);
     assert!(has_text(&app, "This computer is shared"), "{:?}", app.texts());
@@ -373,7 +373,7 @@ fn a_saved_login_is_asked_about_before_touch_id_and_refused_on_a_shared_computer
     settle(&mut app);
     app.press("Use a saved login");
     settle(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 2);
     settle(&mut app);
     app.press("Log in");
@@ -456,7 +456,7 @@ fn an_unproven_broker_gets_no_token_from_any_card_button() {
     seen.impostor.store(true, std::sync::atomic::Ordering::SeqCst);
     on(&mut app, || save_shared("kid@example.com", &["nova"]));
     with_card(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, "/v1/host/prove", 1);
     settle(&mut app);
     assert!(has_text(&app, "so no saved login was used"), "{:?}", app.texts());
@@ -616,7 +616,7 @@ fn an_unshared_logins_id_is_refused_before_touch_id_and_nothing_is_sent() {
         crate::vault::changed();
     });
     settle(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 1);
     settle(&mut app);
     assert_eq!(asks(&mut app), before + 1);
@@ -643,7 +643,7 @@ fn touch_id_is_asked_on_every_use_of_a_saved_login() {
     on(&mut app, || save_shared("kid@example.com", &["nova"]));
     with_card(&mut app);
     let before = asks(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 1);
     settle(&mut app);
     assert_eq!(asks(&mut app), before + 1);
@@ -651,7 +651,7 @@ fn touch_id_is_asked_on_every_use_of_a_saved_login() {
     settle(&mut app);
     app.press("Use a saved login");
     settle(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 2);
     settle(&mut app);
     assert_eq!(asks(&mut app), before + 2, "asked again, not remembered");
@@ -660,7 +660,7 @@ fn touch_id_is_asked_on_every_use_of_a_saved_login() {
     assert_eq!(sent[0].0["savedLoginId"].as_str().map(|s| s.starts_with("sl_")), Some(true));
     settle(&mut app);
     with_card_as(&mut app, "uf_2");
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 3);
     settle(&mut app);
     assert_eq!(asks(&mut app), before + 3, "a new use, a new ask");
@@ -979,4 +979,38 @@ fn a_vault_change_leaves_the_cards_fields_and_typing_alone() {
     assert!(app.has("Use kid@example.com"), "the strip shows the new login: {:?}", app.texts());
     assert_eq!((app.view("Email"), app.view("Password")), (email, password), "the fields weren't rebuilt");
     assert_eq!(app.value("Email"), "kid@exa", "what was typed stays");
+}
+
+/// Each of the card's controls is its own accessible button, named, and Log in says it's disabled
+/// until the form can be sent; the trust note is its own text. The picker's Use, and the save
+/// offer's Save and Not now, too.
+#[test]
+fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
+    if !in_child("the_cards_controls_are_accessible_buttons_each_with_its_label") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    on(&mut app, || save_shared("ada@example.com", &["nova"]));
+    with_card(&mut app);
+    let button = |app: &Headless, label: &str| app.access(label).0 == AccessibilityRole::Button;
+    for label in ["Log in", "Open the screen", "Dismiss", "Use ada@example.com", "Type it by hand"] {
+        assert!(button(&app, label), "{label} is a button: {:?}", app.access(label));
+    }
+    assert!(app.access("Log in").1, "Log in says it's disabled with nothing typed");
+    assert!(!app.access("Open the screen").1);
+    assert!(app.texts().contains(&"Open the screen: You'd use its own browser on its own screen."), "the note is its own text: {:?}", app.texts());
+    assert!(!app.texts().iter().any(|t| t.contains("Log in") && t.contains("Open the screen")), "{:?}", app.texts());
+    app.press("Type it by hand");
+    settle(&mut app);
+    typed_login(&mut app);
+    assert!(!app.access("Log in").1, "enabled once filled");
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    for label in ["Save", "Not now"] {
+        assert!(button(&app, label), "{label} is a button");
+    }
+    no_mark(&app);
 }

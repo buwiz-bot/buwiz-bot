@@ -411,6 +411,7 @@ pub(crate) fn keycap(letter: char, live: bool) -> impl IntoElement {
 pub(crate) fn close_x(what: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
     let hov = signal(false);
     view()
+        .role(AccessibilityRole::Button)
         .label(what)
         .size(px(22.0))
         .rounded(px(6.0))
@@ -440,6 +441,7 @@ pub(crate) fn btn(kind: Btn, label: &str, on: impl Fn() + 'static) -> impl IntoE
         Btn::Secondary => (theme::HOVER, theme::ACTIVE, theme::TEXT),
     };
     view()
+        .role(AccessibilityRole::Button)
         .label(label.to_owned())
         .h(px(28.0))
         .px(px(12.0))
