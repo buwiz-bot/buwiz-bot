@@ -698,7 +698,7 @@ fn connect(found: &Inspected, machine: &Machine) -> Result<BoxGuest> {
 
 /// The `docker create` arguments of the container that owns a computer's network: `sleep`, the
 /// published ports, and IPv6 off.
-fn holder_args(image: &str, name: &str, network: &str, id: &str) -> Vec<String> {
+pub(crate) fn holder_args(image: &str, name: &str, network: &str, id: &str) -> Vec<String> {
     let net = holder(name);
     let mut args: Vec<String> = ["create", "--name", &net, "--network", network, "--label"].map(str::to_owned).to_vec();
     args.push(format!("{LABEL}=1"));
@@ -722,7 +722,7 @@ fn holder_args(image: &str, name: &str, network: &str, id: &str) -> Vec<String> 
 
 /// The `docker create` arguments of a new computer: no secret among them, and no network of its
 /// own.
-fn create_args(image: &str, name: &str, id: &str, secrets: &Path) -> Vec<String> {
+pub(crate) fn create_args(image: &str, name: &str, id: &str, secrets: &Path) -> Vec<String> {
     let mut args: Vec<String> = ["create", "--name", name, "--network"].map(str::to_owned).to_vec();
     args.push(format!("container:{}", holder(name)));
     args.push("--label".to_owned());

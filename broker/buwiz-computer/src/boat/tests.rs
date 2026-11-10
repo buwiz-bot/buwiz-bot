@@ -845,3 +845,85 @@ fn a_stage_or_clear_with_an_id_that_isnt_hex_does_nothing() {
     }
     assert!(!shm.exists());
 }
+
+/// The values each `flag` takes in `words`, in order.
+fn values_of<'a>(words: &'a [String], flag: &str) -> Vec<&'a str> {
+    words.windows(2).filter(|w| w[0] == flag).map(|w| w[1].as_str()).collect()
+}
+
+/// The container ports `-p` publishes, ranges spread out, and the address each is on.
+fn published(words: &[String]) -> std::collections::BTreeSet<(String, u16)> {
+    let mut out = std::collections::BTreeSet::new();
+    for p in values_of(words, "-p") {
+        let (ip, rest) = p.split_once(':').unwrap();
+        let inside = rest.rsplit(':').next().unwrap();
+        let (first, last) = inside.split_once('-').unwrap_or((inside, inside));
+        for port in first.parse::<u16>().unwrap()..=last.parse::<u16>().unwrap() {
+            out.insert((ip.to_owned(), port));
+        }
+    }
+    out
+}
+
+/// boat's `docker create` and Docker's (the box's and its holder's, which owns the network the box
+/// joins) set the box up alike. What differs on purpose is listed, and left out of the comparison:
+///
+/// - the secrets: Docker binds the computer's folder on the Mac, boat the VM's `/dev/shm`
+///   staging folder; both at the same target, read-only;
+/// - the network: Docker's box joins its holder's (`--network container:…`), behind the wall;
+///   boat's has Docker's default bridge in the VM, and no wall;
+/// - so the sysctls and the published ports are the holder's on Docker and the box's on boat;
+/// - the host's side of a published port: any free one in a range on Docker, the same number on
+///   boat, whose VM runs one box;
+/// - `no-new-privileges` is written `:true` on boat, which means the same;
+/// - the volume flags: `--mount type=volume` on Docker, `-v` on boat, to the same two targets;
+/// - the image, and the names, which are each provider's own.
+#[test]
+fn boats_box_is_set_up_as_dockers_except_where_it_says_why() {
+    // boat's create line, its continuations joined, as words
+    let script = prep().replace("\\\n", " ");
+    let line = script.lines().find(|l| l.trim_start().starts_with("docker create")).unwrap();
+    let boat: Vec<String> = line.split_whitespace().map(|w| w.trim_matches('"').to_owned()).collect();
+    let docker = crate::docker::create_args("img:1", "c2-0a1b2c3d", "cmp_1", Path::new("/x/start"));
+    let holder = crate::docker::holder_args("img:1", "c2-0a1b2c3d", "c2-net", "cmp_1");
+
+    let env = |words: &[String]| values_of(words, "-e").into_iter().map(str::to_owned).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(env(&boat), env(&docker), "the same settings, the secrets' file names included");
+    for flag in ["--cap-add", "--cap-drop", "--user", "--shm-size", "--memory", "--pids-limit"] {
+        let (mut b, mut d) = (values_of(&boat, flag), values_of(&docker, flag));
+        b.sort_unstable();
+        d.sort_unstable();
+        assert_eq!(b, d, "{flag}");
+    }
+    let opts = |words: &[String]| values_of(words, "--security-opt").into_iter().map(|o| o.trim_end_matches(":true").to_owned()).collect::<Vec<_>>();
+    assert_eq!(opts(&boat), opts(&docker));
+    let labels = |words: &[String]| values_of(words, "--label").into_iter().map(|l| l.split('=').next().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(labels(&boat), labels(&docker), "the same labels, so a sweep finds either");
+
+    // the sysctls and the ports: the holder's, on Docker
+    let mut sysctls = (values_of(&boat, "--sysctl"), values_of(&holder, "--sysctl"));
+    sysctls.0.sort_unstable();
+    sysctls.1.sort_unstable();
+    assert_eq!(sysctls.0, sysctls.1);
+    assert_eq!(published(&boat), published(&holder), "the same ports, on loopback");
+    assert!(values_of(&docker, "-p").is_empty(), "the box itself publishes nothing on Docker");
+
+    // the two volumes, to the same targets, named after the box
+    let boat_volumes: Vec<(String, String)> = values_of(&boat, "-v").into_iter().filter(|v| v.starts_with("$2-")).map(|v| {
+        let (source, target) = v.split_once(':').unwrap();
+        (source.trim_start_matches("$2").to_owned(), target.to_owned())
+    }).collect();
+    let docker_volumes: Vec<(String, String)> = values_of(&docker, "--mount").into_iter().filter(|m| m.starts_with("type=volume,")).map(|m| {
+        let source = m.split(',').find_map(|p| p.strip_prefix("source=")).unwrap();
+        let target = m.split(',').find_map(|p| p.strip_prefix("target=")).unwrap();
+        (source.trim_start_matches("c2-0a1b2c3d").to_owned(), target.to_owned())
+    }).collect();
+    assert_eq!(boat_volumes, docker_volumes);
+    assert_eq!(boat_volumes.len(), 2);
+
+    // the secrets: another folder, the same target, read-only on both
+    let boat_secrets = values_of(&boat, "-v").into_iter().find(|v| !v.starts_with("$2-")).unwrap();
+    let docker_secrets = values_of(&docker, "--mount").into_iter().find(|m| m.starts_with("type=bind,")).unwrap();
+    assert!(boat_secrets.ends_with(":/run/buwiz-computer:ro"), "{boat_secrets}");
+    assert!(docker_secrets.contains(",target=/run/buwiz-computer,") && docker_secrets.ends_with(",readonly"), "{docker_secrets}");
+}
