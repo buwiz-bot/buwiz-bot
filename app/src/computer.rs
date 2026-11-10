@@ -1236,25 +1236,31 @@ fn count_down_while(shows: impl Fn() -> bool + 'static) {
     });
 }
 
-/// One more place showing a hand-over's time left (`on`), or one fewer.
+/// One more place showing a hand-over's time left (`on`), or one fewer. The count is decided in the
+/// borrow, and the signal and timer are touched after it: what they wake may count again.
 fn counting(on: bool) {
     let now = NOW.with(|s| *s);
-    let stopped = COUNTING.with_borrow_mut(|(places, timer)| {
+    let (start, stopped) = COUNTING.with_borrow_mut(|(places, timer)| {
         if on {
             *places += 1;
-            if *places == 1 {
-                now.set(std::time::Instant::now());
-                // its own, not the part's that asked first: it stops with the last
-                *timer = Some(Owner::detached().run(|| set_interval(COUNT, move || now.set(std::time::Instant::now()))));
-            }
-            None
+            (*places == 1, None)
         } else {
             *places = places.saturating_sub(1);
-            if *places == 0 { timer.take() } else { None }
+            (false, if *places == 0 { timer.take() } else { None })
         }
     });
     if let Some(timer) = stopped {
         timer.cancel();
+    }
+    if start {
+        // its own, not the part's that asked first: it stops with the last
+        let timer = Owner::detached().run(|| set_interval(COUNT, move || now.set(std::time::Instant::now())));
+        // a place that let go in the meantime leaves none to count for
+        let late = COUNTING.with_borrow_mut(|(places, slot)| if *places > 0 { slot.replace(timer) } else { Some(timer) });
+        if let Some(timer) = late {
+            timer.cancel();
+        }
+        now.set(std::time::Instant::now());
     }
 }
 
