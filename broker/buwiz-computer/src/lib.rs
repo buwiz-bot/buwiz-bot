@@ -605,6 +605,13 @@ pub trait Provider: Send + Sync {
 
     async fn sleep(&self, machine: &Machine, depth: Sleep) -> Result<()>;
 
+    /// What the last [`Provider::sleep`] of it did that a person should know, as a sentence: a
+    /// light sleep that couldn't keep what was open, say. The sleep still worked, so it isn't a
+    /// [`Problem`]. Taken: a second ask has nothing until another sleep leaves one.
+    fn take_sleep_note(&self, _machine: &Machine) -> Option<String> {
+        None
+    }
+
     /// Removes it and everything it kept. Only for a computer a person agreed to delete, or one
     /// just made that holds nothing yet.
     async fn destroy(&self, machine: &Machine) -> Result<()>;

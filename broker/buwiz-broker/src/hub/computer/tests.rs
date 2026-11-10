@@ -360,6 +360,25 @@ async fn a_bot_that_leaves_a_sleeping_computer_loses_its_screen_at_the_next_wake
 }
 
 #[tokio::test]
+async fn a_sleep_that_couldnt_keep_whats_open_says_so_until_the_next_wake() {
+    let b = bed("sleep-note");
+    let id = awake(&b, &b.ann.0).await;
+    let note = "This computer couldn't hibernate, so it was stopped instead.";
+    *b.mock.sleep_note.lock().unwrap() = Some(note.to_owned());
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["sleepNote"], note);
+    // still true after it sleeps deeper: what was open is no more there
+    b.computers.sleep(&b.ctx, &id, Sleep::Deep).await.unwrap();
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["sleepNote"], note);
+    *b.mock.sleep_note.lock().unwrap() = None;
+    awake(&b, &b.ann.0).await;
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await.get("sleepNote"), None, "a wake that worked clears it");
+    // and a light sleep that kept everything has nothing to say
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await.get("sleepNote"), None);
+}
+
+#[tokio::test]
 async fn a_join_that_fails_leaves_no_seat() {
     let b = bed("join");
     let id = awake(&b, &b.ann.0).await;

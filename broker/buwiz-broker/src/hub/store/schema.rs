@@ -159,6 +159,9 @@ const TRIED: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS computer_providers(kind TEXT PRIMARY KEY, config TEXT NOT NULL, updated_at INTEGER);
   CREATE TABLE IF NOT EXISTS computer_home(id INTEGER PRIMARY KEY CHECK(id=1), kind TEXT NOT NULL, at INTEGER);
   CREATE TABLE IF NOT EXISTS bot_computer_home(bot_id TEXT PRIMARY KEY, kind TEXT NOT NULL, at INTEGER);",
+    // what its last sleep did that a person should know (a hibernation that became a stop), until
+    // a wake works
+    "ALTER TABLE computers ADD COLUMN sleep_note TEXT",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

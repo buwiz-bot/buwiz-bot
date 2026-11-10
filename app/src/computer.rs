@@ -48,6 +48,8 @@ pub(crate) struct Status {
     /// the Bots at this computer, this one included: (id, name)
     pub bots: Vec<(String, String)>,
     pub wake_ms: Option<u64>,
+    /// what its last sleep did that a person should know, until a wake works; "" when nothing
+    pub sleep_note: String,
     /// the open viewer's mode, `watch` or `drive`; "" when none is open
     pub viewer: String,
     /// a run has this screen
@@ -143,6 +145,7 @@ impl Status {
             message: text("message"),
             bots: bots.filter_map(|b| Some((b.get("id")?.as_str()?.to_owned(), b.get("name")?.as_str()?.to_owned()))).collect(),
             wake_ms: v.get("wakeMs").and_then(Value::as_u64),
+            sleep_note: text("sleepNote"),
             viewer: text("viewer"),
             working: v.get("working").and_then(Value::as_bool).unwrap_or(false),
             takeover: v.get("takeover").and_then(Takeover::parse),
@@ -1014,6 +1017,9 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     for words in [&p.status.message, &p.note].into_iter().filter(|w| !w.is_empty()) {
         out = out.child(view().test_id("computer-problem").child(note(words.clone())));
     }
+    if !p.status.sleep_note.is_empty() {
+        out = out.child(view().test_id("computer-sleep-note").child(note(p.status.sleep_note.clone())));
+    }
     let shared = p.status.shared_with(bot);
     if !shared.is_empty() {
         out = out.child(note(shared));
@@ -1284,6 +1290,13 @@ mod tests {
         assert_eq!((s.state.as_str(), s.message.as_str(), s.wake_ms), ("error", "Docker isn't running.", Some(1200)));
         assert_eq!(s.shared_with("b_1"), "Shared with Bea. Each has its own screen, but a screen is no wall: use separate computers for work that must stay apart.");
         assert_eq!(Status { bots: vec![("b_1".into(), "Ann".into())], ..Status::default() }.shared_with("b_1"), "");
+    }
+
+    #[test]
+    fn a_sleep_note_is_read_and_its_absence_is_empty() {
+        let s = Status::parse(&json!({"state": "asleep", "sleepNote": "This computer couldn't hibernate, so it was stopped instead."}));
+        assert_eq!(s.sleep_note, "This computer couldn't hibernate, so it was stopped instead.");
+        assert_eq!(Status::parse(&json!({"state": "asleep"})).sleep_note, "");
     }
 
     #[test]
