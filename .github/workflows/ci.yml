@@ -1,8 +1,8 @@
 name: CI
 
 # The app's, the office crates' and the broker's tests, and clippy on the
-# app and the office crates, on Apple silicon,
-# for every PR.
+# app and the office crates, on Apple silicon, and that nsh's Cargo.lock
+# passes --locked, for every PR.
 #
 # main runs too, and only main saves caches: a PR can read its base branch's
 # cache but no other PR's, and caches saved by PRs push each other out.
@@ -23,6 +23,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # the release builds nsh (nsh-cli, nsh-macos-host) with --locked: a buwiz
+  # whose Cargo.lock lacks what its merged topics added fails here, not at
+  # release time
+  nsh-lock:
+    name: nsh Cargo.lock (cargo metadata --locked)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check
+        working-directory: nsh
+        # stable: resolving needs none of nsh's toolchain file's mobile targets
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: cargo metadata --locked --format-version 1 > /dev/null
   app:
     name: App and office crates (cargo test)
     runs-on: macos-15
