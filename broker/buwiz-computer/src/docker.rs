@@ -1462,6 +1462,59 @@ mod tests {
         assert!(!calls(&dir).contains("exec"), "{}", calls(&dir));
     }
 
+    /// Runs [`CLEAR`] on this Mac against a made-up `/proc` and `/home/box` under argv[2]: the
+    /// owner of each path is root unless `OWNERS` says, as the kernel shows a process that isn't
+    /// dumpable, and a kill moves the process's folder away instead of signalling anything here.
+    const FAKE_PROC: &str = r#"
+import builtins, os, sys
+ROOT = sys.argv[2]
+OWNERS = {'/proc/400': 20001}
+def _at(p):
+    p = os.fspath(p)
+    return ROOT + p if p.startswith(('/proc', '/home/box')) else p
+_open, _listdir, _stat, _lstat, _readlink, _rename = builtins.open, os.listdir, os.stat, os.lstat, os.readlink, os.rename
+def _owned(p, st):
+    f = list(st)
+    f[4] = OWNERS.get(os.fspath(p), 0)
+    return os.stat_result(f)
+builtins.open = lambda p, *a, **k: _open(_at(p), *a, **k)
+os.listdir = lambda p: _listdir(_at(p))
+os.stat = lambda p: _owned(p, _stat(_at(p)))
+os.lstat = lambda p: _owned(p, _lstat(_at(p)))
+os.readlink = lambda p: _readlink(_at(p))
+os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' % pid)
+"#;
+
+    /// A process in the made-up `/proc`: its `status` says `uid`, and it runs `exe`.
+    fn fake_process(root: &Path, pid: u32, name: &str, uid: u32, exe: &str) {
+        let dir = root.join(format!("proc/{pid}"));
+        std::fs::create_dir_all(dir.join(format!("task/{pid}"))).unwrap();
+        let stat = format!("{pid} ({name}) S 1 1 1 0 -1 0\n");
+        std::fs::write(dir.join("stat"), &stat).unwrap();
+        std::fs::write(dir.join(format!("task/{pid}/stat")), &stat).unwrap();
+        std::fs::write(dir.join("status"), format!("Name:\t{name}\nUmask:\t0022\nState:\tS (sleeping)\nPPid:\t1\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nGid:\t{uid}\t{uid}\t{uid}\t{uid}\n")).unwrap();
+        std::fs::write(dir.join("maps"), "").unwrap();
+        std::os::unix::fs::symlink(exe, dir.join("exe")).unwrap();
+    }
+
+    /// A process that isn't dumpable has its `/proc` folder owned by root, whoever it runs as: only
+    /// the `Uid:` line of its `status` says who that is. One of the Bot's like that is still found,
+    /// and another user's is left alone whatever its folder's owner.
+    #[test]
+    fn clearing_reads_a_processs_user_from_its_status_not_its_folders_owner() {
+        let root = tmp("fake-proc");
+        std::fs::create_dir_all(root.join("home/box/.box/bots")).unwrap();
+        std::fs::write(root.join("home/box/.box/bots/b_ann"), "0\n").unwrap();
+        // the Bot's desktop user is 20001: this one is its, and not dumpable
+        fake_process(&root, 300, "hidden", 20001, "/home/box/hidden");
+        fake_process(&root, 400, "someone", 1000, "/home/box/someone");
+        std::fs::create_dir_all(root.join("proc/self")).unwrap();
+        let out = std::process::Command::new("python3").args(["-I", "-S", "-c", &format!("{FAKE_PROC}{CLEAR}"), "b_ann"]).arg(&root).output().expect("python3 runs the scan on this Mac");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"["hidden"]"#);
+        assert!(root.join("ended-300").exists() && root.join("proc/400").exists(), "only the Bot's own is ended");
+    }
+
     #[tokio::test]
     async fn clearing_is_for_one_bots_desktop() {
         let dir = tmp("clear");
