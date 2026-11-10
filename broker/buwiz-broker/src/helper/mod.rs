@@ -13,3 +13,4 @@ pub mod plugins;
 pub mod release;
 pub mod remote;
 pub mod sessions;
+pub mod updates;

@@ -330,6 +330,7 @@ mod tests {
         assert_eq!(owner(Method::POST, "/mcp/servers"), Some(Hub(Chat)));
         assert_eq!(owner(Method::GET, "/mcp/servers"), Some(Rust));
         assert_eq!(owner(Method::POST, "/v1/host/plugins/acme/enable"), Some(Hub(Host)));
+        assert_eq!(owner(Method::POST, "/v1/host/plugins/updates/review"), Some(Hub(Host)));
         assert_eq!(owner(Method::POST, "/v1/host/agents/resume"), Some(Hub(Agents)));
         assert_eq!(owner(Method::DELETE, "/v1/host/plugins"), Some(Hub(Host)));
         assert_eq!(owner(Method::POST, "/v1/hooks/ah_x/secret"), Some(Hub(Hooks)));

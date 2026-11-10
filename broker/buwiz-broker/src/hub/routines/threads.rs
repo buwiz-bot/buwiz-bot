@@ -25,6 +25,7 @@ pub fn notice_text(n: &Value) -> String {
         Some("computer_job") => return crate::hub::computer::jobs::said(&s("name"), &s("state"), n.get("exit").and_then(Value::as_i64)),
         Some("messages") => return format!("Who can message {}?", s("botName")),
         Some("app_install") => return format!("Install {} {} from {}?", s("title"), s("version"), s("source")),
+        Some("app_update_failed") => return format!("{} update failed · still on {}", s("title"), s("version")),
         Some("app_uninstall") => return format!("Uninstall {}? It removes its {}.", s("title"), buwiz_protocol::ui::uninstall_removes(&s("id"))),
         Some("app_accounts") => {
             let to = if s("provider") == "google" { "Google".to_owned() } else { s("label") };
