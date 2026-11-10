@@ -10,6 +10,10 @@
 //! Not now drops it; with nothing held (a replay after a restart, a login
 //! that came from the vault) the card paints nothing. Where the offer
 //! stands is the cards' shared state under its key.
+//!
+//! A login saved here is shared with the Bot whose card typed it, and no
+//! other (`Vault::save_for`): that Bot just used it on its own computer.
+//! Settings › Logins shares it further.
 
 use std::borrow::Borrow;
 
@@ -28,6 +32,8 @@ pub(crate) struct SaveLoginSpec {
     pub form_entry_id: String,
     pub origin: String,
     pub username: String,
+    /// The card's Bot, to say who it's shared with; "" when unknown.
+    pub bot_name: String,
 }
 
 impl SaveLoginSpec {
@@ -49,6 +55,7 @@ impl SaveLoginSpec {
             origin: at(&["origin"])?,
             username: at(&["username"])?,
             form_entry_id: at(&["formEntryId", "form_entry_id", "entryId"]).unwrap_or_default(),
+            bot_name: String::new(),
         })
     }
 }
@@ -64,12 +71,17 @@ fn save(spec: &SaveLoginSpec, key: &str) {
     Owner::detached().run(|| {
         spawn(async move {
             let saved = off_main(move || {
-                let r = vault().save(&pending.origin, &pending.username, vault::KIND_PASSWORD, &pending.password);
+                // shared with the Bot whose card typed it, and no other
+                let bot = Some(pending.bot.as_str()).filter(|b| !b.is_empty());
+                let r = vault().save_for(&pending.origin, &pending.username, vault::KIND_PASSWORD, &pending.password, bot);
                 (r, pending)
             })
             .await;
             match saved {
-                Some((Ok(_), _)) => set_state(&key, CardState::Answered("saved".into())),
+                Some((Ok(_), _)) => {
+                    vault::changed();
+                    set_state(&key, CardState::Answered("saved".into()))
+                }
                 Some((Err(e), pending)) => {
                     // held again, so Save can be pressed once more
                     vault().stash_pending(&entry, pending);
@@ -79,6 +91,12 @@ fn save(spec: &SaveLoginSpec, key: &str) {
             }
         });
     });
+}
+
+/// What Save means: where the password goes, and which Bot gets it.
+fn saved_note(bot_name: &str) -> String {
+    let who = if bot_name.is_empty() { "this Bot".to_owned() } else { bot_name.to_owned() };
+    format!("The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID. It's offered to {who} only; share it with other Bots in Settings › Logins.")
 }
 
 /// Not now: the held password is dropped.
@@ -110,7 +128,7 @@ pub(crate) fn card(spec: impl Borrow<SaveLoginSpec>, key: impl AsRef<str>) -> im
         shell(&id)
             .label(format!("Save login for {}", spec.origin))
             .child(title(format!("Save login for {} as {}?", spec.origin, spec.username)))
-            .child(note("The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID.".into()))
+            .child(note(saved_note(&spec.bot_name)))
             .child(
                 view()
                     .flex_row()

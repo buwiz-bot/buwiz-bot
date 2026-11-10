@@ -27,6 +27,19 @@
 //! saved login's secret is read from the Keychain only after Touch ID
 //! (`vault::Vault::unlock`), held here unpainted ([`Held`]), and goes into
 //! `values` only inside the submit body (`savedLogin:true, savedLoginId`).
+//! Touch ID is asked on every use: nothing read is kept past one submit.
+//!
+//! # Whose logins
+//!
+//! A card offers and lists only the saved logins shared with its own Bot
+//! (the notice's `bot`), or every login with share-all on, and only those
+//! saved for its site ([`vault::Vault::offered`]). A pick goes by the row's
+//! id, and the vault checks that id again before the broker is asked or
+//! Touch ID shows, and once more before the submit leaves
+//! ([`vault::Vault::usable`]): a login that isn't shared with this Bot, or is
+//! for another site, is refused with nothing sent. The broker, which can't
+//! see the vault, decides the other half: that this is the Bot's own
+//! computer (its `shared-computer` refusal).
 //! That body is sent only to a broker that has just proven it holds the
 //! host token (`transport::submit_user_form`, `POST /v1/host/prove`);
 //! otherwise it stays in the app and the card says so.
@@ -880,7 +893,7 @@ pub(crate) fn save_candidate(spec: &UserFormSpec, values: &Values) -> Option<Pen
         .map(|f| values.get(&f.id).trim())
         .find(|v| !v.is_empty())?;
     let username = name_field_in(spec).map(|id| values.get(&id).trim().to_owned()).filter(|u| !u.is_empty())?;
-    Some(PendingSave { origin, username, password: Secret::new(password) })
+    Some(PendingSave { origin, username, password: Secret::new(password), bot: spec.agent_id.clone() })
 }
 
 // ---------------------------------------------------------------------------
@@ -958,6 +971,9 @@ struct Local {
 /// leaves memory with the submit (or Type it by hand, or the card's end).
 struct Held {
     login_id: String,
+    /// The card's Bot and sites, for the check again at submit.
+    bot: String,
+    sites: Vec<String>,
     /// The field it fills; `None` on a name page.
     field: Option<String>,
     secret: Option<Secret>,
@@ -1028,6 +1044,13 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
         return;
     }
     let held = held().borrow_mut().remove(&key);
+    // the login is checked again by id: unshared, deleted or moved since the pick, nothing goes
+    if let Some(h) = &held
+        && let Err(no) = vault().usable(&h.login_id, &h.bot, &h.sites, h.code)
+    {
+        loc.pick.set(Pick::None);
+        return set_state(&key, CardState::Error(no.sentence(&spec.bot_name)));
+    }
     let typed = loc.values.get_untracked();
     let mut values = Values::default();
     for f in &spec.fields {
@@ -1194,13 +1217,29 @@ fn retry(spec: &UserFormSpec, key: &str) {
     reopen(key);
 }
 
-/// Touch ID, then the pick: its name into the name field, its secret held
-/// for the submit — never into a field, never on screen.
-fn use_saved(key: String, row: SiteLogin, target: CardTarget, site: String) {
+/// The sites a card's saved logins may be for: its page's, and the one its
+/// `domain` names when that is another (listed only once asked for).
+pub(crate) fn card_sites(spec: &UserFormSpec) -> Vec<String> {
+    offered_site(spec).into_iter().chain(asked_site(spec)).collect()
+}
+
+/// The saved login `login_id` on the card under `key`, for the card's Bot
+/// `bot` (`bot_name` to say so): the vault checks first that it's shared
+/// with that Bot and saved for one of `sites` (nothing is asked or sent
+/// otherwise), then the broker says whether it would use one on this
+/// computer, then Touch ID, every time. The pick: its name into the name
+/// field, its secret held for the submit — never into a field, never on
+/// screen.
+pub(crate) fn use_saved(key: String, login_id: &str, target: CardTarget, site: String, sites: Vec<String>, bot: String, bot_name: &str) {
     let loc = local(&key);
     if matches!(loc.pick.get_untracked(), Pick::Confirming { .. }) {
         return;
     }
+    let code = target.kind() == vault::KIND_CODE;
+    let row = match vault().usable(login_id, &bot, &sites, code) {
+        Ok(row) => row,
+        Err(no) => return loc.pick.set(Pick::Unavailable(no.sentence(bot_name))),
+    };
     loc.pick.set(Pick::Confirming { username: row.username.clone() });
     let reason = use_reason(&row, &site);
     let reads = target.secret_field().is_some();
@@ -1215,7 +1254,7 @@ fn use_saved(key: String, row: SiteLogin, target: CardTarget, site: String) {
             }
             let got = off_main(move || {
                 if reads {
-                    vault().unlock(&r, &reason)
+                    vault().unlock_as(&r, code, &reason)
                 } else {
                     // the name page reads nothing, but a use is still the owner's
                     vault().confirm(&reason).map(|()| Unlock::Secret(Secret::new(""))).unwrap_or_else(|e| e)
@@ -1240,7 +1279,6 @@ fn use_saved(key: String, row: SiteLogin, target: CardTarget, site: String) {
                 // the card ended while the sheet was up: hold nothing
                 return loc.pick.set(Pick::None);
             }
-            let code = target.kind() == vault::KIND_CODE;
             if code && let Err(e) = vault::totp::Totp::parse(secret.expose()) {
                 return loc.pick.set(Pick::Unavailable(e));
             }
@@ -1254,6 +1292,8 @@ fn use_saved(key: String, row: SiteLogin, target: CardTarget, site: String) {
                 key.clone(),
                 Held {
                     login_id: row.id.clone(),
+                    bot,
+                    sites,
                     field: target.secret_field().map(str::to_owned),
                     secret: reads.then_some(secret),
                     code,
@@ -1290,7 +1330,12 @@ pub(crate) fn card(spec: impl Borrow<UserFormSpec>, key: impl AsRef<str>) -> imp
             (Some(r), _) => settled(spec.clone(), key.clone(), r).into_element(),
             (None, Phase::Settled(r)) => settled(spec.clone(), key.clone(), r).into_element(),
             (None, Phase::Sending) => collapsed(&spec, &key, FormResolution::Sending).into_element(),
-            (None, Phase::Idle) => idle(spec.clone(), key.clone()).into_element(),
+            (None, Phase::Idle) => {
+                // an open card is drawn again when a login or a share changes: only what's shared
+                // with this Bot shows
+                let _ = vault::revision().get();
+                idle(spec.clone(), key.clone()).into_element()
+            }
         }
     })
 }
@@ -1355,7 +1400,7 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
     if r == FormResolution::Submitted && loc.offer.get_untracked() {
         let entry = spec.entry_id.clone();
         if let Some((origin, username)) = vault().pending_who(&entry) {
-            let offer = save_login::SaveLoginSpec { form_entry_id: entry.clone(), origin, username };
+            let offer = save_login::SaveLoginSpec { form_entry_id: entry.clone(), origin, username, bot_name: spec.bot_name.clone() };
             v = v.child(save_login::card(offer, format!("save-login-{entry}")));
         }
     }
@@ -1368,14 +1413,13 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
         loc.chat.set(spec.chat.clone());
     }
     let target = card_target(&spec);
-    let rows: Vec<SiteLogin> = match (&target, offered_site(&spec)) {
-        (Some(t), Some(origin)) => vault().rows_for(&origin, t.kind()),
+    // only the logins shared with this card's Bot, for this card's site
+    let offer = |site: Option<String>| match (&target, site) {
+        (Some(t), Some(site)) => vault().offered(&site, &spec.agent_id, t.kind() == vault::KIND_CODE),
         _ => Vec::new(),
     };
-    let asked: Vec<SiteLogin> = match (&target, asked_site(&spec)) {
-        (Some(t), Some(origin)) => vault().rows_for(&origin, t.kind()),
-        _ => Vec::new(),
-    };
+    let rows: Vec<SiteLogin> = offer(offered_site(&spec));
+    let asked: Vec<SiteLogin> = offer(asked_site(&spec));
     // non-secret prefills seed the view state once
     let missing: Vec<(String, String)> = spec
         .fields
@@ -1405,7 +1449,14 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     }
     if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty() || !asked.is_empty()), offered_site(&spec)) {
         let asked = asked_site(&spec).map(|named| (named, asked));
-        v = v.child(saved_strip(key.clone(), rows, t, site, asked));
+        let who = (spec.agent_id.clone(), spec.bot_name.clone(), card_sites(&spec));
+        v = v.child(saved_strip(key.clone(), rows, t, site, asked, who));
+    } else {
+        // no login is offered here, but a refused pick still says why
+        v = v.child(dynamic(move || match loc.pick.get() {
+            Pick::Unavailable(why) => text(why).number_of_lines(3).text_size(px(12.0)).text_color(theme::DOWN).into_element(),
+            _ => view().into_element(),
+        }));
     }
     for f in &spec.fields {
         v = v.child(field_view(key.clone(), f.clone(), target.clone()));
@@ -1462,6 +1513,7 @@ fn saved_strip(
     target: CardTarget,
     site: String,
     asked: Option<(String, Vec<SiteLogin>)>,
+    (bot, bot_name, sites): (String, String, Vec<String>),
 ) -> impl IntoElement {
     let loc = local(&key);
     dynamic(move || {
@@ -1512,7 +1564,8 @@ fn saved_strip(
             v = v.child(text(format!("No login is saved for {site}.")).text_size(px(12.0)).text_color(theme::MUTED));
         }
         for row in &listed(&rows, other, shown) {
-            let (k, r, t, s) = (key.clone(), row.clone(), target.clone(), site.clone());
+            let (k, id, t, s) = (key.clone(), row.id.clone(), target.clone(), site.clone());
+            let (b, bn, ss) = (bot.clone(), bot_name.clone(), sites.clone());
             let saved_for = match site_match(&row.origin, true, &site) {
                 SiteMatch::Exact => (format!("Saved for {}", row.origin), theme::MUTED),
                 _ => (format!("Saved for {}, not {site}: check before you use it", row.origin), theme::DOWN),
@@ -1540,7 +1593,7 @@ fn saved_strip(
                             .child(text(saved_for.0).number_of_lines(2).text_size(px(11.0)).text_color(saved_for.1)),
                     )
                     .child(button("Use", Kind::Secondary, || true, move || {
-                        use_saved(k.clone(), r.clone(), t.clone(), s.clone())
+                        use_saved(k.clone(), &id, t.clone(), s.clone(), ss.clone(), b.clone(), &bn)
                     })),
             );
         }

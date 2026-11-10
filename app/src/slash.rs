@@ -169,6 +169,14 @@ const BUILTINS: &[Builtin] = &[
         // its cards and Settings › Computers (no model call)
         run: crate::homes::run,
     },
+    Builtin {
+        name: "vault",
+        args: "add <site> | share <site> with <Bot> | unshare <site> with <Bot> | share all | share all off",
+        description: "Your saved logins: add one, and which Bots each is offered to",
+        menu: Some(crate::vault::command::menu),
+        // Settings › Logins and the vault on this Mac (no model call); never a secret from the line
+        run: crate::vault::command::run,
+    },
 ];
 
 /// The built-in `text` starts with: `/name` alone, or followed by `:` or a space. Every built-in is
@@ -596,6 +604,11 @@ fn note(msg: String) {
 /// row selected, for the composer's text as it is now.
 pub(crate) fn show_rows(rows: Vec<PopRow>) {
     show(rows, String::new());
+}
+
+/// A built-in's question: `rows` to pick from, under `head`, for the text as it is now.
+pub(crate) fn ask(rows: Vec<PopRow>, head: String) {
+    show(rows, head);
 }
 
 /// `show_rows` for completions asked when the text was `query`: an
@@ -1065,14 +1078,14 @@ mod tests {
 
     #[test]
     fn every_builtin_and_every_name_kept_for_one_is_a_persons_command() {
-        for (t, name) in [("/computer", "computer"), ("/computer takeover", "computer"), ("/computer session save x", "computer"), ("/status:demo", "status"), ("/tools", "tools"), ("/avatars list", "avatars"), ("/messages none", "messages"), ("  /messages", "messages")] {
+        for (t, name) in [("/computer", "computer"), ("/computer takeover", "computer"), ("/computer session save x", "computer"), ("/status:demo", "status"), ("/tools", "tools"), ("/avatars list", "avatars"), ("/messages none", "messages"), ("  /messages", "messages"), ("/vault", "vault"), ("/vault share all", "vault"), ("/vault add x", "vault")] {
             assert_eq!(super::names_a_builtin(t), Some(name), "{t}");
         }
-        for t in ["/computers", "/vault", "computer takeover", "see /computer takeover", "/short:computer", ""] {
+        for t in ["/computers", "/vaults", "/network", "computer takeover", "see /computer takeover", "see /vault share all", "/short:computer", ""] {
             assert_eq!(super::names_a_builtin(t), None, "{t}");
         }
         // what an untyped line may never run: anything that reads as a command
-        for t in ["/vault add x", "  /network allow x", "/nosuchcmd", "/computer takeover"] {
+        for t in ["/vault add x", "/vault share all", " /vault share shop.example with Nova", "  /network allow x", "/nosuchcmd", "/computer takeover"] {
             assert!(super::reads_as_command(t), "{t}");
         }
         for t in ["see /computer", "computer", ""] {
