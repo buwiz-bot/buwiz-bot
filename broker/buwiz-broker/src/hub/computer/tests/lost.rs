@@ -99,6 +99,54 @@ async fn keep_finds_a_lost_computer_again_and_leaves_it_unseated() {
     fresh.attach(&b.ctx, &b.bea.0, &old).await.unwrap();
 }
 
+/// A provider whose recover finds it (as boat's now does): kept, it's never swept however long it
+/// sits, and the first wake stops what runs with the old secrets before it starts again.
+#[tokio::test]
+async fn a_kept_computer_is_never_swept_and_its_first_wake_stops_it_first() {
+    let b = bed("lost-keep-wake");
+    let (old, fresh) = lost_one(&b).await;
+    // Ann's new computer finishes its own wake first, so the calls below are only old's
+    for _ in 0..400 {
+        if fresh.status(&b.ctx, &b.ann.0).await["state"] == "awake" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    *b.mock.recoverable.lock().unwrap() = Some(buwiz_computer::Reach::Container {
+        name: "mock-found".into(),
+    });
+    fresh
+        .keep_lost(&b.ctx, ProviderKind::Docker, &old)
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        past_just_gone(&b);
+        fresh.sleep_the_idle(&b.ctx).await;
+    }
+    assert!(!deleted_anything(&b), "{:?}", b.mock.calls());
+    assert!(Computers::ids(&b.ctx).contains(&old));
+    fresh.attach(&b.ctx, &b.bea.0, &old).await.unwrap();
+    b.mock.calls.lock().unwrap().clear();
+    fresh.click(&b.ctx, &b.bea.0).await.unwrap();
+    for _ in 0..400 {
+        if b.mock.calls().contains(&"wake".to_owned()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let calls = b.mock.calls();
+    let at = |c: &str| {
+        calls
+            .iter()
+            .position(|x| x == c)
+            .unwrap_or_else(|| panic!("no {c}: {calls:?}"))
+    };
+    assert!(at("sleep Deep") < at("wake"), "{calls:?}");
+    assert!(at("sleep Deep") < at("screen_up b_bea"), "{calls:?}");
+    assert!(!Computers::stop_owed(&b.ctx, &old).exists());
+    assert!(!deleted_anything(&b), "{calls:?}");
+}
+
 #[tokio::test]
 async fn keep_that_still_cant_find_it_changes_nothing_and_deletes_nothing() {
     let b = bed("lost-keep-not-found");
