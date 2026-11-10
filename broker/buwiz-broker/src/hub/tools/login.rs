@@ -58,6 +58,40 @@ const ANSWER_PATIENCE: Duration = Duration::from_secs(120);
 const HANDOVER_S: u64 = 300;
 
 pub const SECRET_KINDS: [&str; 2] = ["password", "otp"];
+
+/// Words that make a field a secret, whatever the model called it: the reference's and the box's
+/// (ultra-instinct's `SECRET_LABEL_WORDS`), and a few more.
+const SECRET_WORDS: [&str; 15] = ["password", "passwd", "passcode", "passphrase", "pin", "cvv", "cvc", "ssn", "card", "security", "secret", "otp", "totp", "2fa", "mfa"];
+/// Of those, the ones that make it a one-time code, which a page may ask for in a plain box.
+const CODE_WORDS: [&str; 5] = ["otp", "totp", "2fa", "mfa", "one-time"];
+/// Phrases that make it a one-time code.
+const CODE_PHRASES: [&str; 6] = ["one time", "verification code", "authentication code", "auth code", "sms code", "security code"];
+
+/// What a field's words say it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hint {
+    Plain,
+    /// a password or the like: it goes only into a box the page calls sensitive
+    Secret,
+    /// a one-time code
+    Code,
+}
+
+/// What `text` (a label, an id, a type) names: split on anything but letters, digits and `-`, as the
+/// box splits a label, and on `_` and `.` too.
+pub fn hint_of(text: &str) -> Hint {
+    let lower = text.to_lowercase();
+    let spaced: String = lower.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { ' ' }).collect();
+    let words: Vec<&str> = spaced.split_whitespace().collect();
+    let phrase = words.join(" ");
+    if words.iter().any(|w| CODE_WORDS.contains(w)) || CODE_PHRASES.iter().any(|p| phrase.contains(p)) {
+        Hint::Code
+    } else if words.iter().any(|w| SECRET_WORDS.contains(w) || w.ends_with("password")) {
+        Hint::Secret
+    } else {
+        Hint::Plain
+    }
+}
 const CHALLENGES: [&str; 4] = ["password", "otp", "captcha", "outside_sandbox"];
 
 /// The text a sanitised form keeps, field by field: never a value.
@@ -224,9 +258,19 @@ pub fn sanitize(input: &Value) -> Result<Form, String> {
         if fields.iter().any(|g| g.id == id) {
             return Err(format!("Field IDs must be unique. Give each field a different id and call {NAME} again."));
         }
-        let kind = f.get("type").and_then(Value::as_str).map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty()).unwrap_or_else(|| "text".to_owned());
-        let kind = if matches!(kind.as_str(), "email" | "text" | "tel" | "password" | "otp" | "number") { kind } else { "text".to_owned() };
-        fields.push(Field { id, label, kind, required: f.get("required").and_then(Value::as_bool).unwrap_or(false), secret: f.get("secret").and_then(Value::as_bool).unwrap_or(false) });
+        let raw = f.get("type").and_then(Value::as_str).map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty()).unwrap_or_else(|| "text".to_owned());
+        let mut kind = if matches!(raw.as_str(), "email" | "text" | "tel" | "password" | "otp" | "number") { raw.clone() } else { "text".to_owned() };
+        let mut secret = f.get("secret").and_then(Value::as_bool).unwrap_or(false);
+        // secrecy isn't the model's to turn off: a field whose label, id or type names a secret is one
+        let hints = [hint_of(&label), hint_of(&id), hint_of(&raw)];
+        if kind != "password" && kind != "otp" {
+            if hints.contains(&Hint::Secret) {
+                secret = true;
+            } else if hints.contains(&Hint::Code) {
+                kind = "otp".to_owned();
+            }
+        }
+        fields.push(Field { id, label, kind, required: f.get("required").and_then(Value::as_bool).unwrap_or(false), secret });
     }
     Ok(Form {
         title,
@@ -278,6 +322,9 @@ pub enum Pressed {
 pub struct Outcome {
     pub id: String,
     pub filled: bool,
+    /// it went into an element the box calls sensitive: whatever the card said, its value is a
+    /// secret, never shown to the model
+    pub sensitive: bool,
 }
 
 /// What a fill came to.
@@ -345,8 +392,8 @@ pub(crate) fn logged() -> MutexGuard<'static, Vec<String>> {
 
 /// A line of the fill's log: a field by its id and label, and how long its value is. It takes no
 /// value, so it can't show one.
-pub fn field_log_line(field: &Field, len: usize, what: &str) -> String {
-    format!("buwiz-broker: login: field {} ({:?}) secret={} len={len}: {what}", field.id, js::slice_utf16(&field.label, MAX_LABEL), field.is_secret())
+pub fn field_log_line(field: &Field, secret: bool, len: usize, what: &str) -> String {
+    format!("buwiz-broker: login: field {} ({:?}) secret={} len={len}: {what}", field.id, js::slice_utf16(&field.label, MAX_LABEL), secret || field.is_secret())
 }
 
 fn norm(s: &str) -> String {
@@ -445,7 +492,7 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
         return Fill::Refused { code: "wrong-page", message };
     }
     let to_type: Vec<&Field> = form.fields.iter().take(if form.types_only_first_field() { 1 } else { form.fields.len() }).filter(|f| values.get(&f.id).is_some_and(|v| !v.expose().is_empty())).collect();
-    let mut outcomes: Vec<Outcome> = form.fields.iter().map(|f| Outcome { id: f.id.clone(), filled: false }).collect();
+    let mut outcomes: Vec<Outcome> = form.fields.iter().map(|f| Outcome { id: f.id.clone(), filled: false, sensitive: false }).collect();
     let mut taken: Vec<String> = Vec::new();
     let mut last: Option<&Field> = None;
     for (i, field) in to_type.iter().enumerate() {
@@ -470,7 +517,9 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
             };
             drop(body);
             if reply.ok() {
-                break Ok(elements.iter().find(|e| e["ref"] == r.as_str()).map(|e| norm(e["label"].as_str().unwrap_or_default())).unwrap_or_default());
+                let el = elements.iter().find(|e| e["ref"] == r.as_str());
+                let label = el.map(|e| norm(e["label"].as_str().unwrap_or_default())).unwrap_or_default();
+                break Ok((label, el.is_some_and(|e| e["sensitive"].as_bool().unwrap_or(false))));
             }
             // a page that changed under the snap: once more, from a fresh one
             if reply.code() == Some("stale_ref") && tries == 1 {
@@ -479,16 +528,17 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
             break Err(refusal_sentence(&reply, &form.site));
         };
         match typed {
-            Ok(label) => {
-                log(field_log_line(field, value.expose().chars().count(), "typed"));
+            Ok((label, sensitive)) => {
+                log(field_log_line(field, sensitive, value.expose().chars().count(), "typed"));
                 taken.push(label);
                 if let Some(o) = outcomes.iter_mut().find(|o| o.id == field.id) {
                     o.filled = true;
+                    o.sensitive = sensitive;
                 }
                 last = Some(field);
             }
             Err(reason) => {
-                log(field_log_line(field, value.expose().chars().count(), "not typed"));
+                log(field_log_line(field, false, value.expose().chars().count(), "not typed"));
                 return Fill::Failed { outcomes, reason };
             }
         }
@@ -552,11 +602,12 @@ pub fn result_text(form: &Form, fill: &Fill, shared: &BTreeMap<String, String>) 
     }
 }
 
-/// The values the model may read: the fields that aren't secret, as typed.
+/// The values the model may read: those of fields that aren't secret by their own words, and that
+/// went into an element the box doesn't call sensitive.
 pub fn shared_values(form: &Form, values: &BTreeMap<String, Secret>, outcomes: &[Outcome]) -> BTreeMap<String, String> {
     form.fields
         .iter()
-        .filter(|f| !f.is_secret() && outcomes.iter().any(|o| o.id == f.id && o.filled))
+        .filter(|f| !f.is_secret() && outcomes.iter().any(|o| o.id == f.id && o.filled && !o.sensitive))
         .filter_map(|f| values.get(&f.id).map(|v| (f.id.clone(), js::slice_utf16(v.expose(), 200).to_owned())))
         .collect()
 }
@@ -708,7 +759,7 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
         if field.required && len == 0 {
             return Err((400, "invalid_args", format!("\"{}\" is needed.", field.label)));
         }
-        log(field_log_line(field, len, "received; value not logged"));
+        log(field_log_line(field, false, len, "received; value not logged"));
     }
     let live = computers.live(ctx, &bot_of(ctx, chat, id)).await.map_err(|p| (409, "unavailable", p.sentence()))?;
     if computers.person_on(&live.bot) {

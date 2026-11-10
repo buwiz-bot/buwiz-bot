@@ -430,8 +430,60 @@ async fn a_person_saves_and_loads_a_session_of_the_bots_own_screen() {
 #[test]
 fn a_log_line_takes_a_length_and_never_a_value() {
     let form = login::sanitize(&card_input()).unwrap();
-    let line = login::field_log_line(&form.fields[1], MARK.len(), "typed");
+    let line = login::field_log_line(&form.fields[1], false, MARK.len(), "typed");
     assert!(line.contains("field password") && line.contains("secret=true") && line.contains(&format!("len={}", MARK.len())), "{line}");
+    // a plain field's line says secret when it went into a sensitive element
+    assert!(login::field_log_line(&form.fields[0], true, 3, "typed").contains("secret=true"));
     let fill = Fill::Filled { outcomes: vec![], pressed: Pressed::Yes };
     assert!(!login::result_text(&form, &fill, &Default::default()).contains("password="));
+}
+
+#[test]
+fn secrecy_is_not_the_models_to_turn_off() {
+    let form = login::sanitize(&json!({"title": "t", "domain": SITE, "samePage": true, "fields": [
+        {"id": "f1", "label": "Password", "type": "text", "secret": false},
+        {"id": "user_pin", "label": "Your number", "type": "text"},
+        {"id": "f3", "label": "Verification code", "type": "text"},
+        {"id": "f4", "label": "Card number", "type": "tel"},
+        {"id": "f5", "label": "Nickname", "type": "current-password"},
+        {"id": "email", "label": "Email", "type": "email"},
+    ]})).unwrap();
+    let f = |id: &str| form.fields.iter().find(|x| x.id == id).unwrap().clone();
+    for id in ["f1", "user_pin", "f4", "f5"] {
+        assert!(f(id).is_secret() && f(id).wants_a_password_box(), "{id}");
+    }
+    assert_eq!(f("f3").kind, "otp");
+    assert!(f("f3").is_secret() && !f("f3").wants_a_password_box());
+    assert!(!f("email").is_secret());
+    assert_eq!(form.to_json()["fields"][0]["secret"], true, "masked on the card");
+    for (word, hint) in [("Security answer", login::Hint::Secret), ("CVC", login::Hint::Secret), ("one-time code", login::Hint::Code), ("2FA", login::Hint::Code), ("Email address", login::Hint::Plain), ("Spinach", login::Hint::Plain)] {
+        assert_eq!(login::hint_of(word), hint, "{word}");
+    }
+
+    // only a plain field that landed in a plain element is shared
+    let values: std::collections::BTreeMap<String, buwiz_computer::Secret> = [("email", "kid@example.com"), ("f1", MARK)].into_iter().map(|(k, v)| (k.to_owned(), buwiz_computer::Secret::new(v))).collect();
+    let outcome = |id: &str, sensitive: bool| login::Outcome { id: id.into(), filled: true, sensitive };
+    assert_eq!(login::shared_values(&form, &values, &[outcome("email", false), outcome("f1", false)]).len(), 1);
+    assert!(login::shared_values(&form, &values, &[outcome("email", true)]).is_empty(), "a value that went into a sensitive element is a secret");
+}
+
+#[tokio::test]
+async fn a_password_the_model_called_text_is_masked_typed_into_the_password_box_and_never_returned() {
+    let b = login_bed("login-disguised");
+    awake(&b, &b.ann.0).await;
+    login::logged().clear();
+    let (card, call) = asked(&b, json!({"title": "Sign in", "domain": SITE, "samePage": true, "fields": [
+        {"id": "email", "label": "Email", "type": "email"},
+        {"id": "secret_thing", "label": "Password", "type": "text"},
+    ]})).await;
+    assert_eq!(card["form"]["fields"][1]["secret"], true, "{card}");
+    let (status, reply) = submit(&b, &card, json!({"email": "kid@example.com", "secret_thing": MARK}), false).await;
+    assert_eq!(status, 200, "{reply}");
+    let said = words(&call.await.unwrap());
+    assert!(said.contains("Shared fields: email=kid@example.com.") && !said.contains("secret_thing"), "{said}");
+    assert_eq!(b.mock.typed()[1], ("Password".to_owned(), MARK.to_owned()), "into the sensitive box");
+    for (what, text) in [("result", said), ("transcript", transcript(&b)), ("reply", reply.to_string()), ("calls", b.mock.calls().join("\n")), ("log", login::logged().join("\n"))] {
+        assert!(!text.contains(MARK), "the secret is in the {what}");
+    }
+    assert!(login::logged().iter().any(|l| l.contains("field secret_thing") && l.contains("secret=true")));
 }
