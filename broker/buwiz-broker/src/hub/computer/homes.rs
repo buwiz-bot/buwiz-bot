@@ -666,14 +666,21 @@ impl Computers {
     }
 
     /// Docker's leftovers that are no computer's here, by its id or its box's name. Not knowing
-    /// which computers there are, any volume could be one's, so then none is listed.
+    /// which computers there are, any volume could be one's, so then none is listed; not knowing
+    /// a Docker computer's box name, any volume from before labels could be its, so then none of
+    /// those is (a labelled one still says its computer).
     async fn docker_leftovers(&self, ctx: &HubCtx) -> Vec<Value> {
         let Ok(ids) = Self::try_ids_where(ctx, "1=1") else { return Vec::new() };
         let mut boxes = HashSet::new();
+        let mut unnamed = false;
         for id in &ids {
             let Ok(reach) = Self::reach_of(ctx, id) else { return Vec::new() };
-            if let Some(Reach::Container { name }) = reach.or_else(|| self.machine(ctx, id).ok().map(|m| m.reach)) {
-                boxes.insert(name);
+            match reach.or_else(|| self.machine(ctx, id).ok().map(|m| m.reach)) {
+                Some(Reach::Container { name }) => {
+                    boxes.insert(name);
+                }
+                // a Docker computer, or one whose kind can't be read, with no box name to go by
+                _ => unnamed |= !matches!(Self::kind_of(ctx, id), Ok(Some(kind)) if kind != ProviderKind::Docker),
             }
         }
         let Ok(found) = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await else { return Vec::new() };
@@ -683,7 +690,7 @@ impl Computers {
         let Ok(now) = Self::try_ids_where(ctx, "1=1") else { return Vec::new() };
         found
             .into_iter()
-            .filter(|l| !boxes.contains(&l.owner) && !l.id.as_ref().is_some_and(|id| ids.contains(id) || now.contains(id) || making.contains(id)))
+            .filter(|l| !boxes.contains(&l.owner) && !(unnamed && l.id.is_none()) && !l.id.as_ref().is_some_and(|id| ids.contains(id) || now.contains(id) || making.contains(id)))
             .map(|l| match l.id {
                 Some(id) => json!({"name": l.name, "id": id}),
                 None => json!({"name": l.name}),

@@ -418,6 +418,21 @@ async fn files_left_by_a_docker_computer_thats_gone_are_listed_and_a_known_ones_
 }
 
 #[tokio::test]
+async fn a_docker_computer_with_no_box_name_to_go_by_hides_the_volumes_from_before_labels() {
+    let b = bed("leftovers-unnamed");
+    let id = awake(&b, &b.ann.0).await;
+    // a row from before reach was kept, and its record lost: nothing says its box's name
+    b.ctx.db.with(|c| c.execute("UPDATE computers SET reach=NULL WHERE id=?", [&id])).unwrap();
+    std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
+    let fresh = Computers::new(b.mock.clone());
+    let left = |name: &str, id: Option<&str>, owner: &str| buwiz_computer::Leftover { name: name.to_owned(), id: id.map(str::to_owned), owner: owner.to_owned() };
+    *b.mock.leftovers.lock().unwrap() = vec![left("c2-0a1b2c3d-workspace", Some("cmp_gone"), "c2-0a1b2c3d"), left("c2-deadbeef-home", None, "c2-deadbeef")];
+    let seen = fresh.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([{"name": "c2-0a1b2c3d-workspace", "id": "cmp_gone"}]), "an unlabelled one could be that computer's");
+}
+
+#[tokio::test]
 async fn a_computer_being_made_has_no_leftovers() {
     let b = bed("leftovers-making");
     b.mock.create_ms.store(300, Ordering::SeqCst);
