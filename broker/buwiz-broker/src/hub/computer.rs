@@ -1120,7 +1120,8 @@ impl Computers {
     fn mark_retired(&self, ctx: &HubCtx, id: &str) {
         let at = policy::now(ctx);
         let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=? AND lost_at IS NULL", rusqlite::params![at, id]));
-        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
+        // a lost row is left as it is, seats and all
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?1 AND ?1 NOT IN (SELECT id FROM computers WHERE lost_at IS NOT NULL)", [id]));
     }
 
     /// Deletes computer `id`, on its way out, and then all that's kept of it here. `Err` says why

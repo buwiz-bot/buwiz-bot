@@ -467,3 +467,21 @@ async fn keep_says_what_else_of_the_computer_was_left_as_it_is() {
     assert!(said.contains("No Bot sits at it") && said.ends_with("Other sandboxes are labelled for this computer: bx_2."), "{said}");
     assert!(!deleted_anything(&b), "{:?}", b.mock.calls());
 }
+
+/// Nothing marks a lost row for removal, nor takes a seat from it: only a person's Delete, which
+/// clears its mark first.
+#[tokio::test]
+async fn mark_retired_leaves_a_lost_row_as_it_is() {
+    let b = bed("lost-mark-retired");
+    let (old, fresh) = lost_one(&b).await;
+    b.ctx.db.with(|c| c.execute("INSERT INTO computer_seats(bot_id, computer_id, role, attached_at) VALUES('b_x', ?, 'member', 1)", [&old])).unwrap();
+    fresh.mark_retired(&b.ctx, &old);
+    assert!(Computers::is_lost(&b.ctx, &old).unwrap());
+    assert!(!Computers::retired(&b.ctx, &old).unwrap());
+    assert_eq!(Computers::seats(&b.ctx, &old).unwrap().len(), 1, "its seat is untouched");
+    // a person's Delete still deletes it
+    b.ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id='b_x'", [])).unwrap();
+    past_just_gone(&b);
+    fresh.delete_lost(&b.ctx, ProviderKind::Docker, &old).await.unwrap();
+    assert!(!Computers::ids_where(&b.ctx, "1=1").contains(&old));
+}
