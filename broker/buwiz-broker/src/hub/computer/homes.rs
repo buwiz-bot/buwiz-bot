@@ -58,6 +58,9 @@ const E2B_BUILD: &str = "https://github.com/buwiz-bot/computer/tree/main/deploy/
 
 /// How long a keystore that didn't answer is left before it's asked again.
 const UNREAD_WAIT: Duration = Duration::from_secs(30);
+/// How long the homes' list waits on Docker for its leftovers: past it the list goes without them.
+/// Settings and every key save ask for the list, and a Docker that hangs mustn't hold them up
+const LEFTOVERS_WAIT: Duration = Duration::from_secs(3);
 
 /// The longest value a field takes.
 const MAX_VALUE: usize = 4096;
@@ -656,10 +659,12 @@ impl Computers {
     /// [`Computers::providers_json`], with what's left on this Mac of Docker computers that are
     /// gone on Docker's entry: `leftovers`, the volumes no computer here names. Files nothing else
     /// shows, and only listed: a person decides what's in them, so nothing here removes them.
+    /// Without `leftovers` when they can't be told within [`LEFTOVERS_WAIT`]: the app keeps what
+    /// it had, and the list itself never waits longer or fails for them.
     pub async fn providers_seen(&self, ctx: &HubCtx) -> Value {
         let mut out = self.providers_json(ctx);
-        let left = self.docker_leftovers(ctx).await;
-        if let Some(home) = out["providers"].as_array_mut().and_then(|l| l.iter_mut().find(|h| h["kind"] == ProviderKind::Docker.as_str())) {
+        let left = tokio::time::timeout(LEFTOVERS_WAIT, self.docker_leftovers(ctx)).await.ok().flatten();
+        if let (Some(left), Some(home)) = (left, out["providers"].as_array_mut().and_then(|l| l.iter_mut().find(|h| h["kind"] == ProviderKind::Docker.as_str()))) {
             home["leftovers"] = json!(left);
         }
         out
@@ -668,13 +673,13 @@ impl Computers {
     /// Docker's leftovers that are no computer's here, by its id or its box's name. Not knowing
     /// which computers there are, any volume could be one's, so then none is listed; not knowing
     /// a Docker computer's box name, any volume from before labels could be its, so then none of
-    /// those is (a labelled one still says its computer).
-    async fn docker_leftovers(&self, ctx: &HubCtx) -> Vec<Value> {
-        let Ok(ids) = Self::try_ids_where(ctx, "1=1") else { return Vec::new() };
+    /// those is (a labelled one still says its computer). `None` when Docker or the rows can't say.
+    async fn docker_leftovers(&self, ctx: &HubCtx) -> Option<Vec<Value>> {
+        let ids = Self::try_ids_where(ctx, "1=1").ok()?;
         let mut boxes = HashSet::new();
         let mut unnamed = false;
         for id in &ids {
-            let Ok(reach) = Self::reach_of(ctx, id) else { return Vec::new() };
+            let reach = Self::reach_of(ctx, id).ok()?;
             match reach.or_else(|| self.machine(ctx, id).ok().map(|m| m.reach)) {
                 Some(Reach::Container { name }) => {
                     boxes.insert(name);
@@ -683,19 +688,20 @@ impl Computers {
                 _ => unnamed |= !matches!(Self::kind_of(ctx, id), Ok(Some(kind)) if kind != ProviderKind::Docker),
             }
         }
-        let Ok(found) = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await else { return Vec::new() };
+        let found = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await.ok()?;
         // a computer being made has its volumes before its row: read after Docker answered, the
         // ones being made first, so a make that ends meanwhile is in its row by the second read
         let making: HashSet<String> = self.being_made.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let Ok(now) = Self::try_ids_where(ctx, "1=1") else { return Vec::new() };
-        found
+        let now = Self::try_ids_where(ctx, "1=1").ok()?;
+        let left = found
             .into_iter()
             .filter(|l| !boxes.contains(&l.owner) && !(unnamed && l.id.is_none()) && !l.id.as_ref().is_some_and(|id| ids.contains(id) || now.contains(id) || making.contains(id)))
             .map(|l| match l.id {
                 Some(id) => json!({"name": l.name, "id": id}),
                 None => json!({"name": l.name}),
             })
-            .collect()
+            .collect();
+        Some(left)
     }
 
     /// Saves what a person gave `kind`, once it works. `values` holds the fields they filled in (a

@@ -414,7 +414,24 @@ async fn files_left_by_a_docker_computer_thats_gone_are_listed_and_a_known_ones_
     let seen = b.computers.providers_seen(&b.ctx).await;
     b.ctx.db.with(|c| c.execute("ALTER TABLE computers_away RENAME TO computers", [])).unwrap();
     let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
-    assert_eq!(docker["leftovers"], json!([]));
+    assert!(docker.get("leftovers").is_none(), "not an empty list, which would say there are none: {docker}");
+}
+
+#[tokio::test]
+async fn a_docker_that_hangs_leaves_the_leftovers_out_of_the_list_and_holds_it_up_no_longer() {
+    let b = bed("leftovers-hang");
+    *b.mock.leftovers.lock().unwrap() = vec![buwiz_computer::Leftover { name: "c2-deadbeef-home".into(), id: None, owner: "c2-deadbeef".into() }];
+    b.mock.hang_leftovers.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let seen = tokio::time::timeout(Duration::from_secs(10), b.computers.providers_seen(&b.ctx)).await.expect("the list waited on Docker");
+    assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert!(docker.get("leftovers").is_none(), "{docker}");
+    assert!(docker["computers"].is_array(), "the rest of the list is there: {docker}");
+    b.mock.hang_leftovers.store(false, Ordering::SeqCst);
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([{"name": "c2-deadbeef-home"}]));
 }
 
 #[tokio::test]
