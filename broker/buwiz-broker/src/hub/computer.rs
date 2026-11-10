@@ -1100,9 +1100,10 @@ impl Computers {
     }
 
     /// Whether `id`'s record can't be read, and it isn't a remote computer, whose record is all
-    /// there is of it here: what's left of it on its platform can't be told then.
+    /// there is of it here: what's left of it on its platform can't be told then. Remote first: its
+    /// record's read asks the keystore, which isn't waited on under `seating`.
     fn unreadable(&self, ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
-        Ok(matches!(self.machine(ctx, id), Err(Problem::Gone)) && !Self::is_remote(ctx, id)?)
+        Ok(!Self::is_remote(ctx, id)? && matches!(self.machine(ctx, id), Err(Problem::Gone)))
     }
 
     /// `id`, its record unreadable, has no Bots left: kept as lost, for a person's Keep or Delete
