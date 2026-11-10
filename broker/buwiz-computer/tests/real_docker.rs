@@ -1156,6 +1156,11 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     on_desktop(m, "c2k_a", &a, "rm ~/.config/autostart/c2plant.desktop");
     p.open_url(m, &a, "http://127.0.0.1:1/").await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // the open browser, as box-screen started it: box-chromium's loop, its launcher and Chromium
+    let chain = format!("pgrep -u {desktop_a} -f '^/bin/sh /usr/local/bin/box-chromium '; pgrep -u {desktop_a} -x box-chrome-pipe; pgrep -u {desktop_a} -o -x chromium");
+    let browser: Vec<String> = docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &chain]).lines().map(str::to_owned).collect();
+    println!("the open browser's loop, launcher and Chromium: {browser:?}");
+    assert_eq!(browser.len(), 3, "the browser isn't one loop, one launcher and one Chromium, so this proves nothing: {browser:?}");
 
     // what was left: a keylogger, a forking loop, a copied interpreter, an allowed program with a
     // library of its own, a name that isn't text, an undumpable process, and a leader that exited
@@ -1205,6 +1210,7 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
 
     let ended: Vec<String> = serde_json::from_str(&scanned).unwrap();
     assert!(!ended.iter().any(|n| n == "box-active-tab"), "the browser's own helper went: {ended:?}");
+    assert!(!ended.iter().any(|n| n == "box-chromium" || n == "box-chrome-pipe" || n == "chromium"), "the open browser's chain went: {ended:?}");
     assert!(ended.iter().any(|n| n == "Xvfb"), "the allowed program with a library was spared: {ended:?}");
     let after = docker(&["exec", "--user", "0", &name_of(m), "ps", "-eo", "pid,uid,stat,comm,args", "--forest"]);
     println!("after:\n{after}");
@@ -1228,6 +1234,10 @@ async fn clear(p: &DockerProvider, m: &buwiz_computer::Machine, dir: &std::path:
     assert!(p.screenshot(m, &a).await.is_ok());
     assert_eq!(p.clear_strays(m, &a).await.unwrap(), Vec::<String>::new(), "a second pass finds nothing: the desktop isn't a stray");
     assert_ne!(docker(&["exec", "--user", "0", &name_of(m), "pgrep", "-c", "-u", &desktop_a.to_string(), "chromium"]), "0", "the browser went");
+    // the same browser, not one started again: every part of it lived through both clearings
+    for pid in &browser {
+        assert_eq!(docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", &format!("test -d /proc/{pid} && echo alive; true")]), "alive", "{pid} of {browser:?} went:\n{after}");
+    }
 }
 
 /// The main screen goes, and a command takes its name at once. A call that names no display must not
