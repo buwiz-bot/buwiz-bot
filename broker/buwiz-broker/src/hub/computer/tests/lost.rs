@@ -45,6 +45,13 @@ async fn a_lost_computer_is_listed_with_where_to_look() {
     assert_eq!(row["lost"], true, "{row}");
     assert!(row["look"].as_str().unwrap().contains(&old), "{row}");
     assert!(
+        row["look"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("label=app.buwiz.computer.id={old}")),
+        "Docker's line says what to filter on: {row}"
+    );
+    assert!(
         row.get("leaving").is_none(),
         "it isn't on its way out: {row}"
     );

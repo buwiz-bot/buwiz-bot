@@ -58,6 +58,8 @@ pub(crate) const HOST_PORT: u16 = 1340;
 /// The screens' viewers, `6900 + slot`: the box's own, then the Bots'.
 pub(crate) const VIEWER_PORTS: [u16; 5] = [6901, 6902, 6903, 6904, 6905];
 const LABEL: &str = "app.buwiz.computer";
+/// The label a computer's containers and volumes carry, with its id: `{LABEL}.id`.
+pub const ID_LABEL: &str = "app.buwiz.computer.id";
 /// Where the container sees the folder its secrets are put in for a start.
 const SECRET_MOUNT: &str = "/run/buwiz-computer";
 const TOKEN_FILE: &str = "token";
@@ -1234,6 +1236,11 @@ fn classify(status: Option<i32>, stderr: &str, image: &str) -> Problem {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_id_label_is_the_one_made_things_carry() {
+        assert_eq!(ID_LABEL, format!("{LABEL}.id"));
+    }
 
     fn fake_docker(dir: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;

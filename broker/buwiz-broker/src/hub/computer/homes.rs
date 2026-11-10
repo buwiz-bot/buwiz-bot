@@ -548,6 +548,7 @@ fn look_for(kind: ProviderKind, id: &str) -> String {
         ProviderKind::Ec2 => format!("In the EC2 console, in each region you've used, terminate any instance tagged {}={id}", ec2::api::ID_TAG),
         ProviderKind::E2b => format!("In the E2B dashboard, kill any sandbox whose metadata has {}={id}", buwiz_computer::e2b::METADATA_KEY),
         ProviderKind::Boat => format!("In boat.dev, delete any sandbox labelled {}={id}", buwiz_computer::boat::LABEL),
+        ProviderKind::Docker => format!("In Docker, remove any container labelled {l}={id} (docker ps -a --filter label={l}={id}), then its volumes (docker volume ls --filter label={l}={id}; one made before labels has none, and is named after its container: <name>-workspace and <name>-home)", l = buwiz_computer::docker::ID_LABEL),
         _ => format!("Delete anything made for {id} on that platform"),
     }
 }
