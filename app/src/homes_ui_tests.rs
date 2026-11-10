@@ -220,6 +220,8 @@ fn a_computer_being_deleted_shows_where_to_look_and_forget_sends_its_id() {
     let mut app = start::<Page>((900.0, 1600.0));
     wait_for_text(&mut app, "cmp_cd34 is being deleted");
     assert!(shows(&mut app, "buwiz-computer=cmp_cd34, then press Forget cmp_cd34."), "{:?}", app.texts());
+    // the broker's list once it's forgotten, which a Forget asks for again
+    route("GET", "/v1/host/computer/providers", 200, providers(true));
     app.press("Forget cmp_cd34 on E2B");
     let sent = wait_for_change(&mut app, 1);
     assert_eq!((sent[0].0.as_str(), sent[0].1.as_str()), ("POST", "/v1/host/computer/providers/e2b/forget"));
@@ -250,12 +252,44 @@ fn a_lost_computer_shows_where_to_look_and_keep_and_delete_send_its_id() {
     assert_eq!(sent[0].2, json!({"id": "cmp_ef56"}));
     wait_for_text(&mut app, "Nothing was deleted.");
     assert!(shows(&mut app, "cmp_ef56 was found with its record lost"), "a refused Keep changes nothing: {:?}", app.texts());
+    // the broker's list once it's deleted, which a Delete asks for again
+    route("GET", "/v1/host/computer/providers", 200, providers(true));
     app.press("Delete cmp_ef56 on E2B");
     let sent = wait_for_change(&mut app, 2);
     assert_eq!((sent[1].0.as_str(), sent[1].1.as_str()), ("POST", "/v1/host/computer/providers/e2b/delete"));
     assert_eq!(sent[1].2, json!({"id": "cmp_ef56"}));
     wait_for_text(&mut app, "cmp_ef56 is deleted.");
     assert!(!shows(&mut app, "cmp_ef56 was found with its record lost"), "{:?}", app.texts());
+}
+
+#[test]
+fn a_deleted_lost_computer_takes_its_leftovers_off_the_list() {
+    if !in_child("a_deleted_lost_computer_takes_its_leftovers_off_the_list") {
+        return;
+    }
+    let mut list = providers(true);
+    list["providers"][0]["computers"] = json!([{"id": "cmp_9a8b", "bots": [], "lost": true, "look": "In Docker, remove any container labelled app.buwiz.computer.id=cmp_9a8b"}]);
+    list["providers"][0]["leftovers"] = json!([{"name": "buwiz-computer-0a1b2c3d-home", "id": "cmp_old"}]);
+    route("GET", "/v1/host/computer/providers", 200, list);
+    // the reply has the one home, with no list of leftovers: only the full list says
+    let mut docker = providers(true)["providers"][0].clone();
+    docker["computers"] = json!([]);
+    route("POST", "/v1/host/computer/providers/docker/delete", 200, json!({"ok": true, "provider": docker}));
+    let mut app = start::<Page>((900.0, 1600.0));
+    wait_for_text(&mut app, "buwiz-computer-0a1b2c3d-home");
+    let mut after = providers(true);
+    after["providers"][0]["leftovers"] = json!([]);
+    route("GET", "/v1/host/computer/providers", 200, after);
+    app.press("Delete cmp_9a8b on Docker on this Mac");
+    let sent = wait_for_change(&mut app, 1);
+    assert_eq!((sent[0].0.as_str(), sent[0].1.as_str()), ("POST", "/v1/host/computer/providers/docker/delete"));
+    wait_for_text(&mut app, "cmp_9a8b is deleted.");
+    for _ in 0..100 {
+        if !shows(&mut app, "buwiz-computer-0a1b2c3d-home") {
+            return;
+        }
+    }
+    panic!("the deleted computer's volumes are still listed: {:?}", app.texts());
 }
 
 #[component]

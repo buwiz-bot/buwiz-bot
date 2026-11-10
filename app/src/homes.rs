@@ -91,8 +91,9 @@ pub(crate) struct Home {
     pub policy: String,
     /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
     pub launch: String,
-    /// what's left on this Mac of computers that are gone: Docker's volume names, listed only
-    pub leftovers: Vec<String>,
+    /// what's left on this Mac of computers that are gone: Docker's volume names, listed only.
+    /// `None` when the reply didn't say (one home's reply, or a Docker that didn't answer in time)
+    pub leftovers: Option<Vec<String>>,
 }
 
 impl Home {
@@ -131,17 +132,18 @@ impl Home {
             policy: text("policy"),
             // only a web page: it's opened in the browser
             launch: Some(text("launch")).filter(|u| u.starts_with("https://")).unwrap_or_default(),
-            leftovers: list("leftovers").iter().filter_map(|l| l.get("name")?.as_str()).map(str::to_owned).collect(),
+            leftovers: v.get("leftovers").map(|_| list("leftovers").iter().filter_map(|l| l.get("name")?.as_str()).map(str::to_owned).collect()),
             kind,
         })
     }
 
     /// The sentence naming what's left of computers that are gone; "" when nothing is.
     pub(crate) fn leftovers_words(&self) -> String {
-        if self.leftovers.is_empty() {
+        let left = self.leftovers.as_deref().unwrap_or_default();
+        if left.is_empty() {
             return String::new();
         }
-        format!("Files from a computer that's gone are still on this Mac, in these Docker volumes: {}. Nothing here deletes them.", self.leftovers.join(", "))
+        format!("Files from a computer that's gone are still on this Mac, in these Docker volumes: {}. Nothing here deletes them.", left.join(", "))
     }
 
     /// Whether it takes a key of its own.
@@ -242,8 +244,8 @@ impl Homes {
         match self.list.iter_mut().find(|h| h.kind == home.kind) {
             Some(h) => {
                 // only the full list looks for leftovers: one home's reply doesn't say they went
-                if home.leftovers.is_empty() {
-                    home.leftovers = std::mem::take(&mut h.leftovers);
+                if home.leftovers.is_none() {
+                    home.leftovers = h.leftovers.take();
                 }
                 *h = home;
             }
@@ -367,7 +369,13 @@ fn bot_path(bot: &str) -> String {
 /// Asks the broker for the homes; whether it answered.
 pub(crate) async fn load() -> bool {
     let Some(v) = client::get_any(PROVIDERS).await.filter(|v| v.get("providers").is_some()) else { return false };
-    let homes = Homes::parse(&v);
+    let mut homes = Homes::parse(&v);
+    // a list whose Docker didn't answer in time doesn't say the leftovers went: what was said stays
+    if let Some(before) = HOMES.with(|s| s.get_untracked()) {
+        for home in homes.list.iter_mut().filter(|h| h.leftovers.is_none()) {
+            home.leftovers = before.get(&home.kind).and_then(|h| h.leftovers.clone());
+        }
+    }
     HOMES.with(|s| s.set(Some(homes)));
     true
 }
@@ -425,10 +433,12 @@ pub(crate) async fn remove(kind: &str) -> Said {
 /// `POST providers/{kind}/forget`. The broker tries the keys in use once more first.
 pub(crate) async fn forget(kind: &str, id: &str) -> Said {
     let reply = ask("POST", &provider_path(kind, "/forget"), Some(json!({"id": id}))).await;
-    if let Said::Yes(v) = &reply
-        && let Some(home) = v.get("provider").and_then(Home::parse)
-    {
-        set_homes(|h| h.replace(home));
+    if let Said::Yes(v) = &reply {
+        if let Some(home) = v.get("provider").and_then(Home::parse) {
+            set_homes(|h| h.replace(home));
+        }
+        // what went may have been the leftovers' computer: only the full list says
+        load().await;
     }
     reply
 }
@@ -441,6 +451,7 @@ pub(crate) async fn keep_lost(kind: &str, id: &str) -> Result<String, String> {
             if let Some(home) = v.get("provider").and_then(Home::parse) {
                 set_homes(|h| h.replace(home));
             }
+            load().await;
             Ok(v.get("message").and_then(Value::as_str).map_or_else(|| format!("{id} is kept."), str::to_owned))
         }
         Said::No(why) => Err(why),
@@ -450,10 +461,12 @@ pub(crate) async fn keep_lost(kind: &str, id: &str) -> Result<String, String> {
 /// Deletes computer `id`, found with its record lost, on its platform: `POST providers/{kind}/delete`.
 pub(crate) async fn delete_lost(kind: &str, id: &str) -> Said {
     let reply = ask("POST", &provider_path(kind, "/delete"), Some(json!({"id": id}))).await;
-    if let Said::Yes(v) = &reply
-        && let Some(home) = v.get("provider").and_then(Home::parse)
-    {
-        set_homes(|h| h.replace(home));
+    if let Said::Yes(v) = &reply {
+        if let Some(home) = v.get("provider").and_then(Home::parse) {
+            set_homes(|h| h.replace(home));
+        }
+        // its volumes went with it: only the full list says which are left
+        load().await;
     }
     reply
 }
@@ -1238,7 +1251,8 @@ mod tests {
     fn files_left_by_a_gone_computer_are_named_and_only_named() {
         let v = json!({"kind": "docker", "label": "Docker on this Mac", "fields": [], "leftovers": [{"name": "buwiz-computer-0a1b2c3d-workspace", "id": "cmp_1"}, {"name": "buwiz-computer-0a1b2c3d-home"}]});
         let home = Home::parse(&v).unwrap();
-        assert_eq!(home.leftovers, ["buwiz-computer-0a1b2c3d-workspace", "buwiz-computer-0a1b2c3d-home"]);
+        assert_eq!(home.leftovers.as_deref().unwrap(), ["buwiz-computer-0a1b2c3d-workspace", "buwiz-computer-0a1b2c3d-home"]);
+        assert_eq!(Home::parse(&json!({"kind": "docker", "leftovers": []})).unwrap().leftovers, Some(Vec::new()), "an empty list says none are left");
         assert_eq!(home.leftovers_words(), "Files from a computer that's gone are still on this Mac, in these Docker volumes: buwiz-computer-0a1b2c3d-workspace, buwiz-computer-0a1b2c3d-home. Nothing here deletes them.");
         assert_eq!(Home::parse(&json!({"kind": "docker"})).unwrap().leftovers_words(), "");
         // one home's reply has no list of them: what the full list said stays
@@ -1246,6 +1260,9 @@ mod tests {
         h.replace(home.clone());
         h.replace(Home::parse(&json!({"kind": "docker", "label": "Docker on this Mac"})).unwrap());
         assert_eq!(h.get("docker").unwrap().leftovers, home.leftovers);
+        // and a reply that says none are left is believed
+        h.replace(Home::parse(&json!({"kind": "docker", "label": "Docker on this Mac", "leftovers": []})).unwrap());
+        assert_eq!(h.get("docker").unwrap().leftovers_words(), "");
     }
 
     #[test]
