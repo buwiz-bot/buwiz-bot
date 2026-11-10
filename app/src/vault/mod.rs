@@ -359,13 +359,23 @@ impl Vault {
     /// share-all on), saved for that site ([`site_match`]), and of the kind
     /// the card wants. The only list a card shows.
     pub(crate) fn offered(&self, site: &str, bot: &str, code: bool) -> Vec<SiteLogin> {
+        self.offered_on(&[Some(site.to_owned())], bot, code).pop().unwrap_or_default()
+    }
+
+    /// [`Vault::offered`] for each of `sites` (none: nothing), the table read once.
+    pub(crate) fn offered_on(&self, sites: &[Option<String>], bot: &str, code: bool) -> Vec<Vec<SiteLogin>> {
+        let none = || sites.iter().map(|_| Vec::new()).collect();
         if bot.trim().is_empty() {
-            return Vec::new();
+            return none();
         }
         let all = self.share_all();
-        self.list()
-            .into_iter()
-            .filter(|r| (all || r.shared_with.contains(bot)) && self.fits(r, code) && site_match(&r.origin, r.exact, site) != SiteMatch::No)
+        let mine: Vec<SiteLogin> = self.list().into_iter().filter(|r| (all || r.shared_with.contains(bot)) && self.fits(r, code)).collect();
+        sites
+            .iter()
+            .map(|site| match site {
+                Some(site) => mine.iter().filter(|r| site_match(&r.origin, r.exact, site) != SiteMatch::No).cloned().collect(),
+                None => Vec::new(),
+            })
             .collect()
     }
 

@@ -1330,12 +1330,7 @@ pub(crate) fn card(spec: impl Borrow<UserFormSpec>, key: impl AsRef<str>) -> imp
             (Some(r), _) => settled(spec.clone(), key.clone(), r).into_element(),
             (None, Phase::Settled(r)) => settled(spec.clone(), key.clone(), r).into_element(),
             (None, Phase::Sending) => collapsed(&spec, &key, FormResolution::Sending).into_element(),
-            (None, Phase::Idle) => {
-                // an open card is drawn again when a login or a share changes: only what's shared
-                // with this Bot shows
-                let _ = vault::revision().get();
-                idle(spec.clone(), key.clone()).into_element()
-            }
+            (None, Phase::Idle) => idle(spec.clone(), key.clone()).into_element(),
         }
     })
 }
@@ -1413,13 +1408,6 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
         loc.chat.set(spec.chat.clone());
     }
     let target = card_target(&spec);
-    // only the logins shared with this card's Bot, for this card's site
-    let offer = |site: Option<String>| match (&target, site) {
-        (Some(t), Some(site)) => vault().offered(&site, &spec.agent_id, t.kind() == vault::KIND_CODE),
-        _ => Vec::new(),
-    };
-    let rows: Vec<SiteLogin> = offer(offered_site(&spec));
-    let asked: Vec<SiteLogin> = offer(asked_site(&spec));
     // non-secret prefills seed the view state once
     let missing: Vec<(String, String)> = spec
         .fields
@@ -1447,17 +1435,7 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     if let Some(site) = spec.domain.as_ref().filter(|_| !spec.chat.is_empty()) {
         v = v.child(text(where_words(&spec, site)).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT));
     }
-    if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty() || !asked.is_empty()), offered_site(&spec)) {
-        let asked = asked_site(&spec).map(|named| (named, asked));
-        let who = (spec.agent_id.clone(), spec.bot_name.clone(), card_sites(&spec));
-        v = v.child(saved_strip(key.clone(), rows, t, site, asked, who));
-    } else {
-        // no login is offered here, but a refused pick still says why
-        v = v.child(dynamic(move || match loc.pick.get() {
-            Pick::Unavailable(why) => text(why).number_of_lines(3).text_size(px(12.0)).text_color(theme::DOWN).into_element(),
-            _ => view().into_element(),
-        }));
-    }
+    v = v.child(saved_part(spec.clone(), key.clone(), target.clone()));
     for f in &spec.fields {
         v = v.child(field_view(key.clone(), f.clone(), target.clone()));
     }
@@ -1499,6 +1477,36 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
         v = v.child(text(format!("Open the screen: {t}")).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::MUTED));
     }
     v
+}
+
+/// The card's saved-login part, alone drawn again when a login or a share
+/// changes (the fields beside it are not, so focus and typing stay): the
+/// logins shared with this card's Bot for its site, read once per change, or
+/// with none, a refused pick's sentence.
+fn saved_part(spec: Rc<UserFormSpec>, key: String, target: Option<CardTarget>) -> impl IntoElement {
+    let loc = local(&key);
+    dynamic(move || {
+        let _ = vault::revision().get();
+        let sites = [offered_site(&spec), asked_site(&spec)];
+        let [rows, asked] = match &target {
+            Some(t) => {
+                let mut found = vault().offered_on(&sites, &spec.agent_id, t.kind() == vault::KIND_CODE).into_iter();
+                [found.next().unwrap_or_default(), found.next().unwrap_or_default()]
+            }
+            None => [Vec::new(), Vec::new()],
+        };
+        if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty() || !asked.is_empty()), sites[0].clone()) {
+            let asked = sites[1].clone().map(|named| (named, asked));
+            let who = (spec.agent_id.clone(), spec.bot_name.clone(), card_sites(&spec));
+            return saved_strip(key.clone(), rows, t, site, asked, who).into_element();
+        }
+        // no login is offered here, but a refused pick still says why
+        dynamic(move || match loc.pick.get() {
+            Pick::Unavailable(why) => text(why).number_of_lines(3).text_size(px(12.0)).text_color(theme::DOWN).into_element(),
+            _ => view().into_element(),
+        })
+        .into_element()
+    })
 }
 
 /// The saved logins for the card's site: Use (Touch ID), or Type it by hand.

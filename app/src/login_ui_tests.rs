@@ -962,3 +962,21 @@ fn a_card_with_no_bot_id_saves_a_login_shared_with_no_bot_and_says_so() {
     assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.is_empty()), "no share without an id");
     no_mark(&app);
 }
+
+/// A vault change redraws only the card's saved-login part: the field being typed into is the
+/// same input, with what was typed in it.
+#[test]
+fn a_vault_change_leaves_the_cards_fields_and_typing_alone() {
+    if !in_child("a_vault_change_leaves_the_cards_fields_and_typing_alone") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    app.type_text("Email", "kid@exa");
+    let (email, password) = (app.view("Email"), app.view("Password"));
+    on(&mut app, || save_shared("kid@example.com", &["nova"]));
+    settle(&mut app);
+    assert!(app.has("Use kid@example.com"), "the strip shows the new login: {:?}", app.texts());
+    assert_eq!((app.view("Email"), app.view("Password")), (email, password), "the fields weren't rebuilt");
+    assert_eq!(app.value("Email"), "kid@exa", "what was typed stays");
+}
