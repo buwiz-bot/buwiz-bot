@@ -411,6 +411,17 @@ pub struct OpenContext {
     files: Mutex<HashMap<String, Picked>>,
     /// Storage operations, in the order the app made them.
     store_jobs: Mutex<Option<mpsc::Sender<StoreJob>>>,
+    /// When this open last said a hand-off was refused ([`refusal_due`]).
+    refused_at: Mutex<Option<Instant>>,
+}
+
+/// How long after one refusal another is said again, per open: an app's
+/// code calling on a timer can't keep a message up.
+pub const REFUSAL_EVERY: Duration = Duration::from_secs(3);
+
+/// Whether a refusal at `now` is said, the last one said at `last`.
+pub fn refusal_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= REFUSAL_EVERY)
 }
 
 impl OpenContext {
@@ -438,6 +449,7 @@ impl OpenContext {
             gate: Mutex::new(Gate::default()),
             files: Mutex::new(HashMap::new()),
             store_jobs: Mutex::new(None),
+            refused_at: Mutex::new(None),
         })
     }
 
@@ -985,7 +997,12 @@ impl OpenContext {
                 if after || why == Refused::Closed {
                     return false;
                 }
-                self.ui.file_refused(if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+                let now = Instant::now();
+                let mut said = self.refused_at.lock().unwrap_or_else(|e| e.into_inner());
+                if refusal_due(*said, now) {
+                    *said = Some(now);
+                    self.ui.file_refused(if matches!(hand, Hand::Save) { SAVE_REFUSED } else { OPEN_REFUSED });
+                }
                 true
             }
         }

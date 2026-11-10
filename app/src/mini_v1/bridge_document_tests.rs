@@ -445,3 +445,32 @@ fn a_name_that_would_show_as_another_is_refused_out_loud() {
     assert!(opened(&o).is_empty(), "the viewer never shows the name");
     assert_eq!(told(&o), [OPEN_REFUSED]);
 }
+
+#[test]
+fn an_apps_refused_hand_offs_in_a_row_say_so_once() {
+    let bed = Bed::new();
+    let path = bed.folder.join("open-1f/1/IMG_4250.png");
+    let args = json!({"open_with": {"path": path}});
+    // no press: the app's own code, as a timer would call it
+    let script = format!(
+        "await buwiz.call(\"fx_document\", {args}); await buwiz.call(\"fx_document\", {args}); return await buwiz.call(\"fx_document\", {args});"
+    );
+    let folder = bed.folder.clone();
+    let mut o = Open::start_with(FIXTURE, json!({"tools": TOOLS}), &script, Limits::default(), move |ui| {
+        ui.first_party.store(true, Ordering::SeqCst);
+        *ui.folder.lock().unwrap() = Some(folder);
+    });
+    o.wait("{");
+    assert!(opened_with(&o).is_empty());
+    assert_eq!(told(&o), [OPEN_REFUSED], "one message for the three");
+}
+
+#[test]
+fn a_refusal_is_said_again_once_the_last_has_had_its_time() {
+    let t = Instant::now();
+    assert!(refusal_due(None, t));
+    assert!(!refusal_due(Some(t), t));
+    assert!(!refusal_due(Some(t), t + REFUSAL_EVERY - Duration::from_millis(1)));
+    assert!(refusal_due(Some(t), t + REFUSAL_EVERY));
+    assert!(!refusal_due(Some(t + REFUSAL_EVERY), t), "a clock that went back says nothing");
+}
