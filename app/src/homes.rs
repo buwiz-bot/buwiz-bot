@@ -444,46 +444,38 @@ pub(crate) async fn remove(kind: &str) -> Said {
     reply
 }
 
-/// Forgets computer `id`, being deleted, once a person checked nothing of it is left:
-/// `POST providers/{kind}/forget`. The broker tries the keys in use once more first.
-pub(crate) async fn forget(kind: &str, id: &str) -> Said {
-    let reply = ask("POST", &provider_path(kind, "/forget"), Some(json!({"id": id}))).await;
+/// `POST providers/{kind}/{what} {id}`, for one computer on `kind`: a yes puts the home it carries
+/// in place, and asks for the full list again, since what went may have been the leftovers'
+/// computer and only that list says which are left.
+async fn act_on(kind: &str, what: &str, id: &str) -> Said {
+    let reply = ask("POST", &provider_path(kind, &format!("/{what}")), Some(json!({"id": id}))).await;
     if let Said::Yes(v) = &reply {
         if let Some(home) = v.get("provider").and_then(Home::parse) {
             set_homes(|h| h.replace(home));
         }
-        // what went may have been the leftovers' computer: only the full list says
         load().await;
     }
     reply
 }
 
+/// Forgets computer `id`, being deleted, once a person checked nothing of it is left:
+/// `POST providers/{kind}/forget`. The broker tries the keys in use once more first.
+pub(crate) async fn forget(kind: &str, id: &str) -> Said {
+    act_on(kind, "forget", id).await
+}
+
 /// Keeps computer `id`, found with its record lost: `POST providers/{kind}/keep`. The broker looks
 /// for it once more; found, it's a computer again with no Bot at it. Ok is the sentence to show.
 pub(crate) async fn keep_lost(kind: &str, id: &str) -> Result<String, String> {
-    match ask("POST", &provider_path(kind, "/keep"), Some(json!({"id": id}))).await {
-        Said::Yes(v) => {
-            if let Some(home) = v.get("provider").and_then(Home::parse) {
-                set_homes(|h| h.replace(home));
-            }
-            load().await;
-            Ok(v.get("message").and_then(Value::as_str).map_or_else(|| format!("{id} is kept."), str::to_owned))
-        }
+    match act_on(kind, "keep", id).await {
+        Said::Yes(v) => Ok(v.get("message").and_then(Value::as_str).map_or_else(|| format!("{id} is kept."), str::to_owned)),
         Said::No(why) => Err(why),
     }
 }
 
 /// Deletes computer `id`, found with its record lost, on its platform: `POST providers/{kind}/delete`.
 pub(crate) async fn delete_lost(kind: &str, id: &str) -> Said {
-    let reply = ask("POST", &provider_path(kind, "/delete"), Some(json!({"id": id}))).await;
-    if let Said::Yes(v) = &reply {
-        if let Some(home) = v.get("provider").and_then(Home::parse) {
-            set_homes(|h| h.replace(home));
-        }
-        // its volumes went with it: only the full list says which are left
-        load().await;
-    }
-    reply
+    act_on(kind, "delete", id).await
 }
 
 /// Makes `kind` the default home: `PUT providers/default`.
