@@ -691,6 +691,24 @@ impl Provider for RemoteProvider {
         clean(machine, guest.open_url(screen, url).await)
     }
 
+    async fn browser(&self, machine: &Machine, screen: &Screen, op: crate::BrowserOp, body: &serde_json::Value) -> Result<crate::BrowserReply> {
+        let open = self.boxed(machine, "use a page by its controls")?;
+        let Some(guest) = &open.guest else { return Err(Problem::Asleep) };
+        clean(machine, guest.browser(screen, op, body).await)
+    }
+
+    async fn active_tab(&self, machine: &Machine, screen: &Screen) -> Result<crate::ActiveTab> {
+        let open = self.boxed(machine, "use a page by its controls")?;
+        let Some(guest) = &open.guest else { return Err(Problem::Asleep) };
+        clean(machine, guest.active_tab(screen).await)
+    }
+
+    async fn capabilities(&self, machine: &Machine) -> Result<serde_json::Value> {
+        let open = self.boxed(machine, "use a page by its controls")?;
+        let Some(guest) = &open.guest else { return Err(Problem::Asleep) };
+        clean(machine, guest.capabilities().await)
+    }
+
     /// `/workspace/<path>` for a plain host's path inside its root, so a Bot's folder reads the
     /// same here as on a box. Anything else comes back as it is, and the tools refuse it.
     async fn resolve(&self, machine: &Machine, path: &str) -> Result<String> {

@@ -1155,6 +1155,18 @@ impl Provider for DockerProvider {
         self.guest(machine).await?.open_url(screen, url).await
     }
 
+    async fn browser(&self, machine: &Machine, screen: &Screen, op: crate::BrowserOp, body: &serde_json::Value) -> Result<crate::BrowserReply> {
+        self.guest(machine).await?.browser(screen, op, body).await
+    }
+
+    async fn active_tab(&self, machine: &Machine, screen: &Screen) -> Result<crate::ActiveTab> {
+        self.guest(machine).await?.active_tab(screen).await
+    }
+
+    async fn capabilities(&self, machine: &Machine) -> Result<serde_json::Value> {
+        self.guest(machine).await?.capabilities().await
+    }
+
     async fn read_file(&self, machine: &Machine, path: &str) -> Result<Vec<u8>> {
         self.guest(machine).await?.read_file(path).await
     }

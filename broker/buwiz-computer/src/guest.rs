@@ -26,11 +26,13 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use serde_json::{json, Value};
 
-use crate::{CommandOutput, Input, Problem, Result, Screen, Screenshot, Secret, Settled, WaitFor};
+use crate::{ActiveTab, BrowserOp, BrowserReply, CommandOutput, Input, Problem, Result, Screen, Screenshot, Secret, Settled, WaitFor};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// What a call that isn't a command gets.
 const PATIENCE: Duration = Duration::from_secs(30);
+/// What a browser call gets: the box gives one 45 s, and a few more for the answer to come.
+const BROWSER_PATIENCE: Duration = Duration::from_secs(55);
 /// What a screen request gets: `box-screen` waits its turn, then for an X server and a viewer.
 const SCREEN_PATIENCE: Duration = Duration::from_secs(50);
 /// What the guest may answer with before it counts as broken.
@@ -145,6 +147,27 @@ impl BoxGuest {
         self.screen(open_request(screen, url)?).await.map(|_| ())
     }
 
+    /// `POST /v1/browser/<op>?display=` with `body`: the answer, a refusal with its code included.
+    /// A box that couldn't be reached, or that answered with no JSON, is a [`Problem`].
+    pub async fn browser(&self, screen: &Screen, op: BrowserOp, body: &Value) -> Result<BrowserReply> {
+        let url = format!("{}{}", self.exec, on(op.path(), screen));
+        let (status, bytes) = self.exchange(Method::POST, &url, "application/json", Some(body.to_string()), BROWSER_PATIENCE).await?;
+        let body = if bytes.is_empty() { Value::Null } else { parse(&bytes)? };
+        Ok(BrowserReply { status, body })
+    }
+
+    /// `GET /v1/chrome/active-tab?display=` (box-host).
+    pub async fn active_tab(&self, screen: &Screen) -> Result<ActiveTab> {
+        let url = format!("{}{}", self.host, on("/v1/chrome/active-tab", screen));
+        let v = parse(&self.send(Method::GET, &url, "application/json", None, PATIENCE).await?)?;
+        Ok(active_tab_of(&v))
+    }
+
+    /// `GET /v1/info`'s `capabilities` (`Null` when it has none).
+    pub async fn capabilities(&self) -> Result<Value> {
+        Ok(self.info().await?.get("capabilities").cloned().unwrap_or(Value::Null))
+    }
+
     async fn run_argv(&self, bot: Option<&str>, argv: &[&str]) -> Result<CommandOutput> {
         let v = self.post("/v1/exec", &json!({"command": argv, "timeout_ms": 30000, "bot": bot}), Duration::from_secs(35)).await?;
         let out = command_output(&v);
@@ -224,6 +247,15 @@ impl BoxGuest {
     }
 
     async fn send(&self, method: Method, url: &str, accept: &str, body: Option<String>, patience: Duration) -> Result<Bytes> {
+        let (status, body) = self.exchange(method, url, accept, body, patience).await?;
+        if !(200..300).contains(&status) {
+            return Err(Problem::Guest { status, message: error_text(&body, status) });
+        }
+        Ok(body)
+    }
+
+    /// One request, and its status and whole answer whatever the status.
+    async fn exchange(&self, method: Method, url: &str, accept: &str, body: Option<String>, patience: Duration) -> Result<(u16, Bytes)> {
         let mut request = Request::builder().method(method).uri(url).header("authorization", format!("Bearer {}", self.token.expose())).header("accept", accept);
         if let Some((exec, host)) = &self.names {
             request = request.header("host", if url.starts_with(&self.exec) { exec } else { host });
@@ -237,10 +269,7 @@ impl BoxGuest {
             let response = self.http.request(request).await.map_err(|_| Problem::Guest { status: 503, message: "it isn't answering".to_owned() })?;
             let status = response.status().as_u16();
             let body = Limited::new(response.into_body(), MAX_BODY).collect().await.map_err(|_| Problem::Guest { status: 502, message: "its answer broke off".to_owned() })?.to_bytes();
-            if !(200..300).contains(&status) {
-                return Err(Problem::Guest { status, message: error_text(&body, status) });
-            }
-            Ok(body)
+            Ok((status, body))
         })
         .await
         .map_err(|_| Problem::Guest { status: 504, message: format!("no answer in {}s", patience.as_secs()) })?
@@ -278,6 +307,12 @@ pub fn parse_screen(stdout: &str, bot: &str) -> Result<Screen> {
     let viewer_port = v.get("viewer_port").and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok()).filter(|p| (6901..=6905).contains(p)).ok_or_else(bad)?;
     let profile = v.get("profile").and_then(Value::as_str).map(str::to_owned);
     Ok(Screen { display: display.to_owned(), viewer_port, folder: format!("agents/{bot}"), profile })
+}
+
+/// `GET /v1/chrome/active-tab`'s answer. What isn't the right type is taken as not said.
+pub fn active_tab_of(v: &Value) -> ActiveTab {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    ActiveTab { url: text("url").filter(|u| !u.is_empty()), focus: text("focus"), seq: v.get("seq").and_then(Value::as_u64) }
 }
 
 /// `box-screen list`'s Bots.
@@ -448,6 +483,19 @@ mod tests {
         let guest = answering(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhalf".to_vec()).await;
         let done = tokio::time::timeout(Duration::from_secs(5), guest.ready_within(Duration::from_millis(200))).await;
         assert!(!done.expect("the call hung on the body"));
+    }
+
+    #[tokio::test]
+    async fn a_browser_refusal_comes_back_with_its_code_and_the_front_tab_is_read() {
+        let refusal = br#"{"error":{"code":"confirm_required","message":"x","details":{"label":"Pay $1","confirm":"t"}}}"#;
+        let guest = answering(http("409 Conflict", "", refusal)).await;
+        let screen = Screen { display: ":3".into(), viewer_port: 6903, folder: "agents/b".into(), profile: None };
+        let reply = guest.browser(&screen, BrowserOp::Act, &json!({"ref": "@e1", "action": "key", "text": "Enter"})).await.unwrap();
+        assert_eq!((reply.status, reply.code()), (409, Some("confirm_required")));
+        assert!(!format!("{reply:?}").contains("Pay"), "a reply's Debug shows no page text: {reply:?}");
+        let tab = active_tab_of(&json!({"url": "https://shop.example/login", "focus": "password", "seq": 7}));
+        assert_eq!(tab, ActiveTab { url: Some("https://shop.example/login".into()), focus: Some("password".into()), seq: Some(7) });
+        assert_eq!(active_tab_of(&json!({"url": null, "seq": "x"})), ActiveTab::default());
     }
 
     #[tokio::test]
