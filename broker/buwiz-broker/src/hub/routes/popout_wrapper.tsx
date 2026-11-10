@@ -13,17 +13,22 @@ const STRIP = 26;
 // The version badge's text ("" for none), typed wide so the check reads
 // the test below as a test, not as an always-true or always-false literal.
 const BADGE: string = ${JSON.stringify(badge)};
-if (isAvailable) {
-  Window.setTitle("widget · " + ${JSON.stringify(popName)});
-  Window.setTitleBar({ style: "hidden", height: 32 }); // natural height: the lights land at AppKit's own (9,9) spot
-  // A regular window level: aerospace keeps it out of the tile grid (a
-  // free-standing window), but it stacks normally — it can sit behind
-  // other windows and comes forward when focused, not pinned on top.
-  Window.setLevel("normal");
-  Window.setFrame({ size: { width: wantW, height: ${wantH} + STRIP } });
+// The host's one window (nsh/desktop's `WindowRef`; `null` off desktops).
+const main = isAvailable ? Window.get("main") : null;
+if (main) {
+  main.set({
+    title: "widget · " + ${JSON.stringify(popName)},
+    // natural height: the lights land at AppKit's own (9,9) spot
+    titleBar: { style: "hidden", height: 32 },
+    // A regular window level: aerospace keeps it out of the tile grid (a
+    // free-standing window), but it stacks normally — it can sit behind
+    // other windows and comes forward when focused, not pinned on top.
+    level: "normal",
+  });
+  main.setBounds({ size: { width: wantW, height: ${wantH} + STRIP } });
   // A spawned host process has no activation context — without this the
   // window orders in behind the front app, never key (grayed lights).
-  Window.orderFront();
+  main.focus();
 }
 // The window hugs the widget's real height — with manners. A resize is
 // applied only once the measured height has been stable for ~150ms, so a
@@ -50,7 +55,8 @@ const hug = (raw: number) => {
       return;
     }
     lastH = pendingH;
-    Window.setFrame({ size: { height: pendingH + STRIP }, animated: true });
+    // Its top left stays: the window grows and shrinks at its bottom edge.
+    main?.setBounds({ size: { height: pendingH + STRIP }, animated: true });
   }, 150);
 };
 mount(() => (
