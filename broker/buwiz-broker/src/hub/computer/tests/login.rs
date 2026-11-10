@@ -598,3 +598,10 @@ async fn nothing_reaches_the_box_before_a_person_answers_the_card() {
     call.await.unwrap();
     assert!(b.mock.calls().iter().all(|c| !c.starts_with("browser") && !c.starts_with("active_tab")), "nor after a dismiss");
 }
+
+#[test]
+fn a_backslash_ends_the_host_as_a_browser_reads_it() {
+    assert_eq!(login::site_of("https://evil.test\\@shop.example/").as_deref(), Some("evil.test"));
+    assert!(!login::on_site("https://evil.test\\@shop.example/login", SITE));
+    assert_eq!(login::sanitize(&json!({"title": "t", "domain": "https://evil.test\\@shop.example/", "fields": [{"id": "a", "label": "Email"}]})).unwrap().site, "evil.test", "the card names the host the browser would go to");
+}

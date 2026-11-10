@@ -200,6 +200,9 @@ fn text(input: &Value, key: &str, max: usize) -> String {
 /// anything that isn't a host name or an address.
 pub fn site_of(raw: &str) -> Option<String> {
     let raw = raw.trim();
+    // a backslash ends the authority, as a browser reads it: `evil.test\@shop.example` is evil.test
+    let raw = raw.replace('\\', "/");
+    let raw = raw.as_str();
     let rest = raw.split_once("://").map_or(raw, |(_, r)| r);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let authority = authority.rsplit('@').next().unwrap_or("");
