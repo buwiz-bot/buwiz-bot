@@ -594,8 +594,8 @@ async fn a_turn_with_nobody_there_cant_ask() {
     awake(&b, &b.ann.0).await;
     set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
     let r = run(&b, &b.ann.1, Some("rt_1"));
-    assert!(!offered(&r).await.iter().any(|n| n == tools::ASK_PERSON));
-    assert_eq!(offered(&r).await.len(), NAMES.len() - 1);
+    assert!(!offered(&r).await.iter().any(|n| n == tools::ASK_PERSON || n == crate::hub::tools::login::NAME));
+    assert_eq!(offered(&r).await.len(), NAMES.len() - 2);
     let out = call(&r, tools::ASK_PERSON, json!({"reason": "x"})).await;
     assert_eq!(out.is_error, Some(true));
     assert_eq!(words(&out), ask::NOBODY);

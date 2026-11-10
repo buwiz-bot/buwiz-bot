@@ -31,6 +31,11 @@ fn bed(label: &str) -> Bed {
 }
 
 fn bed_with(label: &str, make: impl FnOnce(Arc<dyn Provider>) -> Computers) -> Bed {
+    bed_tweaked(label, make, |_| {})
+}
+
+/// [`bed_with`], with `tweak` given the context before it's shared.
+fn bed_tweaked(label: &str, make: impl FnOnce(Arc<dyn Provider>) -> Computers, tweak: impl FnOnce(&mut HubCtx)) -> Bed {
     let dir = std::env::temp_dir().join(format!("buwiz-computer-hub-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut ctx = HubCtx::new(dir, Clock::manual());
@@ -54,6 +59,7 @@ fn bed_with(label: &str, make: impl FnOnce(Arc<dyn Provider>) -> Computers) -> B
             ids
         })
         .unwrap();
+    tweak(&mut ctx);
     Bed { ctx: Arc::new(ctx), computers, mock, ann: ("b_ann".into(), a), bea: ("b_bea".into(), b) }
 }
 
@@ -88,7 +94,7 @@ fn words(o: &Out) -> String {
 }
 
 async fn offered(r: &Run) -> Vec<String> {
-    tool_list(r).await.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).filter(|n| n.starts_with("computer_")).collect()
+    tool_list(r).await.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).filter(|n| NAMES.contains(&n.as_str())).collect()
 }
 
 fn set(b: &Bed, bot: &str, key: &str, state: &str) {
@@ -1143,7 +1149,7 @@ async fn a_routine_gets_it_only_if_a_person_turned_that_on() {
     assert_eq!(o.is_error, Some(true));
 
     set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
-    assert_eq!(offered(&r).await.len(), NAMES.len() - 1, "all but asking a person, who isn't there");
+    assert_eq!(offered(&r).await.len(), NAMES.len() - 2, "all but asking a person and the login card: nobody is there");
     // then it may wake it, with nobody to click
     b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
     assert_eq!(call(&r, "computer_screenshot", json!({})).await.is_error, None);
@@ -1250,6 +1256,7 @@ fn a_computer_can_be_pinned_to_a_group() {
 
 mod homes;
 mod jobs;
+mod login;
 mod lost;
 mod remote;
 mod together;

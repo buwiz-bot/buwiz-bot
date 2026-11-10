@@ -328,6 +328,7 @@ fn computer_line(name: &str, input: &Value) -> String {
         "computer_job_status" => "Looked at a job on its computer".to_owned(),
         "computer_job_stop" => "Stopped a job on its computer".to_owned(),
         computer::ASK_PERSON => "Asked a person to take over its computer".to_owned(),
+        crate::hub::tools::login::NAME => "Asked the person to sign in on its computer".to_owned(),
         "computer_type" | "computer_key" => "Typed on its computer".to_owned(),
         "computer_screenshot" | "computer_wait" => "Looked at its computer".to_owned(),
         _ => "Used its computer's screen".to_owned(),

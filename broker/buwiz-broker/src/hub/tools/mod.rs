@@ -19,6 +19,7 @@ pub mod computer;
 pub mod controls;
 pub mod defs;
 pub mod drive;
+pub mod login;
 pub mod mcp;
 pub mod miniapps;
 pub mod office;

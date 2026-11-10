@@ -1957,6 +1957,33 @@ async fn detach(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
+/// `POST /v1/host/computer/bot/{bot}/session {op, name}`: a person's `/computer session`.
+async fn session(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let (status, v) = super::tools::login::session(&ctx, &computers, &bot, &body).await;
+    types::json(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), &v)
+}
+
+/// The login card's routes (`tools::login`): human only, the host token on each.
+macro_rules! login_route {
+    ($name:ident, $call:expr) => {
+        async fn $name(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+            if !host::authorized(&req.headers) {
+                return host::unauthorized();
+            }
+            // the body may hold a typed login: it's read here, and never logged
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+            let (status, v) = $call(&ctx, &body).await;
+            types::json(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), &v)
+        }
+    };
+}
+
+login_route!(login_submit, super::tools::login::host_submit);
+login_route!(login_dismiss, super::tools::login::host_dismiss);
+login_route!(login_saved, |ctx: &Arc<HubCtx>, b: &Value| std::future::ready(super::tools::login::host_saved(ctx, b)));
+
 /// What the form sent. Nothing of it is logged, and no answer repeats a secret.
 fn asked(body: &Value) -> Asked {
     let text = |k: &str| body.get(k).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
@@ -2171,6 +2198,10 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/record"), record);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/attach"), attach);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/detach"), detach);
+    routes.route(Verb::Post, S("/v1/host/computer/bot/*/session"), session);
+    routes.route(Verb::Post, X("/v1/host/computer/login/submit"), login_submit);
+    routes.route(Verb::Post, X("/v1/host/computer/login/dismiss"), login_dismiss);
+    routes.route(Verb::Post, X("/v1/host/computer/login/saved"), login_saved);
     routes.on_start(|ctx| {
         buwiz_computer::remote::ssh::clear_staged(&ctx.data.join("computers"));
         let Some(computers) = Computers::of(&ctx) else { return };
