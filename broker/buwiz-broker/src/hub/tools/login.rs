@@ -28,6 +28,7 @@
 //!   Open the screen, which hands the screen to them). A switch at Off still takes the tool away.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
@@ -536,7 +537,7 @@ async fn front_page(live: &Live, site: &str) -> Result<(), String> {
 
 /// Types `values` into the page on `live`'s screen by OpenGrok's rules (see the module's words).
 /// No picture is taken. `values` are by field id, this card's alone.
-pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -> Fill {
+pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>, typing: &AtomicBool) -> Fill {
     let to_type: Vec<&Field> = form.fields.iter().take(if form.types_only_first_field() { 1 } else { form.fields.len() }).filter(|f| values.get(&f.id).is_some_and(|v| !v.expose().is_empty())).collect();
     if to_type.is_empty() {
         return Fill::Empty;
@@ -567,6 +568,8 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
             };
             let body = json!({"ref": r, "snapshot": snapshot, "action": "type", "text": value.expose(), "allow_domains": allow(&form.site)});
             // the type went out: a broken answer doesn't say it didn't land
+            // from here a value may be in the page, whatever becomes of this run
+            typing.store(true, Ordering::SeqCst);
             let reply = match live.provider.browser(&live.machine, &live.screen, BrowserOp::Act, &body).await {
                 Ok(r) => r,
                 Err(p) => break Err((p.sentence(), true)),
@@ -736,13 +739,19 @@ struct Parked {
     ctx: Arc<HubCtx>,
     chat: String,
     id: String,
+    /// a fill sent a value to the box: a run stopped after that may have left it in the page
+    typing: Arc<AtomicBool>,
 }
 
 impl Drop for Parked {
     fn drop(&mut self) {
         waiting().remove(&self.id);
         if find(&self.ctx, &self.chat, &self.id).is_some_and(|n| n["state"] == "pending") {
-            settle(&self.ctx, &self.chat, &self.id, "expired", Value::Null);
+            if self.typing.load(Ordering::SeqCst) {
+                settle(&self.ctx, &self.chat, &self.id, "fill_failed", json!({"uncertain": true, "note": format!("The run stopped part way through the fill. {MAYBE_TYPED}")}));
+            } else {
+                settle(&self.ctx, &self.chat, &self.id, "expired", Value::Null);
+            }
         }
     }
 }
@@ -772,7 +781,8 @@ pub async fn request(run: &Run, computers: &Arc<Computers>, live: Live, input: &
     });
     let (tx, mut rx) = mpsc::channel::<Ask>(4);
     waiting().insert(id.clone(), tx);
-    let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone() };
+    let typing = Arc::new(AtomicBool::new(false));
+    let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone(), typing: typing.clone() };
     if !crate::hub::tools::miniapps::post_in(ctx, &chat, &n) {
         return Out::err("The card couldn't be put in this chat, so nothing was asked.".to_owned());
     }
@@ -788,7 +798,7 @@ pub async fn request(run: &Run, computers: &Arc<Computers>, live: Live, input: &
             }
         };
         match ask {
-            Ask::Submit { values, saved, reply } => match submitted(run, computers, &form, &chat, &id, values, saved).await {
+            Ask::Submit { values, saved, reply } => match submitted(run, computers, &form, &chat, &id, values, saved, &typing).await {
                 Ok((answer, out)) => {
                     let _ = reply.send(Ok(answer));
                     break out;
@@ -814,7 +824,8 @@ pub async fn request(run: &Run, computers: &Arc<Computers>, live: Live, input: &
 }
 
 /// A submit: the fill, the card settled, and what the model reads. `Err` leaves the card open.
-async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &str, id: &str, values: BTreeMap<String, Secret>, saved: bool) -> Result<(Value, Out), (u16, &'static str, String)> {
+#[allow(clippy::too_many_arguments)]
+async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &str, id: &str, values: BTreeMap<String, Secret>, saved: bool, typing: &AtomicBool) -> Result<(Value, Out), (u16, &'static str, String)> {
     let ctx = &run.ctx;
     let values: BTreeMap<String, Secret> = values.into_iter().filter(|(k, _)| form.fields.iter().any(|f| &f.id == k)).collect();
     for field in &form.fields {
@@ -835,7 +846,7 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
         }
     }
     run.set_job("connecting", "Typing the sign-in into the page");
-    let fill = fill(&live, form, &values).await;
+    let fill = fill(&live, form, &values, typing).await;
     Computers::touch(ctx, &live.computer);
     if let Fill::Refused { code, message } = fill {
         run.set_job("waiting", asking::WAITING);

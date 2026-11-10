@@ -88,6 +88,8 @@ pub struct MockProvider {
     /// the next browser call whose op or act action is the first word is refused with this status
     /// and code, once
     pub browser_refusal: Mutex<Option<(String, u16, String)>>,
+    /// an act waits here until released, when set, as a browser that's slow to answer
+    pub hold_browser: AtomicBool,
     /// what was typed into which field, by its label: kept apart from `calls`, which never hold
     /// a typed text
     pub typed: Mutex<Vec<(String, String)>>,
@@ -146,7 +148,7 @@ fn refusal(status: u16, code: &str) -> BrowserReply {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default() }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default(), hold_browser: AtomicBool::new(false) }
     }
 }
 
@@ -403,6 +405,12 @@ impl Provider for MockProvider {
     async fn browser(&self, _: &Machine, screen: &Screen, op: BrowserOp, body: &serde_json::Value) -> Result<BrowserReply> {
         use serde_json::json;
         self.awake()?;
+        if op == BrowserOp::Act && self.hold_browser.load(Ordering::SeqCst) {
+            self.note(format!("browser {} act held", screen.display));
+            while self.hold_browser.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
         let action = body.get("action").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
         let word = match op {
             BrowserOp::Snap => "snap".to_owned(),

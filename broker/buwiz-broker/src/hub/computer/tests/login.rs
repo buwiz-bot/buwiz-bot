@@ -685,3 +685,33 @@ async fn only_a_login_typed_in_full_is_offered_for_saving_and_the_card_says_each
     assert_eq!(reply["offerSave"]["origin"], SITE);
     assert_eq!(reply["notice"]["note"], "Typed, and Return was pressed.");
 }
+
+#[tokio::test]
+async fn a_run_stopped_mid_fill_leaves_the_card_saying_a_value_may_have_been_typed() {
+    let b = login_bed("login-stopped");
+    awake(&b, &b.ann.0).await;
+    b.mock.hold_browser.store(true, Ordering::SeqCst);
+    let (card, call) = asked(&b, card_input()).await;
+    let sending = {
+        let (ctx, card) = (b.ctx.clone(), card.clone());
+        tokio::spawn(async move { login::host_submit(&ctx, &json!({"chat": card["chat"], "id": card["id"], "values": values()})).await })
+    };
+    for _ in 0..600 {
+        if b.mock.calls().iter().any(|c| c.ends_with("act held")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    call.abort();
+    let _ = call.await;
+    let settled = login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap();
+    assert_eq!((settled["state"].as_str(), settled["uncertain"].as_bool()), (Some("fill_failed"), Some(true)), "{settled}");
+    assert!(settled["note"].as_str().unwrap().contains("may have been typed"));
+    b.mock.hold_browser.store(false, Ordering::SeqCst);
+    let _ = sending.await;
+    // a run stopped before any value went out still just expires
+    let (card, call) = asked(&b, card_input()).await;
+    call.abort();
+    let _ = call.await;
+    assert_eq!(login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap()["state"], "expired");
+}
