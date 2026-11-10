@@ -406,6 +406,66 @@ async fn card_01_an_answer_card_keeps_its_size_and_snapshot_a_bad_size_drops_it(
 }
 
 #[tokio::test]
+async fn a_cards_link_names_the_call_that_made_it_unless_the_log_would_redact_it() {
+    let fake = Fake::new("");
+    let ctx = with_plugins("origin", &fake);
+    let job = run_in(&ctx, TurnCtx::default());
+    call(&job, "fx_open", json!({"title": "Due soon", "size": "small"})).await;
+    assert_eq!(job.state().link_turn.as_ref().unwrap().links[0]["origin"], json!({"tool": "fx_open", "args": {"title": "Due soon", "size": "small"}}));
+    // an input the tool log would blank is not kept: a card never runs half a call again
+    for input in [json!({"title": "x", "api_key": "k-123"}), json!({"title": format!("see {TKT}")}), json!({"title": "t".repeat(crate::hub::agent::tool_log::INPUT_MAX)})] {
+        let job = run_in(&ctx, TurnCtx::default());
+        call(&job, "fx_open", input.clone()).await;
+        let st = job.state();
+        let link = &st.link_turn.as_ref().unwrap().links[0];
+        assert!(link["card"].is_object() && link.get("origin").is_none(), "{input}");
+    }
+}
+
+#[test]
+fn an_old_cards_call_is_read_from_the_turns_tool_log_only_when_it_cant_be_another() {
+    use crate::hub::agent::tool_log::entry;
+    use crate::hub::store::json::{turns_json, Lookups};
+    use crate::hub::store::{Thread, Turn};
+    let link = |plugin: &str, app: &str| json!({"provider": "buwiz-app", "id": format!("buwiz://app/{plugin}/{app}"), "link": format!("buwiz://app/{plugin}/{app}"), "card": {"plugin": plugin, "app": app, "placement": "inline"}});
+    let ok = |name: &str, input: Value| entry(name, &input, &Out::ok("found".into()));
+    let mut l = Lookups::default();
+    for (tool, plugin) in [("gws_search_mail", GWS), ("gws_search_drive", GWS), ("fx_open", FX)] {
+        l.tool_plugins.insert(tool.to_owned(), plugin.to_owned());
+    }
+    let turns = |links: Value, tools: Value| {
+        let mut t = Thread::default();
+        t.turns.push(Turn { links: Some(links), tools: Some(tools), ..Turn::ai("Here.", "m") });
+        turns_json(&mut t, &l, std::path::Path::new("/nonexistent"))[0]["links"].clone()
+    };
+    // one card, one call of its plugin (another plugin's call beside it)
+    let got = turns(json!([link(GWS, "mail")]), json!([ok("fx_open", json!({})), ok("gws_search_mail", json!({"query": "in:inbox", "limit": 10}))]));
+    assert_eq!(got[0]["origin"], json!({"tool": "gws_search_mail", "args": {"query": "in:inbox", "limit": 10}}));
+    assert!(got[0].get("tools").is_none(), "the log itself never goes to the app");
+    // as many cards as calls: in order, each plugin by itself
+    let got = turns(
+        json!([link(GWS, "mail"), link(FX, "card"), link(GWS, "drive")]),
+        json!([ok("gws_search_mail", json!({"query": "a"})), ok("fx_open", json!({"title": "T"})), ok("gws_search_drive", json!({"query": "b"}))]),
+    );
+    assert_eq!((got[0]["origin"]["args"]["query"].clone(), got[1]["origin"]["tool"].clone(), got[2]["origin"]["tool"].clone()), (json!("a"), json!("fx_open"), json!("gws_search_drive")));
+    // two calls and one card: either could be its call, so neither is
+    let got = turns(json!([link(GWS, "mail")]), json!([ok("gws_search_mail", json!({"query": "a"})), ok("gws_search_mail", json!({"query": "b"}))]));
+    assert!(got[0].get("origin").is_none(), "{got}");
+    // a failed call made no card
+    let failed = entry("gws_search_mail", &json!({"query": "a"}), &Out::err("offline".into()));
+    assert_eq!(turns(json!([link(GWS, "mail")]), json!([failed, ok("gws_search_mail", json!({"query": "b"}))]))[0]["origin"]["args"]["query"], "b");
+    // an input the log blanked or cut is not a call to run again
+    let got = turns(json!([link(GWS, "mail")]), json!([ok("gws_search_mail", json!({"query": "x", "token": "s"}))]));
+    assert!(got[0].get("origin").is_none(), "{got}");
+    // a stored origin is the link's own
+    let mut own = link(GWS, "mail");
+    own["origin"] = json!({"tool": "gws_search_mail", "args": {"query": "kept"}});
+    assert_eq!(turns(json!([own]), json!([ok("gws_search_mail", json!({"query": "other"}))]))[0]["origin"]["args"]["query"], "kept");
+    // no log, no plugin table: the link as it was
+    assert!(turns(json!([link(GWS, "mail")]), json!([]))[0].get("origin").is_none());
+}
+
+#[tokio::test]
 async fn card_02_next_steps_are_capped_kept_off_the_model_and_ignored_on_errors() {
     let fake = Fake::new("");
     let ctx = with_plugins("card02", &fake);

@@ -128,6 +128,22 @@ pub fn holds_secret(input: &Value) -> bool {
     redact_value(input) != *input || scrub(&text, true) != text
 }
 
+/// A call's input as a card may carry it to run the call again (a link's
+/// `origin`): the input itself, when it is an object that holds nothing
+/// the log would redact and fits the log's cap. Anything else is `None`:
+/// a search with a part blanked out is another search.
+pub fn rerunnable(input: &Value) -> Option<Value> {
+    (input.is_object() && !holds_secret(input) && js::stringify(input).chars().count() <= INPUT_MAX).then(|| input.clone())
+}
+
+/// [`rerunnable`] read back from a stored entry's `input` text.
+pub fn rerunnable_text(input: &str) -> Option<Value> {
+    if [REDACTED, TIN, OMITTED, "…[truncated"].iter().any(|mark| input.contains(mark)) {
+        return None;
+    }
+    serde_json::from_str::<Value>(input).ok().filter(Value::is_object)
+}
+
 /// `s` cut to `max` chars, the cut said: `…[truncated N chars]`.
 pub fn cut(s: &str, max: usize) -> String {
     let n = s.chars().count();
