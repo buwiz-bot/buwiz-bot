@@ -245,9 +245,10 @@ impl IntoElement for Dropdown {
             .trigger(trigger)
             // Highlighted: `bg-muted`; chosen: the check (`item_row`). nsh/base
             // gives an item's state to its row's classes, not to `render_item`.
-            .item_class(Some(SharedString::from(
-                "group rounded-[4px] focus:bg-[#f1f5f9] dark:focus:bg-[#333333]",
-            )))
+            .item_class(Some(SharedString::from(format!(
+                "group rounded-[4px] {}",
+                p::class("focus:", "bg", p::TW_MUTED)
+            ))))
             .render_item(move |s: &SelectEntry| {
                 let opt = row_opts.iter().find(|o| o.value == s.value);
                 if opt.is_some_and(|o| o.heading) {

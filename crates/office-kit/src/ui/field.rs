@@ -219,19 +219,23 @@ pub fn select_field(
         .trigger(trigger)
         // Highlighted: `--doc-primary` under `--doc-on-primary` text. nsh/base
         // gives an item's state to its row's classes, not to `render_item`.
-        .item_class(Some(SharedString::from(
-            "group rounded-[3px] focus:bg-[#1a73e8] dark:focus:bg-[#4e9dff]",
-        )))
+        .item_class(Some(SharedString::from(format!(
+            "group rounded-[3px] {}",
+            p::class("focus:", "bg", p::PRIMARY)
+        ))))
         .render_item(|s: &SelectEntry| {
             text(s.title.clone())
                 .w_full()
                 .px(px(8.0))
                 .py(px(4.0))
                 .text_size(px(FIELD_TEXT))
-                .text_color(p::TEXT)
-                .app_class(Some(SharedString::from(
-                    "group-focus:text-[#ffffff] dark:group-focus:text-[#1f1f1f]",
-                )))
+                // Classes, not `text_color`: a typed style is the inline
+                // one, which would win over the highlight's `group-focus:`.
+                .app_class(Some(SharedString::from(format!(
+                    "{} {}",
+                    p::class("", "text", p::TEXT),
+                    p::class("group-focus:", "text", p::ON_PRIMARY)
+                ))))
                 .into_element()
         })
         .on_change(move |v: &Option<SharedString>| {
