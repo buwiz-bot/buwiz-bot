@@ -60,6 +60,8 @@ struct Broker {
     saved: Mutex<(u16, Value)>,
     /// it answers the proof as a stranger on the broker's port would: with another token's
     impostor: std::sync::atomic::AtomicBool,
+    /// what the dismiss route answers instead of its own settled card
+    dismiss: Mutex<Option<(u16, Value)>>,
 }
 
 struct Done;
@@ -87,6 +89,7 @@ impl Network for Broker {
             }
             SUBMIT => self.submit.lock().unwrap().clone(),
             SAVED => self.saved.lock().unwrap().clone(),
+            DISMISS if self.dismiss.lock().unwrap().is_some() => self.dismiss.lock().unwrap().clone().unwrap(),
             DISMISS => (200, json!({"ok": true, "notice": {"kind": "user_form", "id": body["id"], "state": if body["mode"] == "escalated" { "escalated" } else { "dismissed" }}})),
             "/threads" => (200, threads()),
             p if p.ends_with("/session") => (200, json!({"ok": true, "op": body["op"], "name": body["name"], "cookies": 2, "origins": 1, "pending": 0})),
@@ -109,7 +112,7 @@ fn submitted(state: &str) -> (u16, Value) {
 }
 
 fn start(submit: (u16, Value)) -> (Headless, Arc<Broker>) {
-    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), submit: Mutex::new(submit), saved: Mutex::new((200, json!({"ok": true, "usable": true}))), impostor: Default::default() });
+    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), submit: Mutex::new(submit), saved: Mutex::new((200, json!({"ok": true, "usable": true}))), impostor: Default::default(), dismiss: Mutex::new(None) });
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1000.0), px(900.0));
     config.network = Some(seen.clone());
@@ -440,4 +443,37 @@ fn an_unproven_broker_gets_no_token_from_any_card_button() {
     assert!(!log.iter().any(|(p, _, token)| *token && p.starts_with("/v1/host/prove")), "no token on a proof");
     assert!(!log.iter().any(|(p, _, token)| *token && (p.starts_with("/v1/host/prove") || p.starts_with("/v1/host/computer/login/"))));
     assert!(!log.iter().any(|(_, b, _)| b.to_string().contains(MARK)), "the password stayed in the app");
+}
+
+/// An answer that can't say how the fill went never reads as "nothing was filled": a submit past
+/// the broker's patience says to check the screen, and a dismiss that came after the login was
+/// typed paints what was typed.
+#[test]
+fn a_late_or_unsure_answer_paints_what_really_happened() {
+    if !in_child("a_late_or_unsure_answer_paints_what_really_happened") {
+        return;
+    }
+    let (mut app, seen) = start((504, json!({"ok": false, "code": "timeout", "message": "It's still being typed.", "notice": {"kind": "user_form", "id": "uf_1", "state": "pending"}})));
+    with_card(&mut app);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Check the screen") && !app.has("Log in"), "no second answer: {:?}", app.texts());
+    assert!(!has_text(&app, "Nothing was filled") && !has_text(&app, "Dismissed"), "{:?}", app.texts());
+}
+
+/// A dismiss that came after the broker typed the login paints what was typed.
+#[test]
+fn a_dismiss_after_the_login_was_typed_paints_it_typed() {
+    if !in_child("a_dismiss_after_the_login_was_typed_paints_it_typed") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    *seen.dismiss.lock().unwrap() = Some((409, json!({"ok": false, "code": "stale", "message": "This card was answered already.", "notice": {"kind": "user_form", "id": "uf_1", "state": "submitted"}})));
+    with_card(&mut app);
+    app.press("Dismiss");
+    wait_for(&mut app, &seen, DISMISS, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Submitted") && !has_text(&app, "Dismissed without filling"), "{:?}", app.texts());
 }

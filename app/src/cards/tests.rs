@@ -314,4 +314,6 @@ fn the_brokers_login_answers_are_read_as_settled_refused_stale_or_gone() {
     assert_eq!(transport::user_form_action_from_http(404, &json!({"ok": false, "code": "not_found", "message": "no route /v1/host/computer/login/submit"})), UserFormReply::MissingRoute);
     assert!(matches!(transport::user_form_action_from_http(401, &json!({"ok": false, "code": "unauthorized", "message": "X-Buwiz-Host is missing or wrong"})), UserFormReply::Failed(_)));
     assert!(matches!(transport::user_form_action_from_http(200, &json!({"ok": true, "notice": {"state": "pending"}})), UserFormReply::Empty));
+    assert_eq!(transport::user_form_action_from_http(504, &json!({"ok": false, "code": "timeout", "notice": {"state": "pending"}})), UserFormReply::StillWorking);
+    assert!(matches!(transport::user_form_action_from_http(409, &json!({"ok": false, "code": "stale", "notice": {"state": "submitted"}})), UserFormReply::Settled(_)));
 }

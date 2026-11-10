@@ -44,6 +44,9 @@ pub(crate) enum UserFormReply {
     Settled(Value),
     /// Another failure (5xx, …): its sentence; the card stays open.
     Failed(String),
+    /// `504 {code: "timeout"}`: the broker is still typing, or couldn't say: not an error to
+    /// answer again.
+    StillWorking,
 }
 
 /// One request: `(status, body)`, the body as JSON or, when it is not
@@ -316,6 +319,9 @@ pub(crate) fn user_form_action_from_http(status: u16, body: &Value) -> UserFormR
     }
     if status == 404 {
         return if is_form_entry_missing(body) { UserFormReply::MissingEntry } else { UserFormReply::MissingRoute };
+    }
+    if status == 504 && body.get("code").and_then(Value::as_str) == Some("timeout") {
+        return if notice_settled(body) { UserFormReply::Settled(body.clone()) } else { UserFormReply::StillWorking };
     }
     if status == 409 && body.get("code").and_then(Value::as_str) == Some("stale") {
         return if notice_settled(body) { UserFormReply::Settled(body.clone()) } else { UserFormReply::AlreadyAnswered };

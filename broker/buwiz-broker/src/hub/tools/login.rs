@@ -59,6 +59,8 @@ const MAX_INSTRUCTION: usize = 300;
 const MAX_VALUE: usize = 4096;
 /// How long a submit waits for the run to have typed it.
 const ANSWER_PATIENCE: Duration = Duration::from_secs(120);
+/// Another patience than [`ANSWER_PATIENCE`] (tests), in `ctx.ext`.
+pub struct AnswerWait(pub Duration);
 /// How a hand-over from the card is limited, as `computer_ask_person`'s default.
 const HANDOVER_S: u64 = 300;
 
@@ -952,16 +954,27 @@ fn waiting_card(ctx: &HubCtx, b: &Value) -> Result<(String, String, mpsc::Sender
     Ok((chat, id, tx))
 }
 
-async fn put(tx: mpsc::Sender<Ask>, make: impl FnOnce(oneshot::Sender<Answer>) -> Ask) -> (u16, Value) {
+/// Hands an answer to the run and waits for what it made of it. A reply that can't say (the run
+/// went on without it, or it's still typing) carries the card as it stands now, so the app paints
+/// what really happened, never "nothing was filled" on a card that was.
+async fn put(ctx: &HubCtx, chat: &str, id: &str, tx: mpsc::Sender<Ask>, make: impl FnOnce(oneshot::Sender<Answer>) -> Ask) -> (u16, Value) {
+    let as_it_stands = |status: u16, code: &str, message: &str| {
+        let (status, mut v) = refused(status, code, message);
+        if let Some(n) = find(ctx, chat, id) {
+            v["notice"] = n;
+        }
+        (status, v)
+    };
     let (reply, answer) = oneshot::channel();
     if tx.send(make(reply)).await.is_err() {
-        return refused(409, "stale", "Nothing waits on this card any more, so nothing was typed.");
+        return as_it_stands(409, "stale", "This card was answered already.");
     }
-    match tokio::time::timeout(ANSWER_PATIENCE, answer).await {
+    let patience = ctx.ext.get::<AnswerWait>().map_or(ANSWER_PATIENCE, |w| w.0);
+    match tokio::time::timeout(patience, answer).await {
         Ok(Ok(Ok(v))) => (200, v),
         Ok(Ok(Err((status, code, message)))) => refused(status, code, message),
-        Ok(Err(_)) => refused(409, "stale", "The run stopped before it could type this, so nothing more was typed."),
-        Err(_) => refused(504, "timeout", "The fill took too long to say how it went. Look at the screen before trying again."),
+        Ok(Err(_)) => as_it_stands(409, "stale", "This card was answered already."),
+        Err(_) => as_it_stands(504, "timeout", "It's still being typed, or the fill took too long to say how it went. Look at the Bot's screen before doing anything else."),
     }
 }
 
@@ -969,7 +982,7 @@ async fn put(tx: mpsc::Sender<Ask>, make: impl FnOnce(oneshot::Sender<Answer>) -
 /// Human only (the host token). The values go to the run that waits on the card and nowhere else;
 /// nothing of them is logged or answered.
 pub async fn host_submit(ctx: &Arc<HubCtx>, b: &Value) -> (u16, Value) {
-    let (_, _, tx) = match waiting_card(ctx, b) {
+    let (chat, id, tx) = match waiting_card(ctx, b) {
         Ok(found) => found,
         Err(e) => return e,
     };
@@ -983,7 +996,7 @@ pub async fn host_submit(ctx: &Arc<HubCtx>, b: &Value) -> (u16, Value) {
         values.insert(k.clone(), Secret::new(t));
     }
     let saved = b.get("savedLogin").and_then(Value::as_bool).unwrap_or(false);
-    put(tx, |reply| Ask::Submit { values, saved, reply }).await
+    put(ctx, &chat, &id, tx, |reply| Ask::Submit { values, saved, reply }).await
 }
 
 /// `POST /v1/host/computer/login/dismiss {chat, id, mode: "dismissed" | "escalated"}`.
@@ -993,11 +1006,11 @@ pub async fn host_dismiss(ctx: &Arc<HubCtx>, b: &Value) -> (u16, Value) {
         Some("escalated") => true,
         Some(_) => return refused(400, "invalid_args", "mode is \"dismissed\" or \"escalated\""),
     };
-    let (_, _, tx) = match waiting_card(ctx, b) {
+    let (chat, id, tx) = match waiting_card(ctx, b) {
         Ok(found) => found,
         Err(e) => return e,
     };
-    put(tx, |reply| Ask::Dismiss { escalate, reply }).await
+    put(ctx, &chat, &id, tx, |reply| Ask::Dismiss { escalate, reply }).await
 }
 
 /// `POST /v1/host/computer/login/saved {chat, id}`: whether a saved login may be used on this

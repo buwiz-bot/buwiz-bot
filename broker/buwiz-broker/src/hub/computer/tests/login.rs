@@ -715,3 +715,48 @@ async fn a_run_stopped_mid_fill_leaves_the_card_saying_a_value_may_have_been_typ
     let _ = call.await;
     assert_eq!(login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap()["state"], "expired");
 }
+
+#[tokio::test]
+async fn an_answer_that_comes_after_the_fill_carries_what_the_fill_did() {
+    let b = login_bed("login-late-answer");
+    awake(&b, &b.ann.0).await;
+    b.mock.hold_browser.store(true, Ordering::SeqCst);
+    let (card, call) = asked(&b, card_input()).await;
+    let body = json!({"chat": card["chat"], "id": card["id"], "values": values(), "mode": "dismissed"});
+    let sending = {
+        let (ctx, body) = (b.ctx.clone(), body.clone());
+        tokio::spawn(async move { login::host_submit(&ctx, &body).await })
+    };
+    for _ in 0..600 {
+        if b.mock.calls().iter().any(|c| c.ends_with("act held")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // the person presses Dismiss while it types
+    let dismissing = {
+        let (ctx, body) = (b.ctx.clone(), body.clone());
+        tokio::spawn(async move { login::host_dismiss(&ctx, &body).await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    b.mock.hold_browser.store(false, Ordering::SeqCst);
+    assert_eq!(sending.await.unwrap().0, 200);
+    let (status, late) = dismissing.await.unwrap();
+    assert_eq!((status, late["code"].as_str()), (409, Some("stale")), "{late}");
+    assert_eq!(late["notice"]["state"], "submitted", "the late answer says the login was typed: {late}");
+    call.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_submit_that_outlasts_its_patience_says_it_may_still_be_typing() {
+    let b = bed_tweaked("login-patience", Computers::new, |ctx| ctx.ext.insert(login::AnswerWait(Duration::from_millis(50))));
+    b.mock.set_page(Some(MockPage::sign_in(PAGE)));
+    awake(&b, &b.ann.0).await;
+    b.mock.hold_browser.store(true, Ordering::SeqCst);
+    let (card, call) = asked(&b, card_input()).await;
+    let (status, reply) = submit(&b, &card, values(), false).await;
+    assert_eq!((status, reply["code"].as_str()), (504, Some("timeout")), "{reply}");
+    assert_eq!(reply["notice"]["state"], "pending", "still being typed");
+    b.mock.hold_browser.store(false, Ordering::SeqCst);
+    call.await.unwrap();
+}

@@ -182,6 +182,8 @@ pub(crate) enum FormResolution {
     TimedOut,
     /// A later message moved the chat on.
     Superseded,
+    /// The answer didn't say how it went: still being typed, or answered already elsewhere.
+    Unsure,
 }
 
 impl FormResolution {
@@ -194,6 +196,7 @@ impl FormResolution {
             "skipped" | "skip" => Self::Skipped,
             "timed_out" | "timed-out" => Self::TimedOut,
             "superseded" => Self::Superseded,
+            "unsure" => Self::Unsure,
             _ => Self::Dismissed,
         }
     }
@@ -209,6 +212,7 @@ impl FormResolution {
             Self::Skipped => "skipped",
             Self::TimedOut => "timed_out",
             Self::Superseded => "superseded",
+            Self::Unsure => "unsure",
         }
     }
 
@@ -222,6 +226,7 @@ impl FormResolution {
             Self::Skipped => "Skipped",
             Self::TimedOut => "Timed out",
             Self::Superseded => "Superseded",
+            Self::Unsure => "Check the screen",
         }
     }
 
@@ -235,6 +240,7 @@ impl FormResolution {
             Self::Skipped => "Skipped without filling anything.",
             Self::TimedOut => "Nobody answered in time, so nothing was filled.",
             Self::Superseded => "Moved on to your next message.",
+            Self::Unsure => "Buwiz Bot didn't hear how this went: it may still be typing, or it was answered already. Look at the Bot's screen before doing anything else.",
         }
     }
 }
@@ -1102,9 +1108,14 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
                     vault().take_pending(entry);
                     set_state(&key, CardState::Error(why));
                 }
-                UserFormReply::Empty | UserFormReply::AlreadyAnswered | UserFormReply::MissingEntry => {
+                UserFormReply::Empty | UserFormReply::MissingEntry => {
                     vault().take_pending(entry);
                     settle(&key, FormResolution::FillFailed);
+                }
+                // it may have been typed: no second answer, the person looks
+                UserFormReply::AlreadyAnswered | UserFormReply::StillWorking => {
+                    vault().take_pending(entry);
+                    settle(&key, FormResolution::Unsure);
                 }
                 UserFormReply::MissingRoute => {
                     vault().take_pending(entry);
@@ -1164,7 +1175,9 @@ fn answer_card(spec: Rc<UserFormSpec>, key: String, mode: &'static str) {
                         crate::computer::open_full(&spec.agent_id, &spec.bot_name);
                     }
                 }
-                UserFormReply::Empty | UserFormReply::AlreadyAnswered | UserFormReply::MissingEntry => set_state(&key, CardState::Dismissed),
+                UserFormReply::Empty | UserFormReply::MissingEntry => set_state(&key, CardState::Dismissed),
+                // the card was answered another way, or is still being typed: never "nothing was filled"
+                UserFormReply::AlreadyAnswered | UserFormReply::StillWorking => settle(&key, FormResolution::Unsure),
                 UserFormReply::MissingRoute => set_state(&key, CardState::Error(NO_ROUTE.to_owned())),
                 UserFormReply::Refused(why) | UserFormReply::Failed(why) => set_state(&key, CardState::Error(why)),
             }
