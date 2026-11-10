@@ -2673,8 +2673,10 @@ impl Turn {
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
             computer_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::computer_setup::Notice::of)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
-            run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| ["run_ended", "computer_job"].contains(&s(n, "kind").as_str()))).then(|| s(v, "text")),
-            run_failed: s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "run_ended" && s(n, "reason") == "failed"),
+            // a plugin's failed update ("Google Workspace update failed · still
+            // on 1.4.0") is a line as a failed run's is
+            run_ended: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| ["run_ended", "computer_job", "app_update_failed"].contains(&s(n, "kind").as_str()))).then(|| s(v, "text")),
+            run_failed: s(v, "role") == "notice" && v.get("notice").is_some_and(|n| (s(n, "kind") == "run_ended" && s(n, "reason") == "failed") || s(n, "kind") == "app_update_failed"),
             instruction_from: if s(v, "role") == "user" {
                 v.get("routine").filter(|r| r.is_object()).map(|r| s(r, "name")).unwrap_or_default()
             } else {
@@ -9107,6 +9109,15 @@ mod tests {
         let t = "tkt_0123456789ABCDEFGHJKMNPQRS";
         let attached = Turn { text: format!("Attached @bir:taxprofile:{t}"), ..Default::default() };
         assert!(reply_label(&attached).contains(t));
+    }
+
+    #[test]
+    fn a_failed_update_is_a_line_in_the_chat() {
+        use super::Turn;
+        let t = Turn::of(&serde_json::json!({"role": "notice", "text": "Google Workspace update failed · still on 1.4.0", "notice": {"kind": "app_update_failed", "id": "app.buwiz.google-workspace", "title": "Google Workspace", "version": "1.4.0", "reason": "the download stopped"}}));
+        assert_eq!((t.run_ended.as_deref(), t.run_failed), (Some("Google Workspace update failed · still on 1.4.0"), true));
+        // the reason stays on the card's signal: the line doesn't carry it
+        assert!(!t.run_ended.unwrap().contains("download"));
     }
 
     #[test]

@@ -68,12 +68,21 @@ fn links() -> Vec<DriveLink> {
 
 /// The broker's list: Google Workspace at `installed`, with `update`.
 fn list(installed: &str, update: Value) {
-    let v = json!({"id": GWS, "title": "Google Workspace", "version": installed, "state": "running", "enabled": true, "update": update});
+    listed(json!({"id": GWS, "title": "Google Workspace", "version": installed, "state": "running", "enabled": true, "update": update, "apps": apps()}));
+}
+
+/// The broker's list: the one plugin `v`.
+fn listed(v: Value) {
     batch(|| {
         store().v1.listed.set(vec![Listed::of(&v)]);
         store().v1.entries.set(vec![PluginEntry::from_json(&v).unwrap()]);
         store().v1.known.set(true);
     });
+}
+
+/// The apps its manifest has: Mail, a card and a full screen.
+fn apps() -> Value {
+    json!([{"id": "mail", "title": "Mail", "placement": ["full", "inline"]}])
 }
 
 fn waiting(version: &str) -> Value {
@@ -94,12 +103,25 @@ fn Stage() -> impl IntoElement {
     Owner::detached().run(|| {
         let _ = store();
     });
+    // a gone app's card over a store that still has its rows
+    let gone_text = signal(false);
     view()
         .size_full()
+        .child(when(
+            move || gone_text.get(),
+            || {
+                let open = Some((V1Key { plugin: GWS.to_owned(), app: "drive".to_owned(), ticket: None, props: Default::default() }, "Drive".to_owned()));
+                ui::gone_card_with("Mail".to_owned(), "Google Workspace".to_owned(), open, || {
+                    Ok(crate::mini_v1::gone::Text { lines: vec!["Ada Lovelace — Lunch on Friday".to_owned(), "Grace Hopper — Compiler notes".to_owned()], at: 0 })
+                })
+                .into_element()
+            },
+        ))
         .child(
             view()
                 .flex_row()
                 .h(px(24.0))
+                .child(button("gone, with text", move || gone_text.set(true)))
                 .child(button("seed", || store().active_id.set("chat".to_owned())))
                 .child(button("1.5.0 waits", || list("1.4.0", waiting("1.5.0"))))
                 .child(button("plain 1.5.0 waits", || list("1.4.0", json!({"version": "1.5.0"}))))
@@ -116,6 +138,29 @@ fn Stage() -> impl IntoElement {
                 .child(button("plugin restarts", || {
                     store().v1_reconnecting(&key(), "Mail");
                     store().v1_plugin_event(&json!({"id": GWS, "state": "running", "generation": 2, "enabled": true}));
+                }))
+                .child(button("update fails", || {
+                    store().v1.update_failed.update(|f| {
+                        f.insert(GWS.to_owned(), "the download stopped.".to_owned());
+                    })
+                }))
+                .child(button("mail is gone", || {
+                    listed(json!({"id": GWS, "short": "gws", "title": "Google Workspace", "version": "1.5.0", "state": "running", "enabled": true, "apps": [{"id": "drive", "title": "Drive", "placement": ["full", "inline"]}]}))
+                }))
+                .child(button("mail is gone, plugin restarting", || {
+                    listed(json!({"id": GWS, "short": "gws", "title": "Google Workspace", "version": "1.5.0", "state": "restarting", "enabled": true, "apps": [{"id": "drive", "title": "Drive", "placement": ["full", "inline"]}]}))
+                }))
+                .child(button("review from connect apps", || {
+                    store().v1.review.set(Some(crate::mini_v1::connect::Review {
+                        command: "/bin/gws".to_owned(),
+                        id: GWS.to_owned(),
+                        title: "Google Workspace".to_owned(),
+                        version: "1.5.0".to_owned(),
+                        from_version: Some("1.4.0".to_owned()),
+                        manifest_sha256: "a".repeat(64),
+                        ..Default::default()
+                    }));
+                    store().v1_install();
                 }))
                 .child(button("next launch", || store().v1.later.set(Default::default())))
                 .child(button("made again with 1.5.0", || {
@@ -163,6 +208,15 @@ fn stub_broker() -> Arc<Mutex<Vec<String>>> {
 
 /// [`stub_broker`], whose plugin list is Google Workspace at `version`.
 fn stub_broker_listing(version: &'static str) -> Arc<Mutex<Vec<String>>> {
+    stub(version, false)
+}
+
+/// [`stub_broker`], which refuses every install: "the download stopped".
+fn stub_broker_refusing_installs() -> Arc<Mutex<Vec<String>>> {
+    stub("1.4.0", true)
+}
+
+fn stub(version: &'static str, refuse_installs: bool) -> Arc<Mutex<Vec<String>>> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     // the child has one thread here, and nothing has read the variable yet
@@ -172,6 +226,7 @@ fn stub_broker_listing(version: &'static str) -> Arc<Mutex<Vec<String>>> {
         for s in listener.incoming().flatten() {
             let mut s = s;
             let mut raw = Vec::new();
+            let mut install = false;
             let mut buf = [0; 4096];
             while let Ok(n) = s.read(&mut buf) {
                 if n == 0 {
@@ -182,12 +237,17 @@ fn stub_broker_listing(version: &'static str) -> Arc<Mutex<Vec<String>>> {
                 let Some((head, body)) = text.split_once("\r\n\r\n") else { continue };
                 let length = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length: ")?.trim().parse::<usize>().ok()).unwrap_or(0);
                 if body.len() >= length {
+                    install = head.lines().next().unwrap_or_default().contains("/v1/host/plugins/install");
                     log.lock().unwrap().push(format!("{} {body}", head.lines().next().unwrap_or_default()));
                     break;
                 }
             }
-            let plugin = json!({"id": GWS, "title": "Google Workspace", "version": version, "state": "running", "enabled": true, "generation": 2});
-            let body = json!({"ok": true, "plugins": [plugin]}).to_string();
+            let plugin = json!({"id": GWS, "title": "Google Workspace", "version": version, "state": "running", "enabled": true, "generation": 2, "apps": apps()});
+            let body = if install && refuse_installs {
+                json!({"ok": false, "code": "plugin_unavailable", "message": "the download stopped", "error": {"code": "plugin_unavailable", "message": "the download stopped"}}).to_string()
+            } else {
+                json!({"ok": true, "plugins": [plugin]}).to_string()
+            };
             let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
         }
     });
@@ -426,4 +486,147 @@ fn a_restart_into_the_same_version_says_nothing() {
     app.press("plugin restarts");
     listed_again(&mut app, "1.4.0");
     assert!(!says(&app, "Made with"), "{:?}", app.texts());
+}
+
+/// The "!"'s name once an update failed.
+const FAILED: &str = "Google Workspace update failed";
+
+/// G1-1: a failed update turns the (i) into a "!" whose panel says why
+/// and what stays, with Retry; the card keeps its place. Retry asks for
+/// the review card again and installs nothing.
+#[test]
+fn a_failed_update_shows_on_the_signal_with_retry() {
+    if !in_child("a_failed_update_shows_on_the_signal_with_retry") {
+        return;
+    }
+    let seen = stub_broker();
+    let mut app = start();
+    app.press("1.5.0 waits");
+    let before = layout(&app);
+    app.press("update fails");
+    assert!(app.has(FAILED) && !app.has(SIGNAL), "the ! stands where the (i) was");
+    assert!(says(&app, "Mail"), "the card is still there");
+    assert_eq!(layout(&app), before, "the ! takes no more room than the (i)");
+
+    app.press(FAILED);
+    assert!(app.has("Update panel") && app.has("Update failure") && app.has("Retry"));
+    assert!(says(&app, "Update failed: the download stopped. Still on 1.4.0."), "{:?}", app.texts());
+    assert!(!app.has("Later") && !app.has("Skip 1.5.0"));
+    assert_eq!(layout(&app), before, "the panel floats");
+    app.cancel("Update panel");
+    assert!(!app.has("Update panel") && app.has(FAILED));
+
+    // Retry: the review card again, never an install
+    app.press(FAILED);
+    app.press("Retry");
+    assert!(!app.has("Update panel") && !app.has(FAILED) && app.has(SIGNAL), "the failure is cleared and the update waits again");
+    let mut heard = false;
+    for _ in 0..200 {
+        app.pump(Duration::from_millis(20));
+        if seen.lock().unwrap().iter().any(|r| r.contains("/v1/host/plugins/updates/review")) {
+            heard = true;
+            break;
+        }
+    }
+    assert!(heard, "no review reached the broker: {:?}", seen.lock().unwrap());
+    assert!(!seen.lock().unwrap().iter().any(|r| r.contains("/plugins/install")), "nothing installs without Install");
+}
+
+/// G1-1: the failure shows even when the update's own signal is hidden:
+/// skipped, put off, or no longer listed.
+#[test]
+fn a_failure_shows_whether_or_not_the_update_still_signals() {
+    if !in_child("a_failure_shows_whether_or_not_the_update_still_signals") {
+        return;
+    }
+    let mut app = start();
+    app.press("1.5.0 waits");
+    app.press(SIGNAL);
+    app.press("Later");
+    assert!(!app.has(SIGNAL));
+    app.press("update fails");
+    assert!(app.has(FAILED), "put off, and it failed all the same");
+    // the list no longer announces it: what is installed is what stays
+    app.press("installed");
+    assert!(app.has(FAILED) && !app.has(SIGNAL));
+    app.press(FAILED);
+    assert!(says(&app, "Update failed: the download stopped. Still on 1.5.0."), "{:?}", app.texts());
+}
+
+/// G1-1: an update refused from Connect Apps' review shows on the cards
+/// and is said in the open chat.
+#[test]
+fn an_update_refused_in_connect_apps_shows_on_the_card_and_in_the_chat() {
+    if !in_child("an_update_refused_in_connect_apps_shows_on_the_card_and_in_the_chat") {
+        return;
+    }
+    let seen = stub_broker_refusing_installs();
+    let mut app = start();
+    app.press("1.5.0 waits");
+    app.press("review from connect apps");
+    let mut said = None;
+    for _ in 0..300 {
+        app.pump(Duration::from_millis(20));
+        if let Some(r) = seen.lock().unwrap().iter().find(|r| r.contains("/v1/host/plugins/updates/failed")) {
+            said = Some(r.clone());
+            break;
+        }
+    }
+    let said = said.unwrap_or_else(|| panic!("the chat was not told: {:?}", seen.lock().unwrap()));
+    assert!(said.contains(&format!(r#""id":"{GWS}""#)) && said.contains(r#""chat":"chat""#) && said.contains("the download stopped"), "{said}");
+    assert!(app.has(FAILED), "{:?}", app.texts());
+    app.press(FAILED);
+    assert!(says(&app, "Update failed: the download stopped. Still on 1.4.0."), "{:?}", app.texts());
+}
+
+/// G3-1: a running plugin whose new version has no such app leaves the
+/// card as its title, the note, and Open in plugin when its store has
+/// nothing (here: no text tool). A plugin that is only restarting says
+/// nothing about its apps.
+#[test]
+fn a_card_whose_app_is_gone_says_so_and_offers_the_plugin() {
+    if !in_child("a_card_whose_app_is_gone_says_so_and_offers_the_plugin") {
+        return;
+    }
+    let mut app = start();
+    app.press("installed");
+    assert!(!app.has("Card can't be redrawn"));
+    app.press("mail is gone, plugin restarting");
+    assert!(!app.has("Card can't be redrawn"), "a restart is not a missing app");
+    app.press("mail is gone");
+    assert!(app.has("Card can't be redrawn") && says(&app, "Mail"), "{:?}", app.texts());
+    assert!(says(&app, "The new version of Google Workspace can't redraw this card."), "{:?}", app.texts());
+    for _ in 0..200 {
+        if app.has("Open in plugin") {
+            break;
+        }
+        app.pump(Duration::from_millis(20));
+    }
+    assert!(app.has("Open in plugin"), "{:?}", app.texts());
+    assert!(!app.has("Last content") && !app.has("Open full screen") && !app.has("Collapse"), "nothing of the old card to press");
+    // the app is back (a later version): the card is a card again
+    app.press("installed");
+    assert!(!app.has("Card can't be redrawn"));
+}
+
+/// G3-1: what the plugin's store still has is shown as plain text: lines
+/// nobody can press, under the note.
+#[test]
+fn a_gone_cards_last_content_is_plain_text() {
+    if !in_child("a_gone_cards_last_content_is_plain_text") {
+        return;
+    }
+    let mut app = start();
+    app.press("gone, with text");
+    for _ in 0..200 {
+        if app.has("Last content") {
+            break;
+        }
+        app.pump(Duration::from_millis(20));
+    }
+    assert!(app.has("Last content"), "{:?}", app.texts());
+    for line in ["Mail", "Ada Lovelace — Lunch on Friday", "Grace Hopper — Compiler notes", "The new version of Google Workspace can't redraw this card."] {
+        assert!(says(&app, line), "{line}: {:?}", app.texts());
+    }
+    assert!(!app.has("Open in plugin"), "there is content: nothing to go and look for");
 }

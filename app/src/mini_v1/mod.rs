@@ -36,6 +36,7 @@ pub mod cards;
 pub mod connect;
 pub mod consent;
 pub mod document;
+pub mod gone;
 pub mod host_api;
 pub mod lifecycle;
 pub mod links;

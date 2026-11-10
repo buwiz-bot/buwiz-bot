@@ -352,6 +352,23 @@ pub fn update_label(title: &str, u: &Update) -> String {
     format!("{title} {} update available", bare_version(&u.version))
 }
 
+/// The "!"'s accessible name once an update failed: "Google Workspace
+/// update failed".
+pub fn update_failed_label(title: &str) -> String {
+    format!("{title} update failed")
+}
+
+/// What a failed update's panel says: "Update failed: the download
+/// stopped. Still on 1.4.0." (`installed` is the version that stays).
+pub fn update_failed_line(reason: &str, installed: &str) -> String {
+    let reason = reason.trim().trim_end_matches('.').trim_end();
+    let still = match bare_version(installed) {
+        "" => String::new(),
+        v => format!(" Still on {v}."),
+    };
+    if reason.is_empty() { format!("Update failed.{still}") } else { format!("Update failed: {reason}.{still}") }
+}
+
 /// A version without its `v`.
 pub fn bare_version(v: &str) -> &str {
     v.trim().trim_start_matches('v')
@@ -1225,6 +1242,15 @@ mod tests {
         assert_eq!(update_step(&u), "1.4.0 → 1.5.0");
         assert_eq!(update_access(&u).as_deref(), Some("Needs new access: Google Drive, Contacts"));
         assert_eq!(update_access(&Update::default()), None);
+    }
+
+    #[test]
+    fn a_failed_update_says_why_and_what_stays() {
+        assert_eq!(super::update_failed_line("the download stopped", "v1.4.0"), "Update failed: the download stopped. Still on 1.4.0.");
+        assert_eq!(super::update_failed_line("The signature is wrong. ", "1.4.0"), "Update failed: The signature is wrong. Still on 1.4.0.");
+        assert_eq!(super::update_failed_line(" ", "1.4.0"), "Update failed. Still on 1.4.0.");
+        assert_eq!(super::update_failed_line("no network", ""), "Update failed: no network.");
+        assert_eq!(super::update_failed_label("Google Workspace"), "Google Workspace update failed");
     }
 
     #[test]

@@ -1568,17 +1568,14 @@ impl Store {
                     Ok(r) => r,
                     Err(e) => {
                         if review.from_version.is_some() {
-                            store().v1.update_failed.update(|f| {
-                                f.insert(review.id.clone(), e.message.clone());
-                            });
+                            // on its cards' signal, and a line in the open chat
+                            store().v1_update_ended(&review.id, &store().active_id.get_untracked(), Some(e.message.clone()));
                         }
                         return crate::toast::show(e.message);
                     }
                 };
                 if review.from_version.is_some() {
-                    store().v1.update_failed.update(|f| {
-                        f.remove(&review.id);
-                    });
+                    store().v1_update_ended(&review.id, "", None);
                 }
                 match r {
                     connect::Installed::Done => {
@@ -2003,11 +2000,20 @@ impl Store {
                 self.v1.update_failed.update(|f| {
                     f.insert(id.clone(), reason.clone());
                 });
+                // no chat open (Connect Apps over an empty window): the
+                // signal alone says it
+                if chat.is_empty() {
+                    return;
+                }
                 let chat = chat.to_owned();
-                std::thread::spawn(move || {
-                    if let Err(e) = host_api::update_failed(&broker(), &id, &chat, &reason) {
-                        log::warn!("mini v1: the update's failure was not said in the chat: {}", e.message);
-                    }
+                std::thread::spawn(move || match host_api::update_failed(&broker(), &id, &chat, &reason) {
+                    // the line is a turn of that chat: read it now
+                    Ok(()) => super::to_store(move |st| {
+                        if st.active_id.get_untracked() == chat {
+                            st.refresh_turns();
+                        }
+                    }),
+                    Err(e) => log::warn!("mini v1: the update's failure was not said in the chat: {}", e.message),
                 });
             }
         }
@@ -2253,6 +2259,96 @@ pub fn open_card(card: OpenCard, card_id: String) -> AnyElement {
 /// a row with Open. A `collapsed` one (aged, or past an answer's one main
 /// and two small ones) shows its header only until it is opened.
 fn card_row(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
+    // its plugin's new version has no such app (G3-1): nothing can draw
+    // it again, so it shows what it last showed, as text
+    let (plugin, app) = (card.plugin.clone(), card.app.clone());
+    let is_gone = computed(move || {
+        let entry = store().v1.entries.with(|e| e.iter().find(|p| p.id == plugin).cloned());
+        let listed = store().v1.listed.with(|l| l.iter().find(|p| p.id == plugin).cloned());
+        super::gone::gone(entry.as_ref(), listed.as_ref(), &app)
+    });
+    dynamic(move || {
+        let (card, card_id) = (card.clone(), card_id.clone());
+        if is_gone.get() {
+            return untracked(|| gone_card(card).into_element());
+        }
+        untracked(|| card_row_live(card, card_id, collapsed))
+    })
+    .into_element()
+}
+
+/// The card a gone app leaves, read from its plugin's store.
+fn gone_card(card: OpenCard) -> impl IntoElement {
+    let entry = store().v1.entry(&card.plugin);
+    let listed = store().v1.listed.with_untracked(|l| l.iter().find(|p| p.id == card.plugin).cloned());
+    let plugin_title = entry.as_ref().map(|p| p.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| card.plugin.clone());
+    let open = entry.as_ref().and_then(super::gone::full_app).map(|(app, title)| (V1Key { plugin: card.plugin.clone(), app, ticket: None, props: Default::default() }, title));
+    let c = card.clone();
+    gone_card_with(card.title.clone(), plugin_title, open, move || match (&entry, &listed) {
+        (Some(e), Some(l)) => super::gone::read(Arc::new(broker()), e, l, &c),
+        _ => Err(RoxError::new("not_found", "the plugin is not listed")),
+    })
+}
+
+/// A gone app's card (G3-1): its title, the note that the new version
+/// can't redraw it, and what `read` finds of its last content in the
+/// plugin's store, as plain text nobody can press. With nothing found, or
+/// until it is: "Open in plugin" (`open`: the plugin's full-screen app),
+/// when it has one. `read` runs off the main thread, and what it answers
+/// lives in this card only.
+pub fn gone_card_with(title: String, plugin_title: String, open: Option<(V1Key, String)>, read: impl FnOnce() -> Result<super::gone::Text, RoxError> + Send + 'static) -> impl IntoElement {
+    // None: still reading
+    let found: Signal<Option<Option<super::gone::Text>>> = signal(None);
+    spawn(async move {
+        let got = crate::vault::off_main(read).await;
+        if let Some(Err(e)) = &got {
+            log::info!("mini v1: a gone card's text: {}", e.code);
+        }
+        found.set(Some(got.and_then(Result::ok)));
+    });
+    view()
+        .label("Card can't be redrawn")
+        .w(px(COLUMN))
+        .rounded(px(12.0))
+        .overflow_hidden()
+        .border_1()
+        .border_color(theme::BORDER_S)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(40.0))
+                .px(px(10.0))
+                .bg(tc("#1f1f1f"))
+                .child(crate::appdetails::named_tile("", &title, 22.0))
+                .child(text(title).flex_auto().min_w(px(0.0)).number_of_lines(1).text_size(px(13.0)).text_color(tc("#f5f5f5"))),
+        )
+        .child(dynamic(move || {
+            let mut body = view().gap(px(6.0)).px(px(10.0)).py(px(8.0)).bg(theme::CARD);
+            match found.get() {
+                Some(Some(t)) => {
+                    body = body.child(view().label("Last content").gap(px(2.0)).children(
+                        t.lines.into_iter().map(|l| text(l).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::DIM)),
+                    ));
+                    let note = super::gone::note(&plugin_title);
+                    let note = if t.at > 0 { format!("{note} Saved {}.", cards::as_of_label(t.at)) } else { note };
+                    body.child(text(note).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(tc("#f5f5f5ad"))).into_element()
+                }
+                state => {
+                    body = body.child(text(super::gone::note(&plugin_title)).number_of_lines(3).text_size(px(12.0)).line_height(px(16.0)).text_color(tc("#f5f5f5ad")));
+                    // nothing stored (not: still reading)
+                    if let (Some(None), Some((key, app_title))) = (state, open.clone()) {
+                        body = body.child(view().flex_row().child(crate::cards::btn(crate::cards::Btn::Secondary, "Open in plugin", move || store().open_v1(key.clone(), &app_title, Opener::User))));
+                    }
+                    body.into_element()
+                }
+            }
+        }))
+}
+
+/// [`card_row`] of an app its plugin has.
+fn card_row_live(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement {
     let entry = store().v1.entry(&card.plugin);
     let plugin_title = entry.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| card.plugin.clone());
     let auto = !collapsed
@@ -2526,6 +2622,7 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                 })
                 // a newer version waits: the (i), left of ⌄ ⤢
                 .child(update_signal(&id_signal, &card.plugin))
+                .child(failed_signal(&id_signal, &card.plugin))
                 .child(dynamic(move || {
                     let id = id_toggle.clone();
                     if shown() {
@@ -2675,7 +2772,8 @@ fn open_update_panel(card_id: &str, plugin: &str, version: &str, pinned: bool) {
 fn update_signal(card_id: &str, plugin: &str) -> impl IntoElement {
     let (card_id, plugin) = (card_id.to_owned(), plugin.to_owned());
     let p = plugin.clone();
-    let update = computed(move || store().v1_update(&p));
+    // a failed update has the "!" instead ([`failed_signal`])
+    let update = computed(move || if store().v1.update_failed.with(|f| f.contains_key(&p)) { None } else { store().v1_update(&p) });
     let anchor = element_ref();
     // the pointer is on the icon or the panel
     let over = signal(false);
@@ -2743,6 +2841,118 @@ fn update_signal(card_id: &str, plugin: &str) -> impl IntoElement {
                 .into_element(),
         )
     })
+}
+
+/// The signal of an update that failed (G1-1): a "!" in the card's header
+/// where the (i) was, whether or not the update still waits (a skipped or
+/// put-off one failed all the same). Its panel says why and which version
+/// stays, with Retry; the card itself keeps working on that version.
+fn failed_signal(card_id: &str, plugin: &str) -> impl IntoElement {
+    let (card_id, plugin) = (card_id.to_owned(), plugin.to_owned());
+    let p = plugin.clone();
+    let failed = computed(move || store().v1.update_failed.with(|f| f.get(&p).cloned()));
+    let anchor = element_ref();
+    let over = signal(false);
+    let owner = Owner::current();
+    dynamic(move || {
+        let reason = failed.get()?;
+        // tracked: the version that stays is the one installed now
+        let (title, installed) = store().v1.listed.with(|l| l.iter().find(|x| x.id == plugin).map(|x| (x.title.clone(), x.version.clone()))).unwrap_or_default();
+        let title = if title.is_empty() { plugin.clone() } else { title };
+        let (id_open, id_peek, id_press, id_leave, id_panel) = (card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone());
+        let (o_peek, o_leave) = (owner, owner);
+        let open = move || store().v1.update_panel.with(|p| p.as_ref().is_some_and(|(id, _)| *id == id_open));
+        let (plugin_panel, line, anchor_panel, owner_panel) = (plugin.clone(), connect::update_failed_line(&reason, &installed), anchor, owner);
+        Some(
+            view()
+                .child(
+                    view()
+                        .size(px(28.0))
+                        .rounded(px(14.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(theme::SUBTLE)
+                        .label(connect::update_failed_label(&title))
+                        .element_ref(&anchor)
+                        .on_mouse_enter(move |_: &MouseEvent| {
+                            over.set(true);
+                            let id = id_peek.clone();
+                            o_peek.run(|| {
+                                set_timeout(std::time::Duration::from_millis(PEEK_MS), move || {
+                                    if over.get_untracked() && store().v1.update_panel.with_untracked(Option::is_none) {
+                                        store().v1.update_panel.set(Some((id, false)));
+                                    }
+                                })
+                            });
+                        })
+                        .on_mouse_leave(move |_: &MouseEvent| {
+                            over.set(false);
+                            close_peek_later(&o_leave, &id_leave, over);
+                        })
+                        .on_press(move || {
+                            let pinned = Some((id_press.clone(), true));
+                            let now = store().v1.update_panel.with_untracked(|p| *p == pinned);
+                            store().v1.update_panel.set(if now { None } else { pinned });
+                        })
+                        // a ! in a ring
+                        .child(
+                            view()
+                                .size(px(16.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(theme::WARN)
+                                .items_center()
+                                .justify_center()
+                                .child(text("!").text_size(px(11.0)).line_height(px(13.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::WARN)),
+                        ),
+                )
+                .child(when(open, move || failed_panel(&id_panel, &plugin_panel, &line, &anchor_panel, over, &owner_panel).into_element()))
+                .into_element(),
+        )
+    })
+}
+
+/// A failed update's panel, against its "!": the reason, the version
+/// that stays, and Retry, which brings the install-review card back
+/// (nothing installs from here). It floats as the update's panel does.
+fn failed_panel(card_id: &str, plugin: &str, line: &str, anchor: &ElementRef, over: Signal<bool>, owner: &Owner) -> impl IntoElement {
+    let shown = signal(reduce_motion());
+    if !shown.get_untracked() {
+        set_timeout(std::time::Duration::from_millis(16), move || shown.set(true));
+    }
+    let (focus, id_leave, o_leave, plugin) = (*anchor, card_id.to_owned(), *owner, plugin.to_owned());
+    let body = view()
+        .label("Update failure")
+        .w(px(PANEL_W))
+        .gap(px(8.0))
+        .p(px(12.0))
+        .rounded(px(12.0))
+        .bg(theme::POPOVER)
+        .border_1()
+        .border_color(theme::BORDER_S)
+        .shadow_lg()
+        .opacity(move || if shown.get() { 1.0f32 } else { 0.0 })
+        .transition_opacity()
+        .duration(PANEL_FADE_MS)
+        .on_mouse_enter(move |_: &MouseEvent| over.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| {
+            over.set(false);
+            close_peek_later(&o_leave, &id_leave, over);
+        })
+        .child(text(line.to_owned()).number_of_lines(6).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+        .child(view().flex_row().pt(px(2.0)).child(crate::cards::btn(crate::cards::Btn::Primary, "Retry", move || store().v1_review_update(&plugin))));
+    nsh_core::element::overlay()
+        .anchor(anchor)
+        .placement(nsh_core::overlay::Placement::Bottom)
+        .align(nsh_core::overlay::Align::End)
+        .offset(px(6.0))
+        .label("Update panel")
+        .on_press_outside(move |_: &Point<Points>| store().v1.update_panel.set(None))
+        .on_cancel(move || {
+            store().v1.update_panel.set(None);
+            focus.focus();
+        })
+        .child(body)
 }
 
 /// Closes card `card_id`'s panel after the grace, if it was only a peek
