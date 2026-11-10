@@ -1988,17 +1988,18 @@ export default function R() {
 
     const WIDGET_WINDOW: &str = r#"
 import { Text } from "nsh";
-import { Window } from "nsh/desktop";
+import { currentWindow } from "nsh/desktop";
 import os from "os";
 
 export default function R() {
-  Window.setTitle("spoofed");
-  Window.minimize();
+  const win = currentWindow();
+  win.set({ title: "spoofed" });
+  win.minimize();
   let home: string;
   try {
     home = typeof os.homedir();
   } catch (e) {
-    home = (e as Error).name;
+    home = (e as Error & { code?: string }).code ?? "thrown";
   }
   return <Text>{`home ${home}`}</Text>;
 }
@@ -2008,11 +2009,12 @@ export default function R() {
     fn a_widget_cannot_control_the_window_or_read_the_home_directory() {
         let js = super::compile_widget("R997", WIDGET_WINDOW).expect("compile widget");
 
-        // Widgets and MCP apps declare no `window` or `homeDir`: the window
-        // commands never reach the platform and `os.homedir()` throws.
+        // Widgets and MCP apps declare no `window` or `homeDir`: the main
+        // window's commands never reach the platform and `os.homedir()`
+        // fails with `ERR_ACCESS_DENIED`.
         for module in ["R997", "mcp:bir/forms"] {
             let (engine, rx, _) = start_widget(super::mini_bundle(module, js.clone()));
-            let commands = run_until_text(&engine, &rx, "home TypeError");
+            let commands = run_until_text(&engine, &rx, "home ERR_ACCESS_DENIED");
             assert!(
                 commands.is_empty(),
                 "{module}: desktop commands reached the platform: {commands:?}"
@@ -2029,7 +2031,8 @@ export default function R() {
                 Command::Desktop(command)
                     if matches!(
                         command.as_ref(),
-                        DesktopCommand::SetTitle(title) if title == "spoofed"
+                        DesktopCommand::SetAttributes(attributes)
+                            if attributes.title.as_deref() == Some("spoofed")
                     )
             )),
             "default policy did not send the title: {commands:?}"

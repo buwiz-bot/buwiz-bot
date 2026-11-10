@@ -296,7 +296,9 @@ async fn a_lost_record_doesnt_strand_a_bot() {
         let fresh = Computers::new(b.mock.clone());
         let fresh = Arc::new(fresh);
         assert_eq!(fresh.live(&b.ctx, &b.ann.0).await.err(), Some(Problem::Gone));
-        assert_eq!(fresh.status(&b.ctx, &b.ann.0).await["code"], "gone");
+        let status = fresh.status(&b.ctx, &b.ann.0).await;
+        assert_eq!(status["code"], "lost");
+        assert!(status["message"].as_str().unwrap().contains("Click to look for it"), "a click may find it, and nothing says it's gone: {status}");
         fresh.click(&b.ctx, &b.ann.0).await.unwrap();
         for _ in 0..400 {
             if fresh.status(&b.ctx, &b.ann.0).await["state"] == "awake" {
@@ -307,14 +309,27 @@ async fn a_lost_record_doesnt_strand_a_bot() {
         let new = seated(&b.ctx, &b.ann.0).unwrap().computer;
         assert_ne!(new, old);
         assert_eq!(seated(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
-        fresh.sleep_the_idle(&b.ctx).await;
         assert!(b.mock.calls().iter().any(|c| c.starts_with(&format!("recover {old} Some(Container"))), "it looked for what's left first, by name: {:?}", b.mock.calls());
-        assert_eq!(Computers::ids(&b.ctx), [new]);
+        // the old one is lost, with nobody at it, and the timer never deletes it, however long
+        assert!(Computers::is_lost(&b.ctx, &old).unwrap());
+        assert!(Computers::seats(&b.ctx, &old).unwrap().is_empty());
+        assert_eq!(Computers::ids(&b.ctx), std::slice::from_ref(&new));
+        for _ in 0..3 {
+            past_just_gone(&b);
+            fresh.sleep_the_idle(&b.ctx).await;
+        }
+        assert_eq!(fresh.finish_retire(&b.ctx, &old).await.unwrap_err().code(), "lost");
+        assert!(!b.mock.calls().iter().any(|c| c.starts_with("sweep") || c == "destroy"), "a computer was deleted with nobody asked: {:?}", b.mock.calls());
+        let mut left = Computers::ids_where(&b.ctx, "1=1");
+        left.sort();
+        let mut both = [old.clone(), new];
+        both.sort();
+        assert_eq!(left, both, "both rows are still there");
     }
 }
 
 #[tokio::test]
-async fn leaving_with_the_record_lost_is_leaving() {
+async fn leaving_with_the_record_lost_keeps_it_as_lost() {
     let b = bed("lost-leave");
     let id = awake(&b, &b.ann.0).await;
     std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
@@ -323,7 +338,8 @@ async fn leaving_with_the_record_lost_is_leaving() {
     assert!(seated(&b.ctx, &b.ann.0).is_none());
     past_just_gone(&b);
     fresh.sleep_the_idle(&b.ctx).await;
-    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
+    // nothing can say it's gone: a person's Delete in Settings is what deletes it (`tests/lost.rs`)
+    assert_eq!(Computers::ids_where(&b.ctx, "lost_at IS NOT NULL"), std::slice::from_ref(&id));
 }
 
 #[tokio::test]
@@ -357,6 +373,124 @@ async fn a_bot_that_leaves_a_sleeping_computer_loses_its_screen_at_the_next_wake
     }
     assert!(b.mock.calls().contains(&"screen_down b_bea".to_owned()), "{:?}", b.mock.calls());
     assert_eq!(*b.mock.screens.lock().unwrap(), ["b_ann"]);
+}
+
+#[tokio::test]
+async fn a_sleep_that_couldnt_keep_whats_open_says_so_until_the_next_wake() {
+    let b = bed("sleep-note");
+    let id = awake(&b, &b.ann.0).await;
+    let note = "This computer couldn't hibernate, so it was stopped instead.";
+    *b.mock.sleep_note.lock().unwrap() = Some(note.to_owned());
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["sleepNote"], note);
+    // still true after it sleeps deeper: what was open is no more there
+    b.computers.sleep(&b.ctx, &id, Sleep::Deep).await.unwrap();
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["sleepNote"], note);
+    *b.mock.sleep_note.lock().unwrap() = None;
+    awake(&b, &b.ann.0).await;
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await.get("sleepNote"), None, "a wake that worked clears it");
+    // and a light sleep that kept everything has nothing to say
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await.get("sleepNote"), None);
+}
+
+#[tokio::test]
+async fn files_left_by_a_docker_computer_thats_gone_are_listed_and_a_known_ones_arent() {
+    let b = bed("leftovers");
+    let id = awake(&b, &b.ann.0).await;
+    let left = |name: &str, id: Option<&str>, owner: &str| buwiz_computer::Leftover { name: name.to_owned(), id: id.map(str::to_owned), owner: owner.to_owned() };
+    *b.mock.leftovers.lock().unwrap() = vec![
+        // this computer's, by its box's name and by its label: a wake rebuilds on them
+        left(&format!("mock-{id}-home"), None, &format!("mock-{id}")),
+        left("c2-renamed-home", Some(&id), "c2-renamed"),
+        left("c2-0a1b2c3d-workspace", Some("cmp_gone"), "c2-0a1b2c3d"),
+        left("c2-deadbeef-home", None, "c2-deadbeef"),
+    ];
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([{"name": "c2-0a1b2c3d-workspace", "id": "cmp_gone"}, {"name": "c2-deadbeef-home"}]));
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("destroy") || c.starts_with("sweep")), "only listed: {:?}", b.mock.calls());
+    // a list that can't tell which computers are here lists nothing
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME TO computers_away", [])).unwrap();
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers_away RENAME TO computers", [])).unwrap();
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert!(docker.get("leftovers").is_none(), "not an empty list, which would say there are none: {docker}");
+}
+
+#[tokio::test]
+async fn a_docker_that_hangs_leaves_the_leftovers_out_of_the_list_and_holds_it_up_no_longer() {
+    let b = bed("leftovers-hang");
+    *b.mock.leftovers.lock().unwrap() = vec![buwiz_computer::Leftover { name: "c2-deadbeef-home".into(), id: None, owner: "c2-deadbeef".into() }];
+    b.mock.hang_leftovers.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let seen = tokio::time::timeout(Duration::from_secs(10), b.computers.providers_seen(&b.ctx)).await.expect("the list waited on Docker");
+    assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert!(docker.get("leftovers").is_none(), "{docker}");
+    assert!(docker["computers"].is_array(), "the rest of the list is there: {docker}");
+    b.mock.hang_leftovers.store(false, Ordering::SeqCst);
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([{"name": "c2-deadbeef-home"}]));
+}
+
+#[tokio::test]
+async fn a_provider_that_cant_say_what_is_left_gives_no_list_of_leftovers() {
+    let b = bed("leftovers-unknown");
+    b.mock.leftovers_unknown.store(true, Ordering::SeqCst);
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert!(docker.get("leftovers").is_none(), "not an empty list, which would say there are none: {docker}");
+    b.mock.leftovers_unknown.store(false, Ordering::SeqCst);
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]), "Docker's own word that nothing is left: {docker}");
+}
+
+#[tokio::test]
+async fn a_docker_computer_with_no_box_name_to_go_by_hides_the_volumes_from_before_labels() {
+    let b = bed("leftovers-unnamed");
+    let id = awake(&b, &b.ann.0).await;
+    // a row from before reach was kept, and its record lost: nothing says its box's name
+    b.ctx.db.with(|c| c.execute("UPDATE computers SET reach=NULL WHERE id=?", [&id])).unwrap();
+    std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
+    let fresh = Computers::new(b.mock.clone());
+    let left = |name: &str, id: Option<&str>, owner: &str| buwiz_computer::Leftover { name: name.to_owned(), id: id.map(str::to_owned), owner: owner.to_owned() };
+    *b.mock.leftovers.lock().unwrap() = vec![left("c2-0a1b2c3d-workspace", Some("cmp_gone"), "c2-0a1b2c3d"), left("c2-deadbeef-home", None, "c2-deadbeef")];
+    let seen = fresh.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([{"name": "c2-0a1b2c3d-workspace", "id": "cmp_gone"}]), "an unlabelled one could be that computer's");
+}
+
+#[tokio::test]
+async fn a_computer_being_made_has_no_leftovers() {
+    let b = bed("leftovers-making");
+    b.mock.create_ms.store(300, Ordering::SeqCst);
+    let computers = b.computers.clone();
+    let ctx = b.ctx.clone();
+    let ann = b.ann.0.clone();
+    let click = tokio::spawn(async move { computers.click(&ctx, &ann).await });
+    let mut id = None;
+    for _ in 0..400 {
+        id = b.computers.being_made.lock().unwrap().iter().next().cloned();
+        if id.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let id = id.expect("a make started");
+    assert!(Computers::ids_where(&b.ctx, "1=1").is_empty(), "its row isn't written yet");
+    // its volumes are there before its row, as Docker's create makes them
+    *b.mock.leftovers.lock().unwrap() = vec![buwiz_computer::Leftover { name: "c2-0a1b2c3d-home".into(), id: Some(id.clone()), owner: "c2-0a1b2c3d".into() }];
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]), "a computer being made isn't gone");
+    click.await.unwrap().unwrap();
+    assert!(b.computers.being_made.lock().unwrap().is_empty());
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]), "and once made, its row says it's here");
 }
 
 #[tokio::test]
@@ -799,6 +933,7 @@ async fn a_lost_record_is_rebuilt_from_what_is_left_and_no_files_go() {
     fresh.sleep_the_idle(&b.ctx).await;
     assert!(!b.mock.calls().iter().any(|c| c.starts_with("sweep") || c == "destroy" || c.starts_with("create")), "{:?}", b.mock.calls());
     assert!(Computers::dir(&b.ctx, &old).join("machine.json").exists());
+    assert_eq!(Computers::reach_of(&b.ctx, &old).unwrap(), Some(buwiz_computer::Reach::Container { name: "mock-kept".into() }), "its row says where it is now");
 }
 
 #[tokio::test]
@@ -1115,5 +1250,6 @@ fn a_computer_can_be_pinned_to_a_group() {
 
 mod homes;
 mod jobs;
+mod lost;
 mod remote;
 mod together;

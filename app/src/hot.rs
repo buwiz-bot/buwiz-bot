@@ -199,10 +199,14 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     // Hidden title bar on the desktop, keeping the traffic lights over
     // the sidebar's drag strip.
     #[cfg(target_os = "macos")]
-    nsh_core::element::desktop::set_title_bar(
-        nsh_core::desktop::TitleBarStyle::Hidden,
-        Some(px(44.0)),
-    );
+    {
+        let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
+        title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
+        title_bar.height = Some(px(44.0));
+        let mut attributes = nsh_core::desktop::WindowAttributes::default();
+        attributes.title_bar = Some(title_bar);
+        nsh_core::element::desktop::main_window().set(attributes);
+    }
 
     // `BUWIZ_MINI=R<n>`: debug-mount a generated widget alone in the window —
     // the same fetch → compile → AppView path the chat cards take, without

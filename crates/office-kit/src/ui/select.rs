@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 
-use nsh_base::{SelectGroup, SelectItem, SelectItemState};
+use nsh_base::{SelectEntry, SelectGroup, SelectItem};
 use nsh_core::canvas::{FillRule, svg_path};
 use nsh_core::element::StyleRefinement;
 use nsh_core::prelude::*;
@@ -243,7 +243,13 @@ impl IntoElement for Dropdown {
                 }
             })
             .trigger(trigger)
-            .render_item(move |s: &SelectItemState| {
+            // Highlighted: `bg-muted`; chosen: the check (`item_row`). nsh/base
+            // gives an item's state to its row's classes, not to `render_item`.
+            .item_class(Some(SharedString::from(format!(
+                "group rounded-[4px] {}",
+                p::class("focus:", "bg", p::TW_MUTED)
+            ))))
+            .render_item(move |s: &SelectEntry| {
                 let opt = row_opts.iter().find(|o| o.value == s.value);
                 if opt.is_some_and(|o| o.heading) {
                     return header(&s.title, false);
@@ -261,9 +267,9 @@ impl IntoElement for Dropdown {
     }
 }
 
-/// An item's row: `hover:bg-muted focus:bg-muted`, the check at its right
-/// while chosen, its text in its own preview.
-fn item_row(s: &SelectItemState, preview: &Preview, (px_, py_): (f32, f32)) -> AnyElement {
+/// An item's row: its text in its own preview, the check at its right
+/// while chosen. The row's `focus:bg-muted` is the select's `item_class`.
+fn item_row(s: &SelectEntry, preview: &Preview, (px_, py_): (f32, f32)) -> AnyElement {
     let mut t = text(s.title.clone())
         .text_size(px(preview.size.unwrap_or(TEXT_SM)))
         .line_height(px(preview.size.map_or(LINE_SM, |z| z * 1.3)))
@@ -281,23 +287,20 @@ fn item_row(s: &SelectItemState, preview: &Preview, (px_, py_): (f32, f32)) -> A
         .flex_row()
         .items_center()
         .w_full()
-        .rounded(px(4.0))
         .px(px(px_))
         .py(px(py_))
-        .bg(if s.highlighted { p::TW_MUTED } else { AdaptiveColor::TRANSPARENT })
         .opacity(if s.disabled { 0.5 } else { 1.0 })
         .child(t)
-        .when(s.selected, |v| {
-            v.child(
-                view()
-                    .absolute()
-                    .right(px(8.0))
-                    .size(px(14.0))
-                    .items_center()
-                    .justify_center()
-                    .child(mini_icon(CHECK_D, 16.0, p::TW_FOREGROUND)),
-            )
-        })
+        .child(
+            view()
+                .absolute()
+                .right(px(8.0))
+                .size(px(14.0))
+                .items_center()
+                .justify_center()
+                .app_class(Some(SharedString::from("opacity-0 group-selected:opacity-100")))
+                .child(mini_icon(CHECK_D, 16.0, p::TW_FOREGROUND)),
+        )
         .into_element()
 }
 
@@ -681,13 +684,13 @@ impl IntoElement for FontSize {
                 return;
             }
             let (c, s) = (c_up.clone(), set_up.clone());
-            on_key_with("up", KeyOptions { when: nsh_core::keymap::When::Always, repeat: true }, move |_| {
+            on_key_with("up", KeyOptions { when: nsh_core::keymap::When::Always, repeat: true, ..Default::default() }, move |_| {
                 let n = size_up(c());
                 draft.set(size_text(n));
                 s(n)
             });
             let (c, s) = (c_down.clone(), set_down.clone());
-            on_key_with("down", KeyOptions { when: nsh_core::keymap::When::Always, repeat: true }, move |_| {
+            on_key_with("down", KeyOptions { when: nsh_core::keymap::When::Always, repeat: true, ..Default::default() }, move |_| {
                 let n = size_down(c());
                 draft.set(size_text(n));
                 s(n)

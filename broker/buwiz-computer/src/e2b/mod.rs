@@ -33,8 +33,12 @@
 //! - *destroy*: `DELETE /sandboxes/{id}`. A sandbox that's gone already is fine.
 //! - *power*: the held connection, else `GET /sandboxes/{id}`: `running` or `paused`, or gone.
 //! - *sweep*: every sandbox whose metadata names the computer, plus the one the record names.
-//! - *recover*: nothing. A box that has read its secrets can't be given new ones, so a lost record
-//!   isn't recovered; its sandbox is found and stopped by sweep.
+//! - *recover*: nothing. A lost record's sandbox can't be kept in use, because it can't be given
+//!   new secrets: they go in only through envd, with the access token from E2B's answer to the
+//!   create call, which nothing here gets again or keeps, and the box has already read and
+//!   unlinked the ones it had. So a person is offered only Delete for it
+//!   ([`Provider::cant_keep_lost`]): sweep finds the sandbox and deletes it (`DELETE
+//!   /sandboxes/{id}`, as *destroy*), files and all; it is never just stopped.
 //!
 //! **Reach.** A sandbox's ports are at `https://<port>-<sandboxID>.e2b.app`. The broker runs one
 //! TLS relay per service ([`crate::remote::tls`]) to `1337`, `1340` and `6901`–`6905`, which end on
@@ -636,7 +640,29 @@ impl Provider for E2bProvider {
         Ok(())
     }
 
-    /// Nothing: a box that has read its secrets can't be given new ones. Sweep finds it.
+    /// Any sandbox whose metadata names the computer, or the one the record named, as sweep finds
+    /// them.
+    async fn finds(&self, id: &str, last: Option<&Reach>) -> Result<Option<bool>> {
+        if !self.listed(safe_id(id)?).await?.is_empty() {
+            return Ok(Some(true));
+        }
+        match last {
+            Some(Reach::Sandbox { id: last }) => {
+                Ok(Some(self.state(safe_id(last)?).await?.is_some()))
+            }
+            _ => Ok(Some(false)),
+        }
+    }
+
+    fn cant_keep_lost(&self) -> Option<String> {
+        Some(
+            "An E2B computer can't be given new secrets once its record is lost, so it can't be put back in use: it can only be deleted, or left as it is."
+                .to_owned(),
+        )
+    }
+
+    /// Nothing: a box that has read its secrets can't be given new ones, since envd's token came
+    /// with the create call's answer and isn't kept. Sweep finds its sandbox and deletes it.
     async fn recover(&self, _: &Spec, _: Option<&Reach>) -> Result<Option<Machine>> {
         Ok(None)
     }

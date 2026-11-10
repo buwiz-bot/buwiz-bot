@@ -192,7 +192,9 @@ impl Headless {
     /// The secondary button at `(x, y)` in the view.
     pub fn right_click(&mut self, label: &str, x: f32, y: f32) {
         let id = self.view(label);
-        let e = ContextMenuEvent { position: point(px(x), px(y)), page_position: point(px(x), px(y)), modifiers: Default::default() };
+        let mut e = ContextMenuEvent::default();
+        e.position = point(px(x), px(y));
+        e.page_position = point(px(x), px(y));
         self.send(id, EventKind::ContextMenu, EventPayload::ContextMenu(e));
         self.pump(Duration::from_millis(50));
     }

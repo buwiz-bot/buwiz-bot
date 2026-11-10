@@ -390,6 +390,7 @@ async fn sleep_hibernates_and_the_wake_after_finds_the_box_as_it_was() {
     p.sleep(&m, Sleep::Light).await.unwrap();
     assert_eq!(stops(&fake), ["true"]);
     assert!(fake.lock().unwrap().instances[0].hibernated);
+    assert_eq!(p.take_sleep_note(&m), None, "a hibernation has nothing to tell");
     assert_eq!(p.power(&m).await.unwrap(), Power::Asleep, "stopping");
     assert_eq!(p.power(&m).await.unwrap(), Power::Asleep, "stopped");
     assert!(matches!(p.screens(&m).await, Err(Problem::Asleep)), "the link went with the sleep");
@@ -432,6 +433,9 @@ async fn an_instance_that_cant_hibernate_is_stopped_and_deep_sleep_is_a_stop() {
     let m = machine(&d, "i-1");
     p.sleep(&m, Sleep::Light).await.unwrap();
     assert_eq!(stops(&fake), ["true", "false"]);
+    let note = p.take_sleep_note(&m).expect("a hibernation that became a stop is told");
+    assert!(note.contains("couldn't hibernate (AWS said UnsupportedHibernationConfiguration)") && note.contains("won't be there when it wakes"), "{note}");
+    assert_eq!(p.take_sleep_note(&m), None, "taken once");
     {
         let mut f = fake.lock().unwrap();
         f.instances[0] = FakeInstance { hibernation: false, ..ours("i-1", "cmp_ab12", "running") };
@@ -439,6 +443,7 @@ async fn an_instance_that_cant_hibernate_is_stopped_and_deep_sleep_is_a_stop() {
     }
     p.sleep(&m, Sleep::Light).await.unwrap();
     assert_eq!(stops(&fake), ["false"], "one launched without hibernation isn't asked to");
+    assert!(p.take_sleep_note(&m).is_some_and(|n| n.contains("wasn't made able to hibernate")));
     {
         let mut f = fake.lock().unwrap();
         f.instances[0] = ours("i-1", "cmp_ab12", "running");
@@ -446,6 +451,7 @@ async fn an_instance_that_cant_hibernate_is_stopped_and_deep_sleep_is_a_stop() {
         f.calls.clear();
     }
     assert!(p.sleep(&m, Sleep::Light).await.unwrap_err().sentence().contains("may not"), "a policy's no isn't papered over");
+    assert_eq!(p.take_sleep_note(&m), None, "a sleep that failed says so itself");
     fake.lock().unwrap().calls.clear();
     p.sleep(&m, Sleep::Deep).await.unwrap();
     assert_eq!(stops(&fake), ["false"]);
