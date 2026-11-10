@@ -723,6 +723,18 @@ fn the_logins_page_adds_edits_shares_and_deletes_and_never_shows_a_secret() {
     settle(&mut app);
     assert!(app.has("Share all, off") && !on(&mut app, || crate::vault::vault().share_all()));
 
+    // a new site stops the shares, and the form says so before Save
+    app.press("Edit");
+    app.wait_for("Login site");
+    assert!(!has_text(&app, crate::vault::SITE_CHANGE_UNSHARES));
+    app.change("Login site", "shop3.example");
+    settle(&mut app);
+    assert!(has_text(&app, crate::vault::SITE_CHANGE_UNSHARES), "{:?}", app.texts());
+    app.press("Save login");
+    settle(&mut app);
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.is_empty()), "moved: shared with no Bot");
+    assert!(app.has("Share with Nova, off"));
+
     // Delete, pressed twice
     app.press("Delete");
     settle(&mut app);

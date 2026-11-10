@@ -55,7 +55,7 @@ use rusqlite::Connection;
 pub(crate) use db::SiteLogin;
 use keychain::SecretStore;
 pub(crate) use origin::{SiteMatch, site_match, site_origin};
-pub(crate) use page::{SHARE_ALL_MEANS, open_add, open_page, settings_page};
+pub(crate) use page::{SHARE_ALL_MEANS, SITE_CHANGE_UNSHARES, open_add, open_page, settings_page};
 #[cfg(test)]
 pub(crate) use touch_id::owner_asks;
 use touch_id::{AuthOutcome, OwnerGate};
@@ -464,7 +464,9 @@ impl Vault {
 
     /// Changes row `id`: its site and username, and its password or seed when
     /// one is given (an empty one keeps what's saved: a secret is write-only
-    /// here, never read back). Its shares stay.
+    /// here, never read back). A share is for a login on its site: moved to
+    /// another site, the login is shared with no Bot until shared again. A
+    /// change of username or secret keeps its shares.
     pub(crate) fn edit(&self, id: &str, origin: &str, username: &str, password: &Secret, seed: &Secret) -> Result<SiteLogin, String> {
         let mut row = self.get(id).ok_or("that login isn't saved any more")?;
         let site = site_origin(origin).ok_or("a login needs a site")?;
@@ -486,11 +488,15 @@ impl Vault {
         if row.label == default_label(&row.username, &row.origin) || row.label.trim().is_empty() {
             row.label = default_label(username, &site);
         }
+        let moved = row.origin != site;
         row.origin = site;
         row.username = username.to_owned();
         row.exact = true;
         row.updated_at = now_ms();
         self.db(|c| db::update(c, &row))?;
+        if moved {
+            self.db(|c| db::set_shares(c, &row.id, &BTreeSet::new()))?;
+        }
         self.get(&row.id).ok_or_else(|| "that login isn't saved any more".to_owned())
     }
 
@@ -876,11 +882,16 @@ mod tests {
         v.share(&row.id, "nova", true).expect("share");
         assert_eq!(v.offered("shop.example", "nova", true).len(), 1, "offered on a code card too");
         assert!(v.add("shop.example", "ada", &Secret::new("fake-pw"), &none).is_err(), "saved already: an edit");
-        // an edit with empty secrets keeps them, and moves the row
+        // a new username keeps the shares
+        let renamed = v.edit(&row.id, "shop.example", "ada2", &none, &none).expect("edit");
+        assert_eq!(renamed.shared_with.len(), 1, "a username change keeps its shares");
+        // an edit with empty secrets keeps them; a new site stops its shares
         let moved = v.edit(&row.id, "shop2.example", "ada2", &none, &none).expect("edit");
         assert_eq!((moved.id.as_str(), moved.origin.as_str(), moved.username.as_str()), (row.id.as_str(), "shop2.example", "ada2"));
         assert_eq!(moved.label, "ada2 on shop2.example");
-        assert_eq!(moved.shared_with.len(), 1, "its shares stay");
+        assert!(moved.shared_with.is_empty(), "moved to another site: shared with no Bot");
+        assert!(v.offered("shop2.example", "nova", false).is_empty(), "not offered to Nova on the new site");
+        v.share(&row.id, "nova", true).expect("share again");
         assert_eq!(v.unlock(&moved, "test"), Unlock::Secret(Secret::new("fake-pw")));
         v.edit(&row.id, "shop2.example", "ada2", &Secret::new("fake-pw-new"), &none).expect("edit");
         assert_eq!(v.unlock(&moved, "test"), Unlock::Secret(Secret::new("fake-pw-new")));

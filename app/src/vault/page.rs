@@ -28,9 +28,13 @@ use crate::theme;
 /// How long a shown password stays on screen.
 const SHOWN_FOR: Duration = Duration::from_secs(30);
 
-/// The Add / Edit form, while it's open: `None` adds, `Some(id)` edits.
+/// The Add / Edit form, while it's open: `None` adds, `Some(id)` edits; and
+/// the site the login had when the form opened.
 #[derive(Clone, PartialEq, Debug)]
-struct Form(Option<String>);
+struct Form(Option<String>, String);
+
+/// What the form says when an edit moves a login to another site.
+pub(crate) const SITE_CHANGE_UNSHARES: &str = "Changing the site stops sharing this login; share it again after.";
 
 /// The page's state, anchored (like the store) so a hot patch or a
 /// remount of Settings keeps the pick.
@@ -113,7 +117,7 @@ fn open_form(id: Option<String>, site: String, user: String) {
         u.f_pass.set(Secret::new(""));
         u.f_seed.set(Secret::new(""));
         u.f_note.set(String::new());
-        u.form.set(Some(Form(id)));
+        u.form.set(Some(Form(id, u.f_site.get_untracked())));
     });
 }
 
@@ -133,7 +137,7 @@ fn close_form() {
 /// open, masked, to fix.
 fn save_form() {
     let u = ui();
-    let Some(Form(id)) = u.form.get_untracked() else { return };
+    let Some(Form(id, _)) = u.form.get_untracked() else { return };
     if u.busy.get_untracked() {
         return;
     }
@@ -433,6 +437,17 @@ fn form_view() -> impl IntoElement {
         .child(form_field("User name", "Login user name", "", false, u.f_user.get_untracked(), move |t| u.f_user.set(t)))
         .child(form_field("Password", "Login password", keep_pass, true, String::new(), move |t| u.f_pass.set(Secret::new(t))))
         .child(form_field("Authenticator", "Login authenticator secret", keep_seed, true, String::new(), move |t| u.f_seed.set(Secret::new(t))))
+        .child(dynamic(move || {
+            // an edit to another site takes the login's shares with it: said before Save
+            let moved = match u.form.get() {
+                Some(Form(Some(_), was)) => super::site_origin(&u.f_site.get()).is_some_and(|now| now != was),
+                _ => false,
+            };
+            if !moved {
+                return view().into_element();
+            }
+            text(SITE_CHANGE_UNSHARES).number_of_lines(2).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::WARN).into_element()
+        }))
         .child(
             text("Passwords and authenticator secrets are kept in the macOS Keychain and never shown here again.")
                 .text_size(px(11.0))
