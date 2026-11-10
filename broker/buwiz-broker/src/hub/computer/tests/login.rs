@@ -645,3 +645,16 @@ async fn a_hand_over_refused_after_the_desktop_was_cleared_says_what_was_ended()
     drop(held);
     call.abort();
 }
+
+#[tokio::test]
+async fn a_return_whose_answer_is_lost_may_have_been_pressed_and_is_not_pressed_again() {
+    let b = login_bed("login-return-lost");
+    awake(&b, &b.ann.0).await;
+    *b.mock.browser_refusal.lock().unwrap() = Some(("key".into(), 504, "browser_timeout".into()));
+    let (card, call) = asked(&b, card_input()).await;
+    let (_, reply) = submit(&b, &card, values(), false).await;
+    let said = words(&call.await.unwrap());
+    assert!(said.contains(login::MAYBE_PRESSED) && !said.contains("press the page's own button"), "{said}");
+    assert!(reply["notice"]["note"].as_str().unwrap().contains("Return may have been pressed"), "{reply}");
+    assert_eq!(b.mock.calls().iter().filter(|c| c.contains(" key refused") || c.contains("act key")).count(), 1, "pressed once: {:?}", b.mock.calls());
+}

@@ -324,6 +324,8 @@ pub enum Pressed {
     /// the box asks a person to confirm pressing this label: nobody did
     NeedsConfirm(String),
     Failed(String),
+    /// the Enter went out and its answer didn't say how it went: it may have been pressed
+    Uncertain(String),
 }
 
 /// One field's outcome.
@@ -399,6 +401,10 @@ pub const MAYBE_TYPED: &str = "A value may have been typed into the page before 
 /// The card's note when every field was empty.
 pub const EMPTY_NOTE: &str = "Nothing was typed: every field was empty.";
 const EMPTY_NEXT: &str = "Continue without those credentials, or ask the person in chat whether they meant to; do not raise the same card again.";
+
+/// What the model and the card are told of an Enter that may have gone: looking first keeps a
+/// login from going twice.
+pub const MAYBE_PRESSED: &str = "Return may have been pressed: the browser didn't say how it went. Take a screenshot and look before pressing anything, so the login isn't sent twice.";
 
 /// The site list for every fill call: the site and the hosts under it.
 fn allow(site: &str) -> Value {
@@ -616,8 +622,10 @@ async fn press_return(live: &Live, form: &Form, field: &Field, others: &[String]
     match live.provider.browser(&live.machine, &live.screen, BrowserOp::Act, &body).await {
         Ok(reply) if reply.ok() => Pressed::Yes,
         Ok(reply) if reply.code() == Some("confirm_required") => Pressed::NeedsConfirm(reply.body.pointer("/error/details/label").and_then(Value::as_str).map(|l| js::slice_utf16(l, 80).to_owned()).unwrap_or_else(|| "the form's button".to_owned())),
+        Ok(reply) if uncertain(&reply) => Pressed::Uncertain(refusal_sentence(&reply, &form.site)),
         Ok(reply) => Pressed::Failed(refusal_sentence(&reply, &form.site)),
-        Err(p) => Pressed::Failed(p.sentence()),
+        // the Enter went out: a broken answer doesn't say it wasn't pressed
+        Err(p) => Pressed::Uncertain(p.sentence()),
     }
 }
 
@@ -643,6 +651,7 @@ pub fn result_text(form: &Form, fill: &Fill, shared: &BTreeMap<String, String>) 
                 Pressed::No => "Nothing was pressed: press the page's own button after you look.".to_owned(),
                 Pressed::NeedsConfirm(label) => format!("Return wasn't pressed: the page asks a person to confirm \"{label}\" first. Ask the person to press it themselves; don't press it for them."),
                 Pressed::Failed(why) => format!("Return wasn't pressed: {why}"),
+                Pressed::Uncertain(why) => format!("{why} {MAYBE_PRESSED}"),
             };
             let shared = if shared.is_empty() { "No non-secret fields were shared.".to_owned() } else { format!("Shared fields: {}.", shared.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", ")) };
             format!("The person submitted the form \"{title}\". It was filled into the page. {pressed} {observe} {shared} {SECRET_NOTE}")
@@ -837,6 +846,7 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
             let note = match pressed {
                 Pressed::NeedsConfirm(label) => Some(format!("The page asks you to confirm \"{label}\": press it yourself on the screen.")),
                 Pressed::Failed(why) => Some(format!("Return wasn't pressed: {why}")),
+                Pressed::Uncertain(why) => Some(format!("{why} {MAYBE_PRESSED}")),
                 _ => None,
             };
             ("submitted", outcomes.clone(), json!({"pressed": matches!(pressed, Pressed::Yes), "note": note}))
