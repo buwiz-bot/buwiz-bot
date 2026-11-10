@@ -400,7 +400,15 @@ pub(super) async fn begin_handover(run: &Run, computers: &std::sync::Arc<Compute
     };
     // nothing is handed over beside what can't be cleared: this Bot's desktop alone
     let ended_programs = live.provider.clear_strays(&live.machine, &live.screen).await.map_err(|p| refused(&p))?;
-    let handing = computers.hand_over(&live, reason, limit).map_err(|p| refused(&p))?;
+    let handing = computers.hand_over(&live, reason, limit).map_err(|p| {
+        // what was ended stays ended: the model is told, whatever stopped the hand-over
+        let out = refused(&p);
+        if ended_programs.is_empty() {
+            return out;
+        }
+        let said = out.content.as_str().unwrap_or_default().to_owned();
+        Out::err(format!("{said} What you left running on your screen's desktop was ended first: {}. Start again what you still need.", ended_programs.join(", ")))
+    })?;
     Ok(Handed { live, handing, recording, ended_programs })
 }
 

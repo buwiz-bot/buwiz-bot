@@ -629,3 +629,19 @@ async fn a_plain_value_goes_only_into_a_field_the_page_labels_for_it() {
     assert_eq!(b.mock.typed(), [("Email".to_owned(), "kid@example.com".to_owned()), ("Password".to_owned(), MARK.to_owned())]);
 }
 
+#[tokio::test]
+async fn a_hand_over_refused_after_the_desktop_was_cleared_says_what_was_ended() {
+    let b = login_bed("login-handover-refused");
+    awake(&b, &b.ann.0).await;
+    let (card, call) = asked(&b, card_input()).await;
+    // the screen is a person's already, so the hand-over is refused after the clearing
+    let live = b.computers.live(&b.ctx, &b.ann.0).await.unwrap();
+    let held = b.computers.hand_over(&live, "already", Duration::from_secs(60)).unwrap();
+    *b.mock.strays.lock().unwrap() = vec!["xterm".to_owned()];
+    let (status, reply) = login::host_dismiss(&b.ctx, &json!({"chat": card["chat"], "id": card["id"], "mode": "escalated"})).await;
+    assert_eq!(status, 409, "{reply}");
+    let said = reply["message"].as_str().unwrap();
+    assert!(said.contains("with a person already") && said.contains("was ended first: xterm"), "{said}");
+    drop(held);
+    call.abort();
+}
