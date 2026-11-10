@@ -858,3 +858,49 @@ fn a_login_saved_from_a_bots_card_is_shared_with_that_bot_only() {
     assert_eq!(shares, [["nova".to_owned()]]);
     no_mark(&app);
 }
+
+/// What was typed into the Logins form's password never outlives the form: closing Settings, or
+/// `/vault` with the form open, clears it, and a Save after keeps the saved password, not the
+/// one typed before.
+#[test]
+fn a_password_typed_into_the_logins_form_goes_when_settings_closes_or_vault_reopens_it() {
+    if !in_child("a_password_typed_into_the_logins_form_goes_when_settings_closes_or_vault_reopens_it") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    let saved = |app: &mut Headless| on(app, || {
+        let v = crate::vault::vault();
+        let r = v.list().pop().unwrap();
+        v.unlock(&r, "test") == crate::vault::Unlock::Secret(crate::vault::Secret::new("fake-old-pw"))
+    });
+    on(&mut app, || {
+        assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+        crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new("fake-old-pw")).unwrap();
+    });
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Edit");
+    app.wait_for("Login password");
+    app.type_text("Login password", MARK);
+    // Settings closes, and opens again
+    on(&mut app, || store().settings_open.set(false));
+    settle(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Edit");
+    app.wait_for("Login password");
+    assert_eq!(app.value("Login password"), "", "nothing held under an empty field");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(saved(&mut app), "the password typed before Settings closed wasn't saved");
+
+    // `/vault` with the form still open
+    app.press("Edit");
+    app.wait_for("Login password");
+    app.type_text("Login password", MARK);
+    typed(&mut app, "/vault");
+    assert_eq!(app.value("Login password"), "", "the field and what it holds are one");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(saved(&mut app), "the password typed before /vault wasn't saved");
+    no_mark(&app);
+}

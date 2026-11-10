@@ -79,12 +79,33 @@ fn ui() -> Ui {
         Box::leak(Box::new(ui)) as *const Ui as usize
     });
     // SAFETY: the anchor holds a leaked `Ui` for the life of the process.
-    unsafe { *(at as *const Ui) }
+    let u = unsafe { *(at as *const Ui) };
+    watch_settings(u);
+    u
+}
+
+/// However Settings closes, the form closes with it, and what was typed into
+/// it goes. Set up once, outside the anchor (the store is an anchor too).
+fn watch_settings(u: Ui) {
+    thread_local! {
+        static WATCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if WATCHING.with(|w| w.replace(true)) {
+        return;
+    }
+    Owner::detached().run(|| {
+        effect(move || {
+            if !crate::live::store().settings_open.get() {
+                untracked(|| close_form_of(u));
+            }
+        })
+    });
 }
 
 /// Reads the table again.
 fn reload() {
     let u = ui();
+    forget_typed();
     let rows = vault().list();
     if !rows.iter().any(|r| r.id == u.sel.get_untracked()) {
         u.sel.set(rows.first().map(|r| r.id.clone()).unwrap_or_default());
@@ -95,8 +116,22 @@ fn reload() {
     super::changed();
 }
 
-/// Opens Settings on Logins.
+/// What was typed into the form's secret fields, gone. The fields show the
+/// same signals, so what they show and what a Save sends never differ.
+fn forget_typed() {
+    forget_typed_of(ui());
+}
+
+fn forget_typed_of(u: Ui) {
+    batch(|| {
+        u.f_pass.set(Secret::new(""));
+        u.f_seed.set(Secret::new(""));
+    });
+}
+
+/// Opens Settings on Logins; a form left open keeps nothing typed into its secret fields.
 pub(crate) fn open_page() {
+    forget_typed();
     let st = crate::live::store();
     st.settings_page.set("logins".to_owned());
     st.settings_open.set(true);
@@ -111,11 +146,10 @@ pub(crate) fn open_add(site: &str) {
 /// The form, for a new login (`id` none) or row `id`; its secret fields empty.
 fn open_form(id: Option<String>, site: String, user: String) {
     let u = ui();
+    forget_typed();
     batch(|| {
         u.f_site.set(site);
         u.f_user.set(user);
-        u.f_pass.set(Secret::new(""));
-        u.f_seed.set(Secret::new(""));
         u.f_note.set(String::new());
         u.form.set(Some(Form(id, u.f_site.get_untracked())));
     });
@@ -123,11 +157,13 @@ fn open_form(id: Option<String>, site: String, user: String) {
 
 /// Closes the form; what was typed into its secret fields goes.
 fn close_form() {
-    let u = ui();
+    close_form_of(ui());
+}
+
+fn close_form_of(u: Ui) {
+    forget_typed_of(u);
     batch(|| {
         u.form.set(None);
-        u.f_pass.set(Secret::new(""));
-        u.f_seed.set(Secret::new(""));
         u.f_note.set(String::new());
     });
 }
@@ -433,10 +469,10 @@ fn form_view() -> impl IntoElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::TEXT),
         )
-        .child(form_field("Website", "Login site", "shop.example", false, u.f_site.get_untracked(), move |t| u.f_site.set(t)))
-        .child(form_field("User name", "Login user name", "", false, u.f_user.get_untracked(), move |t| u.f_user.set(t)))
-        .child(form_field("Password", "Login password", keep_pass, true, String::new(), move |t| u.f_pass.set(Secret::new(t))))
-        .child(form_field("Authenticator", "Login authenticator secret", keep_seed, true, String::new(), move |t| u.f_seed.set(Secret::new(t))))
+        .child(form_field("Website", "Login site", "shop.example", false, move || u.f_site.get(), move |t| u.f_site.set(t)))
+        .child(form_field("User name", "Login user name", "", false, move || u.f_user.get(), move |t| u.f_user.set(t)))
+        .child(form_field("Password", "Login password", keep_pass, true, move || u.f_pass.with(|s| s.expose().to_owned()), move |t| u.f_pass.set(Secret::new(t))))
+        .child(form_field("Authenticator", "Login authenticator secret", keep_seed, true, move || u.f_seed.with(|s| s.expose().to_owned()), move |t| u.f_seed.set(Secret::new(t))))
         .child(dynamic(move || {
             // an edit to another site takes the login's shares with it: said before Save
             let moved = match u.form.get() {
@@ -470,10 +506,11 @@ fn form_view() -> impl IntoElement {
         )
 }
 
-/// One row of the form: its words, and an input under `label`. A secret
-/// one is masked and starts empty (`start` is "" for it).
-fn form_field(words: &'static str, label: &'static str, placeholder: &'static str, secret: bool, start: String, on: impl Fn(String) + 'static) -> impl IntoElement {
-    let value = signal(start);
+/// One row of the form: its words, and an input under `label` showing the
+/// form's own state (`get`) and writing it (`set`): one owner, so the field
+/// and what Save sends can't differ. A secret one is masked; its state is
+/// only what was typed into it since the form opened.
+fn form_field(words: &'static str, label: &'static str, placeholder: &'static str, secret: bool, get: impl Fn() -> String + 'static, set: impl Fn(String) + 'static) -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
@@ -483,7 +520,7 @@ fn form_field(words: &'static str, label: &'static str, placeholder: &'static st
             view().flex_1().h(px(30.0)).rounded(px(7.0)).bg(theme::HOVER).px(px(8.0)).justify_center().child(
                 input()
                     .label(label)
-                    .value(move || value.get())
+                    .value(get)
                     .placeholder(placeholder)
                     .placeholder_color(|| color(theme::GHOST))
                     .masked(secret)
@@ -491,12 +528,7 @@ fn form_field(words: &'static str, label: &'static str, placeholder: &'static st
                     .text_size(px(13.0))
                     .text_color(theme::TEXT)
                     .h(px(30.0))
-                    .on_change(move |t: &str| {
-                        if !secret {
-                            value.set(t.to_owned());
-                        }
-                        on(t.to_owned())
-                    }),
+                    .on_change(move |t: &str| set(t.to_owned())),
             ),
         )
 }
