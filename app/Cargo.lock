@@ -561,7 +561,7 @@ dependencies = [
 [[package]]
 name = "books-core"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
+source = "git+https://github.com/buwiz-app/books?rev=8f71afff11b3f2b5252629307e2379da964459f9#8f71afff11b3f2b5252629307e2379da964459f9"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
@@ -570,7 +570,7 @@ dependencies = [
 [[package]]
 name = "books-mini-app"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
+source = "git+https://github.com/buwiz-app/books?rev=8f71afff11b3f2b5252629307e2379da964459f9#8f71afff11b3f2b5252629307e2379da964459f9"
 dependencies = [
  "books-core",
  "books-store",
@@ -586,7 +586,7 @@ dependencies = [
 [[package]]
 name = "books-screens"
 version = "0.3.0"
-source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
+source = "git+https://github.com/buwiz-app/books?rev=8f71afff11b3f2b5252629307e2379da964459f9#8f71afff11b3f2b5252629307e2379da964459f9"
 dependencies = [
  "buwiz-app",
  "nsh-core",
@@ -596,7 +596,7 @@ dependencies = [
 [[package]]
 name = "books-store"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/books?rev=dbc5dce580bdc4c0a9f0373a7c08812d0c537318#dbc5dce580bdc4c0a9f0373a7c08812d0c537318"
+source = "git+https://github.com/buwiz-app/books?rev=8f71afff11b3f2b5252629307e2379da964459f9#8f71afff11b3f2b5252629307e2379da964459f9"
 dependencies = [
  "books-core",
  "getrandom 0.3.4",
@@ -665,7 +665,7 @@ dependencies = [
 [[package]]
 name = "buwiz-app"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=79883a820597c623c9259cc0fac0c4166bdde093#79883a820597c623c9259cc0fac0c4166bdde093"
+source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=369935a8406808786b642c3b4893fbed9c106859#369935a8406808786b642c3b4893fbed9c106859"
 dependencies = [
  "base64 0.22.1",
  "nsh-core",
@@ -736,7 +736,7 @@ dependencies = [
 [[package]]
 name = "buwiz-plugin"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=79883a820597c623c9259cc0fac0c4166bdde093#79883a820597c623c9259cc0fac0c4166bdde093"
+source = "git+https://github.com/buwiz-app/buwiz-sdk?rev=369935a8406808786b642c3b4893fbed9c106859#369935a8406808786b642c3b4893fbed9c106859"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
@@ -1968,7 +1968,7 @@ dependencies = [
 [[package]]
 name = "gws-screens"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-app/google-workspace?rev=87c370b562c489a42c16a033eb660f31872a7f9d#87c370b562c489a42c16a033eb660f31872a7f9d"
+source = "git+https://github.com/buwiz-app/google-workspace?rev=956787f3bc1ae15e7555d0846c40a47c7765836d#956787f3bc1ae15e7555d0846c40a47c7765836d"
 dependencies = [
  "base64 0.22.1",
  "buwiz-app",

@@ -83,7 +83,8 @@ status = "local"
 branch = "pr/core-handler-aliases"
 kind = "fix"
 pr = 0
-status = "local"
+status = "buwiz-only"
+note = "React Native's handler names (onChangeText, onSubmitEditing, onPressIn, onPressOut) and onChangeText's bare text: upstream treats React Native as a reference, not an API to match (AGENTS.md, docs/dev/api-naming.md), so this stays ours"
 
 [[topic]]
 branch = "pr/macos-pause-embedded"
@@ -113,8 +114,8 @@ note = "superseded by #1160: shots are the window server's composite, videos inc
 [[topic]]
 branch = "pr/sandbox-desktop-homedir"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1499
+status = "open"
 note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Buwiz Bot's mini apps)"
 
 [[topic]]
@@ -201,8 +202,8 @@ note = "superseded by upstream's sight module (#895 and the move counter): a rev
 [[topic]]
 branch = "pr/macos-pace-mounts"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1500
+status = "open"
 note = "a batch making hundreds of views out of sight is applied over frames, what shows at once; on upstream main alone, deciding what shows with crate::sight (it was stacked on pr/macos-revisit-cache's clip.rs, which upstream's sight replaced)"
 
 [[topic]]
@@ -230,8 +231,8 @@ note = "The Agent Hub: gpui-agent-server splits the listener off the in-process 
 [[topic]]
 branch = "pr/macos-web-file-url"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1496
+status = "open"
 note = "a file:// source loads by loadFileURL, reading its own folder only, and that web view may navigate to that file and no other: the viewer's PDF of a local copy was blank"
 
 [[topic]]
