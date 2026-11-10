@@ -114,6 +114,20 @@ pub struct Records {
     pub sent: Vec<Sent>,
     /// Each plugin's version as last listed.
     pub versions: Vec<Seen>,
+    /// What the person did about each plugin's waiting update.
+    pub updates: Vec<UpdateSeen>,
+}
+
+/// What the person did about a plugin's waiting update: the version whose
+/// panel they opened (its dot is gone) and the one they skipped. Each
+/// names one version: a newer one is news again.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UpdateSeen {
+    pub plugin: String,
+    /// "" until a panel was opened.
+    pub seen: String,
+    /// "" until one was skipped.
+    pub skipped: String,
 }
 
 /// The file in `dir` (Rox's data dir).
@@ -224,6 +238,11 @@ impl Records {
                         .collect()
                 })
                 .unwrap_or_default(),
+            updates: v
+                .get("updates")
+                .and_then(Value::as_object)
+                .map(|m| m.iter().map(|(k, x)| UpdateSeen { plugin: k.clone(), seen: s(x, "seen"), skipped: s(x, "skipped") }).collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -246,6 +265,9 @@ impl Records {
             })).collect::<Vec<_>>(),
             "versions": self.versions.iter().map(|x| (x.plugin.clone(), json!({
                 "version": x.version, "changed_at": x.changed_at,
+            }))).collect::<serde_json::Map<_, _>>(),
+            "updates": self.updates.iter().map(|x| (x.plugin.clone(), json!({
+                "seen": x.seen, "skipped": x.skipped,
             }))).collect::<serde_json::Map<_, _>>(),
         })
     }
@@ -379,6 +401,44 @@ impl Records {
         fresh.then(|| format!("Updated to v{}", x.version.trim_start_matches('v')))
     }
 
+    fn update_of(&mut self, plugin: &str) -> &mut UpdateSeen {
+        let at = match self.updates.iter().position(|x| x.plugin == plugin) {
+            Some(at) => at,
+            None => {
+                self.updates.push(UpdateSeen { plugin: plugin.to_owned(), ..Default::default() });
+                self.updates.len() - 1
+            }
+        };
+        &mut self.updates[at]
+    }
+
+    /// The person opened the panel of `plugin`'s update to `version`: its
+    /// dot goes. Whether that is new (the records want saving).
+    pub fn see_update(&mut self, plugin: &str, version: &str) -> bool {
+        let x = self.update_of(plugin);
+        let new = x.seen != version;
+        x.seen = version.to_owned();
+        new
+    }
+
+    /// Skip on `plugin`'s update to `version`: no signal for that version.
+    pub fn skip_update(&mut self, plugin: &str, version: &str) -> bool {
+        let x = self.update_of(plugin);
+        let new = x.skipped != version;
+        x.skipped = version.to_owned();
+        new
+    }
+
+    /// Whether the panel of `plugin`'s update to `version` was opened.
+    pub fn update_seen(&self, plugin: &str, version: &str) -> bool {
+        self.updates.iter().any(|x| x.plugin == plugin && x.seen == version)
+    }
+
+    /// Whether `plugin`'s update to `version` was skipped.
+    pub fn update_skipped(&self, plugin: &str, version: &str) -> bool {
+        self.updates.iter().any(|x| x.plugin == plugin && x.skipped == version)
+    }
+
     /// Removes everything that names `plugin` (13.6 step 4): its
     /// attachments in every chat, its pins, its apps' fingerprints, the
     /// version it was seen at. How many attachments and pins went.
@@ -389,6 +449,7 @@ impl Records {
         let prefix = format!("{plugin}/");
         self.opened.retain(|(k, _)| !k.starts_with(&prefix));
         self.versions.retain(|x| x.plugin != plugin);
+        self.updates.retain(|x| x.plugin != plugin);
         (a - self.attachments.len(), p - self.pins.len())
     }
 }
@@ -558,6 +619,27 @@ mod tests {
         let dir = temp("sent");
         r.save(&dir).unwrap();
         assert_eq!(Records::load(&dir).sent, r.sent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_updates_dot_and_skip_are_per_version_saved_and_go_with_the_plugin() {
+        let dir = temp("updates");
+        let mut r = Records::default();
+        assert!(!r.update_seen("p.q.r", "1.5.0") && !r.update_skipped("p.q.r", "1.5.0"));
+        assert!(r.see_update("p.q.r", "1.5.0"));
+        assert!(!r.see_update("p.q.r", "1.5.0"), "seen once is enough");
+        assert!(r.skip_update("p.q.r", "1.5.0"));
+        assert!(!r.skip_update("p.q.r", "1.5.0"));
+        r.save(&dir).unwrap();
+        let mut back = Records::load(&dir);
+        assert_eq!(back, r);
+        assert!(back.update_seen("p.q.r", "1.5.0") && back.update_skipped("p.q.r", "1.5.0"));
+        // a newer version is news again: a dot, and a signal
+        assert!(!back.update_seen("p.q.r", "1.6.0") && !back.update_skipped("p.q.r", "1.6.0"));
+        assert!(!back.update_seen("other", "1.5.0"));
+        back.remove_plugin("p.q.r");
+        assert!(back.updates.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

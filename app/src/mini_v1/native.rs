@@ -605,7 +605,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
                     super::to_store(move |st| st.v1_error(&k, text));
                 });
                 let viewport = s.viewport.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or(viewport);
-                match screens::mount(&ctx, viewport, fail) {
+                match screens::mount_from(&ctx, viewport, fail, super::cards::origin(&key)) {
                     Ok(m) => {
                         *s.emit.lock().unwrap_or_else(|e| e.into_inner()) = Some(m.emit);
                         nsh_platform_macos::App::Rust(m.root)
@@ -622,8 +622,8 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
                 }
             }
         };
-        let fingerprint = prepared.fingerprint.clone();
-        super::to_store(move |st| st.v1_running(id, &key, &fingerprint));
+        let (fingerprint, version) = (prepared.fingerprint.clone(), prepared.plugin.version.clone());
+        super::to_store(move |st| st.v1_running(id, &key, &fingerprint, &version));
         let t_load = std::time::Instant::now();
         let kind = if prepared.native.is_some() { "native" } else { "tsx" };
         let (pid, aid) = (prepared.plugin.id.clone(), prepared.key.app.clone());

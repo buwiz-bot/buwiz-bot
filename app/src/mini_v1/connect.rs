@@ -299,6 +299,28 @@ impl Update {
     }
 }
 
+/// The updates waiting among `listed`, each with its plugin: every one
+/// announced that the person did not skip (`skipped`: whether they
+/// skipped that plugin's version). What the Connect apps badge counts.
+pub fn waiting(listed: &[Listed], skipped: impl Fn(&str, &str) -> bool) -> Vec<(Listed, Update)> {
+    listed.iter().filter_map(|p| p.update.clone().filter(|u| !skipped(&p.id, &u.version)).map(|u| (p.clone(), u))).collect()
+}
+
+/// What an update's panel is headed: "Google Workspace 1.4.0 → 1.5.0".
+pub fn update_heading(title: &str, u: &Update) -> String {
+    format!("{title} {} → {}", bare_version(&u.from_version), bare_version(&u.version))
+}
+
+/// The (i)'s accessible name: "Google Workspace 1.5.0 update available".
+pub fn update_label(title: &str, u: &Update) -> String {
+    format!("{title} {} update available", bare_version(&u.version))
+}
+
+/// A version without its `v`.
+pub fn bare_version(v: &str) -> &str {
+    v.trim().trim_start_matches('v')
+}
+
 /// A version's numbers ("v1.5.0", "1.5.0-rc.1" → [1, 5, 0]); `None` for
 /// anything else.
 fn version_numbers(v: &str) -> Option<Vec<u64>> {
@@ -1163,6 +1185,17 @@ mod tests {
         assert_eq!(listed("1.4.0", json!({"version": "soon"})).update, None);
         // a link that is not https is not offered
         assert_eq!(listed("1.4.0", json!({"version": "1.5.0", "url": "javascript:alert(1)"})).update.unwrap().url, "");
+        // E2-1: once the update is installed nothing waits, in any chat,
+        // and a list read after a relaunch that still names it changes
+        // nothing; Skip hides that version only
+        let lists = |installed: &str, to: &str| vec![listed(installed, json!({"version": to}))];
+        assert_eq!(super::waiting(&lists("1.4.0", "1.5.0"), |_, _| false).len(), 1);
+        assert!(super::waiting(&lists("1.5.0", "1.5.0"), |_, _| false).is_empty());
+        assert!(super::waiting(&lists("1.4.0", "1.5.0"), |p, v| (p, v) == ("app.buwiz.fixture", "1.5.0")).is_empty());
+        assert_eq!(super::waiting(&lists("1.4.0", "1.6.0"), |_, v| v == "1.5.0").len(), 1, "a newer version shows again");
+        let u = super::waiting(&lists("1.4.0", "v1.5.0"), |_, _| false).remove(0).1;
+        assert_eq!(super::update_heading("Google Workspace", &u), "Google Workspace 1.4.0 → 1.5.0");
+        assert_eq!(super::update_label("Google Workspace", &u), "Google Workspace 1.5.0 update available");
         assert!(super::newer("v1.10.0", "1.9.9") && super::newer("2", "1.9") && !super::newer("1.5", "1.5.0") && !super::newer("1.4.9", "1.5.0"));
     }
 

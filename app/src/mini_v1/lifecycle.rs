@@ -1,6 +1,7 @@
 //! A running v1 open's life on the screen (spec 6.7, 12.2, 13.7): the
 //! message an app's error shows (with Reload and Close), the opens a new
-//! version leaves on old source (a Reload banner, LCY-04), and when an
+//! version leaves on old source (a Reload banner, LCY-04; an inline card
+//! keeps what it shows and says "Made with 1.4.0 · Refresh"), and when an
 //! open that lost its plugin to a restart may reopen ("Reconnecting").
 //!
 //! The decisions are pure; `mini.rs` and the store act on them.
@@ -23,7 +24,8 @@ pub fn error_message(title: &str, text: &str) -> Option<String> {
 
 /// The opens (module keys, with the fingerprint each runs) whose app now
 /// has another fingerprint in `plugins`' manifests: a full-screen one keeps
-/// its source and shows a Reload banner (12.2), an inline card reloads.
+/// its source and shows a Reload banner (12.2). An inline card keeps what
+/// it shows too: nothing reloads it but its own Refresh ([`made_with`]).
 pub fn stale(running: &[(String, String)], plugins: &[PluginEntry]) -> Vec<String> {
     running
         .iter()
@@ -39,6 +41,27 @@ pub fn stale(running: &[(String, String)], plugins: &[PluginEntry]) -> Vec<Strin
         })
         .map(|(key, _)| key.clone())
         .collect()
+}
+
+/// What an inline card's footer says once its plugin's version is no
+/// longer the one it was `made` with ("Made with 1.4.0", beside Refresh):
+/// the card keeps its content until the person refreshes it. `None` while
+/// the version is the same, or either is unknown.
+pub fn made_with(made: &str, now: &str) -> Option<String> {
+    let bare = |v: &str| v.trim().trim_start_matches('v').to_owned();
+    let (made, now) = (bare(made), bare(now));
+    (!made.is_empty() && !now.is_empty() && made != now).then(|| format!("Made with {made}"))
+}
+
+/// After `plugin` restarted: of the opens waiting on it (`waiting`, each
+/// module key with whether it is an inline card and the version it was
+/// made with), the ones that reopen on the new process. A full-screen
+/// open always does; an inline card does when the plugin is the version
+/// it was made with (a crash, a relaunch: it comes back as if nothing
+/// happened), and stays as it is after an update, until its Refresh.
+pub fn reopen_after_restart(waiting: &[(String, bool, String)], now: &str) -> (Vec<String>, Vec<String>) {
+    let (keep, reopen): (Vec<_>, Vec<_>) = waiting.iter().partition(|(_, inline, made)| *inline && made_with(made, now).is_some());
+    (reopen.into_iter().map(|(k, _, _)| k.clone()).collect(), keep.into_iter().map(|(k, _, _)| k.clone()).collect())
 }
 
 /// Whether a broker `plugin` event says `plugin` runs again: the opens
@@ -64,11 +87,11 @@ pub fn reconnecting(title: &str) -> String {
 }
 
 /// Whether a broker `plugin` event repeats the last one Rox heard for its
-/// plugin (the same state, code, generation and enabled): no news, so no
-/// list and no reload. `last` keeps what each plugin last said.
+/// plugin (the same state, code, generation, enabled and waiting
+/// update): no news, so no list and no reload. `last` keeps what each plugin last said.
 pub fn repeated(last: &mut std::collections::HashMap<String, String>, event: &Value) -> bool {
     let id = event.get("id").or_else(|| event.get("plugin")).and_then(Value::as_str).unwrap_or_default();
-    let said = [&event["state"], &event["code"], &event["generation"], &event["enabled"]].map(|v| v.to_string()).join(" ");
+    let said = [&event["state"], &event["code"], &event["generation"], &event["enabled"], &event["update"]].map(|v| v.to_string()).join(" ");
     last.insert(id.to_owned(), said.clone()).is_some_and(|before| before == said)
 }
 
@@ -115,6 +138,29 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_card_keeps_its_content_across_an_update_and_reopens_after_a_plain_restart() {
+        assert_eq!(made_with("1.4.0", "1.5.0").as_deref(), Some("Made with 1.4.0"));
+        assert_eq!(made_with("v1.4.0", "1.4.0"), None, "the same version, however it is written");
+        assert_eq!(made_with("", "1.5.0"), None);
+        assert_eq!(made_with("1.4.0", ""), None, "a plugin that is not listed says nothing");
+        let waiting = vec![
+            ("v1:p/card".to_owned(), true, "1.4.0".to_owned()),
+            ("v1:p/board".to_owned(), false, "1.4.0".to_owned()),
+            ("v1:p/other".to_owned(), true, String::new()),
+        ];
+        // a crash or a relaunch: every open comes back on the new process
+        let (reopen, keep) = reopen_after_restart(&waiting, "1.4.0");
+        assert_eq!(reopen, ["v1:p/card", "v1:p/board", "v1:p/other"]);
+        assert!(keep.is_empty());
+        // an update: the inline card stays as it is until its Refresh; the
+        // full screen reconnects as it did, and a card of unknown version
+        // is not left dead
+        let (reopen, keep) = reopen_after_restart(&waiting, "1.5.0");
+        assert_eq!(reopen, ["v1:p/board", "v1:p/other"]);
+        assert_eq!(keep, ["v1:p/card"]);
+    }
+
+    #[test]
     fn app_08_a_running_apps_error_shows_the_specs_message() {
         assert_eq!(error_message("Board", "TypeError: x is undefined\n    at f (app.js:3)").as_deref(), Some("Board stopped: TypeError: x is undefined."));
         assert_eq!(error_message("Board", "interrupted").as_deref(), Some("Board stopped: it took too long."));
@@ -141,5 +187,8 @@ mod tests {
         assert!(!super::repeated(&mut last, &json!({"id": "p", "state": "running", "code": null, "generation": 2, "enabled": true})), "a new generation is");
         assert!(!super::repeated(&mut last, &json!({"id": "q", "state": "running", "code": null, "generation": 2, "enabled": true})), "another plugin's is its own");
         assert!(!super::repeated(&mut last, &json!({"id": "p", "state": "stopped", "code": null, "generation": 2, "enabled": true})), "a new state is");
+        assert!(!super::repeated(&mut last, &json!({"id": "p", "state": "stopped", "code": null, "generation": 2, "enabled": true, "update": "1.5.0"})), "an update found is");
+        assert!(super::repeated(&mut last, &json!({"id": "p", "state": "stopped", "code": null, "generation": 2, "enabled": true, "update": "1.5.0"})));
+        assert!(!super::repeated(&mut last, &json!({"id": "p", "state": "stopped", "code": null, "generation": 2, "enabled": true, "update": null})), "and one installed is");
     }
 }

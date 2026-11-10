@@ -55,8 +55,28 @@ pub struct V1 {
     /// Per open: a running app's error (6.7), with Reload and Close.
     pub error: Signal<HashMap<String, String>>,
     /// Full-screen opens a new version left on old source: a Reload
-    /// banner (12.2). Inline cards reload instead.
+    /// banner (12.2). An inline card keeps what it shows ([`V1::made`]).
     pub stale: Signal<HashSet<String>>,
+    /// Per open (module key): the open's number and its plugin's version
+    /// when it started. An inline card whose plugin has another version
+    /// now says "Made with 1.4.0 · Refresh" and reloads only on Refresh.
+    pub made: Signal<HashMap<String, (u64, String)>>,
+    /// Opens whose plugin runs again, each with the first list
+    /// ([`V1::lists`]) that may say whether its version changed.
+    restarted: RefCell<Vec<(String, u64)>>,
+    /// How many lists were asked for.
+    lists: std::cell::Cell<u64>,
+    /// Plugins whose install is running: their cards show a line moving
+    /// along their top edge.
+    pub installing: Signal<HashSet<String>>,
+    /// Plugins whose update failed in this run: why.
+    pub update_failed: Signal<HashMap<String, String>>,
+    /// Updates put off with Later, `(plugin, version)`: no signal on a
+    /// card until the next launch.
+    pub later: Signal<HashSet<(String, String)>>,
+    /// The update panel open: its card's id, and whether a press pinned it
+    /// (a peek closes when the pointer leaves).
+    pub update_panel: Signal<Option<(String, bool)>>,
     /// Opens whose plugin restarted, by key: their plugin (13.7).
     reconnecting: RefCell<HashMap<String, String>>,
     /// Inline cards shown (their ids).
@@ -139,6 +159,13 @@ impl V1 {
             notice: signal(HashMap::new()),
             error: signal(HashMap::new()),
             stale: signal(HashSet::new()),
+            made: signal(HashMap::new()),
+            restarted: RefCell::new(Vec::new()),
+            lists: std::cell::Cell::new(0),
+            installing: signal(HashSet::new()),
+            update_failed: signal(HashMap::new()),
+            later: signal(HashSet::new()),
+            update_panel: signal(None),
             reconnecting: RefCell::new(HashMap::new()),
             shown: signal(HashSet::new()),
             hidden: signal(HashSet::new()),
@@ -308,11 +335,18 @@ impl Store {
 
     /// Lists the v1 plugins again.
     pub fn v1_refresh(&'static self) {
+        let asked = self.v1.lists.get() + 1;
+        self.v1.lists.set(asked);
         Owner::detached().run(|| {
             spawn(async move {
                 let got = crate::vault::off_main(|| host_api::plugins(&broker())).await;
                 let Some(Ok(list)) = got else {
                     self.v1.loaded.set(true);
+                    // nobody can say what changed: the opens that waited on
+                    // a restart come back, as they always did
+                    for key in self.v1_take_restarted(asked) {
+                        self.v1_reopen(&key);
+                    }
                     return;
                 };
                 let entries: Vec<PluginEntry> = list.iter().filter_map(PluginEntry::from_json).collect();
@@ -328,11 +362,11 @@ impl Store {
                 let running: Vec<(String, String)> =
                     self.v1.running.borrow().iter().map(|(_, k, f)| (k.clone(), f.clone())).collect();
                 // a full-screen open keeps its source and offers Reload
-                // (12.2); an inline card reloads in place, as its Refresh
-                // does: an update is the plugin page's news, not the card's
+                // (12.2); an inline card keeps what it shows until its own
+                // Refresh ("Made with 1.4.0 · Refresh")
                 let full: HashSet<String> = self.mini_full.with_untracked(|f| f.iter().map(|o| o.key.clone()).collect());
-                let (stale, reload): (Vec<String>, Vec<String>) =
-                    lifecycle::stale(&running, &entries).into_iter().partition(|k| full.contains(k));
+                let stale: Vec<String> = lifecycle::stale(&running, &entries).into_iter().filter(|k| full.contains(k)).collect();
+                let restarted = self.v1_take_restarted(asked);
                 batch(|| {
                     self.v1.listed.set(list.iter().map(connect::Listed::of).collect());
                     self.v1.known.set(true);
@@ -342,11 +376,161 @@ impl Store {
                         self.v1.stale.update(|s| s.extend(stale));
                     }
                 });
-                for key in reload {
-                    self.v1_reload(&key);
-                }
+                self.v1_restarted(restarted, &full);
                 self.v1_close_gone();
             })
+        });
+    }
+
+    /// The opens waiting on a restart that list number `asked` may decide.
+    fn v1_take_restarted(&'static self, asked: u64) -> Vec<String> {
+        let mut waiting = self.v1.restarted.borrow_mut();
+        let (now, later): (Vec<_>, Vec<_>) = waiting.drain(..).partition(|(_, from)| *from <= asked);
+        *waiting = later;
+        now.into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// An open that waited on its plugin's restart comes back on the new
+    /// process.
+    fn v1_reopen(&'static self, key: &str) {
+        self.v1.notice.update(|n| {
+            n.remove(key);
+        });
+        self.reload_mini(key);
+    }
+
+    /// The plugin of `keys` runs again and the list is fresh: each open
+    /// reopens on the new process, but an inline card whose plugin changed
+    /// version (an update) stays as it is, until its Refresh
+    /// ([`lifecycle::reopen_after_restart`]).
+    fn v1_restarted(&'static self, keys: Vec<String>, full: &HashSet<String>) {
+        let mut by_plugin: HashMap<String, Vec<(String, bool, String)>> = HashMap::new();
+        for key in keys {
+            let Ok(k) = V1Key::parse(&key) else { continue };
+            let made = self.v1.made.with_untracked(|m| m.get(&key).map(|(_, v)| v.clone())).unwrap_or_default();
+            by_plugin.entry(k.plugin).or_default().push((key.clone(), !full.contains(&key), made));
+        }
+        for (plugin, waiting) in by_plugin {
+            let now = self.v1.entry(&plugin).map(|p| p.version).unwrap_or_default();
+            let (reopen, keep) = lifecycle::reopen_after_restart(&waiting, &now);
+            for key in reopen {
+                self.v1_reopen(&key);
+            }
+            if !keep.is_empty() {
+                self.v1.notice.update(|n| n.retain(|k, _| !keep.contains(k)));
+            }
+        }
+    }
+
+    /// The updates waiting, each with its plugin (tracked): every one the
+    /// broker announced that the person did not skip. The Connect apps
+    /// badge counts these; Later hides a card's signal only.
+    pub fn v1_updates_waiting(&'static self) -> Vec<(connect::Listed, connect::Update)> {
+        let records = self.v1.records;
+        self.v1.listed.with(|l| connect::waiting(l, |plugin, version| records.with(|r| r.update_skipped(plugin, version))))
+    }
+
+    /// The update `plugin`'s cards signal (tracked): the one waiting,
+    /// unless the person skipped that version or put it off with Later.
+    /// Gone the moment the list says the installed version reached it.
+    pub fn v1_update(&'static self, plugin: &str) -> Option<connect::Update> {
+        let u = self.v1.listed.with(|l| l.iter().find(|p| p.id == plugin).and_then(|p| p.update.clone()))?;
+        if self.v1.records.with(|r| r.update_skipped(plugin, &u.version)) {
+            return None;
+        }
+        let put_off = (plugin.to_owned(), u.version.clone());
+        (!self.v1.later.with(|l| l.contains(&put_off))).then_some(u)
+    }
+
+    /// Whether the panel of `plugin`'s update to `version` was opened
+    /// (tracked): its dot is gone.
+    pub fn v1_update_seen(&'static self, plugin: &str, version: &str) -> bool {
+        self.v1.records.with(|r| r.update_seen(plugin, version))
+    }
+
+    /// Changes the update records here and on disk.
+    fn v1_note_update(&'static self, plugin: &str, version: &str, note: fn(&mut Records, &str, &str) -> bool) {
+        if !self.v1.records.with_untracked(|r| note(&mut r.clone(), plugin, version)) {
+            return;
+        }
+        self.v1.records.update(|r| {
+            note(r, plugin, version);
+        });
+        let (plugin, version) = (plugin.to_owned(), version.to_owned());
+        std::thread::spawn(move || {
+            change_records(|r| note(r, &plugin, &version));
+        });
+    }
+
+    /// The panel of `plugin`'s update to `version` opened: seen from now
+    /// on, in every chat and after a relaunch.
+    pub fn v1_see_update(&'static self, plugin: &str, version: &str) {
+        self.v1_note_update(plugin, version, Records::see_update);
+    }
+
+    /// Skip 1.5.0: no signal for that version again; a newer one shows.
+    pub fn v1_skip_update(&'static self, plugin: &str, version: &str) {
+        self.v1.update_panel.set(None);
+        self.v1_note_update(plugin, version, Records::skip_update);
+    }
+
+    /// Later: the signal is gone until the next launch.
+    pub fn v1_update_later(&'static self, plugin: &str, version: &str) {
+        let put_off = (plugin.to_owned(), version.to_owned());
+        batch(|| {
+            self.v1.update_panel.set(None);
+            self.v1.later.update(|l| {
+                l.insert(put_off);
+            });
+        });
+    }
+
+    /// Review update, Update or Retry on `plugin`'s waiting update: the
+    /// broker fetches and inspects it and puts the install-review card in
+    /// the open chat, which is shown. Nothing installs here: only that
+    /// card's Install does.
+    pub fn v1_review_update(&'static self, plugin: &str) {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            crate::toast::show("Open a chat to review the update in");
+            return;
+        }
+        self.v1.update_panel.set(None);
+        if self.plugins_open.get_untracked() {
+            self.close_plugins();
+        }
+        let plugin = plugin.to_owned();
+        self.v1.update_failed.update(|f| {
+            f.remove(&plugin);
+        });
+        Owner::detached().run(|| {
+            spawn(async move {
+                let c = chat.clone();
+                let r = crate::vault::off_main(move || host_api::review_update(&broker(), &plugin, &c)).await;
+                match r {
+                    Some(Ok(_)) => {
+                        // the card is a turn of that chat: read it now
+                        if self.active_id.get_untracked() == chat {
+                            self.refresh_turns();
+                        }
+                    }
+                    Some(Err(e)) => crate::toast::show(format!("Could not fetch the update: {}", e.message)),
+                    None => crate::toast::show("Could not fetch the update"),
+                }
+            })
+        });
+    }
+
+    /// An install of `plugin` started or ended: while one runs, its cards
+    /// show a line moving along their top edge.
+    fn v1_installing(&'static self, plugin: &str, on: bool) {
+        let plugin = plugin.to_owned();
+        self.v1.installing.update(|i| {
+            if on {
+                i.insert(plugin);
+            } else {
+                i.remove(&plugin);
+            }
         });
     }
 
@@ -453,12 +637,11 @@ impl Store {
                 r.retain(|_, p| *p != plugin);
                 keys
             };
-            for key in keys {
-                self.v1.notice.update(|n| {
-                    n.remove(&key);
-                });
-                self.reload_mini(&key);
-            }
+            // whether each comes back or stays as it is (an inline card
+            // after an update) is decided once the list says the plugin's
+            // version: the one asked for below, or a later one
+            let from = self.v1.lists.get() + 1;
+            self.v1.restarted.borrow_mut().extend(keys.into_iter().map(|k| (k, from)));
             // a card out of view keeps its source in `minis`: it fetches
             // the plugin's new code now, before it shows again
             let running: Vec<String> = self.v1.running.borrow().iter().map(|(_, k, _)| k.clone()).collect();
@@ -665,11 +848,16 @@ impl Store {
         self.open_v1_placed(card, Opener::Pin);
     }
 
-    /// An open of `key` started running with `fingerprint` (its number
-    /// `n`): kept for 12.2's banner, and `app_changed` logged when the app
-    /// changed since it last opened.
-    pub fn v1_running(&'static self, n: u64, key: &str, fingerprint: &str) {
+    /// An open of `key` started running with `fingerprint`, its plugin at
+    /// `version` (its number `n`): kept for 12.2's banner and the inline
+    /// card's "Made with", and `app_changed` logged when the app changed
+    /// since it last opened.
+    pub fn v1_running(&'static self, n: u64, key: &str, fingerprint: &str, version: &str) {
         self.v1.running.borrow_mut().push((n, key.to_owned(), fingerprint.to_owned()));
+        let (k, v) = (key.to_owned(), version.to_owned());
+        self.v1.made.update(|m| {
+            m.insert(k, (n, v));
+        });
         if let Ok(k) = V1Key::parse(key) {
             let fp = fingerprint.to_owned();
             if let Some(old) = change_records(|r| r.opened(&k.plugin, &k.app, &fp)) {
@@ -719,6 +907,9 @@ impl Store {
     /// Open `n` ended.
     pub fn v1_stopped(&'static self, n: u64) {
         self.v1.running.borrow_mut().retain(|(i, _, _)| *i != n);
+        if self.v1.made.with_untracked(|m| m.values().any(|(i, _)| *i == n)) {
+            self.v1.made.update(|m| m.retain(|_, (i, _)| *i != n));
+        }
     }
 
     /// The open `key`'s app hit an error (6.7).
@@ -1329,22 +1520,44 @@ impl Store {
     /// Install older version).
     pub fn v1_install(&'static self) {
         let Some(review) = self.v1.review.get_untracked() else { return };
+        self.v1_installing(&review.id, true);
         self.v1_job(
             "Installing…",
-            move || connect::install(&broker(), &review).map(|r| (r, review)),
-            move |(r, review)| match r {
-                connect::Installed::Done => {
-                    store().v1.review.set(None);
-                    store().v1.form.set(String::new());
-                    crate::toast::show(format!("{} {} is installed", review.title, review.version));
+            // a refusal comes back with the review, so the line on the
+            // plugin's cards ends whichever way the install went
+            move || Ok((connect::install(&broker(), &review), review)),
+            move |(r, review)| {
+                store().v1_installing(&review.id, false);
+                let r = match r {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if review.from_version.is_some() {
+                            store().v1.update_failed.update(|f| {
+                                f.insert(review.id.clone(), e.message.clone());
+                            });
+                        }
+                        return crate::toast::show(e.message);
+                    }
+                };
+                if review.from_version.is_some() {
+                    store().v1.update_failed.update(|f| {
+                        f.remove(&review.id);
+                    });
                 }
-                connect::Installed::NeedsApproval(_) => {
-                    crate::toast::show("This update adds permissions: review and approve them");
-                }
-                connect::Installed::NeedsDowngrade => {
-                    let mut older = review;
-                    older.downgrade = true;
-                    store().v1.review.set(Some(older));
+                match r {
+                    connect::Installed::Done => {
+                        store().v1.review.set(None);
+                        store().v1.form.set(String::new());
+                        crate::toast::show(format!("{} {} is installed", review.title, review.version));
+                    }
+                    connect::Installed::NeedsApproval(_) => {
+                        crate::toast::show("This update adds permissions: review and approve them");
+                    }
+                    connect::Installed::NeedsDowngrade => {
+                        let mut older = review;
+                        older.downgrade = true;
+                        store().v1.review.set(Some(older));
+                    }
                 }
             },
         );
@@ -1712,9 +1925,11 @@ impl Store {
         let typed = self.app_take_typed(&chat, i);
         let body = n.install_body(&typed, n.settings_from(picked.as_deref()));
         drop(typed);
+        self.v1_installing(&n.id, true);
         Owner::detached().run(|| {
             spawn(async move {
                 let r = crate::vault::off_main(move || connect::install_with(&broker(), body)).await;
+                self.v1_installing(&n.id, false);
                 let r = match r {
                     Some(Ok(connect::Installed::Done)) => Ok("installed"),
                     Some(Ok(connect::Installed::NeedsApproval(_))) => {
@@ -1726,10 +1941,38 @@ impl Store {
                     Some(Err(e)) => Err(e.message),
                     None => Err("The install did not finish".to_owned()),
                 };
+                // an update that failed leaves the installed version
+                // running: its cards say so, and the chat gets a line
+                if n.review.from_version.is_some() {
+                    self.v1_update_ended(&n.id, &chat, r.as_ref().err().cloned());
+                }
                 self.app_card(&chat, i, |c| c.finish(r));
                 self.v1_refresh();
             })
         });
+    }
+
+    /// `plugin`'s update ended, `failed` with a reason or installed: a
+    /// failure is kept for its cards' signal and said in chat `chat` (a
+    /// line the broker adds).
+    fn v1_update_ended(&'static self, plugin: &str, chat: &str, failed: Option<String>) {
+        let id = plugin.to_owned();
+        match failed {
+            None => self.v1.update_failed.update(|f| {
+                f.remove(&id);
+            }),
+            Some(reason) => {
+                self.v1.update_failed.update(|f| {
+                    f.insert(id.clone(), reason.clone());
+                });
+                let chat = chat.to_owned();
+                std::thread::spawn(move || {
+                    if let Err(e) = host_api::update_failed(&broker(), &id, &chat, &reason) {
+                        log::warn!("mini v1: the update's failure was not said in the chat: {}", e.message);
+                    }
+                });
+            }
+        }
     }
 
     /// An app card's other answers: Not now (`declined`), Cancel
@@ -1920,6 +2163,11 @@ pub fn answer_cards(turn: &str, links: Vec<crate::store::DriveLink>, user_after:
         .iter()
         .filter_map(|l| {
             let c = OpenCard::from_link(&json!({"provider": "buwiz-app", "card": l.card.clone()?}))?;
+            // what made the card, for its screen (never in its key)
+            if let Some(origin) = &l.origin {
+                cards::note_origin(&c.key().to_key(), origin);
+                cards::note_origin(&c.live_key().to_key(), origin);
+            }
             Some((format!("{turn}:{}", l.id), c))
         })
         .collect();
@@ -2191,7 +2439,8 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
     let key_r = key.clone();
     let plugin_id = card.plugin.clone();
     let plugin_shown = plugin.clone();
-    let (id_shown, id_toggle) = (id.clone(), id.clone());
+    let (id_shown, id_toggle, id_signal) = (id.clone(), id.clone(), id.clone());
+    let (plugin_line, plugin_made, key_made) = (card.plugin.clone(), card.plugin.clone(), key.clone());
     let shown = move || card_shown(&id_shown, auto);
     let open = shown.clone();
     view()
@@ -2232,6 +2481,8 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
                         }
                     }))
                 })
+                // a newer version waits: the (i), left of ⌄ ⤢
+                .child(update_signal(&id_signal, &card.plugin))
                 .child(dynamic(move || {
                     let id = id_toggle.clone();
                     if shown() {
@@ -2271,6 +2522,11 @@ fn open_inline_card(card: OpenCard, id: String, key: String, live: bool, auto: b
             })
             .into_element()
         }))
+        // its plugin changed version since it was made: it keeps what it
+        // shows, and says so
+        .child(made_footer(&key_made, &plugin_made))
+        // an install of its plugin runs: a line along its top edge
+        .child(install_line(&plugin_line, w))
 }
 
 /// `row` while `plugin` is there: nothing for one uninstalled or disabled.
@@ -2352,9 +2608,263 @@ fn card_footer(key: &str) -> impl IntoElement {
     })
 }
 
+/// How long the pointer rests on the (i) before its panel peeks, how long
+/// an unpinned panel waits for the pointer to come back (to travel from
+/// the icon into it), and the panel's fade.
+const PEEK_MS: u64 = 300;
+const GRACE_MS: u64 = 250;
+const PANEL_FADE_MS: f32 = 120.0;
+/// The update panel's width.
+const PANEL_W: f32 = 300.0;
+
+/// Opens the update panel of card `card_id` (`pinned` by a press, or a
+/// peek): the person has looked at that version, so its dot goes.
+fn open_update_panel(card_id: &str, plugin: &str, version: &str, pinned: bool) {
+    store().v1.update_panel.set(Some((card_id.to_owned(), pinned)));
+    store().v1_see_update(plugin, version);
+}
+
+/// The update signal in an inline card's header: an (i) while a newer
+/// version of `plugin` waits, with a dot until its panel was opened.
+/// Resting the pointer on it peeks the panel, a press (or Enter on it,
+/// Tab reaches it) keeps the panel open; the panel is an overlay against
+/// the icon, so it floats over the card and takes no room in it.
+fn update_signal(card_id: &str, plugin: &str) -> impl IntoElement {
+    let (card_id, plugin) = (card_id.to_owned(), plugin.to_owned());
+    let p = plugin.clone();
+    let update = computed(move || store().v1_update(&p));
+    let anchor = element_ref();
+    // the pointer is on the icon or the panel
+    let over = signal(false);
+    let owner = Owner::current();
+    dynamic(move || {
+        let u = update.get()?;
+        let title = store().v1.listed.with_untracked(|l| l.iter().find(|x| x.id == plugin).map(|x| x.title.clone())).filter(|t| !t.is_empty()).unwrap_or_else(|| plugin.clone());
+        let (id_open, id_peek, id_press, id_leave, id_panel) = (card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone(), card_id.clone());
+        let (p_seen, p_peek, p_press) = (plugin.clone(), plugin.clone(), plugin.clone());
+        let (v_seen, v_peek, v_press) = (u.version.clone(), u.version.clone(), u.version.clone());
+        let (o_peek, o_leave) = (owner, owner);
+        let open = move || store().v1.update_panel.with(|p| p.as_ref().is_some_and(|(id, _)| *id == id_open));
+        let (u_panel, plugin_panel, title_panel, anchor_panel, owner_panel) = (u.clone(), plugin.clone(), title.clone(), anchor, owner);
+        Some(
+            view()
+                .child(
+                    view()
+                        .size(px(28.0))
+                        .rounded(px(14.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(theme::SUBTLE)
+                        .label(connect::update_label(&title, &u))
+                        .element_ref(&anchor)
+                        .on_mouse_enter(move |_: &MouseEvent| {
+                            over.set(true);
+                            let (id, plugin, version) = (id_peek.clone(), p_peek.clone(), v_peek.clone());
+                            o_peek.run(|| {
+                                set_timeout(std::time::Duration::from_millis(PEEK_MS), move || {
+                                    if over.get_untracked() && store().v1.update_panel.with_untracked(Option::is_none) {
+                                        open_update_panel(&id, &plugin, &version, false);
+                                    }
+                                })
+                            });
+                        })
+                        .on_mouse_leave(move |_: &MouseEvent| {
+                            over.set(false);
+                            close_peek_later(&o_leave, &id_leave, over);
+                        })
+                        .on_press(move || {
+                            if store().v1.update_panel.with_untracked(|p| *p == Some((id_press.clone(), true))) {
+                                store().v1.update_panel.set(None);
+                            } else {
+                                open_update_panel(&id_press, &p_press, &v_press, true);
+                            }
+                        })
+                        // an i in a ring
+                        .child(
+                            view()
+                                .size(px(16.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(tc("#f5f5f5ad"))
+                                .items_center()
+                                .justify_center()
+                                .child(text("i").text_size(px(11.0)).line_height(px(13.0)).font_weight(FontWeight::SEMIBOLD).text_color(tc("#f5f5f5ad"))),
+                        )
+                        // not looked at yet
+                        .child(when(
+                            move || !store().v1_update_seen(&p_seen, &v_seen),
+                            || view().label("New update").absolute().top(px(3.0)).right(px(3.0)).size(px(7.0)).rounded(px(3.5)).bg(theme::ACCENT),
+                        )),
+                )
+                .child(when(open, move || update_panel(&id_panel, &plugin_panel, &title_panel, &u_panel, &anchor_panel, over, &owner_panel).into_element()))
+                .into_element(),
+        )
+    })
+}
+
+/// Closes card `card_id`'s panel after the grace, if it was only a peek
+/// and the pointer is on neither the icon nor the panel by then.
+fn close_peek_later(owner: &Owner, card_id: &str, over: Signal<bool>) {
+    let id = card_id.to_owned();
+    owner.run(|| {
+        set_timeout(std::time::Duration::from_millis(GRACE_MS), move || {
+            if !over.get_untracked() && store().v1.update_panel.with_untracked(|p| *p == Some((id.clone(), false))) {
+                store().v1.update_panel.set(None);
+            }
+        })
+    });
+}
+
+/// The update panel of a card, against its (i): what is new, and what to
+/// do about it. Review goes to the install-review card in the chat; Later
+/// puts the signal off until the next launch; Skip hides this version.
+/// Escape closes it and gives the focus back to the icon.
+fn update_panel(card_id: &str, plugin: &str, title: &str, u: &connect::Update, anchor: &ElementRef, over: Signal<bool>, owner: &Owner) -> impl IntoElement {
+    // faded in by flipping its opacity once it is there: a transition does
+    // not start from the default style
+    let shown = signal(reduce_motion());
+    if !shown.get_untracked() {
+        set_timeout(std::time::Duration::from_millis(16), move || shown.set(true));
+    }
+    let (focus, id_leave, o_leave) = (*anchor, card_id.to_owned(), *owner);
+    let (p_review, p_later, p_skip) = (plugin.to_owned(), plugin.to_owned(), plugin.to_owned());
+    let (v_later, v_skip) = (u.version.clone(), u.version.clone());
+    let mut body = view()
+        .label("Update details")
+        .w(px(PANEL_W))
+        .gap(px(8.0))
+        .p(px(12.0))
+        .rounded(px(12.0))
+        .bg(theme::POPOVER)
+        .border_1()
+        .border_color(theme::BORDER_S)
+        .shadow_lg()
+        .opacity(move || if shown.get() { 1.0f32 } else { 0.0 })
+        .transition_opacity()
+        .duration(PANEL_FADE_MS)
+        .on_mouse_enter(move |_: &MouseEvent| over.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| {
+            over.set(false);
+            close_peek_later(&o_leave, &id_leave, over);
+        })
+        .child(text(connect::update_heading(title, u)).text_size(px(13.0)).line_height(px(18.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT));
+    if !u.notes.is_empty() {
+        body = body.child(view().gap(px(4.0)).children(u.notes.iter().map(|n| {
+            view()
+                .flex_row()
+                .gap(px(6.0))
+                .child(text("•").text_size(px(13.0)).line_height(px(18.0)).text_color(theme::MUTED))
+                .child(text(n.clone()).flex_1().min_w(px(0.0)).number_of_lines(3).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::DIM))
+        })));
+    }
+    if !u.access.is_empty() {
+        body = body.child(text(format!("Needs new access: {}", u.access.join(", "))).number_of_lines(3).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::WARN));
+    }
+    if !u.url.is_empty() {
+        let url = u.url.clone();
+        body = body.child(
+            view()
+                .label("Read more")
+                .self_start()
+                .on_press(move || store().open_link(&url))
+                .child(text("Read more").text_size(px(13.0)).line_height(px(18.0)).text_color(theme::ACCENT)),
+        );
+    }
+    let body = body.child(
+        view()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(6.0))
+            .pt(px(2.0))
+            .child(crate::cards::btn(crate::cards::Btn::Primary, u.review_label(), move || store().v1_review_update(&p_review)))
+            .child(crate::cards::btn(crate::cards::Btn::Secondary, "Later", move || store().v1_update_later(&p_later, &v_later)))
+            .child(crate::cards::btn(crate::cards::Btn::Secondary, &format!("Skip {}", connect::bare_version(&u.version)), move || store().v1_skip_update(&p_skip, &v_skip))),
+    );
+    nsh_core::element::overlay()
+        .anchor(anchor)
+        .placement(nsh_core::overlay::Placement::Bottom)
+        .align(nsh_core::overlay::Align::End)
+        .offset(px(6.0))
+        .label("Update panel")
+        .on_press_outside(move |_: &Point<Points>| store().v1.update_panel.set(None))
+        .on_cancel(move || {
+            store().v1.update_panel.set(None);
+            // back where the keyboard was
+            focus.focus();
+        })
+        .child(body)
+}
+
+/// An inline card's "Made with 1.4.0 · Refresh": its plugin has another
+/// version now than when the card (`key`) was made. The card keeps what
+/// it shows; only Refresh loads it again.
+fn made_footer(key: &str, plugin: &str) -> impl IntoElement {
+    let (key, plugin) = (key.to_owned(), plugin.to_owned());
+    let k = key.clone();
+    let says = computed(move || {
+        let made = store().v1.made.with(|m| m.get(&k).map(|(_, v)| v.clone()))?;
+        let now = store().v1.entries.with(|e| e.iter().find(|p| p.id == plugin).map(|p| p.version.clone()))?;
+        lifecycle::made_with(&made, &now)
+    });
+    dynamic(move || {
+        let line = says.get()?;
+        let key = key.clone();
+        Some(
+            view()
+                .label("Made with an earlier version")
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .bg(tc("#1f1f1f"))
+                .child(text(format!("{line} ·")).text_size(px(12.0)).line_height(px(16.0)).text_color(tc("#f5f5f5ad")))
+                .child(
+                    view()
+                        .label("Refresh this card")
+                        .on_press(move || store().v1_reload(&key))
+                        .child(text("Refresh").text_size(px(12.0)).line_height(px(16.0)).text_color(tc("#f5f5f5"))),
+                )
+                .into_element(),
+        )
+    })
+}
+
+/// The line along the top edge of a card (`w` wide) while an install of
+/// its `plugin` runs: a short stroke going back and forth, or a still
+/// line under Reduce Motion. It lies over the card and takes no room.
+fn install_line(plugin: &str, w: f32) -> impl IntoElement {
+    const STROKE: f32 = 0.3;
+    const SWEEP_MS: u64 = 900;
+    let plugin = plugin.to_owned();
+    when(
+        move || store().v1.installing.with(|i| i.contains(&plugin)),
+        move || {
+            let track = view().label("Installing").absolute().top(px(0.0)).left(px(0.0)).w(px(w)).h(px(2.0)).pointer_events(PointerEvents::None);
+            if reduce_motion() {
+                return track.bg(theme::ACCENT);
+            }
+            let far = signal(false);
+            set_timeout(std::time::Duration::from_millis(16), move || far.set(true));
+            set_interval(std::time::Duration::from_millis(SWEEP_MS), move || far.update(|f| *f = !*f));
+            track.child(
+                view()
+                    .w(px(w * STROKE))
+                    .h(px(2.0))
+                    .bg(theme::ACCENT)
+                    .translate_x(move || px(if far.get() { w * (1.0 - STROKE) } else { 0.0 }))
+                    .transition_transform()
+                    .duration(SWEEP_MS as f32)
+                    .ease_in_out(),
+            )
+        },
+    )
+}
+
 /// The banners over an open (`key`): its notice ("This item is no longer
 /// available", "reconnecting") and, `full` screen, a stale open's Reload
-/// (12.2). An inline card has no Reload strip: it reloads in place.
+/// (12.2). An inline card has no Reload strip: it keeps what it shows
+/// and says what it was made with ([`made_footer`]).
 pub fn banners(key: &str, full: bool) -> impl IntoElement {
     let (k1, k2, k3, k4) = (key.to_owned(), key.to_owned(), key.to_owned(), key.to_owned());
     view()
