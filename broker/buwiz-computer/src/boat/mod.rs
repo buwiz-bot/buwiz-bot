@@ -33,7 +33,9 @@
 //! there, and box-keeper only reads them. The broker removes them over SSH once the box answers, or
 //! when its start fails, and the VM itself does five minutes on, as on EC2 (`ec2/instance.rs`), so a
 //! broker gone mid-start leaves nothing. Each start writes them again, because a stop drops the
-//! memory that held what box-keeper had read.
+//! memory that held what box-keeper had read: into a folder of its own there (`s-<start id>`), with
+//! `token` and `viewer` links to it, and each removal is of its own start's folder, so the VM's
+//! timer from an earlier start never takes a later start's secrets.
 //!
 //! **Lifecycle, on boat's API** (`https://boat.dev/api/v1`, `Authorization: Bearer <boat_…>`):
 //! - *create*: `POST /sandboxes` with `ttlSeconds` (one hour) and a `buwiz-computer` label, then wait
@@ -134,7 +136,7 @@ const FIRST_OPEN_PORT: u16 = 6906;
 /// the workspace and one for all of `/home/box`. Everything else is the image's own default. Below
 /// [`FIRST_OPEN_PORT`] a port takes a capability, so no command can listen on a service's port. Its
 /// ports are on the VM's loopback alone. The secrets' folder is the container root's alone
-/// ([`STAGE`]), and mounted read-only, as Docker's is: [`CLEAR`] removes the two files.
+/// ([`STAGE`]), and mounted read-only, as Docker's is: [`CLEAR`] removes each start's secrets.
 ///
 /// A computer made before this layout keeps its container as it was (a `-chrome` volume, the old
 /// settings, and no capabilities, which today's image may not start with): wake only starts what
@@ -158,27 +160,39 @@ docker create --name "$2" --label app.buwiz.computer=1 --label "app.buwiz.comput
     )
 }
 
-/// Writes the two secrets from stdin (token, then viewer password, one per line) into the staging
-/// folder, the container root's alone (root's, or the login's user's under a rootless Docker, whose
-/// root that is), and starts the container. A failed start removes them, and so does the VM five
-/// minutes on whatever happens; [`CLEAR`] does once the box answers. Argument: the container name.
+/// Writes the two secrets from stdin (token, then viewer password, one per line) into a folder of
+/// this start's own in the staging folder, the container root's alone (root's, or the login's
+/// user's under a rootless Docker, whose root that is), points `token` and `viewer` at them, and
+/// starts the container. The container's mount and its `BOX_*_FILE` names were fixed at its
+/// create, so the names stay; each is a link swapped in by a rename, into `s-<stage>/`, which is
+/// inside the mount. A failed start removes this start's folder, and so does the VM five minutes
+/// on whatever happens; [`CLEAR`] does once the box answers. Each removal is of its own start's
+/// folder alone, so a timer from an earlier start never removes a later start's secrets.
+/// Arguments: the container name, and this start's id (hex, not a secret).
 const STAGE: &str = r#"# buwiz:stage
 set -e
 d=/dev/shm/buwiz-start
+s=$2
+case "$s" in ""|*[!0-9a-f]*) exit 2;; esac
 o=0; g=0
 if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then o=$(id -u); g=$(id -g); fi
 sudo install -d -m 0700 -o "$o" -g "$g" "$d"
-sudo sh -c 'umask 077 && read -r t && read -r v && rm -f -- "$1/token" "$1/viewer" && printf "%s" "$t" > "$1/token" && printf "%s" "$v" > "$1/viewer" && chown "$2:$3" "$1/token" "$1/viewer"' sh "$d" "$o" "$g"
-sudo setsid -f /bin/sh -c 'sleep 300; rm -f -- "$0/token" "$0/viewer"' "$d" </dev/null >/dev/null 2>&1
-docker start "$1" >/dev/null || { sudo rm -f -- "$d/token" "$d/viewer"; exit 1; }"#;
+sudo sh -c 'umask 077 && read -r t && read -r v && mkdir -- "$1/s-$4" && printf "%s" "$t" > "$1/s-$4/token" && printf "%s" "$v" > "$1/s-$4/viewer" && chown -R "$2:$3" "$1/s-$4" && ln -s "s-$4/token" "$1/.token-$4" && ln -s "s-$4/viewer" "$1/.viewer-$4" && mv -f -- "$1/.token-$4" "$1/token" && mv -f -- "$1/.viewer-$4" "$1/viewer"' sh "$d" "$o" "$g" "$s"
+sudo setsid -f /bin/sh -c 'sleep 300; rm -rf -- "$0/s-$1"' "$d" "$s" </dev/null >/dev/null 2>&1
+docker start "$1" >/dev/null || { sudo rm -rf -- "$d/s-$s"; exit 1; }"#;
 
-/// The staged secrets, gone: box-keeper has read them, or the start failed. Safe to repeat.
+/// This start's staged secrets, gone: box-keeper has read them, or the start failed. Safe to
+/// repeat. `token` and `viewer` are left pointing at nothing until the next start points them
+/// again. Argument: the start's id.
 const CLEAR: &str = r#"# buwiz:clear
-sudo rm -f -- /dev/shm/buwiz-start/token /dev/shm/buwiz-start/viewer"#;
+s=$1
+case "$s" in ""|*[!0-9a-f]*) exit 2;; esac
+sudo rm -rf -- "/dev/shm/buwiz-start/s-$s""#;
 
-/// [`CLEAR`] over `master`. A clear that fails leaves them to the VM's own, five minutes on.
-async fn clear(master: &ssh::Master) {
-    let _ = master.run(CLEAR, &[], None, STAGE_PATIENCE, 4096).await;
+/// [`CLEAR`] of start `stage` over `master`. A clear that fails leaves them to the VM's own, five
+/// minutes on.
+async fn clear(master: &ssh::Master, stage: &str) {
+    let _ = master.run(CLEAR, &[stage], None, STAGE_PATIENCE, 4096).await;
 }
 
 fn wire(field: &[u8]) -> Vec<u8> {
@@ -647,8 +661,9 @@ impl BoatProvider {
     }
 
     /// The secrets to the VM, and the container started. The secrets are on stdin only. A failed
-    /// start leaves none of them staged.
-    async fn start_box(machine: &Machine, login: &Login, name: &str) -> Result<()> {
+    /// start leaves none of them staged. `Ok` has this start's id, for [`CLEAR`].
+    async fn start_box(machine: &Machine, login: &Login, name: &str) -> Result<String> {
+        let stage = crate::random_hex(8)?;
         let stdin = format!(
             "{}\n{}\n",
             machine.token.expose(),
@@ -657,20 +672,21 @@ impl BoatProvider {
         let started = Self::step(
             login,
             STAGE,
-            &[name],
+            &[name, &stage],
             Some(stdin.as_bytes()),
             STAGE_PATIENCE,
             "start the computer",
         )
         .await;
         if started.is_err() {
-            clear(&login.master).await;
+            clear(&login.master, &stage).await;
         }
-        started
+        started.map(|()| stage)
     }
 
-    /// The box, as a link: forwards, the box's answer checked, polled until it answers or [`BOX_PATIENCE`].
-    async fn finish(&self, machine: &Machine, login: Login) -> Result<Arc<Open>> {
+    /// The box, as a link: forwards, the box's answer checked, polled until it answers or
+    /// [`BOX_PATIENCE`]. `stage` is the start's id, whose secrets are cleared either way.
+    async fn finish(&self, machine: &Machine, login: Login, stage: &str) -> Result<Arc<Open>> {
         let guest = guest_at(&login.ports, machine.token.clone())?;
         let open = Arc::new(Open {
             way: Way::Ssh(Box::new(login.master)),
@@ -686,7 +702,7 @@ impl BoatProvider {
                 Err(_) if started.elapsed() < BOX_PATIENCE => tokio::time::sleep(RETRY).await,
                 Err(p) => {
                     if let Ok(master) = open.master() {
-                        clear(master).await;
+                        clear(master, stage).await;
                     }
                     open.close().await;
                     return Err(p);
@@ -695,7 +711,7 @@ impl BoatProvider {
         }
         // box-keeper read them to answer, and can't unlink them on its read-only mount
         if let Ok(master) = open.master() {
-            clear(master).await;
+            clear(master, stage).await;
         }
         beat(Arc::downgrade(&open), BEAT);
         Ok(open)
@@ -846,8 +862,8 @@ impl Provider for BoatProvider {
                 "make the computer",
             )
             .await?;
-            Self::start_box(&machine, &login, &name).await?;
-            let open = self.finish(&machine, login).await?;
+            let stage = Self::start_box(&machine, &login, &name).await?;
+            let open = self.finish(&machine, login, &stage).await?;
             open.close().await;
             self.stop(&sandbox).await
         }
@@ -887,8 +903,8 @@ impl Provider for BoatProvider {
         }
         self.wait_ready(&id).await?;
         let login = self.login(machine, &id).await?;
-        Self::start_box(machine, &login, &container_name(&id)).await?;
-        let open = self.finish(machine, login).await?;
+        let stage = Self::start_box(machine, &login, &container_name(&id)).await?;
+        let open = self.finish(machine, login, &stage).await?;
         self.links
             .lock()
             .unwrap_or_else(|e| e.into_inner())

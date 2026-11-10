@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{prep, ssh_key, BoatProvider};
+use super::{prep, ssh_key, BoatProvider, CLEAR, STAGE};
 use crate::cloud::fake::{empty, ok, serve, Answer, Fake, Seen, CA};
 use crate::cloud::{Api, Settings};
 use crate::{Machine, Power, Problem, Provider, ProviderKind, Reach, Secret, Sleep, Spec};
@@ -646,6 +646,13 @@ async fn a_start_clears_the_staged_secrets_once_the_box_answers() {
         !calls.contains("tok-boat") && !calls.contains("pw-boat"),
         "a secret in argv: {calls}"
     );
+    // the clear is of this start's own folder: the id the stage was given, quoted after each
+    let ids: Vec<&str> = calls
+        .split('\'')
+        .filter(|w| w.len() == 16 && w.bytes().all(|b| b.is_ascii_hexdigit()))
+        .collect();
+    assert_eq!(ids.len(), 2, "the stage's and the clear's: {calls}");
+    assert_eq!(ids[0], ids[1], "{calls}");
     p.sleep(&machine, Sleep::Light).await.unwrap();
 }
 
@@ -748,4 +755,93 @@ async fn a_listing_longer_than_the_cap_is_an_error_and_nothing_acts_on_a_part_of
     let got = calls(&fake);
     assert_eq!(got.iter().filter(|c| c.starts_with("GET ")).count(), 30, "ten pages each: {got:?}");
     assert!(got.iter().all(|c| c.starts_with("GET ")), "nothing was deleted: {got:?}");
+}
+
+/// A folder of fakes for the VM's own commands, for running [`STAGE`] and [`CLEAR`] here: `sudo`
+/// runs what it's given, Docker is rootless (so the folders are this user's), `install` makes the
+/// folder, and `setsid` keeps each timer's command in `timers/` instead of starting it, with a
+/// `sleep` that doesn't wait. Nothing here is root.
+fn vm(name: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("boat-vm-{name}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(root.join("timers")).unwrap();
+    let timers = root.join("timers");
+    for (tool, body) in [
+        ("sudo", "exec \"$@\"".to_owned()),
+        ("docker", "case \"$1\" in info) echo '[name=rootless]';; esac\nexit 0".to_owned()),
+        ("install", "for a; do last=$a; done\nmkdir -p \"$last\" && chmod 700 \"$last\"".to_owned()),
+        ("setsid", format!("[ \"$1\" = -f ] && shift\nn=$(ls '{t}' | wc -l | tr -d ' ')\nfor a; do printf '%s\\0' \"$a\"; done > '{t}'/\"$n\"", t = timers.display())),
+        ("sleep", "exit 0".to_owned()),
+    ] {
+        let file = bin.join(tool);
+        std::fs::write(&file, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    (root, bin)
+}
+
+fn path_with(bin: &Path) -> String {
+    format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display())
+}
+
+/// Runs `script`, its staging folder moved to `shm`, with `args` and `stdin`.
+fn run_here(script: &str, shm: &Path, bin: &Path, args: &[&str], stdin: &str) {
+    use std::io::Write;
+    let script = script.replace("/dev/shm/buwiz-start", &shm.display().to_string());
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&script)
+        .arg("sh")
+        .args(args)
+        .env("PATH", path_with(bin))
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success(), "{args:?}");
+}
+
+/// Runs the timer the `n`th stage left, as the VM would five minutes on.
+fn fire_timer(root: &Path, bin: &Path, n: usize) {
+    let kept = std::fs::read(root.join("timers").join(n.to_string())).unwrap();
+    let words: Vec<String> = kept.split(|b| *b == 0).filter(|w| !w.is_empty()).map(|w| String::from_utf8(w.to_vec()).unwrap()).collect();
+    let ran = std::process::Command::new(&words[0]).args(&words[1..]).env("PATH", path_with(bin)).status().unwrap();
+    assert!(ran.success());
+}
+
+#[test]
+fn an_earlier_starts_timer_never_removes_a_later_starts_secrets() {
+    let (root, bin) = vm("stage-timers");
+    let shm = root.join("shm");
+    let read = |f: &str| std::fs::read_to_string(shm.join(f));
+    run_here(STAGE, &shm, &bin, &["buwiz-box", "aaaa1111aaaa1111"], "tok-1\npw-1\n");
+    assert_eq!((read("token").unwrap(), read("viewer").unwrap()), ("tok-1".to_owned(), "pw-1".to_owned()));
+    // a second start, before the first one's timer is up
+    run_here(STAGE, &shm, &bin, &["buwiz-box", "bbbb2222bbbb2222"], "tok-2\npw-2\n");
+    fire_timer(&root, &bin, 0);
+    assert_eq!((read("token").unwrap(), read("viewer").unwrap()), ("tok-2".to_owned(), "pw-2".to_owned()), "the first start's timer took the second's secrets");
+    assert!(!shm.join("s-aaaa1111aaaa1111").exists(), "its own are gone");
+    // the second's own timer, or its clear, removes them
+    run_here(CLEAR, &shm, &bin, &["bbbb2222bbbb2222"], "");
+    assert!(read("token").is_err() && read("viewer").is_err());
+    assert!(!shm.join("s-bbbb2222bbbb2222").exists());
+    fire_timer(&root, &bin, 1);
+    // no folder but the staging one's own, each start's gone
+    let left: Vec<_> = std::fs::read_dir(&shm).unwrap().flatten().filter(|e| e.path().is_dir()).collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn a_stage_or_clear_with_an_id_that_isnt_hex_does_nothing() {
+    let (root, bin) = vm("stage-bad-id");
+    let shm = root.join("shm");
+    for script in [STAGE, CLEAR] {
+        let script = script.replace("/dev/shm/buwiz-start", &shm.display().to_string());
+        let ran = std::process::Command::new("/bin/sh").arg("-c").arg(&script).arg("sh").args(["buwiz-box", "../x"]).env("PATH", path_with(&bin)).stdin(std::process::Stdio::null()).status().unwrap();
+        assert!(!ran.success());
+    }
+    assert!(!shm.exists());
 }
