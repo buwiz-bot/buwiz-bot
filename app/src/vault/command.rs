@@ -170,7 +170,7 @@ pub(crate) fn run(rest: &str) {
         },
         Outcome::Ask(rows, head) => {
             say(head.clone());
-            crate::slash::ask(rows, head);
+            crate::slash::show(rows, head);
         }
     }
 }

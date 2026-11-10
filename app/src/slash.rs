@@ -606,18 +606,14 @@ pub(crate) fn show_rows(rows: Vec<PopRow>) {
     show(rows, String::new());
 }
 
-/// A built-in's question: `rows` to pick from, under `head`, for the text as it is now.
-pub(crate) fn ask(rows: Vec<PopRow>, head: String) {
-    show(rows, head);
-}
-
 /// `show_rows` for completions asked when the text was `query`: an
 /// answer landing after more was typed is no pick for Enter.
 pub(crate) fn show_rows_for(query: String, rows: Vec<PopRow>) {
     show_for(query, rows, String::new());
 }
 
-fn show(rows: Vec<PopRow>, head: String) {
+/// The popup's `rows` under `head` (a resolve's or a built-in's question), for the text as it is now.
+pub(crate) fn show(rows: Vec<PopRow>, head: String) {
     show_for(store().draft.get_untracked(), rows, head);
 }
 
