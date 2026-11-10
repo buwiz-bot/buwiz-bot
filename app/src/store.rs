@@ -1548,6 +1548,10 @@ pub struct DriveLink {
     pub file_type: String,
     /// A v1 tool result's open (provider `buwiz-app`, 9.6): its card.
     pub card: Option<serde_json::Value>,
+    /// The tool call that made the card, `{tool, args}`: handed to the
+    /// card's native screen so it can run its search again when its
+    /// ticket is lost. Never part of the card's key or its record.
+    pub origin: Option<serde_json::Value>,
 }
 
 impl DriveLink {
@@ -1562,6 +1566,7 @@ impl DriveLink {
             kind: s(v, "kind"),
             file_type: s(v, "type"),
             card: v.get("card").filter(|c| c.is_object()).cloned(),
+            origin: v.get("origin").and_then(crate::mini_v1::cards::origin_of),
         }
     }
 }

@@ -61,6 +61,33 @@ pub enum Size {
     Small,
 }
 
+/// The most a card's origin may hold, as JSON.
+const ORIGIN_MAX: usize = 4096;
+
+/// A link's `origin`, checked: `{tool, args}`, the tool call that made
+/// its card (a name and an object, small). Anything else is no origin.
+pub fn origin_of(v: &Value) -> Option<Value> {
+    let tool = v.get("tool")?.as_str().filter(|t| !t.is_empty() && t.len() <= 100)?;
+    let args = v.get("args").filter(|a| a.is_object())?;
+    let origin = serde_json::json!({"tool": tool, "args": args});
+    (origin.to_string().len() <= ORIGIN_MAX).then_some(origin)
+}
+
+/// The origins of the cards on screen, by module key: what a native
+/// screen's `props.origin` is, read when it mounts. Held here and not in
+/// the key, so a card's key, id and record stay what they were.
+static ORIGINS: std::sync::Mutex<Option<std::collections::HashMap<String, Value>>> = std::sync::Mutex::new(None);
+
+/// Remembers `origin` for the open `key` (a card being shown).
+pub fn note_origin(key: &str, origin: &Value) {
+    ORIGINS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(key.to_owned(), origin.clone());
+}
+
+/// The origin of the open `key`, if its card had one.
+pub fn origin(key: &str) -> Option<Value> {
+    ORIGINS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(key).cloned()
+}
+
 /// A tool result's open, as its card shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenCard {
@@ -407,6 +434,22 @@ pub fn parse_settle(v: Option<&Value>) -> Result<String, RoxError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cards_origin_is_a_tool_and_its_args_and_stays_out_of_its_key() {
+        use serde_json::json;
+        let origin = json!({"tool": "gws_search_mail", "args": {"query": "in:inbox", "limit": 10}, "extra": 1});
+        assert_eq!(super::origin_of(&origin), Some(json!({"tool": "gws_search_mail", "args": {"query": "in:inbox", "limit": 10}})));
+        for bad in [json!({"tool": "", "args": {}}), json!({"tool": "t"}), json!({"tool": "t", "args": "in:inbox"}), json!({"args": {}}), json!({"tool": "t", "args": {"q": "x".repeat(5000)}})] {
+            assert_eq!(super::origin_of(&bad), None, "{bad}");
+        }
+        let link = json!({"provider": "buwiz-app", "origin": origin, "card": {"plugin": "app.buwiz.fixture", "app": "mail", "props": {"search": "tkt_0123456789ABCDEFGHJKMNPQRS"}, "placement": "inline"}});
+        let card = super::OpenCard::from_link(&link).unwrap();
+        assert!(!card.key().to_key().contains("origin") && !card.props.contains_key("origin"));
+        super::note_origin(&card.key().to_key(), &super::origin_of(&link["origin"]).unwrap());
+        assert_eq!(super::origin(&card.key().to_key()).unwrap()["args"]["query"], "in:inbox");
+        assert_eq!(super::origin("v1:app.buwiz.fixture/other"), None);
+    }
+
     use serde_json::json;
 
     use super::*;

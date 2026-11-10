@@ -114,6 +114,27 @@ pub struct Records {
     pub sent: Vec<Sent>,
     /// Each plugin's version as last listed.
     pub versions: Vec<Seen>,
+    /// What the person did about each plugin's waiting update.
+    pub updates: Vec<UpdateSeen>,
+    /// Module key → the plugin version its card was first drawn with,
+    /// oldest first ([`MADE_MAX`] at most): a card keeps saying "Made with
+    /// 1.4.0" after a relaunch, until its Refresh.
+    pub made: Vec<(String, String)>,
+}
+
+/// The most cards whose version [`Records::made`] keeps.
+pub const MADE_MAX: usize = 400;
+
+/// What the person did about a plugin's waiting update: the version whose
+/// panel they opened (its dot is gone) and the one they skipped. Each
+/// names one version: a newer one is news again.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UpdateSeen {
+    pub plugin: String,
+    /// "" until a panel was opened.
+    pub seen: String,
+    /// "" until one was skipped.
+    pub skipped: String,
 }
 
 /// The file in `dir` (Rox's data dir).
@@ -224,6 +245,13 @@ impl Records {
                         .collect()
                 })
                 .unwrap_or_default(),
+            updates: v
+                .get("updates")
+                .and_then(Value::as_object)
+                .map(|m| m.iter().map(|(k, x)| UpdateSeen { plugin: k.clone(), seen: s(x, "seen"), skipped: s(x, "skipped") }).collect())
+                .unwrap_or_default(),
+            // a list, so the oldest goes first when it is full
+            made: list("made").iter().map(|m| (s(m, "key"), s(m, "version"))).filter(|(k, v)| !k.is_empty() && !v.is_empty()).collect(),
         }
     }
 
@@ -247,6 +275,10 @@ impl Records {
             "versions": self.versions.iter().map(|x| (x.plugin.clone(), json!({
                 "version": x.version, "changed_at": x.changed_at,
             }))).collect::<serde_json::Map<_, _>>(),
+            "updates": self.updates.iter().map(|x| (x.plugin.clone(), json!({
+                "seen": x.seen, "skipped": x.skipped,
+            }))).collect::<serde_json::Map<_, _>>(),
+            "made": self.made.iter().map(|(k, v)| json!({"key": k, "version": v})).collect::<Vec<_>>(),
         })
     }
 
@@ -348,6 +380,29 @@ impl Records {
         }
     }
 
+    /// The plugin version card `key` was first drawn with; `version` (the
+    /// plugin's now) becomes it when the card has none yet.
+    pub fn made(&mut self, key: &str, version: &str) -> String {
+        if let Some((_, v)) = self.made.iter().find(|(k, _)| k == key) {
+            return v.clone();
+        }
+        if !version.is_empty() {
+            if self.made.len() >= MADE_MAX {
+                self.made.remove(0);
+            }
+            self.made.push((key.to_owned(), version.to_owned()));
+        }
+        version.to_owned()
+    }
+
+    /// Card `key` is drawn again from scratch (its Refresh): whatever
+    /// version it opens with next is the one it was made with.
+    pub fn remade(&mut self, key: &str) -> bool {
+        let before = self.made.len();
+        self.made.retain(|(k, _)| k != key);
+        self.made.len() != before
+    }
+
     /// Records the `(plugin, version)`s the broker lists now, at `now`
     /// (ms): a plugin seen for the first time is not an update; one whose
     /// version differs from the last seen changed at `now`. Whether
@@ -379,6 +434,44 @@ impl Records {
         fresh.then(|| format!("Updated to v{}", x.version.trim_start_matches('v')))
     }
 
+    fn update_of(&mut self, plugin: &str) -> &mut UpdateSeen {
+        let at = match self.updates.iter().position(|x| x.plugin == plugin) {
+            Some(at) => at,
+            None => {
+                self.updates.push(UpdateSeen { plugin: plugin.to_owned(), ..Default::default() });
+                self.updates.len() - 1
+            }
+        };
+        &mut self.updates[at]
+    }
+
+    /// The person opened the panel of `plugin`'s update to `version`: its
+    /// dot goes. Whether that is new (the records want saving).
+    pub fn see_update(&mut self, plugin: &str, version: &str) -> bool {
+        let x = self.update_of(plugin);
+        let new = x.seen != version;
+        x.seen = version.to_owned();
+        new
+    }
+
+    /// Skip on `plugin`'s update to `version`: no signal for that version.
+    pub fn skip_update(&mut self, plugin: &str, version: &str) -> bool {
+        let x = self.update_of(plugin);
+        let new = x.skipped != version;
+        x.skipped = version.to_owned();
+        new
+    }
+
+    /// Whether the panel of `plugin`'s update to `version` was opened.
+    pub fn update_seen(&self, plugin: &str, version: &str) -> bool {
+        self.updates.iter().any(|x| x.plugin == plugin && x.seen == version)
+    }
+
+    /// Whether `plugin`'s update to `version` was skipped.
+    pub fn update_skipped(&self, plugin: &str, version: &str) -> bool {
+        self.updates.iter().any(|x| x.plugin == plugin && x.skipped == version)
+    }
+
     /// Removes everything that names `plugin` (13.6 step 4): its
     /// attachments in every chat, its pins, its apps' fingerprints, the
     /// version it was seen at. How many attachments and pins went.
@@ -389,6 +482,7 @@ impl Records {
         let prefix = format!("{plugin}/");
         self.opened.retain(|(k, _)| !k.starts_with(&prefix));
         self.versions.retain(|x| x.plugin != plugin);
+        self.updates.retain(|x| x.plugin != plugin);
         (a - self.attachments.len(), p - self.pins.len())
     }
 }
@@ -562,6 +656,27 @@ mod tests {
     }
 
     #[test]
+    fn an_updates_dot_and_skip_are_per_version_saved_and_go_with_the_plugin() {
+        let dir = temp("updates");
+        let mut r = Records::default();
+        assert!(!r.update_seen("p.q.r", "1.5.0") && !r.update_skipped("p.q.r", "1.5.0"));
+        assert!(r.see_update("p.q.r", "1.5.0"));
+        assert!(!r.see_update("p.q.r", "1.5.0"), "seen once is enough");
+        assert!(r.skip_update("p.q.r", "1.5.0"));
+        assert!(!r.skip_update("p.q.r", "1.5.0"));
+        r.save(&dir).unwrap();
+        let mut back = Records::load(&dir);
+        assert_eq!(back, r);
+        assert!(back.update_seen("p.q.r", "1.5.0") && back.update_skipped("p.q.r", "1.5.0"));
+        // a newer version is news again: a dot, and a signal
+        assert!(!back.update_seen("p.q.r", "1.6.0") && !back.update_skipped("p.q.r", "1.6.0"));
+        assert!(!back.update_seen("other", "1.5.0"));
+        back.remove_plugin("p.q.r");
+        assert!(back.updates.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn records_round_trip_and_a_broken_file_starts_empty() {
         let dir = temp("round");
         let mut r = Records { migrated_at: 5, ..Default::default() };
@@ -575,6 +690,31 @@ mod tests {
         assert_eq!(Records::load(&dir), Records::default());
         assert_eq!(major("2.1.0"), 2);
         assert_eq!(major("1.0.0-rc.1"), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cards_version_outlives_a_relaunch_until_its_refresh() {
+        let dir = temp("made");
+        let mut r = Records::default();
+        assert_eq!(r.made("v1:p/card", "1.4.0"), "1.4.0");
+        r.save(&dir).unwrap();
+        // relaunched on 1.5.0: the card still says what it was made with
+        let mut back = Records::load(&dir);
+        assert_eq!(back, r);
+        assert_eq!(back.made("v1:p/card", "1.5.0"), "1.4.0");
+        assert_eq!(back.made("v1:p/new", ""), "", "an unknown version is not kept");
+        // its Refresh draws it again: the version now is the one it was made with
+        assert!(back.remade("v1:p/card"));
+        assert!(!back.remade("v1:p/card"));
+        assert_eq!(back.made("v1:p/card", "1.5.0"), "1.5.0");
+        // full: the oldest goes
+        for i in 0..MADE_MAX {
+            back.made(&format!("v1:p/c{i}"), "1.0.0");
+        }
+        assert_eq!(back.made.len(), MADE_MAX);
+        assert_eq!(back.made[0].0, "v1:p/c0");
+        assert!(!back.made.iter().any(|(k, _)| k == "v1:p/card"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
