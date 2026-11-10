@@ -174,7 +174,7 @@ fn move_rox_secrets(dir: &std::path::Path, c: &Connection) {
 fn gate() -> Box<dyn OwnerGate> {
     match keychain::kind() {
         keychain::Kind::Keychain => Box::new(touch_id::DeviceOwner),
-        keychain::Kind::Memory => Box::new(touch_id::TestOwner),
+        _ => Box::new(touch_id::TestOwner),
     }
 }
 
@@ -197,7 +197,7 @@ impl Vault {
             .and_then(|c| db::migrate(&c).map(|()| c).map_err(|e| e.to_string()));
         // never from a test or a test instance: it would reach the owner's Keychain
         #[cfg(all(target_os = "macos", not(test)))]
-        if let (Ok(c), keychain::Kind::Keychain) = (&conn, keychain::kind()) {
+        if let (Ok(c), true) = (&conn, keychain::kind() == keychain::Kind::Keychain) {
             move_rox_secrets(&dir, c);
         }
         let (db, open_error) = match conn {

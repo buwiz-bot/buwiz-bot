@@ -29,7 +29,7 @@ pub(crate) trait OwnerGate: Send + Sync {
     fn confirm(&self, reason: &str) -> AuthOutcome;
 }
 
-/// The gate with the test store ([`super::keychain::Kind::Memory`]): no sheet. In a test build it
+/// The gate with any store but the Keychain ([`super::keychain::Kind`]): no sheet. In a test build it
 /// answers `BUWIZ_TEST_OWNER` (`verified`, `cancelled`); anywhere else, and with nothing set, the
 /// Mac can't ask, so nothing saved is used.
 pub(crate) struct TestOwner;

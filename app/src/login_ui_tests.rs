@@ -221,7 +221,7 @@ fn a_typed_login_goes_to_the_brokers_route_and_the_save_offer_follows() {
     if !in_child("a_typed_login_goes_to_the_brokers_route_and_the_save_offer_follows") {
         return;
     }
-    assert_eq!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory, "the test store, never the Keychain");
+    assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
     let mut reply = submitted("submitted");
     reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
     let (mut app, seen) = start(reply);

@@ -122,29 +122,45 @@ fn not_found(e: &security_framework::base::Error) -> bool {
 }
 
 /// Which store the app's vault opens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Kind {
     /// The macOS Keychain, service [`super::KEYCHAIN_SERVICE`].
     Keychain,
-    /// [`MemorySecrets`]: a test, a test instance, or not macOS.
-    Memory,
+    /// [`MemorySecrets`], and why: a test build, a test instance, or not macOS. Nothing saved
+    /// outlives the process.
+    Memory(&'static str),
+    /// The environment names a store this app doesn't know: nothing is saved or read, and the
+    /// Logins page says why. Never a silent fallback to memory or the Keychain.
+    Refused(String),
 }
 
-/// Whether the environment asks for no Keychain: `BUWIZ_NO_KEYCHAIN` set (anything but empty, `0`
-/// or `false`), or `BUWIZ_KEYSTORE` naming another store (`file:<dir>`, `memory`), as every test
-/// broker and test instance is started with. A test instance must never reach the owner's
-/// `com.buwiz.bot.site-login` items.
-pub(crate) fn no_keychain_by(var: impl Fn(&str) -> Option<String>) -> bool {
-    let set = |k: &str| var(k).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-    let off = set("BUWIZ_NO_KEYCHAIN").is_some_and(|v| v != "0" && !v.eq_ignore_ascii_case("false"));
-    let other = set("BUWIZ_KEYSTORE").is_some_and(|v| v != "keychain");
-    off || other
-}
-
-/// The store the vault opens, from the environment: never the Keychain in a test build, nor when
-/// the environment asks for none ([`no_keychain_by`]), nor off macOS.
+/// The store the environment names, read as the broker reads it (`helper/keystore.rs`
+/// `from_spec`, `main.rs`): `BUWIZ_KEYSTORE` is `keychain` or `file:<dir>` (a test instance's;
+/// this app keeps no secret in a file, so its logins are kept in memory), and with it empty,
+/// `BUWIZ_NO_KEYCHAIN=1` means no Keychain. Anything else is refused.
 pub(crate) fn kind_by(var: impl Fn(&str) -> Option<String>) -> Kind {
-    if cfg!(test) || !cfg!(target_os = "macos") || no_keychain_by(var) { Kind::Memory } else { Kind::Keychain }
+    if cfg!(test) {
+        return Kind::Memory("this is a test build");
+    }
+    if !cfg!(target_os = "macos") {
+        return Kind::Memory("this isn't macOS");
+    }
+    spec_kind(var)
+}
+
+/// [`kind_by`]'s reading of the environment, for a real build on macOS.
+fn spec_kind(var: impl Fn(&str) -> Option<String>) -> Kind {
+    let spec = var("BUWIZ_KEYSTORE").unwrap_or_default();
+    if spec.starts_with("file:") {
+        return Kind::Memory("BUWIZ_KEYSTORE names a test store");
+    }
+    if !spec.is_empty() && spec != "keychain" {
+        return Kind::Refused(format!("BUWIZ_KEYSTORE must be file:<dir> or keychain, not {}", spec.chars().take(40).collect::<String>()));
+    }
+    if spec.is_empty() && var("BUWIZ_NO_KEYCHAIN").as_deref() == Some("1") {
+        return Kind::Memory("BUWIZ_NO_KEYCHAIN=1 is set");
+    }
+    Kind::Keychain
 }
 
 /// [`kind_by`] of this process's environment.
@@ -152,12 +168,45 @@ pub(crate) fn kind() -> Kind {
     kind_by(buwiz_protocol::env::var)
 }
 
+/// What the Logins page says of the store, when it isn't the Keychain in a real build: `None` for
+/// the Keychain and for a test build.
+pub(crate) fn warning(kind: &Kind) -> Option<String> {
+    match kind {
+        Kind::Keychain => None,
+        Kind::Memory(_) if cfg!(test) || !cfg!(target_os = "macos") => None,
+        Kind::Memory(why) => Some(format!("Saved logins aren't being kept: {why}, so this app uses no Keychain and forgets them when it quits.")),
+        Kind::Refused(why) => Some(format!("Saved logins can't be used: {why}.")),
+    }
+}
+
+/// A store that refuses everything, for an environment naming a store this app doesn't know.
+struct RefusedSecrets(String);
+
+impl SecretStore for RefusedSecrets {
+    fn set(&self, _: &str, _: &Secret) -> Result<(), String> {
+        Err(self.0.clone())
+    }
+
+    fn get(&self, _: &str) -> Result<Option<Secret>, String> {
+        Err(self.0.clone())
+    }
+
+    fn delete(&self, _: &str) -> Result<(), String> {
+        Err(self.0.clone())
+    }
+
+    fn contains(&self, _: &str) -> bool {
+        false
+    }
+}
+
 /// The store the app uses: the Keychain on macOS, memory in a test, a test instance or elsewhere
-/// (no secret is ever written to a file).
+/// (no secret is ever written to a file), and none at all for a store it doesn't know.
 pub(crate) fn open() -> Box<dyn SecretStore> {
     match kind() {
         #[cfg(target_os = "macos")]
         Kind::Keychain => Box::new(Keychain(super::KEYCHAIN_SERVICE)),
+        Kind::Refused(why) => Box::new(RefusedSecrets(why)),
         _ => Box::new(MemorySecrets::default()),
     }
 }
@@ -167,18 +216,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_test_build_and_a_test_instance_never_open_the_keychain() {
+    fn a_test_build_never_opens_the_keychain_and_a_store_it_doesnt_know_is_refused() {
         let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned());
-        // a test build, whatever the environment says
-        assert_eq!(kind_by(env(&[])), Kind::Memory);
-        assert_eq!(kind(), Kind::Memory);
-        // what a test broker and a test instance are started with
-        for set in [&[("BUWIZ_NO_KEYCHAIN", "1")][..], &[("BUWIZ_KEYSTORE", "file:/tmp/x")], &[("BUWIZ_KEYSTORE", "memory")], &[("BUWIZ_NO_KEYCHAIN", "yes"), ("BUWIZ_KEYSTORE", "keychain")]] {
-            assert!(no_keychain_by(env(set)), "{set:?}");
+        // a test build, whatever the environment says: never the Keychain
+        for set in [&[][..], &[("BUWIZ_KEYSTORE", "keychain")], &[("BUWIZ_KEYSTORE", "nonsense")]] {
+            assert!(matches!(kind_by(env(set)), Kind::Memory(_)), "{set:?}");
         }
-        for set in [&[][..], &[("BUWIZ_NO_KEYCHAIN", "0")], &[("BUWIZ_NO_KEYCHAIN", "")], &[("BUWIZ_KEYSTORE", "keychain")], &[("BUWIZ_NO_KEYCHAIN", "false")]] {
-            assert!(!no_keychain_by(env(set)), "{set:?}");
-        }
+        assert!(matches!(kind(), Kind::Memory(_)));
+        assert_eq!(warning(&kind()), None, "a test build says nothing of it");
+        // what a real build makes of the words, read by the rule alone: nothing here opens a store
+        assert_eq!(spec_kind(env(&[])), Kind::Keychain);
+        assert_eq!(spec_kind(env(&[("BUWIZ_KEYSTORE", "keychain")])), Kind::Keychain);
+        assert!(matches!(spec_kind(env(&[("BUWIZ_KEYSTORE", "file:/tmp/k")])), Kind::Memory(_)));
+        assert!(matches!(spec_kind(env(&[("BUWIZ_NO_KEYCHAIN", "1")])), Kind::Memory(_)));
+        assert_eq!(spec_kind(env(&[("BUWIZ_NO_KEYCHAIN", "yes")])), Kind::Keychain, "only 1, as the broker reads it");
+        assert!(matches!(spec_kind(env(&[("BUWIZ_KEYSTORE", "memory")])), Kind::Refused(_)), "no silent memory store");
+        assert!(matches!(spec_kind(env(&[("BUWIZ_KEYSTORE", "Keychain ")])), Kind::Refused(_)));
+        assert_eq!(warning(&Kind::Refused("BUWIZ_KEYSTORE must be file:<dir> or keychain, not x".into())).unwrap(), "Saved logins can't be used: BUWIZ_KEYSTORE must be file:<dir> or keychain, not x.");
+        let refused = RefusedSecrets("no".into());
+        assert!(refused.set("a", &Secret::new("fake")).is_err() && refused.get("a").is_err() && !refused.contains("a"));
     }
 
     fn accounts(a: &[&str]) -> Vec<String> {
