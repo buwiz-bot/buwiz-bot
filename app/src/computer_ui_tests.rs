@@ -33,6 +33,11 @@ fn say(viewer: &str, takeover: bool) {
     crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: viewer.to_owned(), takeover, ..Status::default() });
 }
 
+thread_local! {
+    /// Whether a timer moved the time left when "check timer" was pressed.
+    static TIMER: Signal<bool> = Owner::detached().run(|| signal(false));
+}
+
 #[component]
 fn Bar() -> impl IntoElement {
     view()
@@ -48,6 +53,8 @@ fn Bar() -> impl IntoElement {
         .child(crate::computer::mode_line("computer:b1"))
         .child(crate::computer::drive_button("computer:b1"))
         .child(text(|| format!("probe ready=1 wants={}", crate::computer::wants_to_drive("b1"))).text_size(px(8.0)))
+        .child(view().label("check timer").w(px(40.0)).h(px(20.0)).on_press(|| TIMER.with(|t| t.set(crate::computer::counting_down()))))
+        .child(text(|| format!("timer={}", TIMER.with(|t| t.get()))).text_size(px(8.0)))
 }
 
 fn start() -> Headless {
@@ -95,11 +102,19 @@ fn a_hand_overs_time_counts_down_between_polls() {
         return;
     }
     let mut app = start();
+    app.press("watching");
+    app.press("check timer");
+    assert!(shows(&mut app, "timer=false"), "a timer runs with no hand-over shown");
     app.press("heard now");
     assert!(shows(&mut app, "Sign in to the shop · 2:05 left"), "{:?}", app.texts());
+    app.press("check timer");
+    assert!(shows(&mut app, "timer=true"), "no timer while a hand-over shows");
     app.pump(Duration::from_millis(1300));
     let line = app.texts().iter().find(|t| t.starts_with("Sign in to the shop · ")).map(|t| (*t).to_owned()).unwrap_or_default();
     assert!(["2:04", "2:03", "2:02"].iter().any(|t| line == format!("Sign in to the shop · {t} left")), "a second on, with no poll: {line:?}");
+    app.press("driving");
+    app.press("check timer");
+    assert!(shows(&mut app, "timer=false"), "the timer outlived the hand-over");
 }
 
 /// The words the broker gave for a hand-over: longer than the bar has room for.

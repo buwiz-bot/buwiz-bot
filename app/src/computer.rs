@@ -213,10 +213,10 @@ pub(crate) fn next_ticket(status: &Status, holds: &str, wants_to_drive: bool) ->
     (holds != want || status.viewer != holds).then_some(want)
 }
 
-/// What the line under the bar says of the open viewer, at `now`.
-pub(crate) fn mode_words(status: &Status, now: std::time::Instant) -> String {
+/// What the line under the bar says of the open viewer. `now` is asked only of a hand-over.
+pub(crate) fn mode_words(status: &Status, now: impl FnOnce() -> std::time::Instant) -> String {
     match (&status.takeover, status.viewer.as_str()) {
-        (Some(t), _) => format!("{} · {} left", t.reason, t.left_at(now)),
+        (Some(t), _) => format!("{} · {} left", t.reason, t.left_at(now())),
         (None, "drive") => "You're driving. The agent waits while you do.".to_owned(),
         (None, "watch") if status.working => "Watching the agent work.".to_owned(),
         (None, "watch") => "Watching. Your clicks don't reach the screen.".to_owned(),
@@ -305,8 +305,10 @@ thread_local! {
     static FORM: Form = Owner::detached().run(Form::new);
     /// The tab's Set up a computer is open.
     static SETUP: Signal<bool> = Owner::detached().run(|| signal(false));
-    /// The time a hand-over's time left is shown at: set every [`COUNT`] while one could show.
+    /// The time a hand-over's time left is shown at: set every [`COUNT`] while one shows.
     static NOW: Signal<std::time::Instant> = Owner::detached().run(|| signal(std::time::Instant::now()));
+    /// How many places show a hand-over's time left now, and the one timer moving [`NOW`] for all.
+    static COUNTING: std::cell::RefCell<(usize, Option<Spawned<()>>)> = const { std::cell::RefCell::new((0, None)) };
 }
 
 /// How far the form has got.
@@ -808,7 +810,7 @@ pub(crate) fn pane() -> impl IntoElement {
     }
     tick();
     set_interval(POLL, tick);
-    count_down();
+    count_down_while(|| pane_signal().with(|p| p.status.takeover.is_some()));
     view()
         .test_id("computer-pane")
         .child(dynamic(|| {
@@ -1216,12 +1218,50 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
         ))
 }
 
-/// Moves [`NOW`] on every [`COUNT`], for as long as the part that calls this is shown, so a
-/// hand-over's time left counts down between polls.
-fn count_down() {
+/// Moves [`NOW`] on every [`COUNT`] while `shows()` says this part shows a hand-over's time left,
+/// so it counts down between polls. However many parts do, one timer runs, and none when none does.
+fn count_down_while(shows: impl Fn() -> bool + 'static) {
+    let held = std::rc::Rc::new(std::cell::Cell::new(false));
+    let h = held.clone();
+    effect(move || {
+        let on = shows();
+        if h.replace(on) != on {
+            counting(on);
+        }
+    });
+    cleanup(move || {
+        if held.replace(false) {
+            counting(false);
+        }
+    });
+}
+
+/// One more place showing a hand-over's time left (`on`), or one fewer.
+fn counting(on: bool) {
     let now = NOW.with(|s| *s);
-    now.set(std::time::Instant::now());
-    set_interval(COUNT, move || now.set(std::time::Instant::now()));
+    let stopped = COUNTING.with_borrow_mut(|(places, timer)| {
+        if on {
+            *places += 1;
+            if *places == 1 {
+                now.set(std::time::Instant::now());
+                // its own, not the part's that asked first: it stops with the last
+                *timer = Some(Owner::detached().run(|| set_interval(COUNT, move || now.set(std::time::Instant::now()))));
+            }
+            None
+        } else {
+            *places = places.saturating_sub(1);
+            if *places == 0 { timer.take() } else { None }
+        }
+    });
+    if let Some(timer) = stopped {
+        timer.cancel();
+    }
+}
+
+/// Whether a timer moves [`NOW`], for a test.
+#[cfg(test)]
+pub(crate) fn counting_down() -> bool {
+    COUNTING.with_borrow(|(_, timer)| timer.is_some())
 }
 
 /// Under the bar, on a row of its own: what the viewer is, or why the Bot handed the screen over
@@ -1231,8 +1271,9 @@ pub(crate) fn mode_line(key: &str) -> impl IntoElement {
     let bot = bot_of_key(key).unwrap_or_default();
     let shown = SHOWN.with(|s| *s);
     let now = NOW.with(|s| *s);
-    count_down();
-    let words = move || shown.with(|(of, s)| if *of == bot { mode_words(s, now.get()) } else { String::new() });
+    let b = bot.clone();
+    count_down_while(move || shown.with(|(of, s)| *of == b && s.takeover.is_some()));
+    let words = move || shown.with(|(of, s)| if *of == bot { mode_words(s, || now.get()) } else { String::new() });
     let any = words.clone();
     when(
         move || !any().is_empty(),
@@ -1417,11 +1458,13 @@ mod tests {
         assert_eq!(button_words(&seen("awake", "watch", None)), "Take control");
         assert_eq!(button_words(&seen("awake", "drive", None)), "Stop driving");
         assert_eq!(button_words(&seen("awake", "drive", Some(9))), "Hand back");
-        let now = std::time::Instant::now();
-        assert_eq!(mode_words(&seen("awake", "watch", None), now), "Watching. Your clicks don't reach the screen.");
-        assert_eq!(mode_words(&Status { working: true, ..seen("awake", "watch", None) }, now), "Watching the agent work.");
-        assert_eq!(mode_words(&seen("awake", "drive", None), now), "You're driving. The agent waits while you do.");
-        assert_eq!(mode_words(&seen("awake", "drive", Some(65)), now), "Sign in · 1:05 left");
+        let unasked = || -> std::time::Instant { panic!("the time was asked with no hand-over") };
+        assert_eq!(mode_words(&seen("awake", "watch", None), unasked), "Watching. Your clicks don't reach the screen.");
+        assert_eq!(mode_words(&Status { working: true, ..seen("awake", "watch", None) }, unasked), "Watching the agent work.");
+        assert_eq!(mode_words(&seen("awake", "drive", None), unasked), "You're driving. The agent waits while you do.");
+        let t = seen("awake", "drive", Some(65));
+        let heard = t.takeover.as_ref().unwrap().heard;
+        assert_eq!(mode_words(&t, || heard), "Sign in · 1:05 left");
     }
 
     #[test]
