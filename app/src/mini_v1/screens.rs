@@ -143,6 +143,23 @@ pub struct Mounted {
 /// failures (its error banner). A screen this build lacks says it needs a
 /// newer Buwiz Bot; one whose build panics fails as a TSX app's load does.
 pub fn mount(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + Send + Sync>) -> Result<Mounted, RoxError> {
+    mount_from(ctx, viewport, fail, None)
+}
+
+/// `props` as a screen reads them: the open's checked props, and under
+/// `origin` the tool call that made its card (`{tool, args}`), when the
+/// chat knows it. The origin is the Bot's word, added after the props
+/// were checked against the app's schema, and written nowhere.
+pub fn props_with_origin(mut params: serde_json::Map<String, Value>, origin: Option<Value>) -> serde_json::Map<String, Value> {
+    if let (Some(origin), Some(Value::Object(props))) = (origin, params.get_mut("props")) {
+        props.insert("origin".to_owned(), origin);
+    }
+    params
+}
+
+/// [`mount`] for a card whose chat knows the tool call that made it
+/// (`origin`, [`super::cards::origin`]).
+pub fn mount_from(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + Send + Sync>, origin: Option<Value>) -> Result<Mounted, RoxError> {
     let t0 = std::time::Instant::now();
     let p = &ctx.prepared;
     let def = p
@@ -151,7 +168,7 @@ pub fn mount(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + S
         .and_then(|n| find(&p.plugin.id, &n.screen, n.abi))
         .ok_or_else(|| RoxError::new("not_supported", say::native(&p.title)))?;
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
-    let params = Arc::new(Mutex::new(bridge::params(p, viewport)));
+    let params = Arc::new(Mutex::new(props_with_origin(bridge::params(p, viewport), origin)));
     let listeners: Arc<Mutex<Vec<Listener>>> = Arc::default();
     let emit: Emit = {
         let (params, listeners) = (params.clone(), listeners.clone());
@@ -190,6 +207,17 @@ mod tests {
 
     static ONE: &[ScreenDef] = &[ScreenDef { id: "fx.ledger", abi: sdk::ABI, build: none }];
     static OLD: &[ScreenDef] = &[ScreenDef { id: "fx.old", abi: 0, build: none }, ScreenDef { id: "fx.next", abi: sdk::ABI + 1, build: none }];
+
+    #[test]
+    fn a_screens_props_carry_its_cards_origin_and_nothing_else_changes() {
+        use serde_json::json;
+        let params = |props: Value| json!({"props": props, "app": {"plugin": "p"}}).as_object().unwrap().clone();
+        let origin = json!({"tool": "gws_search_mail", "args": {"query": "in:inbox"}});
+        let with = props_with_origin(params(json!({"search": "tkt_x"})), Some(origin.clone()));
+        assert_eq!(Value::Object(with), json!({"props": {"search": "tkt_x", "origin": origin}, "app": {"plugin": "p"}}));
+        let without = props_with_origin(params(json!({"search": "tkt_x"})), None);
+        assert_eq!(Value::Object(without), json!({"props": {"search": "tkt_x"}, "app": {"plugin": "p"}}));
+    }
 
     #[test]
     fn a_screen_is_found_by_plugin_id_and_abi() {
