@@ -29,7 +29,7 @@ fn in_child(name: &str) -> bool {
 }
 
 fn say(viewer: &str, takeover: bool) {
-    let takeover = takeover.then(|| Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125, heard: None });
+    let takeover = takeover.then(|| Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125, heard: std::time::Instant::now() });
     crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: viewer.to_owned(), takeover, ..Status::default() });
 }
 
@@ -42,7 +42,7 @@ fn Bar() -> impl IntoElement {
         .child(view().label("handed").w(px(40.0)).h(px(20.0)).on_press(|| say("drive", true)))
         .child(view().label("another bot").w(px(40.0)).h(px(20.0)).on_press(|| crate::computer::show_status("b2", Status { viewer: "drive".to_owned(), ..Status::default() })))
         .child(view().label("heard now").w(px(40.0)).h(px(20.0)).on_press(|| {
-            let takeover = Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125, heard: Some(std::time::Instant::now()) };
+            let takeover = Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125, heard: std::time::Instant::now() };
             crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: "drive".to_owned(), takeover: Some(takeover), ..Status::default() });
         }))
         .child(crate::computer::mode_line("computer:b1"))
@@ -113,7 +113,7 @@ fn Full() -> impl IntoElement {
         .size_full()
         .child(view().label("open").w(px(40.0)).h(px(20.0)).on_press(|| {
             crate::live::store().open_mini_token(&crate::computer::key_of("b1"), "Ann's computer", "");
-            let takeover = Takeover { reason: LONG.to_owned(), seconds_left: 125, heard: None };
+            let takeover = Takeover { reason: LONG.to_owned(), seconds_left: 125, heard: std::time::Instant::now() };
             crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: "drive".to_owned(), takeover: Some(takeover), ..Status::default() });
         }))
         .child(text("probe ready=1").text_size(px(8.0)))

@@ -124,22 +124,22 @@ impl Remote {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Takeover {
     pub reason: String,
-    /// as the broker said it, when it was heard
+    /// as the broker said it
     pub seconds_left: u64,
-    /// when that was; `None` counts it as said just now
-    pub heard: Option<std::time::Instant>,
+    /// when its reply was read here, not when the broker worked `seconds_left` out: until the next
+    /// poll the time shown can be up to one round trip more than the broker has left
+    pub heard: std::time::Instant,
 }
 
 impl Takeover {
     fn parse(v: &Value) -> Option<Self> {
-        Some(Self { reason: v.get("reason")?.as_str()?.to_owned(), seconds_left: v.get("secondsLeft")?.as_u64()?, heard: Some(std::time::Instant::now()) })
+        Some(Self { reason: v.get("reason")?.as_str()?.to_owned(), seconds_left: v.get("secondsLeft")?.as_u64()?, heard: std::time::Instant::now() })
     }
 
     /// The seconds left at `now`: what the broker said, less the whole seconds since, and never
     /// under none. Each poll says it again, so it counts down here only between polls.
     pub(crate) fn seconds_left_at(&self, now: std::time::Instant) -> u64 {
-        let since = self.heard.map_or(0, |heard| now.saturating_duration_since(heard).as_secs());
-        self.seconds_left.saturating_sub(since)
+        self.seconds_left.saturating_sub(now.saturating_duration_since(self.heard).as_secs())
     }
 
     /// `4:05`, at `now`.
@@ -1353,7 +1353,7 @@ mod tests {
     }
 
     fn seen(state: &str, viewer: &str, takeover: Option<u64>) -> Status {
-        Status { state: state.to_owned(), viewer: viewer.to_owned(), takeover: takeover.map(|s| Takeover { reason: "Sign in".to_owned(), seconds_left: s, heard: None }), ..Status::default() }
+        Status { state: state.to_owned(), viewer: viewer.to_owned(), takeover: takeover.map(|s| Takeover { reason: "Sign in".to_owned(), seconds_left: s, heard: std::time::Instant::now() }), ..Status::default() }
     }
 
     #[test]
@@ -1362,8 +1362,8 @@ mod tests {
         let s = Status::parse(&v);
         assert_eq!((s.viewer.as_str(), s.working), ("drive", true));
         let t = s.takeover.unwrap();
-        assert_eq!((t.reason.as_str(), t.seconds_left, t.heard.is_some()), ("Sign in", 245, true));
-        assert_eq!(t.left_at(t.heard.unwrap()), "4:05");
+        assert_eq!((t.reason.as_str(), t.seconds_left), ("Sign in", 245));
+        assert_eq!(t.left_at(t.heard), "4:05");
         let bare = Status::parse(&json!({"state": "awake"}));
         assert_eq!((bare.viewer.as_str(), bare.working, bare.takeover), ("", false, None));
     }
@@ -1428,17 +1428,16 @@ mod tests {
     fn a_hand_overs_time_counts_down_between_polls_and_stops_at_none() {
         use std::time::Duration;
         let heard = std::time::Instant::now();
-        let t = Takeover { reason: "Sign in".to_owned(), seconds_left: 65, heard: Some(heard) };
+        let t = Takeover { reason: "Sign in".to_owned(), seconds_left: 65, heard };
         let at = |ms: u64| t.seconds_left_at(heard + Duration::from_millis(ms));
         assert_eq!([at(0), at(999), at(1000), at(1999), at(5000)], [65, 65, 64, 64, 60], "by the whole seconds since it was heard");
         assert_eq!(t.left_at(heard + Duration::from_secs(6)), "0:59");
         assert_eq!([at(65_000), at(600_000)], [0, 0], "it stops at none and never goes under");
         // a clock read before the poll that set it isn't time gone
-        assert_eq!(Takeover { heard: Some(heard + Duration::from_secs(3)), ..t.clone() }.seconds_left_at(heard), 65);
+        assert_eq!(Takeover { heard: heard + Duration::from_secs(3), ..t.clone() }.seconds_left_at(heard), 65);
         // the next poll says it again, from then
-        let polled = Takeover { seconds_left: 63, heard: Some(heard + Duration::from_secs(2)), ..t.clone() };
+        let polled = Takeover { seconds_left: 63, heard: heard + Duration::from_secs(2), ..t };
         assert_eq!(polled.seconds_left_at(heard + Duration::from_millis(2500)), 63);
-        assert_eq!(Takeover { heard: None, ..t }.seconds_left_at(heard + Duration::from_secs(9)), 65, "one not heard is as said");
     }
 
     #[test]
