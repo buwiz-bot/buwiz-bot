@@ -197,6 +197,7 @@ fn Stage() -> impl IntoElement {
             ("Chip messages".to_owned(), "/messages none".to_owned()),
             ("Chip vault".to_owned(), "/vault add shop.example".to_owned()),
             ("Chip network".to_owned(), "/network allow shop.example".to_owned()),
+            ("Chip unknown".to_owned(), "  /nosuchcmd now".to_owned()),
         ]))
         .child(dynamic(|| {
             let turns: Vec<_> = store().turns.get().into_iter().filter(|t| t.user_form.is_some()).collect();
@@ -358,7 +359,7 @@ fn a_chip_or_a_card_never_runs_a_builtin_and_typed_it_does() {
     }
     let (mut app, seen) = start(submitted("submitted"));
     with_card(&mut app);
-    for (n, (chip, words)) in [("Chip computer", "/computer session save shop"), ("Chip takeover", "/computer takeover"), ("Chip messages", "/messages none"), ("Chip vault", "/vault add shop.example"), ("Chip network", "/network allow shop.example")].into_iter().enumerate() {
+    for (n, (chip, words)) in [("Chip computer", "/computer session save shop"), ("Chip takeover", "/computer takeover"), ("Chip messages", "/messages none"), ("Chip vault", "/vault add shop.example"), ("Chip network", "/network allow shop.example"), ("Chip unknown", "/nosuchcmd now")].into_iter().enumerate() {
         app.press(chip);
         let chat = wait_for(&mut app, &seen, "/chat", n + 1);
         assert_eq!(chat[n].0["prompt"], words, "{chip}");
@@ -367,8 +368,8 @@ fn a_chip_or_a_card_never_runs_a_builtin_and_typed_it_does() {
         let spec = crate::cards::choice::FormSpec::from_value(&json!({"title": "/computer session load shop", "fields": [{"id": "q", "label": "Pick", "options": ["Yes", "No"]}]})).expect("a form");
         crate::cards::choice::choose("k", &spec, 0, 0);
     });
-    let chat = wait_for(&mut app, &seen, "/chat", 6);
-    assert_eq!(chat[5].0["prompt"], "/computer session load shop\nPick: Yes");
+    let chat = wait_for(&mut app, &seen, "/chat", 7);
+    assert_eq!(chat[6].0["prompt"], "/computer session load shop\nPick: Yes");
     settle(&mut app);
     let ran: Vec<String> = seen.log.lock().unwrap().iter().map(|(p, _, _)| p.clone()).filter(|p| p.contains("/session") || p.contains("/accepts")).collect();
     assert!(ran.is_empty(), "a chip or a card ran a command: {ran:?}");
@@ -389,7 +390,7 @@ fn a_chip_or_a_card_never_runs_a_builtin_and_typed_it_does() {
     });
     settle(&mut app);
     assert!(on(&mut app, || crate::computer::wants_to_drive("nova")), "typed, it takes over");
-    assert_eq!(heard(&seen, "/chat").len(), 6, "neither went to the AI");
+    assert_eq!(heard(&seen, "/chat").len(), 7, "neither went to the AI");
 }
 
 /// A fill that may have typed something says so, and offers no blind retry.
