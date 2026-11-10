@@ -605,3 +605,27 @@ fn a_backslash_ends_the_host_as_a_browser_reads_it() {
     assert!(!login::on_site("https://evil.test\\@shop.example/login", SITE));
     assert_eq!(login::sanitize(&json!({"title": "t", "domain": "https://evil.test\\@shop.example/", "fields": [{"id": "a", "label": "Email"}]})).unwrap().site, "evil.test", "the card names the host the browser would go to");
 }
+
+#[tokio::test]
+async fn a_plain_value_goes_only_into_a_field_the_page_labels_for_it() {
+    let b = login_bed("login-pick");
+    awake(&b, &b.ann.0).await;
+    // a page whose only plain box is a search: the email isn't typed there, nor is Return pressed
+    let mut page = MockPage::sign_in(PAGE);
+    page.elements.retain(|e| e["label"] != "Email");
+    b.mock.set_page(Some(page));
+    let (card, call) = asked(&b, json!({"title": "t", "domain": SITE, "submit": true, "fields": [{"id": "email", "label": "Your address", "type": "email"}]})).await;
+    submit(&b, &card, json!({"email": "kid@example.com"}), false).await;
+    let said = words(&call.await.unwrap());
+    assert!(said.contains("Couldn't tell which field on the page is"), "{said}");
+    assert!(b.mock.typed().is_empty() && !acts(&b).iter().any(|a| a.contains("act key")), "{:?}", acts(&b));
+
+    // an email box the card calls by another name is found by its kind; the password by the only
+    // sensitive field there is
+    b.mock.set_page(Some(MockPage::sign_in(PAGE)));
+    let (card, call) = asked(&b, json!({"title": "t", "domain": SITE, "samePage": true, "fields": [{"id": "e", "label": "Your address", "type": "email"}, {"id": "p", "label": "Secret word", "type": "password"}]})).await;
+    submit(&b, &card, json!({"e": "kid@example.com", "p": MARK}), false).await;
+    assert!(words(&call.await.unwrap()).contains("filled into the page"));
+    assert_eq!(b.mock.typed(), [("Email".to_owned(), "kid@example.com".to_owned()), ("Password".to_owned(), MARK.to_owned())]);
+}
+

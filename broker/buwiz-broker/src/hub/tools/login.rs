@@ -431,8 +431,9 @@ fn norm(s: &str) -> String {
 }
 
 /// The ref of the page's field for `field`, of those it may go into: a sensitive one for a
-/// password, a plain one for a plain value, either for a code. By its label, whole, then in part;
-/// else the only one there is. `Err` names what's wrong. `taken` are the labels of fields already
+/// password, a plain one for a plain value, either for a code. By its label, whole, then in part,
+/// then a label naming its kind (an email box for an email); a guess only for a password, into the
+/// page's only sensitive field. `Err` names what's wrong. `taken` are the labels of fields already
 /// typed, which no other field goes into.
 fn pick(elements: &[Value], field: &Field, taken: &[String]) -> Result<String, String> {
     let typeable = |e: &&Value| e["actions"].as_array().is_some_and(|a| a.iter().any(|x| x == "type"));
@@ -458,8 +459,24 @@ fn pick(elements: &[Value], field: &Field, taken: &[String]) -> Result<String, S
             return Ok(r);
         }
     }
-    if let Some(r) = one(open.iter().collect()) {
-        return Ok(r);
+    // the page's label names what the field's kind is: an email box for an email
+    let kind_words: &[&str] = match field.kind.as_str() {
+        "email" => &["email", "e-mail", "e mail", "username", "user name", "login", "account"],
+        "tel" => &["phone", "mobile", "tel", "telephone"],
+        "otp" => &["code", "otp", "verification", "one-time", "one time", "passcode"],
+        _ => &[],
+    };
+    if !kind_words.is_empty() {
+        if let Some(r) = one(open.iter().filter(|e| { let l = label_of(e); kind_words.iter().any(|w| l.contains(w)) }).collect()) {
+            return Ok(r);
+        }
+    }
+    // a guess only for a password, into the page's only sensitive field: a plain value never goes
+    // into whatever box is left
+    if field.wants_a_password_box() && elements.iter().filter(typeable).filter(|e| sensitive(e)).count() == 1 {
+        if let Some(r) = one(open.iter().collect()) {
+            return Ok(r);
+        }
     }
     if open.is_empty() && field.wants_a_password_box() {
         return Err(format!("The page has no password field for \"{}\", so a password would go into a box that isn't one, and nothing more was typed.", field.label));
@@ -467,7 +484,7 @@ fn pick(elements: &[Value], field: &Field, taken: &[String]) -> Result<String, S
     if open.is_empty() {
         return Err(format!("The page has no field \"{}\" could go into, so nothing more was typed.", field.label));
     }
-    Err(format!("Several fields on the page could be \"{}\", so nothing more was typed. Raise the card with the page's own label for it.", field.label))
+    Err(format!("Couldn't tell which field on the page is \"{}\", so nothing more was typed. Raise the card with the page's own label for it.", field.label))
 }
 
 /// Why a snap gave nothing to type into.
