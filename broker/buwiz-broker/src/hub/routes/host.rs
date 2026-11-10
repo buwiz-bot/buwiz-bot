@@ -229,8 +229,38 @@ fn sent(path: &str, out: Result<Value, V1Error>) -> HubResponse {
     }
 }
 
+/// Whether this broker asks the plugins' sources for newer releases by
+/// itself (`BUWIZ_UPDATE_CHECK=0` turns it off; the route still checks).
+fn update_checks_on() -> bool {
+    buwiz_protocol::env::var("BUWIZ_UPDATE_CHECK").is_none_or(|v| v != "0")
+}
+
+/// Asks every plugin's release source for a newer version now.
+pub async fn check_updates(ctx: &HubCtx, host: &Arc<Host>) -> usize {
+    let api = ctx.ext.get::<crate::hub::tools::miniapps::GithubApi>().map(|g| g.0.clone()).unwrap_or_else(|| crate::helper::release::GITHUB_API.to_owned());
+    crate::helper::updates::check_all(host, &api).await
+}
+
+/// The update check: a minute after start (the plugins start first), then
+/// every [`crate::helper::updates::EVERY`], off every request's path.
+fn watch_updates(ctx: Arc<HubCtx>) {
+    if cfg!(test) || !update_checks_on() || ctx.plugins.is_none() {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            if let Some(host) = ctx.plugins.as_ref() {
+                check_updates(&ctx, host).await;
+            }
+            tokio::time::sleep(crate::helper::updates::EVERY).await;
+        }
+    });
+}
+
 pub fn install(routes: &mut Registry, rs: Arc<Routines>) {
     routes.on_start(settle_on_sign_in);
+    routes.on_start(watch_updates);
     // a card a previous run left waiting can't be answered now
     routes.on_start(|ctx| crate::hub::policy::ask::expire_pending(&ctx));
     routes.on_start(crate::hub::policy::ask::sweep_waiting);
@@ -307,6 +337,9 @@ const POSTS: &[&str] = &[
     "/v1/host/plugins/inspect",
     "/v1/host/plugins/install",
     "/v1/host/plugins/fetch",
+    "/v1/host/plugins/updates/check",
+    "/v1/host/plugins/updates/review",
+    "/v1/host/plugins/updates/failed",
     "/v1/host/notices/settle",
     "/v1/host/apps/source",
     "/v1/host/sessions/open",
@@ -381,6 +414,19 @@ impl Route {
                     return match op {
                         "inspect" => host.inspect(b).await,
                         "fetch" => fetch_release(ctx, host, b).await,
+                        "updates/check" => {
+                            check_updates(ctx, host).await;
+                            Ok(json!({"ok": true, "plugins": v1.list(&ctx.db)}))
+                        }
+                        "updates/review" | "updates/failed" => {
+                            let str_of = |k: &str| b.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+                            let (Some(id), Some(chat)) = (str_of("id"), str_of("chat")) else { return V1Error::err("invalid_args", "send {id, chat}") };
+                            if op == "updates/review" {
+                                crate::hub::tools::miniapps::review_update(ctx, host, id, chat).await
+                            } else {
+                                crate::hub::tools::miniapps::update_failed(ctx, host, id, chat, str_of("reason").unwrap_or_default())
+                            }
+                        }
                         _ => install_plugin(ctx, host, b).await,
                     };
                 }
@@ -469,7 +515,19 @@ pub fn with_env_from(host: &Host, b: &Value) -> Result<Value, V1Error> {
 /// chat that had one is asked for the setup the plugin lacks
 /// ([`ask_setup`]).
 pub async fn install_plugin(ctx: &HubCtx, host: &Host, b: &Value) -> Result<Value, V1Error> {
-    let out = host.install(&with_env_from(host, b)?).await?;
+    let mut body = with_env_from(host, b)?;
+    // where the release came from, for its update checks: the body's own
+    // word, else the pending card's that reviewed this manifest
+    if body.get("source").is_none_or(Value::is_null) {
+        let reviewed = ctx.store.read(|s| {
+            let cards = s.list.iter().flat_map(|t| t.turns.iter()).filter_map(|u| u.notice.as_ref());
+            cards.filter(|n| n["kind"] == "app_install" && n["state"] == "pending" && !n["manifest_sha256"].is_null() && Some(&n["manifest_sha256"]) == b.get("manifest_sha256")).find_map(|n| n["source"].as_str().map(str::to_owned))
+        });
+        if let (Some(source), Some(o)) = (reviewed, body.as_object_mut()) {
+            o.insert("source".into(), json!(source));
+        }
+    }
+    let out = host.install(&body).await?;
     if let Some(id) = out.get("id").and_then(Value::as_str) {
         let chats = ctx.store.read(|s| {
             let asks = |t: &&crate::hub::store::Thread| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "app_install" && n["id"] == json!(id) && n["state"] == "pending");
@@ -739,7 +797,7 @@ fn events(ctx: &HubCtx) -> HubResponse {
             let out = tokio::select! {
                 got = async { match sub.as_mut() { Some(s) => s.recv().await, None => std::future::pending().await } } => match got {
                     Ok(s) => {
-                        let e = json!({"id": s.get("id"), "state": s.get("state"), "code": s.get("code"), "generation": s.get("generation"), "enabled": s.get("enabled")});
+                        let e = json!({"id": s.get("id"), "state": s.get("state"), "code": s.get("code"), "generation": s.get("generation"), "enabled": s.get("enabled"), "update": s.get("update")});
                         Bytes::from(format!("event: plugin\ndata: {}\n\n", js::stringify(&e)))
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -808,6 +866,14 @@ impl hyper::body::Body for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_update_routes_are_posts_and_no_plugins_action() {
+        for p in ["/v1/host/plugins/updates/check", "/v1/host/plugins/updates/review", "/v1/host/plugins/updates/failed"] {
+            assert!(matches!(Route::of(p), Some(Route::Post(found)) if found == p), "{p}");
+        }
+        assert!(Route::of("/v1/host/plugins/updates/install").is_none(), "nothing installs an update but the card's Install");
+    }
 
     #[test]
     fn account_routes_name_the_plugin_the_account_and_the_op() {

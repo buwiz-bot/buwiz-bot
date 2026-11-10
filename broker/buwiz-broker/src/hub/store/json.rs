@@ -404,6 +404,8 @@ pub struct Lookups {
     /// id → (title, file)
     pub edits: HashMap<String, (Value, Value)>,
     pub renamed: HashMap<String, Value>,
+    /// a v1 plugin's tool → the plugin's id
+    pub tool_plugins: HashMap<String, String>,
 }
 
 fn cell(r: &rusqlite::Row, i: usize) -> Value {
@@ -428,8 +430,55 @@ impl Lookups {
             let (k, v) = r?;
             l.renamed.insert(k, v);
         }
+        // the plugin host's table, in the same file once it has started;
+        // without it no card's call is looked up
+        if let Ok(mut st) = conn.prepare("SELECT id,tools FROM v1_plugins") {
+            let rows: Vec<(String, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(Result::ok).collect();
+            for (id, tools) in rows {
+                let tools: Value = serde_json::from_str(&tools).unwrap_or(Value::Null);
+                for name in tools.as_array().into_iter().flatten().filter_map(|t| t.get("name").and_then(Value::as_str)) {
+                    l.tool_plugins.insert(name.to_owned(), id.clone());
+                }
+            }
+        }
         Ok(l)
     }
+}
+
+/// The call behind each of a turn's `buwiz-app` cards that was stored
+/// without one (`origin`, by the link's place in `links`): read from the
+/// turn's tool log, and only when it can't be the wrong call. The calls
+/// that worked and belong to the card's plugin are matched in order with
+/// that plugin's cards when there are as many of one as of the other;
+/// otherwise the card gets none.
+fn derived_origins(t: &Turn, l: &Lookups) -> HashMap<usize, Value> {
+    let mut out = HashMap::new();
+    let links = t.links.as_ref().and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let log = t.tools.as_ref().and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    fn plugin_of(link: &Value) -> Option<&str> {
+        (link.get("provider").and_then(Value::as_str) == Some("buwiz-app")).then(|| link.pointer("/card/plugin").and_then(Value::as_str)).flatten()
+    }
+    let mut plugins: Vec<&str> = links.iter().filter_map(plugin_of).collect();
+    plugins.sort_unstable();
+    plugins.dedup();
+    for plugin in plugins {
+        let cards: Vec<usize> = links.iter().enumerate().filter(|(_, link)| plugin_of(link) == Some(plugin)).map(|(i, _)| i).collect();
+        let calls: Vec<&Value> = log
+            .iter()
+            .filter(|e| !e.get("is_error").is_some_and(js::truthy))
+            .filter(|e| e.get("name").and_then(Value::as_str).and_then(|n| l.tool_plugins.get(n)).map(String::as_str) == Some(plugin))
+            .collect();
+        if cards.len() != calls.len() {
+            continue;
+        }
+        for (i, call) in cards.into_iter().zip(calls) {
+            let args = call.get("input").and_then(Value::as_str).and_then(crate::hub::agent::tool_log::rerunnable_text);
+            if let (false, Some(args)) = (links[i].get("origin").is_some(), args) {
+                out.insert(i, json!({"tool": call["name"], "args": args}));
+            }
+        }
+    }
+    out
 }
 
 /// state.mjs `turnsJson(thread)`: the turns as the app renders them. It
@@ -529,14 +578,19 @@ pub fn turns_json(thread: &mut Thread, l: &Lookups, gen_dir: &Path) -> Value {
                 })
                 .collect();
             o.insert("files".into(), Value::Array(files));
+            let mut origins = derived_origins(t, l);
             let links: Vec<Value> = arr(&t.links)
                 .as_array()
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .map(|link| {
+                .enumerate()
+                .map(|(at, link)| {
                     let mut m = link.as_object().cloned().unwrap_or_default();
                     m.shift_remove("account");
+                    if let Some(origin) = origins.remove(&at) {
+                        m.insert("origin".into(), origin);
+                    }
                     let orig_name = m.get("name").cloned();
                     if let Some(n) = m.get("token").filter(|t| js::truthy(t)).and_then(Value::as_str).and_then(|t| l.renamed.get(t)).filter(|n| js::truthy(n)).cloned() {
                         m.insert("name".into(), n);

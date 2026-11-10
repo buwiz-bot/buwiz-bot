@@ -16,8 +16,14 @@
 //! the Keychain for the owner's data dir, and goes with the computer.
 //!
 //! Files outlive everything but a person's delete: a box or holder gone missing is rebuilt on the
-//! same volumes when it next wakes, and a lost record is rebuilt from what's left. A computer is
-//! only ever removed for a person who deleted its last Bot, or just made and empty.
+//! same volumes when it next wakes, and a lost record is rebuilt from what's left. A lost record
+//! that nothing of the computer can be found for doesn't strand its Bots: they move to a new
+//! computer, and the old one is kept as **lost** (`lost_at`), unseated, for a person to Keep (look
+//! for it again) or Delete in Settings › Computers. It may still be on its platform with their
+//! files, so nothing automatic ever deletes it. A computer is only ever removed for a person who
+//! deleted its last Bot or a lost computer, or just made and empty. Deleting the last Bot at a
+//! computer whose record can't be read doesn't remove it either: it's kept as lost, unseated, for
+//! the same Keep or Delete.
 //!
 //! A person and an agent share a screen by these rules, all held in [`Now`] and changed only under
 //! its lock, so a click, a sweep and a run see the same thing:
@@ -108,6 +114,7 @@ const TESTED_LIFE: Duration = Duration::from_secs(10 * 60);
 /// Who a switch's Ask is from, when it came with a remote computer and no person chose it.
 const REMOTE_ACTOR: &str = "remote-computer";
 const UNREAD: &str = "This computer's record couldn't be read. Try again in a moment.";
+const LOST_LOCAL: &str = "This computer's record is lost. Click to look for it. If it can't be found, this Bot gets a new computer, and the old one waits in Settings › Computers for you to keep or delete: nothing on it is deleted until you say.";
 const LOST_REMOTE: &str = "This remote computer's saved connection is lost. Nothing happened to the machine: remove it and add it again.";
 
 /// A Bot's place at a computer.
@@ -264,6 +271,37 @@ impl Drop for Handing {
     }
 }
 
+/// A click's turn to make or recover a computer ([`Computers::making`]), held until it's dropped.
+struct Making<'a> {
+    computers: &'a Computers,
+    key: String,
+    held: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for Making<'_> {
+    fn drop(&mut self) {
+        drop(self.held.take());
+        let mut making = self.computers.making.lock().unwrap_or_else(|e| e.into_inner());
+        // the last to want this turn: nothing is kept for a Bot or computer nobody is clicking
+        if making.get(&self.key).is_some_and(|turn| Arc::strong_count(turn) == 1) {
+            making.remove(&self.key);
+        }
+    }
+}
+
+/// `id` in [`Computers::being_made`] until it's dropped: by then [`Computers::make`] has written
+/// its row, or made nothing that needs one.
+struct BeingMade<'a> {
+    computers: &'a Computers,
+    id: String,
+}
+
+impl Drop for BeingMade<'_> {
+    fn drop(&mut self) {
+        self.computers.being_made.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+    }
+}
+
 /// The hub's computers, in `ctx.ext`.
 pub struct Computers {
     /// where new computers are made, and the provider of each kind
@@ -282,10 +320,16 @@ pub struct Computers {
     deep: Duration,
     quiet: Duration,
     patience: Duration,
-    /// one at a time: making a computer and changing who sits where. Two first clicks mustn't
-    /// make two computers. Global rather than per Bot, because a join changes two Bots' view of
-    /// one computer; it is held for a `docker create` at most, and a wake runs outside it.
+    /// one at a time: changing who sits where. Global rather than per Bot, because a join changes
+    /// two Bots' view of one computer. Held for the records alone: a make, a recovery and a wake
+    /// run outside it, so a platform that takes minutes holds up no other Bot
     seating: tokio::sync::Mutex<()>,
+    /// one make or recovery at a time for each Bot with no computer and each computer whose record
+    /// is lost ([`Computers::making`]): two clicks mustn't make two computers
+    making: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// the ids [`Computers::make`] is making: its provider makes parts (Docker's volumes) before
+    /// its row is written, and those parts are no leftovers ([`Computers::docker_leftovers`])
+    being_made: Mutex<HashSet<String>>,
     /// which models see images, as opencodex says, and when it said
     sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
     /// held while a job runs
@@ -311,7 +355,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
+        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), making: Mutex::default(), being_made: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
     }
 
     /// Makes the homes' providers with `factory` (tests).
@@ -404,8 +448,9 @@ impl Computers {
         Self::try_ids_where(ctx, clause).unwrap_or_default()
     }
 
+    /// The computers in use: not on their way out, and not lost.
     fn ids(ctx: &HubCtx) -> Vec<String> {
-        Self::ids_where(ctx, "gone_at IS NULL")
+        Self::ids_where(ctx, "gone_at IS NULL AND lost_at IS NULL")
     }
 
     /// Whether `id` is a computer this broker has: never a path anyone sent.
@@ -484,6 +529,8 @@ impl Computers {
     /// A new computer, asleep, with no Bot at it yet.
     async fn make(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
         let id = format!("cmp_{}", buwiz_computer::random_hex(8)?);
+        self.being_made.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone());
+        let _being_made = BeingMade { computers: self, id: id.clone() };
         let dir = Self::dir(ctx, &id);
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
         let spec = Spec { id: id.clone(), dir: dir.clone() };
@@ -590,54 +637,159 @@ impl Computers {
     }
 
     /// The computer to wake. One recovered with new secrets has a stop owed first.
+    ///
+    /// A make or a recovery (minutes, on a cloud) holds no lock but [`Computers::making`]'s: this
+    /// Bot's while it has no computer, or its computer's while that one's record is lost. A second
+    /// click waits there, then finds what the first did. The seats change under `seating`, after a
+    /// fresh look that nothing changed them meanwhile.
     async fn computer_for_click(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
-        let seating = self.seating.lock().await;
-        let Some(seat) = Self::seat(ctx, bot)? else {
-            let id = self.make(ctx, bot).await?;
-            if let Err(e) = Self::add_seat(ctx, bot, &id, "member") {
-                // just made: nothing is on it. The provider isn't waited on under the lock
-                self.mark_retired(ctx, &id);
-                drop(seating);
-                let _ = self.finish_retire(ctx, &id).await;
-                return Err(e);
+        for _ in 0..3 {
+            let seat = Self::seat(ctx, bot)?;
+            if let Some(seat) = &seat {
+                // a record that reads is all it takes: the wake rebuilds whatever went, on the same files
+                if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
+                    return Ok(seat.computer.clone());
+                }
+                // nothing here can stand in for a machine a person connected
+                if Self::is_remote(ctx, &seat.computer)? {
+                    return Err(Problem::Remote(LOST_REMOTE.to_owned()));
+                }
             }
-            return Ok(id);
+            let key = match &seat {
+                None => format!("bot {bot}"),
+                Some(s) => format!("computer {}", s.computer),
+            };
+            let _making = self.making(&key).await;
+            // a click before this one may have done it while this one waited
+            let now = Self::seat(ctx, bot)?;
+            if now.as_ref().map(|s| &s.computer) != seat.as_ref().map(|s| &s.computer) {
+                continue;
+            }
+            let found = match now {
+                None => self.first_computer(ctx, bot).await?,
+                Some(seat) if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) => Some(seat.computer),
+                Some(seat) => self.found_again(ctx, bot, &seat.computer).await?,
+            };
+            if let Some(id) = found {
+                return Ok(id);
+            }
+        }
+        Err(Problem::Refused { code: "in_use", message: "Where this Bot sits kept changing while its computer was found. Try again.".to_owned() })
+    }
+
+    /// Waits for, then holds, [`Computers::making`]'s turn for `key`.
+    async fn making(&self, key: &str) -> Making<'_> {
+        let turn = self.making.lock().unwrap_or_else(|e| e.into_inner()).entry(key.to_owned()).or_default().clone();
+        let held = turn.lock_owned().await;
+        Making { computers: self, key: key.to_owned(), held: Some(held) }
+    }
+
+    /// `bot` has no computer: a new one, and its seat. `None` when a person seated it meanwhile.
+    async fn first_computer(&self, ctx: &HubCtx, bot: &str) -> Result<Option<String>, Problem> {
+        let id = self.make(ctx, bot).await?;
+        let (seated, spare) = {
+            let _seating = self.seating.lock().await;
+            let seated = match Self::seat(ctx, bot) {
+                Ok(None) => Self::add_seat(ctx, bot, &id, "member").map(|()| true),
+                Ok(Some(_)) => Ok(false),
+                Err(e) => Err(e),
+            };
+            let spare = !matches!(seated, Ok(true)) && self.retire_spare(ctx, &id);
+            (seated, spare)
         };
-        // a record that reads is all it takes: the wake rebuilds whatever went, on the same files
-        if !matches!(self.machine(ctx, &seat.computer), Err(Problem::Gone)) {
-            return Ok(seat.computer);
+        // the provider isn't waited on under the lock
+        if spare {
+            let _ = self.finish_retire(ctx, &id).await;
         }
-        // nothing here can stand in for a machine a person connected
-        if Self::is_remote(ctx, &seat.computer)? {
-            return Err(Problem::Remote(LOST_REMOTE.to_owned()));
-        }
-        // its record is lost: what's left of the computer gets a new one, files and all
-        let spec = Spec { id: seat.computer.clone(), dir: Self::dir(ctx, &seat.computer) };
+        seated.map(|seated| seated.then_some(id))
+    }
+
+    /// `old`'s record is lost: what's left of it gets a new one, files and all. With nothing of it
+    /// found its Bots move to a new computer, and it's kept as lost for a person to decide on:
+    /// not finding it isn't knowing it's gone. `None` when `bot`'s seat changed meanwhile.
+    async fn found_again(&self, ctx: &HubCtx, bot: &str, old: &str) -> Result<Option<String>, Problem> {
+        let spec = Spec { id: old.to_owned(), dir: Self::dir(ctx, old) };
         // by the kind it was: its files are only where it was made
-        let recovered = match Self::kind_of(ctx, &seat.computer)? {
-            Some(kind) => self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, &seat.computer)?.as_ref()).await?,
+        let recovered = match Self::kind_of(ctx, old)? {
+            Some(kind) => self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, old)?.as_ref()).await?,
             // a kind nothing here knows: there's nowhere to look
             None => None,
         };
+        let still_there = |ctx: &HubCtx| Self::seat(ctx, bot).map(|s| s.is_some_and(|s| s.computer == old));
         if let Some(machine) = recovered {
-            std::fs::create_dir_all(&spec.dir).map_err(|e| Problem::Failed(e.to_string()))?;
-            // before the record: once that reads, nothing else says the secrets changed
-            std::fs::write(Self::stop_owed(ctx, &seat.computer), "").map_err(|e| Problem::Failed(e.to_string()))?;
-            Self::save_machine(ctx, &seat.computer, &machine)?;
-            self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(seat.computer.clone(), machine);
-            self.now().problems.remove(&seat.computer);
-            return Ok(seat.computer);
+            let _seating = self.seating.lock().await;
+            // a Bot taken off meanwhile may have marked it lost: nothing brings it back then
+            if !still_there(ctx)? {
+                return Ok(None);
+            }
+            self.adopt(ctx, old, machine)?;
+            return Ok(Some(old.to_owned()));
         }
-        // nothing of it is left to find
+        // a make can be a billed cloud create: not for a Bot taken off meanwhile. Asked again
+        // after, since the seat can change during the create
+        if !still_there(ctx)? {
+            return Ok(None);
+        }
         let id = self.make(ctx, bot).await?;
-        if let Err(e) = ctx.db.with(|c| c.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [&id, &seat.computer])) {
-            self.mark_retired(ctx, &id);
-            drop(seating);
+        let (moved, spare) = {
+            let _seating = self.seating.lock().await;
+            let moved = match still_there(ctx) {
+                Ok(true) => Self::move_off_lost(ctx, old, &id).map(|()| true),
+                Ok(false) => Ok(false),
+                Err(e) => Err(e),
+            };
+            let spare = !matches!(moved, Ok(true)) && self.retire_spare(ctx, &id);
+            (moved, spare)
+        };
+        if spare {
             let _ = self.finish_retire(ctx, &id).await;
-            return Err(db_problem(e));
         }
-        self.mark_retired(ctx, &seat.computer);
-        Ok(id)
+        moved.map(|moved| moved.then_some(id))
+    }
+
+    /// The Bots at `old`, whose record is lost, sit at `new` instead, and `old` is marked lost: in
+    /// one step, so no moment has them moved and it looking unused, or the other way round.
+    fn move_off_lost(ctx: &HubCtx, old: &str, new: &str) -> Result<(), Problem> {
+        let at = policy::now(ctx);
+        ctx.db
+            .with(|c| {
+                let t = c.unchecked_transaction()?;
+                t.execute("UPDATE computer_seats SET computer_id=?, screen=NULL WHERE computer_id=?", [new, old])?;
+                t.execute("UPDATE computers SET lost_at=? WHERE id=?", rusqlite::params![at, old])?;
+                t.commit()
+            })
+            .map_err(db_problem)
+    }
+
+    /// `id`, just made and not needed, is marked for removal if no Bot sits at it: a person may have
+    /// put one there since. Under `seating`. Not knowing who sits there keeps it.
+    fn retire_spare(&self, ctx: &HubCtx, id: &str) -> bool {
+        let empty = Self::seats(ctx, id).is_ok_and(|s| s.is_empty());
+        if empty {
+            self.mark_retired(ctx, id);
+        }
+        empty
+    }
+
+    /// `id`'s record, found again with new secrets: saved, with where it is now. What still runs
+    /// has the old secrets, and is owed a stop at the next wake.
+    fn adopt(&self, ctx: &HubCtx, id: &str, machine: Machine) -> Result<(), Problem> {
+        std::fs::create_dir_all(Self::dir(ctx, id)).map_err(|e| Problem::Failed(e.to_string()))?;
+        // before the record: once that reads, nothing else says the secrets changed
+        std::fs::write(Self::stop_owed(ctx, id), "").map_err(|e| Problem::Failed(e.to_string()))?;
+        Self::save_machine(ctx, id, &machine)?;
+        // where it is now, so a record lost again is looked for there. The record has it too: a
+        // row that won't take it costs nothing until then
+        let reach = serde_json::to_string(&machine.reach).ok();
+        let _ = ctx.db.with(|c| c.execute("UPDATE computers SET reach=? WHERE id=?", rusqlite::params![reach, id]));
+        self.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), machine);
+        self.now().problems.remove(id);
+        Ok(())
+    }
+
+    /// Whether `id` was found with its record lost, waiting on a person.
+    fn is_lost(ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+        Self::try_ids_where(ctx, "lost_at IS NOT NULL").map(|ids| ids.iter().any(|i| i == id)).map_err(db_problem)
     }
 
     /// Up, with every Bot's screen. `id` is in `waking`.
@@ -659,7 +811,7 @@ impl Computers {
         }
         if woke.is_ok() {
             Self::touch(ctx, id);
-            let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL WHERE id=?", [id]));
+            let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL, sleep_note=NULL WHERE id=?", [id]));
             self.freeze_jobs(id, false);
         }
         woke
@@ -797,13 +949,17 @@ impl Computers {
             }
         }
         let at = if depth == Sleep::Light { Some(policy::now(ctx)) } else { None };
-        ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=? WHERE id=?", rusqlite::params![at, id])).map(|_| ()).map_err(db_problem)
+        // a light sleep says what it did, or that nothing needs saying; a deep one after it keeps that
+        let note = provider.take_sleep_note(&machine);
+        let sql = if depth == Sleep::Light { "UPDATE computers SET slept_at=?, sleep_note=? WHERE id=?" } else { "UPDATE computers SET slept_at=?, sleep_note=COALESCE(?, sleep_note) WHERE id=?" };
+        ctx.db.with(|c| c.execute(sql, rusqlite::params![at, note, id])).map(|_| ()).map_err(db_problem)
     }
 
     /// One look at every computer: its jobs first, then the ones nobody needs go to sleep, then
     /// deeper.
     pub async fn sleep_the_idle(&self, ctx: &Arc<HubCtx>) {
-        for id in Self::ids_where(ctx, "gone_at IS NOT NULL") {
+        // a lost one is a person's to delete, and never this timer's: it may still hold their files
+        for id in Self::ids_where(ctx, "gone_at IS NOT NULL AND lost_at IS NULL") {
             // a wake in flight could put back what this removes: the next look gets it
             if !self.now().waking.contains(&id) {
                 let _ = self.finish_retire(ctx, &id).await;
@@ -887,9 +1043,10 @@ impl Computers {
     /// `bot` is off its computer because a person deleted it. The last Bot's going marks the
     /// computer for removal, and the sweep removes it and what it kept
     /// ([`Computers::sleep_the_idle`]), so that removal isn't waited on: with Docker off or hung a
-    /// Bot still goes, and nobody else's click waits behind it. Taking a Bot off a shared computer
-    /// does ask the provider to bring its screen down, outside the lock and best effort. Fails if
-    /// the seats can't be read: nothing is removed on a guess.
+    /// Bot still goes, and nobody else's click waits behind it. A computer whose record can't be
+    /// read is marked lost instead, and nothing removes it ([`Computers::mark_lost`]). Taking a Bot
+    /// off a shared computer does ask the provider to bring its screen down, outside the lock and
+    /// best effort. Fails if the seats can't be read: nothing is removed on a guess.
     pub async fn detach(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
         self.take_off(ctx, bot, true).await
     }
@@ -904,9 +1061,14 @@ impl Computers {
             if last && !may_be_last {
                 return Err(Problem::Failed("the last Bot at a computer can't leave it: its files would go".to_owned()));
             }
+            // with no record to read it may still be on its platform with the person's files, and
+            // nothing here can say: it waits in Settings for their Keep or Delete
+            let lost = last && self.unreadable(ctx, &seat.computer)?;
             ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot])).map_err(db_problem)?;
             drop_ask(ctx, bot);
-            if last {
+            if lost {
+                Self::mark_lost(ctx, &seat.computer);
+            } else if last {
                 self.mark_retired(ctx, &seat.computer);
             }
             let mut now = self.now();
@@ -937,16 +1099,38 @@ impl Computers {
         Ok(())
     }
 
-    /// `id` has no Bots left, and a person agreed to that: it goes as soon as the provider can.
+    /// Whether `id`'s record can't be read, and it isn't a remote computer, whose record is all
+    /// there is of it here: what's left of it on its platform can't be told then. Remote first: its
+    /// record's read asks the keystore, which isn't waited on under `seating`.
+    fn unreadable(&self, ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+        Ok(!Self::is_remote(ctx, id)? && matches!(self.machine(ctx, id), Err(Problem::Gone)))
+    }
+
+    /// `id`, its record unreadable, has no Bots left: kept as lost, for a person's Keep or Delete
+    /// in Settings › Computers, and never swept. One already on its way out stays so.
+    fn mark_lost(ctx: &HubCtx, id: &str) {
+        let at = policy::now(ctx);
+        let _ = ctx.db.with(|c| c.execute("UPDATE computers SET lost_at=? WHERE id=? AND gone_at IS NULL AND lost_at IS NULL", rusqlite::params![at, id]));
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
+    }
+
+    /// `id` has no Bots left, and a person agreed to that: it goes as soon as the provider can. Never
+    /// a lost one: only a person's Delete of it ([`Computers::delete_lost`]) marks that. Deleting the
+    /// last Bot at a computer whose record can't be read marks it lost instead ([`Computers::mark_lost`]).
     fn mark_retired(&self, ctx: &HubCtx, id: &str) {
         let at = policy::now(ctx);
-        let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=?", rusqlite::params![at, id]));
-        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
+        let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=? AND lost_at IS NULL", rusqlite::params![at, id]));
+        // a lost row is left as it is, seats and all
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?1 AND ?1 NOT IN (SELECT id FROM computers WHERE lost_at IS NOT NULL)", [id]));
     }
 
     /// Deletes computer `id`, on its way out, and then all that's kept of it here. `Err` says why
     /// it's still there: the next look tries again.
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+        // lost, it waits on a person: their Delete clears the mark before it comes here
+        if Self::is_lost(ctx, id)? {
+            return Err(Problem::Refused { code: "lost", message: format!("Computer {id} was found with its record lost: only a person deletes it, from Settings › Computers.") });
+        }
         // read while the row is there. Not knowing is a try next time: the row is what finds the key
         let remote = Self::is_remote(ctx, id)?;
         self.retire_jobs(ctx, id, remote).await;
@@ -956,12 +1140,7 @@ impl Computers {
                 // its record is all there is here
                 (Ok(true), _) => Ok(()),
                 (Ok(false), Ok(reach)) => match Self::kind_of(ctx, id) {
-                    Ok(Some(kind)) => match self.provider_of_kind(ctx, kind).sweep(id, reach.as_ref()).await {
-                        // a platform can take a while to list what was just made (EC2's tags are
-                        // eventually consistent): finding nothing yet isn't its word that it's gone
-                        Ok(()) if Self::just_gone(ctx, id)? => Err(Problem::Remote("It was made a moment ago, and its platform can take a minute to list it, so it's looked for again then.".to_owned())),
-                        swept => swept,
-                    },
+                    Ok(Some(kind)) => self.sweep_by_id(ctx, kind, id, reach.as_ref()).await,
                     // a kind this build doesn't know: nothing here can delete it, so its row and
                     // folder stay for a build that can
                     Ok(None) => Err(Problem::Failed("this computer's kind isn't one this build knows".to_owned())),
@@ -982,9 +1161,29 @@ impl Computers {
         self.drop_record(ctx, id)
     }
 
-    /// Whether computer `id` went on its way out within [`JUST_GONE_MS`].
+    /// [`Computers::finish_retire`] of computer `id` on `kind` with no record: deleted by its id and
+    /// where it last was. `Ok` is the platform's word that nothing of it is left.
+    async fn sweep_by_id(&self, ctx: &HubCtx, kind: ProviderKind, id: &str, reach: Option<&Reach>) -> Result<(), Problem> {
+        let provider = self.provider_of_kind(ctx, kind);
+        // keys saved since it was made may be another account's, and a sweep with them finds
+        // nothing: that isn't the platform's word that it's gone, so its row stays, for a person
+        // who looked to Forget
+        if homes::keys_changed_since_made(ctx, id)? && provider.finds(id, reach).await? == Some(false) {
+            return Err(Problem::Refused { code: "unseen", message: format!("Computer {id} can't be found with the keys in use, and they were changed after it was made, so it may still be there under the keys it was made with.") });
+        }
+        match provider.sweep(id, reach).await {
+            // a platform can take a while to list what was just made (EC2's tags are eventually
+            // consistent): finding nothing yet isn't its word that it's gone
+            Ok(()) if Self::just_gone(ctx, id)? => Err(Problem::Remote("It was made a moment ago, and its platform can take a minute to list it, so it's looked for again then.".to_owned())),
+            swept => swept,
+        }
+    }
+
+    /// Whether computer `id` went on its way out within [`JUST_GONE_MS`] of being made. Counted from
+    /// its making: a platform is slow to list what's new, not what's old, and a lost computer a
+    /// person deletes long after is looked for once.
     fn just_gone(ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
-        let at: Option<i64> = ctx.db.with(|c| c.query_row("SELECT gone_at FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).map_err(db_problem)?.flatten();
+        let at: Option<i64> = ctx.db.with(|c| c.query_row("SELECT COALESCE(created_at, gone_at) FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).map_err(db_problem)?.flatten();
         Ok(at.is_some_and(|at| policy::now(ctx) - at < JUST_GONE_MS))
     }
 
@@ -1380,6 +1579,9 @@ impl Computers {
         if let Some(ms) = wake_ms {
             out["wakeMs"] = json!(ms);
         }
+        if let Some(note) = Self::sleep_note(ctx, &id) {
+            out["sleepNote"] = json!(note);
+        }
         let state = if waking {
             "waking".to_owned()
         } else if let Some(p) = problem {
@@ -1406,19 +1608,27 @@ impl Computers {
                     }
                 }
                 Err(p) => {
-                    out["code"] = json!(p.code());
-                    out["message"] = json!(match Self::is_remote(ctx, &id) {
-                        Ok(true) => LOST_REMOTE.to_owned(),
-                        Ok(false) => p.sentence(),
+                    let (code, message) = match Self::is_remote(ctx, &id) {
+                        Ok(true) => (p.code(), LOST_REMOTE.to_owned()),
+                        // a click looks for it before anything else, and may well find it
+                        Ok(false) if p == Problem::Gone => ("lost", LOST_LOCAL.to_owned()),
+                        Ok(false) => (p.code(), p.sentence()),
                         // neither the record nor its row: what kind it is isn't known, so it isn't said
-                        Err(_) => UNREAD.to_owned(),
-                    });
+                        Err(_) => (p.code(), UNREAD.to_owned()),
+                    };
+                    out["code"] = json!(code);
+                    out["message"] = json!(message);
                     "error".to_owned()
                 }
             }
         };
         out["state"] = json!(state);
         out
+    }
+
+    /// What its last sleep left a person to know, until a wake works.
+    fn sleep_note(ctx: &HubCtx, id: &str) -> Option<String> {
+        ctx.db.with(|c| c.query_row("SELECT sleep_note FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).ok().flatten().flatten()
     }
 
     /// The computers another Bot could join, for the tab's picker.
@@ -1816,7 +2026,7 @@ async fn providers(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         return host::unauthorized();
     }
     let Some(computers) = Computers::of(&ctx) else { return unavailable() };
-    types::json(StatusCode::OK, &computers.providers_json(&ctx))
+    types::json(StatusCode::OK, &computers.providers_seen(&ctx).await)
 }
 
 /// `PUT /v1/host/computer/providers/{kind} {values, clear?}`: checked, then kept, or nothing kept.
@@ -1856,6 +2066,30 @@ async fn forget_leaving(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
     match computers.forget_leaving(&ctx, kind, id).await {
+        Ok(provider) => types::json(StatusCode::OK, &json!({"ok": true, "provider": provider})),
+        Err(p) => refused(&p),
+    }
+}
+
+/// `POST /v1/host/computer/providers/{kind}/keep {id}`: a person keeps computer `id`, found with its
+/// record lost. Looked for again: found, it's kept, with no Bot at it; not found, nothing changes.
+async fn keep_lost(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, kind) = provider_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+    match computers.keep_lost(&ctx, kind, id).await {
+        Ok((provider, message)) => types::json(StatusCode::OK, &json!({"ok": true, "provider": provider, "message": message})),
+        Err(p) => refused(&p),
+    }
+}
+
+/// `POST /v1/host/computer/providers/{kind}/delete {id}`: a person deletes computer `id`, found with
+/// its record lost. The only way one is deleted on its platform.
+async fn delete_lost(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, kind) = provider_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+    match computers.delete_lost(&ctx, kind, id).await {
         Ok(provider) => types::json(StatusCode::OK, &json!({"ok": true, "provider": provider})),
         Err(p) => refused(&p),
     }
@@ -1922,6 +2156,8 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, S("/v1/host/computer/providers/*/check"), check_provider);
     routes.route(Verb::Post, S("/v1/host/computer/providers/*/remove"), remove_provider);
     routes.route(Verb::Post, S("/v1/host/computer/providers/*/forget"), forget_leaving);
+    routes.route(Verb::Post, S("/v1/host/computer/providers/*/keep"), keep_lost);
+    routes.route(Verb::Post, S("/v1/host/computer/providers/*/delete"), delete_lost);
     routes.route(Verb::Put, S("/v1/host/computer/bot/*/provider"), set_bot_home);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/test"), test_remote);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote"), add_remote);

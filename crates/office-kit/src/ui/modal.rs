@@ -223,9 +223,9 @@ impl IntoElement for Modal {
                 trap.at.set(0);
                 provide_context(trap);
                 let confirm = on_confirm.clone();
-                on_key_with("enter", KeyOptions { when: When::Always, repeat: false }, move |_| confirm());
+                on_key_with("enter", KeyOptions { when: When::Always, repeat: false, ..Default::default() }, move |_| confirm());
                 for (key, step) in [("tab", 1isize), ("shift+tab", -1)] {
-                    on_key_with(key, KeyOptions { when: When::Always, repeat: true }, move |_| {
+                    on_key_with(key, KeyOptions { when: When::Always, repeat: true, ..Default::default() }, move |_| {
                         let n = trap.fields.with(|f| f.len());
                         if n == 0 {
                             return;

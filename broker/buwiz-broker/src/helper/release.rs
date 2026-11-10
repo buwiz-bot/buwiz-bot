@@ -31,7 +31,7 @@ pub const INDEX_ASSET: &str = "buwiz-release.json";
 pub const MANIFEST_FILE: &str = "manifest.signed.json";
 /// A package's release asset (flat, as GitHub's are).
 pub const PLUGIN_ASSET: &str = PLUGIN_FILE;
-const SMALL_MAX: usize = 1024 * 1024;
+pub(crate) const SMALL_MAX: usize = 1024 * 1024;
 const BINARY_MAX: usize = 200 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const USER_AGENT: &str = "buwiz-bot";
@@ -243,7 +243,7 @@ fn too_big(res: &http::Resp, cap: usize) -> bool {
 }
 
 /// A body of at most `cap` bytes.
-async fn small(url: &str, accept: &str, plain: bool, cap: usize) -> Result<Vec<u8>, String> {
+pub(crate) async fn small(url: &str, accept: &str, plain: bool, cap: usize) -> Result<Vec<u8>, String> {
     let mut res = get(url, accept, plain).await?;
     let over = || format!("{url} is over {} KiB", cap / 1024);
     if too_big(&res, cap) {
@@ -318,7 +318,7 @@ impl Fetched {
     }
 }
 
-fn asset_url(release: &Value, name: &str) -> Result<String, String> {
+pub(crate) fn asset_url(release: &Value, name: &str) -> Result<String, String> {
     release
         .get("assets")
         .and_then(Value::as_array)

@@ -6,6 +6,8 @@
 //!
 //! The decisions are pure; `mini.rs` and the store act on them.
 
+use std::collections::HashSet;
+
 use serde_json::Value;
 
 use super::{V1Key, load::PluginEntry};
@@ -48,8 +50,7 @@ pub fn stale(running: &[(String, String)], plugins: &[PluginEntry]) -> Vec<Strin
 /// the card keeps its content until the person refreshes it. `None` while
 /// the version is the same, or either is unknown.
 pub fn made_with(made: &str, now: &str) -> Option<String> {
-    let bare = |v: &str| v.trim().trim_start_matches('v').to_owned();
-    let (made, now) = (bare(made), bare(now));
+    let (made, now) = (super::connect::bare_version(made), super::connect::bare_version(now));
     (!made.is_empty() && !now.is_empty() && made != now).then(|| format!("Made with {made}"))
 }
 
@@ -62,6 +63,15 @@ pub fn made_with(made: &str, now: &str) -> Option<String> {
 pub fn reopen_after_restart(waiting: &[(String, bool, String)], now: &str) -> (Vec<String>, Vec<String>) {
     let (keep, reopen): (Vec<_>, Vec<_>) = waiting.iter().partition(|(_, inline, made)| *inline && made_with(made, now).is_some());
     (reopen.into_iter().map(|(k, _, _)| k.clone()).collect(), keep.into_iter().map(|(k, _, _)| k.clone()).collect())
+}
+
+/// The opens waiting on a restart when the plugin list could not be read
+/// (`keys`), split into the ones that wait for the next list and the ones
+/// that reopen now: an inline card made with a known version (`made`)
+/// waits, since only the list can say whether an update must leave it as
+/// it is; a full-screen open (`full`) or a card of unknown version reopens.
+pub fn undecided_restarts(keys: Vec<String>, full: &HashSet<String>, made: &HashSet<String>) -> (Vec<String>, Vec<String>) {
+    keys.into_iter().partition(|k| !full.contains(k) && made.contains(k))
 }
 
 /// Whether a broker `plugin` event says `plugin` runs again: the opens
@@ -158,6 +168,14 @@ mod tests {
         let (reopen, keep) = reopen_after_restart(&waiting, "1.5.0");
         assert_eq!(reopen, ["v1:p/board", "v1:p/other"]);
         assert_eq!(keep, ["v1:p/card"]);
+        // the list can't be read: only the inline card of a known version
+        // waits for the next one, since only it can say there was an update
+        let keys = waiting.iter().map(|(k, _, _)| k.clone()).collect();
+        let full = HashSet::from(["v1:p/board".to_owned()]);
+        let made = HashSet::from(["v1:p/card".to_owned(), "v1:p/board".to_owned()]);
+        let (wait, reopen) = undecided_restarts(keys, &full, &made);
+        assert_eq!(wait, ["v1:p/card"]);
+        assert_eq!(reopen, ["v1:p/board", "v1:p/other"]);
     }
 
     #[test]

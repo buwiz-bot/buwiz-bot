@@ -549,12 +549,13 @@ mod tests {
         let s = fill(WRAPPER, &[("rel", "${capH}".into())]);
         assert!(s.contains("from \"${capH}\";"));
         assert!(s.starts_with("import { colorScheme, mount, Text, View } from \"nsh\";\nimport { isAvailable, Window } from \"nsh/desktop\";\n") && s.ends_with("));\n"));
-        // nsh 0.3's homes and shapes: no removed module, no positional
-        // setTitleBar, no flat setFrame, onLayout's bounds
-        for gone in ["nsh/device", "setTitleBar(\"", "anchorTop", "hug(e.height)", "setFrame({ width", "setFrame({ height"] {
+        // nsh's homes and shapes: no removed module, the main window's
+        // `WindowRef` (no `Window.set*` functions), onLayout's bounds
+        for gone in ["nsh/device", "setTitleBar", "setFrame", "setLevel", "orderFront", "anchorTop", "hug(e.height)"] {
             assert!(!WRAPPER.contains(gone), "{gone}");
         }
-        assert!(WRAPPER.contains("Window.setTitleBar({ style: \"hidden\", height: 32 });") && WRAPPER.contains("hug(e.bounds.size.height)"));
+        assert!(WRAPPER.contains("const main = isAvailable ? Window.get(\"main\") : null;"));
+        assert!(WRAPPER.contains("titleBar: { style: \"hidden\", height: 32 },") && WRAPPER.contains("hug(e.bounds.size.height)"));
     }
 
     #[test]

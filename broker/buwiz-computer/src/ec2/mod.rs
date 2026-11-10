@@ -154,6 +154,8 @@ pub struct Ec2Provider {
     links: Mutex<HashMap<PathBuf, Arc<Open>>>,
     /// one wake, sleep, connect or removal at a time, per computer
     turns: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    /// what a light sleep that became a stop left a person to know, until the hub takes it
+    notes: Mutex<HashMap<PathBuf, String>>,
 }
 
 impl Ec2Provider {
@@ -165,7 +167,7 @@ impl Ec2Provider {
     /// The provider reading its settings from `config`, which the broker changes when a person
     /// saves new ones. `keys` are read for each call already.
     pub fn shared(config: Shared<Config>, keys: Arc<dyn creds::Keys>) -> Self {
-        Self { config, keys, endpoint: None, apis: Mutex::default(), ssh: PathBuf::from(ssh::SSH), keygen: PathBuf::from(KEYGEN), patience: Patience::default(), links: Mutex::default(), turns: Mutex::default() }
+        Self { config, keys, endpoint: None, apis: Mutex::default(), ssh: PathBuf::from(ssh::SSH), keygen: PathBuf::from(KEYGEN), patience: Patience::default(), links: Mutex::default(), turns: Mutex::default(), notes: Mutex::default() }
     }
 
     /// Settings and keys from [`from_env`].
@@ -369,19 +371,27 @@ impl Ec2Provider {
         self.start_box(machine, open).await.map(|()| Woke::Started)
     }
 
-    /// Hibernates it, or stops it when it can't, and says so.
-    async fn hibernate(&self, api: &Api, found: &Instance) -> Result<()> {
-        if found.hibernation {
+    /// Hibernates it, or stops it when it can't, and says so: in the log, and in a note for the
+    /// person, since what they had open is gone at the next wake and nothing else tells them.
+    async fn hibernate(&self, api: &Api, machine: &Machine, found: &Instance) -> Result<()> {
+        let note = if found.hibernation {
             match api.stop(&found.id, true).await? {
                 Called::Done(_) => return Ok(()),
                 Called::Refused(r) if r.not_about_hibernation() => return Err(r.problem()),
-                Called::Refused(r) => eprintln!("buwiz-computer: {} couldn't hibernate ({}), so it was stopped: what was open on it won't be there at the next wake", found.id, r.code),
+                Called::Refused(r) => {
+                    eprintln!("buwiz-computer: {} couldn't hibernate ({}), so it was stopped: what was open on it won't be there at the next wake", found.id, r.code);
+                    format!("This computer couldn't hibernate (AWS said {}), so it was stopped instead: what was open on it won't be there when it wakes. Its files are kept.", r.code)
+                }
             }
         } else {
             eprintln!("buwiz-computer: {} wasn't launched able to hibernate, so it was stopped: what was open on it won't be there at the next wake", found.id);
-        }
+            "This computer's instance wasn't made able to hibernate, so it was stopped instead: what was open on it won't be there when it wakes. Its files are kept.".to_owned()
+        };
         match api.stop(&found.id, false).await? {
-            Called::Done(_) => Ok(()),
+            Called::Done(_) => {
+                self.notes.lock().unwrap_or_else(|e| e.into_inner()).insert(machine.dir.clone(), note);
+                Ok(())
+            }
             Called::Refused(r) => Err(r.problem()),
         }
     }
@@ -580,6 +590,8 @@ impl Provider for Ec2Provider {
     async fn sleep(&self, machine: &Machine, depth: Sleep) -> Result<()> {
         let turn = self.turn(machine);
         let _turn = turn.lock().await;
+        // a note is for the sleep that left it: this one leaves its own, or none
+        self.notes.lock().unwrap_or_else(|e| e.into_inner()).remove(&machine.dir);
         let (id, region) = instance_of(machine)?;
         let api = self.api(region)?;
         if depth == Sleep::Deep {
@@ -596,12 +608,16 @@ impl Provider for Ec2Provider {
             return Ok(());
         }
         match depth {
-            Sleep::Light => self.hibernate(&api, &found).await,
+            Sleep::Light => self.hibernate(&api, machine, &found).await,
             Sleep::Deep => match api.stop(id, false).await? {
                 Called::Done(_) => Ok(()),
                 Called::Refused(r) => Err(r.problem()),
             },
         }
+    }
+
+    fn take_sleep_note(&self, machine: &Machine) -> Option<String> {
+        self.notes.lock().unwrap_or_else(|e| e.into_inner()).remove(&machine.dir)
     }
 
     /// Terminates its instance: its root volume, the computer's files, goes with it.
@@ -626,6 +642,11 @@ impl Provider for Ec2Provider {
             api.terminate(&ids).await?;
         }
         Ok(())
+    }
+
+    /// Any instance tagged as computer `id`'s, or the one it was, as [`Provider::sweep`] finds them.
+    async fn finds(&self, id: &str, last: Option<&Reach>) -> Result<Option<bool>> {
+        Ok(Some(!self.found(id, last).await?.is_empty()))
     }
 
     /// Its instance, found by its tags, with new secrets: the box is started again with them at the

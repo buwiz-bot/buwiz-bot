@@ -260,16 +260,11 @@ pub async fn fetch_reviewed(ctx: &HubCtx, host: &Host, url: &str) -> Result<(rel
     Ok((f, spec, i))
 }
 
-async fn install(run: &Run, host: &Host, input: &Value) -> Out {
-    let url = input.get("url").filter(|v| !v.is_null()).map(js::string_of).unwrap_or_default();
-    if let Err(e) = release::parse_url(&url) {
-        return Out::err(e);
-    }
-    run.set_job("connecting", "Fetching the mini app");
-    let (f, spec, i) = match fetch_reviewed(&run.ctx, host, &url).await {
-        Ok(x) => x,
-        Err(e) => return Out::err(format!("app_install: {e}")),
-    };
+/// The `app_install` card of a release fetched and inspected
+/// ([`fetch_reviewed`]): what the user reviews, and what their Install
+/// sends back. The agent's `app_install` and an update's review post the
+/// same one.
+pub fn install_notice(host: &Host, f: &release::Fetched, spec: &Value, i: &Value) -> Value {
     let m = &i["manifest"];
     let title = title_of(m, &f.id);
     let publisher = m.pointer("/publisher/name").or_else(|| m.pointer("/publisher/id")).filter(|p| js::truthy(p)).map(js::string_of).unwrap_or_default();
@@ -311,6 +306,66 @@ async fn install(run: &Run, host: &Host, input: &Value) -> Out {
         n["skills"] = json!(p["skills"].as_array().into_iter().flatten().map(|s| s["name"].clone()).collect::<Vec<_>>());
         n["accounts"] = p["accounts"].clone();
     }
+    n
+}
+
+/// `POST /v1/host/plugins/updates/review {id, chat}`: the update known
+/// for `id`, fetched, verified and inspected, as the `app_install` card
+/// in chat `chat` (one while pending for that version). Nothing is
+/// installed. → `{ok, posted, version}`.
+pub async fn review_update(ctx: &HubCtx, host: &Host, id: &str, chat: &str) -> Result<Value, crate::v1::V1Error> {
+    use crate::v1::V1Error;
+    let Some(row) = host.row(id) else { return V1Error::err("not_found", format!("{} is not installed", js::slice_utf16(id, 80))) };
+    let (Some(update), Some(tag)) = (host.update_of(id), host.update_tag(id)) else {
+        return V1Error::err("not_found", format!("no update is known for {}", title_of(&row.manifest(), id)));
+    };
+    if ctx.store.read(|s| s.thread(chat).is_none()) {
+        return V1Error::err("not_found", format!("no chat {}", js::slice_utf16(chat, 80)));
+    }
+    let Some(src) = crate::helper::updates::source_of(&row) else { return V1Error::err("not_found", format!("{id} has no release source")) };
+    let version = js::string_of(&update["version"]);
+    let pending = ctx.store.read(|st| {
+        st.thread(chat).is_some_and(|t| t.turns.iter().filter_map(|u| u.notice.as_ref()).any(|n| n["kind"] == "app_install" && n["id"] == json!(id) && n["state"] == "pending" && n["version"] == json!(version)))
+    });
+    if pending {
+        return Ok(json!({"ok": true, "posted": true, "version": version}));
+    }
+    let url = format!("https://github.com/{}/{}/releases/tag/{tag}", src.owner, src.repo);
+    let (f, spec, i) = fetch_reviewed(ctx, host, &url).await.map_err(|e| V1Error::new("plugin_unavailable", e))?;
+    if f.id != id {
+        return V1Error::err("plugin_unavailable", format!("the release is {}, not {id}", js::slice_utf16(&f.id, 80)));
+    }
+    // an older card for this plugin can't install what is reviewed now
+    crate::hub::routines::store_host::settle_notices(ctx, Some(chat), "app_install", id, "declined");
+    let n = install_notice(host, &f, &spec, &i);
+    let posted = post_in(ctx, chat, &n);
+    Ok(json!({"ok": true, "posted": posted, "version": f.version}))
+}
+
+/// `POST /v1/host/plugins/updates/failed {id, chat, reason}`: a line in
+/// chat `chat` that `id`'s update failed, and the version that stays.
+pub fn update_failed(ctx: &HubCtx, host: &Host, id: &str, chat: &str, reason: &str) -> Result<Value, crate::v1::V1Error> {
+    use crate::v1::V1Error;
+    let Some(row) = host.row(id) else { return V1Error::err("not_found", format!("{} is not installed", js::slice_utf16(id, 80))) };
+    let n = json!({"kind": "app_update_failed", "id": id, "title": title_of(&row.manifest(), id), "version": row.version, "reason": js::slice_utf16(reason.trim(), 300)});
+    if !post_in(ctx, chat, &n) {
+        return V1Error::err("not_found", format!("no chat {}", js::slice_utf16(chat, 80)));
+    }
+    Ok(json!({"ok": true}))
+}
+
+async fn install(run: &Run, host: &Host, input: &Value) -> Out {
+    let url = input.get("url").filter(|v| !v.is_null()).map(js::string_of).unwrap_or_default();
+    if let Err(e) = release::parse_url(&url) {
+        return Out::err(e);
+    }
+    run.set_job("connecting", "Fetching the mini app");
+    let (f, spec, i) = match fetch_reviewed(&run.ctx, host, &url).await {
+        Ok(x) => x,
+        Err(e) => return Out::err(format!("app_install: {e}")),
+    };
+    let n = install_notice(host, &f, &spec, &i);
+    let title = js::string_of(&n["title"]);
     if !post(run, &n) {
         return Out::err("no chat to show the install card in".into());
     }
@@ -662,9 +717,17 @@ mod tests {
     /// as this platform's binary; `edit` changes plugin.json before it is
     /// signed.
     fn publish_pkg(files: &Files, base: &str, tag: &str, edit: impl FnOnce(&mut Value)) {
+        publish_pkg_as(files, base, tag, |_| {}, edit, json!({}));
+    }
+
+    /// [`publish_pkg`] with the served manifest edited too (a later
+    /// version's), and `release`'s fields on GitHub's release (its notes,
+    /// its page).
+    fn publish_pkg_as(files: &Files, base: &str, tag: &str, served: impl FnOnce(&mut Value), edit: impl FnOnce(&mut Value), release: Value) {
         let dir = server_dir();
         let mut m: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
         m["publisher"]["key_id"] = json!(KEY);
+        served(&mut m);
         let sources: Vec<(String, Vec<u8>)> = ["board", "card"].iter().map(|id| (id.to_string(), std::fs::read(dir.join(format!("{id}.tsx"))).unwrap())).collect();
         let manifest = crate::v1::signing::sign_manifest(&m, &buwiz_protocol::keys::b64(&SEED), &sources).unwrap().to_string().into_bytes();
         let bin = format!("#!/bin/sh\nexec '{}' '{}' \"$@\"\n", node(), dir.join("server.mjs").display()).into_bytes();
@@ -685,7 +748,169 @@ mod tests {
             f.insert(format!("/obj/{tag}/{name}"), (200, String::new(), body));
             assets.push(json!({"name": name, "browser_download_url": format!("{base}/dl/{tag}/{name}")}));
         }
-        f.insert(format!("/repos/o/r/releases/tags/{tag}"), (200, String::new(), json!({"tag_name": tag, "assets": assets}).to_string().into_bytes()));
+        let mut rel = json!({"tag_name": tag, "assets": assets});
+        for (k, v) in release.as_object().into_iter().flatten() {
+            rel[k] = v.clone();
+        }
+        f.insert(format!("/repos/o/r/releases/tags/{tag}"), (200, String::new(), rel.to_string().into_bytes()));
+    }
+
+    /// Makes `tag` the repository's latest release.
+    fn latest(files: &Files, tag: &str) {
+        let mut f = files.lock().unwrap();
+        let rel = f[&format!("/repos/o/r/releases/tags/{tag}")].clone();
+        f.insert("/repos/o/r/releases/latest".into(), rel);
+    }
+
+    /// The fixture package at 1.1.0: one more Google scope, and its card
+    /// may call one more tool.
+    fn publish_1_1(b: &Bed) {
+        publish_pkg_as(
+            &b.files,
+            &b.base,
+            "v1.1.0",
+            |m| {
+                m["version"] = json!("1.1.0");
+                m["apps"][1]["permissions"]["tools"] = json!(["fx_echo", "fx_open"]);
+            },
+            |p| {
+                p["version"] = json!("1.1.0");
+                p["buwiz"]["version"] = json!("1.1.0");
+                p["buwiz"]["accounts"][0]["scopes"] = json!(["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/drive"]);
+            },
+            json!({
+                "html_url": "https://github.com/o/r/releases/tag/v1.1.0",
+                "body": "## Changes\n\n- Cards **survive** a restart ([#40](https://github.com/o/r/pull/40))\n- Faster search\n- Drafts keep their place\n- A fourth line nobody shows\n",
+            }),
+        );
+        latest(&b.files, "v1.1.0");
+    }
+
+    /// A newer release is found, kept across a restart, reviewed in a chat
+    /// card like any install, and gone from the list once it is installed.
+    #[tokio::test]
+    async fn an_update_is_announced_reviewed_in_the_chat_and_cleared_by_its_install() {
+        use crate::hub::routes::host::check_updates;
+        let b = bed_in("update", HostClock::system()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        latest(&b.files, "v1.0.0");
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        install_pkg(&b, "v1.0.0").await;
+        let chat = b.ctx.store.read(|s| s.active.clone());
+        // the install said nothing of its source: the card that reviewed it did
+        assert_eq!(b.host.row(FX).unwrap().source.as_deref(), Some("https://github.com/o/r"));
+        let listed = |host: &Arc<Host>| crate::hub::routines::plugins::describe(host, &host.row(FX).unwrap(), &|_, _| Value::Null)["update"].clone();
+
+        // the newest release is the installed one: no news, and no review
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
+        assert_eq!(listed(&b.host), Value::Null);
+        assert_eq!(review_update(&b.ctx, &b.host, FX, &chat).await.unwrap_err().code, "not_found");
+
+        publish_1_1(&b);
+        let mut events = b.host.events();
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 1);
+        let mut u = listed(&b.host);
+        assert!(u["checked_at"].as_i64().unwrap() > 0, "{u}");
+        u.as_object_mut().unwrap().shift_remove("checked_at");
+        assert_eq!(
+            u,
+            json!({
+                "version": "1.1.0", "from_version": "1.0.0",
+                "notes": ["Cards survive a restart (#40)", "Faster search", "Drafts keep their place"],
+                "url": "https://github.com/o/r/releases/tag/v1.1.0",
+                "access": ["Google Drive", "Fixture Card: can call fx_open"],
+            })
+        );
+        let said = events.try_recv().unwrap();
+        assert_eq!((said["id"].clone(), said["state"].clone(), said["update"].clone()), (json!(FX), json!("running"), json!("1.1.0")));
+        // the same answer again is no news
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
+        assert!(events.try_recv().is_err());
+        assert_eq!(b.host.row(FX).unwrap().version, "1.0.0", "a check installs nothing");
+        assert!(!b.dir.join("v1/apps").join(FX).join("1.1.0").exists(), "and downloads no binary");
+
+        // a restart reads it from disk
+        let again = Host::new(Options { db: b.db.clone(), keys: Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap(), trust_file: b.dir.join("trust.json"), log_dir: None, clock: HostClock::system(), timeouts: Timeouts::default(), apps_dir: None }).unwrap();
+        assert_eq!(again.update_of(FX).unwrap()["version"], "1.1.0");
+
+        // Review update: the install card, in that chat, once
+        assert_eq!(review_update(&b.ctx, &b.host, FX, "t404").await.unwrap_err().code, "not_found");
+        let r = review_update(&b.ctx, &b.host, FX, &chat).await.unwrap();
+        assert_eq!(r, json!({"ok": true, "posted": true, "version": "1.1.0"}));
+        let (text, n) = last_notice(&b.ctx, &chat);
+        assert_eq!(text, "Install Fixture 1.1.0 from https://github.com/o/r/releases/tag/v1.1.0?");
+        assert_eq!((n["kind"].clone(), n["version"].clone(), n["state"].clone()), (json!("app_install"), json!("1.1.0"), json!("pending")));
+        assert_eq!((n["update"]["from_version"].clone(), n["update"]["to_version"].clone()), (json!("1.0.0"), json!("1.1.0")));
+        assert_eq!(n["update"]["added_permissions"], json!(["Fixture Card: can call fx_open"]));
+        let cards = |ctx: &HubCtx| ctx.store.read(|s| s.thread(&chat).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_some_and(|n| n["kind"] == "app_install" && n["version"] == "1.1.0")).count());
+        assert_eq!(review_update(&b.ctx, &b.host, FX, &chat).await.unwrap()["posted"], true);
+        assert_eq!(cards(&b.ctx), 1, "one while it is pending");
+        assert_eq!(b.host.row(FX).unwrap().version, "1.0.0", "a review installs nothing");
+
+        // an install that failed says so in the chat, and the signal stays
+        let body = json!({"command": n["command"], "args": n["args"], "env": n["env"], "manifest_sha256": n["manifest_sha256"], "package": n["package"]});
+        let e = install_plugin(&b.ctx, &b.host, &body).await.unwrap_err();
+        assert_eq!((e.code.as_str(), e.details.as_ref().map(|d| d["reason"].clone())), ("consent_declined", Some(json!("permissions_added"))));
+        assert_eq!(update_failed(&b.ctx, &b.host, FX, &chat, &e.message).unwrap(), json!({"ok": true}));
+        let (text, failed) = last_notice(&b.ctx, &chat);
+        assert_eq!(text, "Fixture update failed · still on 1.0.0");
+        assert_eq!(failed, json!({"kind": "app_update_failed", "id": FX, "title": "Fixture", "version": "1.0.0", "reason": "this update adds permissions the user has not approved"}));
+        assert_eq!(update_failed(&b.ctx, &b.host, FX, "t404", "x").unwrap_err().code, "not_found");
+        assert_eq!(listed(&b.host)["version"], "1.1.0");
+
+        // the card's Install, with the added access approved: installed, and no update left
+        let mut approved = body.clone();
+        approved["approve_permissions"] = json!(true);
+        let mut events = b.host.events();
+        let r = install_plugin(&b.ctx, &b.host, &approved).await.unwrap();
+        assert_eq!((r["ok"].clone(), r["updated"].clone()), (json!(true), json!(true)), "{r}");
+        assert_eq!(b.host.row(FX).unwrap().version, "1.1.0");
+        assert_eq!(listed(&b.host), Value::Null);
+        let mut last = Value::Null;
+        while let Ok(e) = events.try_recv() {
+            last = e;
+        }
+        assert_eq!((last["state"].clone(), last["update"].clone()), (json!("running"), Value::Null));
+        assert_eq!(again.update_of(FX), None, "nor after a restart");
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
+        assert_eq!(review_update(&b.ctx, &b.host, FX, &chat).await.unwrap_err().code, "not_found");
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
+    }
+
+    /// A release that isn't this plugin's, isn't signed by a trusted key or
+    /// can't be read announces nothing and keeps what was known.
+    #[tokio::test]
+    async fn an_update_nobody_can_vouch_for_is_never_announced() {
+        use crate::hub::routes::host::check_updates;
+        let b = bed_in("update-bad", HostClock::system()).await;
+        publish_pkg(&b.files, &b.base, "v1.0.0", |_| {});
+        latest(&b.files, "v1.0.0");
+        accounts_config(&b, &Arc::new(Mutex::new(Vec::new())));
+        install_pkg(&b, "v1.0.0").await;
+        // signed, but tampered with after: plugin.json no longer verifies
+        publish_1_1(&b);
+        {
+            let mut f = b.files.lock().unwrap();
+            let body = &mut f.get_mut("/obj/v1.1.0/plugin.json").unwrap().2;
+            let mut p: Value = serde_json::from_slice(body).unwrap();
+            p["buwiz"]["version"] = json!("9.0.0");
+            *body = p.to_string().into_bytes();
+        }
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
+        assert_eq!(b.host.update_of(FX), None);
+        // a good one is known, then GitHub is unreachable: it stays known
+        publish_1_1(&b);
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 1);
+        b.files.lock().unwrap().remove("/repos/o/r/releases/latest");
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 0);
+        assert_eq!(b.host.update_of(FX).unwrap()["version"], "1.1.0");
+        // the release goes back to the installed version (pulled): the signal goes
+        latest(&b.files, "v1.0.0");
+        assert_eq!(check_updates(&b.ctx, &b.host).await, 1);
+        assert_eq!(b.host.update_of(FX), None);
+        b.host.stop_all().await;
+        let _ = std::fs::remove_dir_all(&b.dir);
     }
 
     fn token_answer(files: &Files, status: u16, body: Value) {

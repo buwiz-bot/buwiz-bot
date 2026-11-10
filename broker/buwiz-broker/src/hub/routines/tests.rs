@@ -78,6 +78,7 @@ impl Fake {
             created_at: 1,
             package: None,
             skills: "[]".into(),
+            source: None,
         };
         let gws = row(GWS, "gws", "Google Workspace", json!([]), vec![tool("gws_search_mail", true), tool("gws_read_mail", true)]);
         let fx = row(FX, "fx", "Fixture", fx_routines, vec![tool("fx_echo", false), tool("fx_search", true), tool("fx_query", false)]);
@@ -949,6 +950,7 @@ async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
             "plugin_pub",
             "first_party",
             "manifest_sha256",
+            "update",
             "apps",
             "commands",
             "scopes",

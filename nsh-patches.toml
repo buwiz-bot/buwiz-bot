@@ -11,8 +11,9 @@
 [[topic]]
 branch = "pr/macos-press-stops-momentum"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1511
+status = "open"
+note = "a press stops the momentum a trackpad flick left running; native check tests/native/press_momentum.rs"
 
 [[topic]]
 branch = "pr/gpui-agent"
@@ -24,8 +25,9 @@ note = "upstream declined #449 on 2026-10-27 (\"not ready to accept this feature
 [[topic]]
 branch = "pr/macos-embedded-scroll"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1515
+status = "open"
+note = "an AppView in a host's view passes on scrolls it cannot use (no movable scroll view under the pointer), so the Bot's page scrolls over a mini app's card; upstream version also uses input::event_root; native check tests/native/embedded_scroll.rs"
 
 [[topic]]
 branch = "pr/perf-jank-log"
@@ -51,7 +53,8 @@ status = "local"
 branch = "pr/core-open-url"
 kind = "feature"
 pr = 0
-status = "local"
+status = "merged"
+note = "superseded by upstream's UrlScheme (#1034, next_url_scheme_open; the macOS delegate takes application:openURLs:): Buwiz Bot listens there"
 
 [[topic]]
 branch = "pr/macos-shown-scale"
@@ -69,7 +72,8 @@ status = "local"
 branch = "pr/macos-link-cursor"
 kind = "feature"
 pr = 0
-status = "local"
+status = "merged"
+note = "superseded upstream: the link hand by over_link, the copy from an input by #1410"
 
 [[topic]]
 branch = "pr/keymap-claim-menu-keys"
@@ -81,7 +85,8 @@ status = "local"
 branch = "pr/core-handler-aliases"
 kind = "fix"
 pr = 0
-status = "local"
+status = "buwiz-only"
+note = "React Native's handler names (onChangeText, onSubmitEditing, onPressIn, onPressOut) and onChangeText's bare text: upstream treats React Native as a reference, not an API to match (AGENTS.md, docs/dev/api-naming.md), so this stays ours"
 
 [[topic]]
 branch = "pr/macos-pause-embedded"
@@ -92,27 +97,29 @@ status = "local"
 [[topic]]
 branch = "pr/macos-detach-subtree"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1513
+status = "open"
+note = "a subtree a batch deletes leaves the window with its root, in one removeFromSuperview; upstream version still detaches modals and header items on their own; native check deleted_subtree in tests/native/mount.rs"
 
 [[topic]]
 branch = "pr/macos-cursor-on-change"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1512
+status = "open"
+note = "the cursor is set only when it changes as the mouse moves: with a customized pointer each NSCursor set costs ~10 ms; unit test input::tests::the_cursor_is_set_only_when_it_changes"
 
 [[topic]]
 branch = "pr/macos-shot-video"
 kind = "fix"
 pr = 0
-status = "local"
-note = "web views already show in cacheDisplay shots on macOS 26; only video was blank"
+status = "merged"
+note = "superseded by #1160: shots are the window server's composite, videos included (only the in-process fallback still draws them black). Before: web views already showed in cacheDisplay shots on macOS 26; only video was blank"
 
 [[topic]]
 branch = "pr/sandbox-desktop-homedir"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1499
+status = "open"
 note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Buwiz Bot's mini apps)"
 
 [[topic]]
@@ -166,6 +173,7 @@ branch = "pr/macos-launch-without-activation"
 kind = "feature"
 pr = 0
 status = "local"
+note = "upstream's AppOptions::background is no substitute: a BackgroundOnly app has no window AeroSpace manages, which scripts/buwiz-test needs"
 
 [[topic]]
 branch = "pr/macos-canvas-typeset-cache"
@@ -192,15 +200,15 @@ note = "stacked on pr/perf-jank-log: the jank line names text and canvas drawing
 branch = "pr/macos-revisit-cache"
 kind = "fix"
 pr = 0
-status = "local"
-note = "stacked on pr/macos-draw-ahead: views put off out of sight keep their rectangle in their scroll view; a frame no longer walks each one's ancestors"
+status = "merged"
+note = "superseded by upstream's sight module (#895 and the move counter): a revisit pass resolves each ancestor once and runs only when views moved. Before: stacked on pr/macos-draw-ahead: views put off out of sight keep their rectangle in their scroll view; a frame no longer walks each one's ancestors"
 
 [[topic]]
 branch = "pr/macos-pace-mounts"
 kind = "fix"
-pr = 0
-status = "local"
-note = "stacked on pr/macos-revisit-cache: a batch making hundreds of views out of sight is applied over frames, what shows at once"
+pr = 1500
+status = "open"
+note = "a batch making hundreds of views out of sight is applied over frames, what shows at once; on upstream main alone, deciding what shows with crate::sight (it was stacked on pr/macos-revisit-cache's clip.rs, which upstream's sight replaced)"
 
 [[topic]]
 branch = "pr/macos-jank-commit-time"
@@ -227,6 +235,14 @@ note = "The Agent Hub: gpui-agent-server splits the listener off the in-process 
 [[topic]]
 branch = "pr/macos-web-file-url"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1496
+status = "open"
 note = "a file:// source loads by loadFileURL, reading its own folder only, and that web view may navigate to that file and no other: the viewer's PDF of a local copy was blank"
+
+[[topic]]
+branch = "buwiz-port/upstream-macos"
+kind = "fix"
+pr = 0
+status = "buwiz-only"
+base = "af7e18c2984f26b929081e1ac6af98ba8d78c705"
+note = "integration fixes no old topic base can hold: the gpui-agent stack's synth gating and role names against upstream's newer macOS code; fold into pr/gpui-agent when the stack is rebased onto upstream"
