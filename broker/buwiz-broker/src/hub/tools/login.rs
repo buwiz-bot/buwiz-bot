@@ -843,11 +843,14 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
     }
     let (state, outcomes, extra) = match &fill {
         Fill::Filled { outcomes, pressed } => {
+            // the card says what happened, step by step
             let note = match pressed {
-                Pressed::NeedsConfirm(label) => Some(format!("The page asks you to confirm \"{label}\": press it yourself on the screen.")),
-                Pressed::Failed(why) => Some(format!("Return wasn't pressed: {why}")),
-                Pressed::Uncertain(why) => Some(format!("{why} {MAYBE_PRESSED}")),
-                _ => None,
+                _ if form.types_only_first_field() => format!("Typed the first step ({}); the rest is for the page that comes next.", form.fields[0].label),
+                Pressed::NeedsConfirm(label) => format!("Typed. The page asks you to confirm \"{label}\": press it yourself on the screen."),
+                Pressed::Failed(why) => format!("Typed, but Return wasn't pressed: {why}"),
+                Pressed::Uncertain(why) => format!("Typed. {why} {MAYBE_PRESSED}"),
+                Pressed::No => "Typed. Return is left to you, or to the AI once it has looked.".to_owned(),
+                Pressed::Yes => "Typed, and Return was pressed.".to_owned(),
             };
             ("submitted", outcomes.clone(), json!({"pressed": matches!(pressed, Pressed::Yes), "note": note}))
         }
@@ -865,7 +868,10 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
     let mut answer = json!({"ok": true, "notice": n});
     // a typed login that went in may be saved on the Mac: the app has the password, this sends
     // only where and as whom
-    if !saved && state == "submitted" && form.has_secret() {
+    // only a login typed in full, every secret of it, and not one whose Return may have gone twice
+    let whole = matches!(&fill, Fill::Filled { pressed, .. } if !matches!(pressed, Pressed::Uncertain(_)))
+        && form.fields.iter().filter(|f| f.is_secret()).all(|f| outcomes.iter().any(|o| o.id == f.id && o.filled));
+    if !saved && whole && form.has_secret() {
         let username = form.fields.iter().filter(|f| !f.is_secret()).find_map(|f| shared.get(&f.id)).cloned();
         answer["offerSave"] = json!({"origin": form.site, "username": username});
     }

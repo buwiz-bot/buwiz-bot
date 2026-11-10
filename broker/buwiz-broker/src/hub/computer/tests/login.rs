@@ -658,3 +658,30 @@ async fn a_return_whose_answer_is_lost_may_have_been_pressed_and_is_not_pressed_
     assert!(reply["notice"]["note"].as_str().unwrap().contains("Return may have been pressed"), "{reply}");
     assert_eq!(b.mock.calls().iter().filter(|c| c.contains(" key refused") || c.contains("act key")).count(), 1, "pressed once: {:?}", b.mock.calls());
 }
+
+#[tokio::test]
+async fn only_a_login_typed_in_full_is_offered_for_saving_and_the_card_says_each_step() {
+    let b = login_bed("login-offer");
+    awake(&b, &b.ann.0).await;
+    // a stepped card: its first step is typed, and nothing is offered
+    let mut input = card_input();
+    input["samePage"] = json!(false);
+    input["submit"] = json!(false);
+    let (card, call) = asked(&b, input).await;
+    let (_, reply) = submit(&b, &card, values(), false).await;
+    call.await.unwrap();
+    assert!(reply.get("offerSave").is_none(), "{reply}");
+    assert_eq!(reply["notice"]["note"], "Typed the first step (Email); the rest is for the page that comes next.");
+    // a Return that may have gone: no offer either
+    *b.mock.browser_refusal.lock().unwrap() = Some(("key".into(), 504, "browser_timeout".into()));
+    let (card, call) = asked(&b, card_input()).await;
+    let (_, reply) = submit(&b, &card, values(), false).await;
+    call.await.unwrap();
+    assert!(reply.get("offerSave").is_none(), "{reply}");
+    // typed in full, Return pressed: offered, and the card says so
+    let (card, call) = asked(&b, card_input()).await;
+    let (_, reply) = submit(&b, &card, values(), false).await;
+    call.await.unwrap();
+    assert_eq!(reply["offerSave"]["origin"], SITE);
+    assert_eq!(reply["notice"]["note"], "Typed, and Return was pressed.");
+}
