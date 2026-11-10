@@ -1312,7 +1312,9 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution, _local_paint:
     drop_held(&key);
     forget_secrets(&spec, loc);
     let mut v = collapsed(&spec, &key, r);
-    if r == FormResolution::FillFailed && spec.has_entry_id() {
+    // the broker's card is done once it settles: the run has gone on, and a fill that may have
+    // typed something isn't retried blind. Its note says what to do; the AI may raise a new card
+    if r == FormResolution::FillFailed && spec.has_entry_id() && spec.chat.is_empty() {
         let (s1, k1, s2, k2) = (spec.clone(), key.clone(), spec.clone(), key.clone());
         v = v.child(
             view()

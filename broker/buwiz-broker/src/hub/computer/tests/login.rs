@@ -286,14 +286,20 @@ async fn the_boxs_refusals_are_plain_sentences_with_nothing_of_the_box_in_them()
     submit(&b, &card, values(), false).await;
     assert!(words(&call.await.unwrap()).contains("filled into the page"), "a stale ref is tried again from a fresh snap");
 
-    for (code, status, words_) in [("pressed_other", 409, "landed on another part"), ("browser_timeout", 504, "didn't answer in time"), ("domain_not_allowed", 403, "isn't on shop.example"), ("action_refused", 422, "wouldn't take the typing")] {
+    for (code, status, words_) in [("pressed_other", 409, "landed on another part"), ("browser_timeout", 504, "didn't answer in time"), ("domain_not_allowed", 403, "isn't on shop.example"), ("action_refused", 422, "wouldn't take the typing"), ("busy", 429, "was busy")] {
         b.mock.typed.lock().unwrap().clear();
         *b.mock.browser_refusal.lock().unwrap() = Some(("type".into(), status, code.into()));
         let (card, call) = asked(&b, card_input()).await;
         submit(&b, &card, values(), false).await;
         let said = words(&call.await.unwrap());
         assert!(said.contains(words_) && !said.contains("mock "), "{code}: {said}");
-        assert_eq!(login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap()["state"], "fill_failed", "{code}");
+        let settled = login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap();
+        assert_eq!(settled["state"], "fill_failed", "{code}");
+        // a type that went out and wasn't answered may have landed: both are told so
+        let maybe = matches!(code, "pressed_other" | "browser_timeout");
+        assert_eq!(said.contains(login::MAYBE_TYPED), maybe, "{code}: {said}");
+        assert_eq!(settled["uncertain"], maybe, "{code}: {settled}");
+        assert_eq!(settled["note"].as_str().unwrap().contains("may have been typed"), maybe, "{code}");
     }
 
     // no browser on a pipe
@@ -512,3 +518,4 @@ async fn a_hand_over_that_fails_leaves_the_card_open_and_says_why() {
     }
     assert_eq!(words(&call.await.unwrap()), login::HANDED_BACK);
 }
+

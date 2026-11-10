@@ -382,3 +382,20 @@ fn a_chip_or_a_card_never_runs_a_builtin_and_typed_it_does() {
     assert!(on(&mut app, || crate::computer::wants_to_drive("nova")), "typed, it takes over");
     assert_eq!(heard(&seen, "/chat").len(), 6, "neither went to the AI");
 }
+
+/// A fill that may have typed something says so, and offers no blind retry.
+#[test]
+fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {
+    if !in_child("a_fill_that_may_have_typed_says_so_and_offers_no_retry") {
+        return;
+    }
+    let note = "The browser didn't answer in time. A value may have been typed into the page before it stopped: take a screenshot before anything else.";
+    let (mut app, seen) = start((200, json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "fill_failed", "uncertain": true, "note": note}})));
+    with_card(&mut app);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Not filled") && has_text(&app, "may have been typed"), "{:?}", app.texts());
+    assert!(!app.has("Try again") && !app.has("Log in"), "no blind retry: {:?}", app.texts());
+}

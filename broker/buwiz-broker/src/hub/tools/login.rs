@@ -332,8 +332,10 @@ pub struct Outcome {
 pub enum Fill {
     /// nothing was typed, and the card stays open for another try (OpenGrok's 403 `wrong-page`)
     Refused { code: &'static str, message: String },
-    /// it stopped: what was typed before is in `outcomes`
-    Failed { outcomes: Vec<Outcome>, reason: String },
+    /// it stopped: what was typed before is in `outcomes`. `uncertain`: the last type went out and
+    /// its answer didn't say how it went (a timeout, a broken answer, a press on another element),
+    /// so a value may be in the page
+    Failed { outcomes: Vec<Outcome>, reason: String, uncertain: bool },
     Filled { outcomes: Vec<Outcome>, pressed: Pressed },
 }
 
@@ -356,11 +358,11 @@ pub async fn browser_layer(live: &Live) -> Result<(), String> {
 fn refusal_sentence(reply: &BrowserReply, site: &str) -> String {
     match reply.code().unwrap_or("") {
         "stale_ref" => "The page changed while it was being filled, so filling stopped.".to_owned(),
-        "pressed_other" => "A press landed on another part of the page than the field it was meant for, so filling stopped.".to_owned(),
+        "pressed_other" => "The typing landed on another part of the page than the field it was meant for, so filling stopped.".to_owned(),
         "domain_not_allowed" => format!("The page isn't on {site} any more, so nothing more was typed."),
         "browser_unavailable" => "No browser is open on this Bot's screen, so nothing was typed. Open the page first.".to_owned(),
         "browser_disabled" => LAYER_OFF.to_owned(),
-        "browser_timeout" => "The browser didn't answer in time. A value may have been typed: look before trying again.".to_owned(),
+        "browser_timeout" => "The browser didn't answer in time.".to_owned(),
         "busy" => "The browser was busy, so nothing more was typed. Try again.".to_owned(),
         "action_refused" => "The page wouldn't take the typing there: the field is covered, out of view or disabled.".to_owned(),
         "dialog_open" => "A dialog is open on the page, so nothing more was typed.".to_owned(),
@@ -370,6 +372,18 @@ fn refusal_sentence(reply: &BrowserReply, site: &str) -> String {
         _ => format!("The browser answered {}, so filling stopped.", reply.status),
     }
 }
+
+/// Whether a refused type may still have landed: the box ran out of time on it (`browser_timeout`,
+/// which it says of a press already sent), or pressed another element (`pressed_other`). `busy`
+/// wasn't run, `stale_ref` pressed nothing, and `target_gone` had no tab to type into.
+fn uncertain(reply: &BrowserReply) -> bool {
+    matches!(reply.code(), Some("browser_timeout" | "pressed_other")) || reply.status == 504
+}
+
+/// What the model and the card are told of a type that may have landed. The box's `type` sets a
+/// field's whole value (ultra-instinct's DOM setter), so a new card's fill of that field replaces
+/// it; a press on another element may have left a value there.
+pub const MAYBE_TYPED: &str = "A value may have been typed into the page before it stopped: take a screenshot before anything else. A new card's fill sets each field's whole value rather than adding to it, but a press that landed on another element may have left a value there.";
 
 /// The site list for every fill call: the site and the hosts under it.
 fn allow(site: &str) -> Value {
@@ -486,7 +500,7 @@ async fn front_page(live: &Live, site: &str) -> Result<(), String> {
 /// No picture is taken. `values` are by field id, this card's alone.
 pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -> Fill {
     if let Err(message) = browser_layer(live).await {
-        return Fill::Failed { outcomes: Vec::new(), reason: message };
+        return Fill::Failed { outcomes: Vec::new(), reason: message, uncertain: false };
     }
     if let Err(message) = front_page(live, &form.site).await {
         return Fill::Refused { code: "wrong-page", message };
@@ -504,16 +518,17 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
                 Ok(s) => s,
                 // nothing typed yet: the card stays open, as for the front page
                 Err(SnapErr::OffSite(host)) if i == 0 => return Fill::Refused { code: "wrong-page", message: format!("The page in front is {host}, not {}, so nothing was typed.", form.site) },
-                Err(e) => break Err(e.sentence(&form.site)),
+                Err(e) => break Err((e.sentence(&form.site), false)),
             };
             let r = match pick(&elements, field, &taken) {
                 Ok(r) => r,
-                Err(reason) => break Err(reason),
+                Err(reason) => break Err((reason, false)),
             };
             let body = json!({"ref": r, "snapshot": snapshot, "action": "type", "text": value.expose(), "allow_domains": allow(&form.site)});
+            // the type went out: a broken answer doesn't say it didn't land
             let reply = match live.provider.browser(&live.machine, &live.screen, BrowserOp::Act, &body).await {
                 Ok(r) => r,
-                Err(p) => break Err(p.sentence()),
+                Err(p) => break Err((p.sentence(), true)),
             };
             drop(body);
             if reply.ok() {
@@ -525,7 +540,7 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
             if reply.code() == Some("stale_ref") && tries == 1 {
                 continue;
             }
-            break Err(refusal_sentence(&reply, &form.site));
+            break Err((refusal_sentence(&reply, &form.site), uncertain(&reply)));
         };
         match typed {
             Ok((label, sensitive)) => {
@@ -537,9 +552,9 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -
                 }
                 last = Some(field);
             }
-            Err(reason) => {
-                log(field_log_line(field, false, value.expose().chars().count(), "not typed"));
-                return Fill::Failed { outcomes, reason };
+            Err((reason, uncertain)) => {
+                log(field_log_line(field, false, value.expose().chars().count(), if uncertain { "may have been typed" } else { "not typed" }));
+                return Fill::Failed { outcomes, reason, uncertain };
             }
         }
     }
@@ -597,7 +612,10 @@ pub fn result_text(form: &Form, fill: &Fill, shared: &BTreeMap<String, String>) 
             let shared = if shared.is_empty() { "No non-secret fields were shared.".to_owned() } else { format!("Shared fields: {}.", shared.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", ")) };
             format!("The person submitted the form \"{title}\". It was filled into the page. {pressed} {observe} {shared} {SECRET_NOTE}")
         }
-        Fill::Failed { reason, .. } => format!("The person submitted the form \"{title}\" but it could not be filled into the page: {reason} {observe} {SECRET_NOTE} Do not type secrets with computer_type."),
+        Fill::Failed { reason, uncertain, .. } => {
+            let maybe = if *uncertain { format!(" {MAYBE_TYPED}") } else { String::new() };
+            format!("The person submitted the form \"{title}\" but it could not be filled into the page: {reason}{maybe} {observe} {SECRET_NOTE} Do not type secrets with computer_type.")
+        }
         Fill::Refused { message, .. } => format!("The form \"{title}\" wasn't filled: {message}"),
     }
 }
@@ -787,7 +805,10 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
             };
             ("submitted", outcomes.clone(), json!({"pressed": matches!(pressed, Pressed::Yes), "note": note}))
         }
-        Fill::Failed { outcomes, reason } => ("fill_failed", outcomes.clone(), json!({"note": reason})),
+        Fill::Failed { outcomes, reason, uncertain } => {
+            let note = if *uncertain { format!("{reason} {MAYBE_TYPED}") } else { reason.clone() };
+            ("fill_failed", outcomes.clone(), json!({"note": note, "uncertain": uncertain}))
+        }
         Fill::Refused { .. } => unreachable!("handled above"),
     };
     let mut extra = extra;
