@@ -1115,6 +1115,15 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
     });
 }
 
+/// Where the broker's card types: its site, the Bot's screen, and Return when it presses it.
+pub(crate) fn where_words(spec: &UserFormSpec, site: &str) -> String {
+    let screen = if spec.bot_name.is_empty() { "the Bot's screen".to_owned() } else { format!("{}'s screen", spec.bot_name) };
+    // the broker's rule (`should_press_return`) when every field is filled
+    let presses = spec.submit || spec.fields.len() == 1 || (spec.same_page && spec.fields.iter().any(Field::masked));
+    let enter = if presses { ", then Return is pressed to send it" } else { "" };
+    format!("Typed into {site} on {screen}{enter}. Nothing is typed until you press {}.", spec.continue_label())
+}
+
 /// A missing route or no broker: nothing was typed, and the card says so.
 pub(crate) const NO_ROUTE: &str = "Buwiz Bot's broker didn't take this, so nothing was typed. Make sure it's running and up to date, then try again.";
 
@@ -1376,6 +1385,10 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     );
     if let Some(i) = spec.instruction.as_ref().filter(|i| !i.is_empty()) {
         v = v.child(note(i.clone()));
+    }
+    // the broker's card says plainly where it types, and whether it presses Return after
+    if let Some(site) = spec.domain.as_ref().filter(|_| !spec.chat.is_empty()) {
+        v = v.child(text(where_words(&spec, site)).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT));
     }
     if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty() || !asked.is_empty()), offered_site(&spec)) {
         let asked = asked_site(&spec).map(|named| (named, asked));

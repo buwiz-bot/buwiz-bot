@@ -519,3 +519,34 @@ async fn a_hand_over_that_fails_leaves_the_card_open_and_says_why() {
     assert_eq!(words(&call.await.unwrap()), login::HANDED_BACK);
 }
 
+#[test]
+fn the_site_is_the_domain_and_a_live_host_never_moves_it() {
+    let card = |extra: Value| {
+        let mut v = json!({"title": "t", "fields": [{"id": "a", "label": "Email"}]});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        login::sanitize(&v)
+    };
+    assert_eq!(card(json!({"domain": SITE, "liveHost": "evil.test"})).unwrap().site, SITE, "another site is ignored");
+    assert_eq!(card(json!({"domain": SITE, "liveHost": "accounts.shop.example"})).unwrap().site, SITE);
+    assert_eq!(card(json!({"domain": SITE, "liveHost": "%% not a host"})).unwrap().site, SITE, "junk doesn't void the domain");
+    assert!(card(json!({"liveHost": SITE})).unwrap_err().contains("domain"), "the site is the domain's to say");
+    let form = card(json!({"domain": SITE, "liveHost": "evil.test"})).unwrap();
+    assert_eq!(form.to_json()["domain"], SITE);
+    assert!(!form.to_json().to_string().contains("evil.test"), "the card names only the site");
+}
+
+#[tokio::test]
+async fn a_live_host_on_another_site_types_nothing_there() {
+    let b = login_bed("login-livehost");
+    awake(&b, &b.ann.0).await;
+    b.mock.set_page(Some(MockPage::sign_in("https://evil.test/login")));
+    let mut input = card_input();
+    input["liveHost"] = json!("evil.test");
+    let (card, call) = asked(&b, input).await;
+    assert_eq!(card["form"]["domain"], SITE);
+    let (status, reply) = submit(&b, &card, values(), false).await;
+    assert_eq!((status, reply["code"].as_str()), (403, Some("wrong-page")), "{reply}");
+    assert!(b.mock.typed().is_empty());
+    assert!(b.mock.calls().iter().filter(|c| c.contains(" snap ") || c.contains(" act ")).all(|c| !c.contains("evil.test")), "the allow-list is the card's site");
+    call.abort();
+}

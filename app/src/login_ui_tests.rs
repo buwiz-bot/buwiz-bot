@@ -222,6 +222,7 @@ fn a_typed_login_goes_to_the_brokers_route_and_the_save_offer_follows() {
     let (mut app, seen) = start(reply);
     with_card(&mut app);
     assert!(has_text(&app, "Sign in to Shop") && app.has("Open the screen"), "{:?}", app.texts());
+    assert!(has_text(&app, "Typed into shop.example on Nova's screen, then Return is pressed to send it. Nothing is typed until you press Log in."), "the site and Return, plainly: {:?}", app.texts());
     typed_login(&mut app);
     app.press("Log in");
     let sent = wait_for(&mut app, &seen, SUBMIT, 1);

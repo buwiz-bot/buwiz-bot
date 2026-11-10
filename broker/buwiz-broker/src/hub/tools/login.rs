@@ -163,7 +163,7 @@ pub fn def() -> Value {
                 "title": {"type": "string", "description": "Short title shown on the card, such as \"Sign in to Shop\"."},
                 "instruction": {"type": "string", "description": "What the person should do, in one line."},
                 "domain": {"type": "string", "description": "The site the sign-in page is on, as its address shows it: shop.example. Nothing is typed on another site."},
-                "liveHost": {"type": "string", "description": "The host on the screen now, when it isn't domain itself (a sign-in subdomain)."},
+                "liveHost": {"type": "string", "description": "The host on the screen now, when it's a sign-in host under domain (accounts.shop.example). It never changes the site: the fill holds to domain and the hosts under it."},
                 "challengeKind": {"type": "string", "enum": CHALLENGES, "description": "password or otp. captcha and outside_sandbox aren't forms: use computer_ask_person."},
                 "samePage": {"type": "boolean", "description": "The fields share one page (an email and a password together). Set it on every one-page card: without it only the first field is typed."},
                 "submit": {"type": "boolean", "description": "Press Return in the last field after the fill: the page's own Sign in. Set it on a one-page login card. A single field presses it on its own."},
@@ -236,8 +236,10 @@ pub fn sanitize(input: &Value) -> Result<Form, String> {
             return Err("challengeKind is password or otp".to_owned());
         }
     }
-    let site = ["liveHost", "domain"].iter().filter_map(|k| input.get(*k).and_then(Value::as_str)).find(|s| !s.trim().is_empty()).and_then(site_of);
-    let Some(site) = site else { return Err(format!("{NAME} needs the site the page is on, as domain (shop.example): nothing is typed without one")) };
+    // `domain` is the site, the one the card shows and the fill holds to. `liveHost` says nothing
+    // the page check doesn't: a host under the site already passes it, and any other is ignored, so
+    // it can never move the card to another site
+    let Some(site) = input.get("domain").and_then(Value::as_str).and_then(site_of) else { return Err(format!("{NAME} needs the site the page is on, as domain (shop.example): nothing is typed without one")) };
     let raw = input.get("fields").and_then(Value::as_array).cloned().unwrap_or_default();
     if raw.is_empty() {
         return Err(format!("{NAME} needs at least one field"));
