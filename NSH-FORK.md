@@ -74,7 +74,12 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    another (the gpui-agent stack) brings its base's commits in once.
    Merges are skipped: a topic that merges upstream `main` in carries its
    port in ordinary commits after the merge, and resolves the merge as
-   the rebuild's picks do.
+   the rebuild's picks do. Topics can add dependencies upstream's
+   `Cargo.lock` lacks, and the release builds nsh with `--locked`: the
+   rebuild adds them with `cargo metadata` (no version changes) in one
+   buwiz-only commit ("buwiz: Bring Cargo.lock in line with the merged
+   topics") and stops unless `cargo metadata --locked` passes. CI checks
+   the same on every Buwiz Bot PR.
 4. Check `buwiz-new`: point the submodule at it, build Buwiz Bot, launch it, then
    `scripts/nsh-fork rebuild --push`.
 5. Update Buwiz Bot. Done when Buwiz Bot is committed on the new `buwiz` commit and runs.

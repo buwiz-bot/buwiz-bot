@@ -19,6 +19,7 @@ Process and rules: NSH-FORK.md.
 
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -132,6 +133,27 @@ def worktree(at):
     git("worktree", "add", "-q", "--detach", str(WORKTREE), at)
 
 
+def lock_in_line():
+    """Topics merged together can add dependencies upstream's Cargo.lock
+    lacks (each topic's lock has its own), and the release builds with
+    --locked. `cargo metadata` adds what is missing and changes no
+    version; one buwiz-only commit keeps it. Fails unless --locked passes."""
+    # stable: the toolchain file's mobile targets are not needed to resolve
+    env = {**os.environ, "RUSTUP_TOOLCHAIN": "stable"}
+    meta = ["cargo", "metadata", "--format-version", "1"]
+    r = subprocess.run(meta, cwd=WORKTREE, env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
+        raise SystemExit(f"cargo metadata failed in {WORKTREE}")
+    if git("status", "--porcelain", "--", "Cargo.lock", cwd=WORKTREE):
+        git("commit", "-q", "-m", "buwiz: Bring Cargo.lock in line with the merged topics", "--", "Cargo.lock", cwd=WORKTREE)
+        print("Cargo.lock: brought in line with the merged topics (one buwiz-only commit)")
+    r = subprocess.run([*meta, "--locked"], cwd=WORKTREE, env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
+        raise SystemExit(f"Cargo.lock still does not pass --locked in {WORKTREE}")
+
+
 def rebuild(push):
     fetch()
     worktree("upstream/main")
@@ -173,6 +195,7 @@ def rebuild(push):
     if git("status", "--porcelain", cwd=WORKTREE):
         git("commit", "-qam", "buwiz: Format the lines the merged topics share", cwd=WORKTREE)
     fmt = subprocess.run(["cargo", "+nightly", "fmt", "--all", "--", "--check"], cwd=WORKTREE, capture_output=True)
+    lock_in_line()
     print(f"buwiz-new: {count('upstream/main..buwiz-new')} commits; rustfmt {'clean' if fmt.returncode == 0 else 'NOT clean'}")
     if not push:
         print(f"check it (cargo check / Buwiz Bot build) in {WORKTREE}, then: scripts/nsh-fork rebuild --push")
