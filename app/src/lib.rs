@@ -185,16 +185,20 @@ pub fn App() -> impl IntoElement {
     // Other URLs are ignored here — the router would hand them to the
     // system, which for `buwiz://` sends them straight back.
     links::make_view_dir();
-    on_open_url(|url| {
-        let thread = url.strip_prefix("buwiz://chat/").map(|r| r.split('?').next().unwrap_or(""));
-        if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty())
-            || url.starts_with("buwiz://plugin/")
-            || url.starts_with("buwiz://app/")
-            || url.starts_with("buwiz://view")
-        {
-            live::store().open_os_link(url);
-        } else {
-            log::warn!("rox: ignoring opened URL {url}");
+    spawn(async {
+        loop {
+            let url = next_url_scheme_open().await;
+            let url = url.as_str();
+            let thread = url.strip_prefix("buwiz://chat/").map(|r| r.split('?').next().unwrap_or(""));
+            if thread.is_some_and(|t| !t.trim_end_matches('/').is_empty())
+                || url.starts_with("buwiz://plugin/")
+                || url.starts_with("buwiz://app/")
+                || url.starts_with("buwiz://view")
+            {
+                live::store().open_os_link(url);
+            } else {
+                log::warn!("rox: ignoring opened URL {url}");
+            }
         }
     });
 

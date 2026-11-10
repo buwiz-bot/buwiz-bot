@@ -920,7 +920,7 @@ pub(crate) fn bindings() -> impl IntoElement {
                     // the innermost open scope's command owns the key
                     let Some(owner) = owners(k, &open) else { continue };
                     bound.insert(canon.clone());
-                    let options = KeyOptions { when: owner.when, repeat: owner.repeat };
+                    let options = KeyOptions { when: owner.when, repeat: owner.repeat, ..Default::default() };
                     let open2 = open.clone();
                     let fire = move |_: &str| {
                         if let Some(c) = owners(k, &open2) {
@@ -955,7 +955,7 @@ pub(crate) fn choice_keys() -> impl IntoElement {
     dynamic(move || {
         for index in 0..options.get() {
             let Some(letter) = crate::cards::choice::choice_letter(index) else { continue };
-            let options = KeyOptions { when: When::NotEditing, repeat: false };
+            let options = KeyOptions { when: When::NotEditing, repeat: false, ..Default::default() };
             on_key_with(&letter.to_ascii_lowercase().to_string(), options, move |_| {
                 crate::cards::choice::answer_keyed(index)
             });

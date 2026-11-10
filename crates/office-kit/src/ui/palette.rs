@@ -23,6 +23,19 @@ pub const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
 }
 
+/// Tailwind classes giving `color` to `utility` (`bg`, `text`, ...) under
+/// `variant` (`focus:`, `group-focus:`, `""` for none), light and dark: the
+/// palette's own values as arbitrary colors. A part whose state only a
+/// class can style (a select's row: `focus:`, `selected:`, `group-*:`)
+/// takes its colors from here, so they follow this palette.
+pub fn class(variant: &str, utility: &str, color: AdaptiveColor) -> String {
+    format!(
+        "{variant}{utility}-[{}] dark:{variant}{utility}-[{}]",
+        color.light.to_hex(),
+        color.dark.to_hex()
+    )
+}
+
 /// `--doc-surface`: #fff / #1f1f1f.
 pub const SURFACE: AdaptiveColor = tone(hsla(0.0, 0.0, 1.0, 1.0), hsla(0.0, 0.0, 0.1216, 1.0));
 /// `--doc-card`: #f8fbff / #2d2d2d.

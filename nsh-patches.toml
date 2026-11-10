@@ -51,7 +51,8 @@ status = "local"
 branch = "pr/core-open-url"
 kind = "feature"
 pr = 0
-status = "local"
+status = "merged"
+note = "superseded by upstream's UrlScheme (#1034, next_url_scheme_open; the macOS delegate takes application:openURLs:): Buwiz Bot listens there"
 
 [[topic]]
 branch = "pr/macos-shown-scale"
@@ -69,7 +70,8 @@ status = "local"
 branch = "pr/macos-link-cursor"
 kind = "feature"
 pr = 0
-status = "local"
+status = "merged"
+note = "superseded upstream: the link hand by over_link, the copy from an input by #1410"
 
 [[topic]]
 branch = "pr/keymap-claim-menu-keys"
@@ -105,8 +107,8 @@ status = "local"
 branch = "pr/macos-shot-video"
 kind = "fix"
 pr = 0
-status = "local"
-note = "web views already show in cacheDisplay shots on macOS 26; only video was blank"
+status = "merged"
+note = "superseded by #1160: shots are the window server's composite, videos included (only the in-process fallback still draws them black). Before: web views already showed in cacheDisplay shots on macOS 26; only video was blank"
 
 [[topic]]
 branch = "pr/sandbox-desktop-homedir"
@@ -166,6 +168,7 @@ branch = "pr/macos-launch-without-activation"
 kind = "feature"
 pr = 0
 status = "local"
+note = "upstream's AppOptions::background is no substitute: a BackgroundOnly app has no window AeroSpace manages, which scripts/buwiz-test needs"
 
 [[topic]]
 branch = "pr/macos-canvas-typeset-cache"
@@ -192,15 +195,15 @@ note = "stacked on pr/perf-jank-log: the jank line names text and canvas drawing
 branch = "pr/macos-revisit-cache"
 kind = "fix"
 pr = 0
-status = "local"
-note = "stacked on pr/macos-draw-ahead: views put off out of sight keep their rectangle in their scroll view; a frame no longer walks each one's ancestors"
+status = "merged"
+note = "superseded by upstream's sight module (#895 and the move counter): a revisit pass resolves each ancestor once and runs only when views moved. Before: stacked on pr/macos-draw-ahead: views put off out of sight keep their rectangle in their scroll view; a frame no longer walks each one's ancestors"
 
 [[topic]]
 branch = "pr/macos-pace-mounts"
 kind = "fix"
 pr = 0
 status = "local"
-note = "stacked on pr/macos-revisit-cache: a batch making hundreds of views out of sight is applied over frames, what shows at once"
+note = "a batch making hundreds of views out of sight is applied over frames, what shows at once; on upstream main alone, deciding what shows with crate::sight (it was stacked on pr/macos-revisit-cache's clip.rs, which upstream's sight replaced)"
 
 [[topic]]
 branch = "pr/macos-jank-commit-time"
@@ -230,3 +233,11 @@ kind = "fix"
 pr = 0
 status = "local"
 note = "a file:// source loads by loadFileURL, reading its own folder only, and that web view may navigate to that file and no other: the viewer's PDF of a local copy was blank"
+
+[[topic]]
+branch = "buwiz-port/upstream-macos"
+kind = "fix"
+pr = 0
+status = "buwiz-only"
+base = "af7e18c2984f26b929081e1ac6af98ba8d78c705"
+note = "integration fixes no old topic base can hold: the gpui-agent stack's synth gating and role names against upstream's newer macOS code; fold into pr/gpui-agent when the stack is rebased onto upstream"
