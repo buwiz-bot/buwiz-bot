@@ -677,9 +677,13 @@ impl Computers {
             }
         }
         let Ok(found) = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await else { return Vec::new() };
+        // a computer being made has its volumes before its row: read after Docker answered, the
+        // ones being made first, so a make that ends meanwhile is in its row by the second read
+        let making: HashSet<String> = self.being_made.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Ok(now) = Self::try_ids_where(ctx, "1=1") else { return Vec::new() };
         found
             .into_iter()
-            .filter(|l| !boxes.contains(&l.owner) && !l.id.as_ref().is_some_and(|id| ids.contains(id)))
+            .filter(|l| !boxes.contains(&l.owner) && !l.id.as_ref().is_some_and(|id| ids.contains(id) || now.contains(id) || making.contains(id)))
             .map(|l| match l.id {
                 Some(id) => json!({"name": l.name, "id": id}),
                 None => json!({"name": l.name}),

@@ -287,6 +287,19 @@ impl Drop for Making<'_> {
     }
 }
 
+/// `id` in [`Computers::being_made`] until it's dropped: by then [`Computers::make`] has written
+/// its row, or made nothing that needs one.
+struct BeingMade<'a> {
+    computers: &'a Computers,
+    id: String,
+}
+
+impl Drop for BeingMade<'_> {
+    fn drop(&mut self) {
+        self.computers.being_made.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+    }
+}
+
 /// The hub's computers, in `ctx.ext`.
 pub struct Computers {
     /// where new computers are made, and the provider of each kind
@@ -312,6 +325,9 @@ pub struct Computers {
     /// one make or recovery at a time for each Bot with no computer and each computer whose record
     /// is lost ([`Computers::making`]): two clicks mustn't make two computers
     making: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// the ids [`Computers::make`] is making: its provider makes parts (Docker's volumes) before
+    /// its row is written, and those parts are no leftovers ([`Computers::docker_leftovers`])
+    being_made: Mutex<HashSet<String>>,
     /// which models see images, as opencodex says, and when it said
     sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
     /// held while a job runs
@@ -337,7 +353,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), making: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
+        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), making: Mutex::default(), being_made: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
     }
 
     /// Makes the homes' providers with `factory` (tests).
@@ -511,6 +527,8 @@ impl Computers {
     /// A new computer, asleep, with no Bot at it yet.
     async fn make(&self, ctx: &HubCtx, bot: &str) -> Result<String, Problem> {
         let id = format!("cmp_{}", buwiz_computer::random_hex(8)?);
+        self.being_made.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone());
+        let _being_made = BeingMade { computers: self, id: id.clone() };
         let dir = Self::dir(ctx, &id);
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
         let spec = Spec { id: id.clone(), dir: dir.clone() };

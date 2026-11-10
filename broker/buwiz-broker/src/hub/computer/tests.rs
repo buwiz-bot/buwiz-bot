@@ -418,6 +418,36 @@ async fn files_left_by_a_docker_computer_thats_gone_are_listed_and_a_known_ones_
 }
 
 #[tokio::test]
+async fn a_computer_being_made_has_no_leftovers() {
+    let b = bed("leftovers-making");
+    b.mock.create_ms.store(300, Ordering::SeqCst);
+    let computers = b.computers.clone();
+    let ctx = b.ctx.clone();
+    let ann = b.ann.0.clone();
+    let click = tokio::spawn(async move { computers.click(&ctx, &ann).await });
+    let mut id = None;
+    for _ in 0..400 {
+        id = b.computers.being_made.lock().unwrap().iter().next().cloned();
+        if id.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let id = id.expect("a make started");
+    assert!(Computers::ids_where(&b.ctx, "1=1").is_empty(), "its row isn't written yet");
+    // its volumes are there before its row, as Docker's create makes them
+    *b.mock.leftovers.lock().unwrap() = vec![buwiz_computer::Leftover { name: "c2-0a1b2c3d-home".into(), id: Some(id.clone()), owner: "c2-0a1b2c3d".into() }];
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]), "a computer being made isn't gone");
+    click.await.unwrap().unwrap();
+    assert!(b.computers.being_made.lock().unwrap().is_empty());
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]), "and once made, its row says it's here");
+}
+
+#[tokio::test]
 async fn a_join_that_fails_leaves_no_seat() {
     let b = bed("join");
     let id = awake(&b, &b.ann.0).await;
