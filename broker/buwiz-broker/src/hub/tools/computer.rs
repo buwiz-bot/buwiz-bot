@@ -233,7 +233,9 @@ pub async fn prompt(run: &Run) -> String {
         format!("{REMOTE_WORDS} It has no screen: computer_run, computer_job_start, computer_job_status, computer_job_stop, computer_read_file and computer_write_file work there, and nothing else does.")
     } else if sees(run).await {
         let remote = if remote_at(run).is_some() { REMOTE_WORDS } else { "" };
-        let person = if remote.is_empty() { " When a page asks for a site login, open it, look, and call request_user_form, then wait: you never receive a password or a code, and must never type one with computer_type or ask for one in chat. Filling is not signing in, so look afterwards. For a captcha, a code sent to their phone or an odd page, use computer_ask_person so they finish it on your screen." } else { " When a page needs a person, such as a sign-in, say so in chat rather than asking for a password." };
+        // what it says of a person matches what's offered: a sign-in card and a hand-over are only
+        // for a turn with someone there (`defs_for`)
+        let person = if !asking::present(&run.turn) { " Nobody can answer a card in this turn, so a page that needs a sign-in, a code or a person's hand waits: say in your report what needs them, and never type or ask for a password." } else if remote.is_empty() { " When a page asks for a site login, open it, look, and call request_user_form, then wait: you never receive a password or a code, and must never type one with computer_type or ask for one in chat. Filling is not signing in, so look afterwards. For a captcha, a code sent to their phone or an odd page, use computer_ask_person so they finish it on your screen." } else { " When a page needs a person, such as a sign-in, say so in chat rather than asking for a password." };
         format!("{remote}\n\nYour computer: the screen is for acting. To read a page or a file, use a text route where one exists (fetch_url, computer_read_file, computer_run), because each screenshot is costly and only the latest few stay with you.{person}")
     } else {
         format!("\n\nYour computer: if asked to use it, say this in your own words: {BLIND}")

@@ -565,3 +565,19 @@ async fn a_submit_with_every_field_empty_types_nothing_and_says_so() {
     assert_eq!(reply["notice"]["note"], login::EMPTY_NOTE);
     assert!(acts(&b).is_empty() && b.mock.typed().is_empty());
 }
+
+#[tokio::test]
+async fn the_prompt_names_the_card_and_the_hand_over_only_when_they_are_offered() {
+    let b = login_bed("login-prompt");
+    awake(&b, &b.ann.0).await;
+    let r = run(&b, &b.ann.1, None);
+    let said = tools::prompt(&r).await;
+    assert!(said.contains(login::NAME) && said.contains(tools::ASK_PERSON), "{said}");
+    set(&b, &b.ann.0, tools::ROUTINES_KEY, "on");
+    let routine = run(&b, &b.ann.1, Some("rt_1"));
+    let offered_now = offered(&routine).await;
+    assert!(!offered_now.iter().any(|n| n == login::NAME || n == tools::ASK_PERSON), "{offered_now:?}");
+    let said = tools::prompt(&routine).await;
+    assert!(!said.is_empty() && !said.contains(login::NAME) && !said.contains(tools::ASK_PERSON), "{said}");
+    assert!(said.contains("Nobody can answer a card"), "{said}");
+}
