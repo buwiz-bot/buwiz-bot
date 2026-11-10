@@ -29,8 +29,13 @@ fn in_child(name: &str) -> bool {
 }
 
 fn say(viewer: &str, takeover: bool) {
-    let takeover = takeover.then(|| Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125 });
+    let takeover = takeover.then(|| Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125, heard: std::time::Instant::now() });
     crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: viewer.to_owned(), takeover, ..Status::default() });
+}
+
+thread_local! {
+    /// Whether a timer moved the time left when "check timer" was pressed.
+    static TIMER: Signal<bool> = Owner::detached().run(|| signal(false));
 }
 
 #[component]
@@ -41,8 +46,15 @@ fn Bar() -> impl IntoElement {
         .child(view().label("driving").w(px(40.0)).h(px(20.0)).on_press(|| say("drive", false)))
         .child(view().label("handed").w(px(40.0)).h(px(20.0)).on_press(|| say("drive", true)))
         .child(view().label("another bot").w(px(40.0)).h(px(20.0)).on_press(|| crate::computer::show_status("b2", Status { viewer: "drive".to_owned(), ..Status::default() })))
+        .child(view().label("heard now").w(px(40.0)).h(px(20.0)).on_press(|| {
+            let takeover = Takeover { reason: "Sign in to the shop".to_owned(), seconds_left: 125, heard: std::time::Instant::now() };
+            crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: "drive".to_owned(), takeover: Some(takeover), ..Status::default() });
+        }))
+        .child(crate::computer::mode_line("computer:b1"))
         .child(crate::computer::drive_button("computer:b1"))
         .child(text(|| format!("probe ready=1 wants={}", crate::computer::wants_to_drive("b1"))).text_size(px(8.0)))
+        .child(view().label("check timer").w(px(40.0)).h(px(20.0)).on_press(|| TIMER.with(|t| t.set(crate::computer::counting_down()))))
+        .child(text(|| format!("timer={}", TIMER.with(|t| t.get()))).text_size(px(8.0)))
 }
 
 fn start() -> Headless {
@@ -80,6 +92,105 @@ fn the_bar_takes_control_gives_it_up_and_hands_back() {
 
     app.press("another bot");
     assert!(shows(&mut app, "Take control"), "another Bot's viewer says nothing of this one: {:?}", app.texts());
+}
+
+/// A hand-over's time counts down between the 2 s polls, from what the last one said: here no
+/// poll comes after the first, and the time still moves.
+#[test]
+fn a_hand_overs_time_counts_down_between_polls() {
+    if !in_child("a_hand_overs_time_counts_down_between_polls") {
+        return;
+    }
+    let mut app = start();
+    app.press("watching");
+    app.press("check timer");
+    assert!(shows(&mut app, "timer=false"), "a timer runs with no hand-over shown");
+    app.press("heard now");
+    assert!(shows(&mut app, "Sign in to the shop · 2:05 left"), "{:?}", app.texts());
+    app.press("check timer");
+    assert!(shows(&mut app, "timer=true"), "no timer while a hand-over shows");
+    app.pump(Duration::from_millis(1300));
+    let line = app.texts().iter().find(|t| t.starts_with("Sign in to the shop · ")).map(|t| (*t).to_owned()).unwrap_or_default();
+    assert!(["2:04", "2:03", "2:02"].iter().any(|t| line == format!("Sign in to the shop · {t} left")), "a second on, with no poll: {line:?}");
+    app.press("driving");
+    app.press("check timer");
+    assert!(shows(&mut app, "timer=false"), "the timer outlived the hand-over");
+}
+
+/// The words the broker gave for a hand-over: longer than the bar has room for.
+const LONG: &str = "Sign in to the shop with the account the owner uses for every order, then pass the code it sends to the phone, and stay on the page until it says you're in, so I can go on with the cart";
+
+/// A computer full screen, as the window shows it.
+#[component]
+fn Full() -> impl IntoElement {
+    let _ = crate::live::store();
+    view()
+        .size_full()
+        .child(view().label("open").w(px(40.0)).h(px(20.0)).on_press(|| {
+            crate::live::store().open_mini_token(&crate::computer::key_of("b1"), "Ann's computer", "");
+            let takeover = Takeover { reason: LONG.to_owned(), seconds_left: 125, heard: std::time::Instant::now() };
+            crate::computer::show_status("b1", Status { state: "awake".to_owned(), viewer: "drive".to_owned(), takeover: Some(takeover), ..Status::default() });
+        }))
+        .child(text("probe ready=1").text_size(px(8.0)))
+        .child(view().flex_1().child(crate::mini::full_layer()))
+        // the reason with no line limit, as wide as the row's text has room for: what it would take
+        .child(view().absolute().left(px(16.0)).top(px(0.0)).w(px(668.0)).child(text(LONG).text_size(px(12.0))))
+}
+
+/// The frame of `id` in the window, by the frames of what holds it.
+fn in_window(app: &Headless, mut id: nsh_core::NodeId) -> (f32, f32, f32, f32) {
+    let f = app.frames[&id];
+    let (mut x, mut y) = (0.0, 0.0);
+    loop {
+        let at = app.frames.get(&id).map_or((0.0, 0.0), |f| (f.origin.x.0, f.origin.y.0));
+        x += at.0;
+        y += at.1;
+        match app.parents.get(&id) {
+            Some(p) => id = *p,
+            None => break,
+        }
+    }
+    (x, y, f.size.width.0, f.size.height.0)
+}
+
+/// A long reason has a row of its own under the bar, one line the window's width, and so never
+/// runs under the centred "Ann's computer". The bar holds the title and its buttons, and no words of
+/// the hand-over. The reason needs more than a line at that width, and the row's shows one, cut at
+/// its end with an ellipsis.
+#[test]
+fn a_long_reason_has_its_own_row_under_the_title() {
+    if !in_child("a_long_reason_has_its_own_row_under_the_title") {
+        return;
+    }
+    let mut config = EngineConfig::new(App::Rust(Root::new::<Full>(|| ())));
+    config.viewport = nsh_core::geometry::Size::new(px(700.0), px(500.0));
+    let mut app = run(config);
+    app.press("open");
+    let words = format!("{LONG} · 2:05 left");
+    app.wait_for(&words);
+    assert!(shows(&mut app, "Ann's computer"), "{:?}", app.texts());
+    let bar = app.parents[&app.view("Close")];
+    let row = app.view(&words);
+    let (bx, by, bw, bh) = in_window(&app, bar);
+    let (rx, ry, rw, rh) = in_window(&app, row);
+    println!("bar {bx},{by} {bw}x{bh}; row {rx},{ry} {rw}x{rh}");
+    assert!(ry >= by + bh, "the row starts at {ry}, inside the bar that ends at {}", by + bh);
+    assert!(rx >= bx && rx + rw <= bx + bw && rw <= 700.0, "the row runs past the window: {rx} + {rw}");
+    assert_eq!(rh, 28.0, "the row is one line, cut short with an ellipsis, not wrapped");
+    let mut up = row;
+    while let Some(p) = app.parents.get(&up) {
+        assert_ne!(*p, bar, "the reason is in the bar again");
+        up = *p;
+    }
+    let (shown, said) = app.text_view(&words);
+    let (whole, _) = app.text_view(LONG);
+    assert_eq!(app.parents[&shown], row, "the words aren't the row's");
+    assert_eq!((said.max_lines, said.ellipsize), (1, nsh_core::EllipsizeMode::Tail), "the row's words aren't one line cut with an ellipsis");
+    let (_, _, sw, sh) = in_window(&app, shown);
+    let (_, _, ww, wh) = in_window(&app, whole);
+    println!("shown {sw}x{sh}; whole {ww}x{wh}");
+    assert!(wh > sh * 1.5, "the reason fits a line anyway ({wh} against {sh}), so nothing was cut");
+    assert!(sw <= rw - 32.0 && sh <= rh, "the row's words run past it: {sw}x{sh} in {rw}x{rh}");
 }
 
 #[component]

@@ -35,6 +35,8 @@ use crate::theme::{self, tc};
 
 const KEY_PREFIX: &str = "computer:";
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often a hand-over's time left is looked at again between polls.
+const COUNT: std::time::Duration = std::time::Duration::from_millis(250);
 /// How long "Woke in" stays once it shows.
 const WOKE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 const LEFT_THE_GATE: &str = "This computer's page tried to take this view somewhere else, so it was closed. Click to open it again.";
@@ -122,17 +124,28 @@ impl Remote {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Takeover {
     pub reason: String,
+    /// as the broker said it
     pub seconds_left: u64,
+    /// when its reply was read here, not when the broker worked `seconds_left` out: until the next
+    /// poll the time shown can be up to one round trip more than the broker has left
+    pub heard: std::time::Instant,
 }
 
 impl Takeover {
     fn parse(v: &Value) -> Option<Self> {
-        Some(Self { reason: v.get("reason")?.as_str()?.to_owned(), seconds_left: v.get("secondsLeft")?.as_u64()? })
+        Some(Self { reason: v.get("reason")?.as_str()?.to_owned(), seconds_left: v.get("secondsLeft")?.as_u64()?, heard: std::time::Instant::now() })
     }
 
-    /// `4:05`.
-    fn left(&self) -> String {
-        format!("{}:{:02}", self.seconds_left / 60, self.seconds_left % 60)
+    /// The seconds left at `now`: what the broker said, less the whole seconds since, and never
+    /// under none. Each poll says it again, so it counts down here only between polls.
+    pub(crate) fn seconds_left_at(&self, now: std::time::Instant) -> u64 {
+        self.seconds_left.saturating_sub(now.saturating_duration_since(self.heard).as_secs())
+    }
+
+    /// `4:05`, at `now`.
+    fn left_at(&self, now: std::time::Instant) -> String {
+        let left = self.seconds_left_at(now);
+        format!("{}:{:02}", left / 60, left % 60)
     }
 }
 
@@ -200,10 +213,10 @@ pub(crate) fn next_ticket(status: &Status, holds: &str, wants_to_drive: bool) ->
     (holds != want || status.viewer != holds).then_some(want)
 }
 
-/// What the bar says of the open viewer.
-pub(crate) fn mode_words(status: &Status) -> String {
+/// What the line under the bar says of the open viewer. `now` is asked only of a hand-over.
+pub(crate) fn mode_words(status: &Status, now: impl FnOnce() -> std::time::Instant) -> String {
     match (&status.takeover, status.viewer.as_str()) {
-        (Some(t), _) => format!("{} · {} left", t.reason, t.left()),
+        (Some(t), _) => format!("{} · {} left", t.reason, t.left_at(now())),
         (None, "drive") => "You're driving. The agent waits while you do.".to_owned(),
         (None, "watch") if status.working => "Watching the agent work.".to_owned(),
         (None, "watch") => "Watching. Your clicks don't reach the screen.".to_owned(),
@@ -292,6 +305,10 @@ thread_local! {
     static FORM: Form = Owner::detached().run(Form::new);
     /// The tab's Set up a computer is open.
     static SETUP: Signal<bool> = Owner::detached().run(|| signal(false));
+    /// The time a hand-over's time left is shown at: set every [`COUNT`] while one shows.
+    static NOW: Signal<std::time::Instant> = Owner::detached().run(|| signal(std::time::Instant::now()));
+    /// How many places show a hand-over's time left now, and the one timer moving [`NOW`] for all.
+    static COUNTING: std::cell::RefCell<(usize, Option<Spawned<()>>)> = const { std::cell::RefCell::new((0, None)) };
 }
 
 /// How far the form has got.
@@ -793,6 +810,7 @@ pub(crate) fn pane() -> impl IntoElement {
     }
     tick();
     set_interval(POLL, tick);
+    count_down_while(|| pane_signal().with(|p| p.status.takeover.is_some()));
     view()
         .test_id("computer-pane")
         .child(dynamic(|| {
@@ -1029,7 +1047,9 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     if let Some(t) = &p.status.takeover {
         let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
-        out = out.child(view().test_id("computer-takeover").child(note(format!("{name} asked you to take over: {} · {} left", t.reason, t.left())))).child(
+        let (t, asked) = (t.clone(), format!("{name} asked you to take over: {}", t.reason));
+        let now = NOW.with(|s| *s);
+        out = out.child(view().test_id("computer-takeover").child(dynamic(move || note(format!("{asked} · {} left", t.left_at(now.get()))).into_element()))).child(
             view()
                 .flex_row()
                 .gap_2()
@@ -1198,30 +1218,103 @@ pub(crate) fn live_view(bot: String) -> impl IntoElement {
         ))
 }
 
-/// Beside Record: what the viewer is, and the way to the other mode or to hand back.
+/// Moves [`NOW`] on every [`COUNT`] while `shows()` says this part shows a hand-over's time left,
+/// so it counts down between polls. However many parts do, one timer runs, and none when none does.
+fn count_down_while(shows: impl Fn() -> bool + 'static) {
+    let held = std::rc::Rc::new(std::cell::Cell::new(false));
+    let h = held.clone();
+    effect(move || {
+        let on = shows();
+        if h.replace(on) != on {
+            counting(on);
+        }
+    });
+    cleanup(move || {
+        if held.replace(false) {
+            counting(false);
+        }
+    });
+}
+
+/// One more place showing a hand-over's time left (`on`), or one fewer. The count is decided in the
+/// borrow, and the signal and timer are touched after it: what they wake may count again.
+fn counting(on: bool) {
+    let now = NOW.with(|s| *s);
+    let (start, stopped) = COUNTING.with_borrow_mut(|(places, timer)| {
+        if on {
+            *places += 1;
+            (*places == 1, None)
+        } else {
+            *places = places.saturating_sub(1);
+            (false, if *places == 0 { timer.take() } else { None })
+        }
+    });
+    if let Some(timer) = stopped {
+        timer.cancel();
+    }
+    if start {
+        // its own, not the part's that asked first: it stops with the last
+        let timer = Owner::detached().run(|| set_interval(COUNT, move || now.set(std::time::Instant::now())));
+        // a place that let go in the meantime leaves none to count for
+        let late = COUNTING.with_borrow_mut(|(places, slot)| if *places > 0 { slot.replace(timer) } else { Some(timer) });
+        if let Some(timer) = late {
+            timer.cancel();
+        }
+        now.set(std::time::Instant::now());
+    }
+}
+
+/// Whether a timer moves [`NOW`], for a test.
+#[cfg(test)]
+pub(crate) fn counting_down() -> bool {
+    COUNTING.with_borrow(|(_, timer)| timer.is_some())
+}
+
+/// Under the bar, on a row of its own: what the viewer is, or why the Bot handed the screen over
+/// and for how long, counting down between polls. In the bar it ran under the centred title; here
+/// it has the window's width, and a longer one ends in an ellipsis. No row when there's nothing.
+pub(crate) fn mode_line(key: &str) -> impl IntoElement {
+    let bot = bot_of_key(key).unwrap_or_default();
+    let shown = SHOWN.with(|s| *s);
+    let now = NOW.with(|s| *s);
+    let b = bot.clone();
+    count_down_while(move || shown.with(|(of, s)| *of == b && s.takeover.is_some()));
+    let words = move || shown.with(|(of, s)| if *of == bot { mode_words(s, || now.get()) } else { String::new() });
+    let any = words.clone();
+    when(
+        move || !any().is_empty(),
+        move || {
+            view()
+                .test_id("computer-mode")
+                .label(words.clone())
+                .h(px(28.0))
+                .px(px(16.0))
+                .justify_center()
+                .border_b(px(0.5))
+                .border_b_color(tc("#f5f5f51a"))
+                .child(text(words.clone()).number_of_lines(1).min_w(px(0.0)).text_size(px(12.0)).text_color(tc("#f5f5f5a8")))
+                .into_element()
+        },
+    )
+}
+
+/// Beside Record: the way to the other mode or to hand back.
 pub(crate) fn drive_button(key: &str) -> impl IntoElement {
     let bot = bot_of_key(key).unwrap_or_default();
     let shown = SHOWN.with(|s| *s);
-    let (b1, b2, b3) = (bot.clone(), bot.clone(), bot);
+    let (b2, b3) = (bot.clone(), bot);
     let status = move |bot: &str| shown.with(|(of, s)| if of == bot { s.clone() } else { Status::default() });
     view()
-        .flex_row()
+        .test_id("computer-drive")
+        .label("Take control")
+        .h(px(32.0))
+        .px(px(12.0))
+        .rounded(px(16.0))
         .items_center()
-        .gap_2()
-        .child(view().test_id("computer-mode").child(text(move || mode_words(&status(&b1))).number_of_lines(1).text_size(px(12.0)).text_color(tc("#f5f5f5a8"))))
-        .child(
-            view()
-                .test_id("computer-drive")
-                .label("Take control")
-                .h(px(32.0))
-                .px(px(12.0))
-                .rounded(px(16.0))
-                .items_center()
-                .justify_center()
-                .bg(tc("#f5f5f50f"))
-                .child(text(move || button_words(&status(&b2)).to_owned()).text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
-                .on_press(move || press_drive(&b3, &status(&b3))),
-        )
+        .justify_center()
+        .bg(tc("#f5f5f50f"))
+        .child(text(move || button_words(&status(&b2)).to_owned()).text_size(px(13.0)).text_color(tc("#f5f5f5a8")))
+        .on_press(move || press_drive(&b3, &status(&b3)))
 }
 
 /// Whether a Stop's answer says the recording ended.
@@ -1307,7 +1400,7 @@ mod tests {
     }
 
     fn seen(state: &str, viewer: &str, takeover: Option<u64>) -> Status {
-        Status { state: state.to_owned(), viewer: viewer.to_owned(), takeover: takeover.map(|s| Takeover { reason: "Sign in".to_owned(), seconds_left: s }), ..Status::default() }
+        Status { state: state.to_owned(), viewer: viewer.to_owned(), takeover: takeover.map(|s| Takeover { reason: "Sign in".to_owned(), seconds_left: s, heard: std::time::Instant::now() }), ..Status::default() }
     }
 
     #[test]
@@ -1315,8 +1408,9 @@ mod tests {
         let v = json!({"state": "awake", "viewer": "drive", "working": true, "takeover": {"reason": "Sign in", "secondsLeft": 245}});
         let s = Status::parse(&v);
         assert_eq!((s.viewer.as_str(), s.working), ("drive", true));
-        assert_eq!(s.takeover, Some(Takeover { reason: "Sign in".to_owned(), seconds_left: 245 }));
-        assert_eq!(s.takeover.unwrap().left(), "4:05");
+        let t = s.takeover.unwrap();
+        assert_eq!((t.reason.as_str(), t.seconds_left), ("Sign in", 245));
+        assert_eq!(t.left_at(t.heard), "4:05");
         let bare = Status::parse(&json!({"state": "awake"}));
         assert_eq!((bare.viewer.as_str(), bare.working, bare.takeover), ("", false, None));
     }
@@ -1370,10 +1464,29 @@ mod tests {
         assert_eq!(button_words(&seen("awake", "watch", None)), "Take control");
         assert_eq!(button_words(&seen("awake", "drive", None)), "Stop driving");
         assert_eq!(button_words(&seen("awake", "drive", Some(9))), "Hand back");
-        assert_eq!(mode_words(&seen("awake", "watch", None)), "Watching. Your clicks don't reach the screen.");
-        assert_eq!(mode_words(&Status { working: true, ..seen("awake", "watch", None) }), "Watching the agent work.");
-        assert_eq!(mode_words(&seen("awake", "drive", None)), "You're driving. The agent waits while you do.");
-        assert_eq!(mode_words(&seen("awake", "drive", Some(65))), "Sign in · 1:05 left");
+        let unasked = || -> std::time::Instant { panic!("the time was asked with no hand-over") };
+        assert_eq!(mode_words(&seen("awake", "watch", None), unasked), "Watching. Your clicks don't reach the screen.");
+        assert_eq!(mode_words(&Status { working: true, ..seen("awake", "watch", None) }, unasked), "Watching the agent work.");
+        assert_eq!(mode_words(&seen("awake", "drive", None), unasked), "You're driving. The agent waits while you do.");
+        let t = seen("awake", "drive", Some(65));
+        let heard = t.takeover.as_ref().unwrap().heard;
+        assert_eq!(mode_words(&t, || heard), "Sign in · 1:05 left");
+    }
+
+    #[test]
+    fn a_hand_overs_time_counts_down_between_polls_and_stops_at_none() {
+        use std::time::Duration;
+        let heard = std::time::Instant::now();
+        let t = Takeover { reason: "Sign in".to_owned(), seconds_left: 65, heard };
+        let at = |ms: u64| t.seconds_left_at(heard + Duration::from_millis(ms));
+        assert_eq!([at(0), at(999), at(1000), at(1999), at(5000)], [65, 65, 64, 64, 60], "by the whole seconds since it was heard");
+        assert_eq!(t.left_at(heard + Duration::from_secs(6)), "0:59");
+        assert_eq!([at(65_000), at(600_000)], [0, 0], "it stops at none and never goes under");
+        // a clock read before the poll that set it isn't time gone
+        assert_eq!(Takeover { heard: heard + Duration::from_secs(3), ..t.clone() }.seconds_left_at(heard), 65);
+        // the next poll says it again, from then
+        let polled = Takeover { seconds_left: 63, heard: heard + Duration::from_secs(2), ..t };
+        assert_eq!(polled.seconds_left_at(heard + Duration::from_millis(2500)), 63);
     }
 
     #[test]
