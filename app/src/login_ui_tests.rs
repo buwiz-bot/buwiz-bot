@@ -802,6 +802,12 @@ fn each_vault_command_does_what_it_says_and_asks_which_of_two() {
     assert!(!on(&mut app, || store().settings_open.get_untracked()), "no form opened");
     assert!(on(&mut app, || store().draft.get_untracked().is_empty()));
     no_mark(&app);
+    // a lone word that isn't a site: refused in fixed words, never in the site field or a toast
+    typed(&mut app, &format!("/vault add {MARK}"));
+    typed(&mut app, &format!("/vault share {MARK} with Nova"));
+    assert!(has_text(&app, "That doesn't look like a site"), "{:?}", app.texts());
+    assert!(!on(&mut app, || store().settings_open.get_untracked()), "no form opened");
+    no_mark(&app);
     assert!(heard(&seen, "/chat").is_empty(), "none of it went to the AI");
 
     // a deleted Bot's shares go with it

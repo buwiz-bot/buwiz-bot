@@ -54,7 +54,7 @@ use rusqlite::Connection;
 
 pub(crate) use db::SiteLogin;
 use keychain::SecretStore;
-pub(crate) use origin::{SiteMatch, site_match, site_origin};
+pub(crate) use origin::{SiteMatch, plausible_site, site_match, site_origin};
 pub(crate) use page::{SHARE_ALL_MEANS, SITE_CHANGE_UNSHARES, open_add, open_page, settings_page};
 #[cfg(test)]
 pub(crate) use touch_id::owner_asks;

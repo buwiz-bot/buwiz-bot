@@ -11,12 +11,14 @@
 //!   ask which (`… as <username> with <Bot>`), never a guess.
 //! - `/vault share all`, `/vault share all off`: the global switch.
 
-use super::{SHARE_ALL_MEANS, SiteLogin, SiteMatch, site_match, site_origin, vault};
+use super::{SHARE_ALL_MEANS, SiteLogin, SiteMatch, plausible_site, site_match, vault};
 use crate::live::store;
 use crate::slash::{Pick, PopRow};
 use crate::store::RoxBot;
 
 const USAGE: &str = "/vault, /vault add <site>, /vault share <site> with <Bot>, /vault unshare <site> with <Bot>, /vault share all, /vault share all off";
+/// For a word that isn't a site: fixed, so a password typed in a site's place is never shown back.
+const NOT_A_SITE: &str = "That doesn't look like a site (like shop.example), so nothing was done. A password never goes on the command line: type it in the form /vault add <site> opens.";
 const NO_SECRET_HERE: &str = "/vault add takes a site only. Type the password in the form it opens, never on the command line.";
 
 /// What follows `/vault`, read whole.
@@ -104,9 +106,9 @@ fn outcome(line: Line, rows: &[SiteLogin], bots: &[RoxBot], share_all: bool) -> 
         Line::Say(s) => Outcome::Say(s.to_owned()),
         Line::Open => Outcome::Open,
         Line::Add("") => Outcome::Add(String::new()),
-        Line::Add(site) => match site_origin(site) {
+        Line::Add(site) => match plausible_site(site) {
             Some(s) => Outcome::Add(s),
-            None => Outcome::Say(format!("{site} isn't a site.")),
+            None => Outcome::Say(NOT_A_SITE.to_owned()),
         },
         Line::ShareAll(on) => Outcome::ShareAll(on),
         Line::Share { on, site, user, bot } => {
@@ -114,7 +116,7 @@ fn outcome(line: Line, rows: &[SiteLogin], bots: &[RoxBot], share_all: bool) -> 
                 Ok(b) => b,
                 Err(why) => return Outcome::Say(why),
             };
-            let Some(site) = site_origin(site) else { return Outcome::Say(format!("{site} isn't a site.")) };
+            let Some(site) = plausible_site(site) else { return Outcome::Say(NOT_A_SITE.to_owned()) };
             let found: Vec<&SiteLogin> = rows
                 .iter()
                 .filter(|r| site_match(&r.origin, true, &site) == SiteMatch::Exact)
@@ -244,6 +246,21 @@ mod tests {
         assert!(matches!(parse(" share shop.example"), Line::Say(_)));
         assert!(matches!(parse(" unshare all"), Line::Say(_)));
         assert!(matches!(parse(" frobnicate"), Line::Say(_)));
+    }
+
+    #[test]
+    fn a_word_that_isnt_a_site_is_refused_and_never_shown_back() {
+        let bots = [bot("nova", "Nova")];
+        let rows = [login("sl_1", "shop.example", "kid", &[])];
+        for line in [" add hunter2", " share hunter2 with Nova", " unshare hunter2 with Nova", " share hunter2 as kid with Nova", " add p@ss.word"] {
+            match outcome(parse(line), &rows, &bots, false) {
+                Outcome::Say(s) => {
+                    assert_eq!(s, NOT_A_SITE, "{line}");
+                    assert!(!s.contains("hunter2") && !s.contains("p@ss"), "{line}");
+                }
+                _ => panic!("{line} was taken as a site"),
+            }
+        }
     }
 
     #[test]
