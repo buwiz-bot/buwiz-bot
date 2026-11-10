@@ -228,6 +228,36 @@ fn a_computer_being_deleted_shows_where_to_look_and_forget_sends_its_id() {
     assert!(!shows(&mut app, "cmp_cd34 is being deleted"), "{:?}", app.texts());
 }
 
+#[test]
+fn a_lost_computer_shows_where_to_look_and_keep_and_delete_send_its_id() {
+    if !in_child("a_lost_computer_shows_where_to_look_and_keep_and_delete_send_its_id") {
+        return;
+    }
+    let mut found = e2b(true);
+    found["computers"] = json!([{"id": "cmp_ef56", "bots": [], "lost": true, "look": "In the E2B dashboard, kill any sandbox whose metadata has buwiz-computer=cmp_ef56"}]);
+    let mut list = providers(true);
+    list["providers"][2] = found;
+    route("GET", "/v1/host/computer/providers", 200, list);
+    route("POST", "/v1/host/computer/providers/e2b/keep", 409, json!({"ok": false, "code": "still_lost", "message": "Computer cmp_ef56 on E2B still can't be found with the keys in use. Nothing was deleted."}));
+    route("POST", "/v1/host/computer/providers/e2b/delete", 200, json!({"ok": true, "provider": e2b(true)}));
+    let mut app = start::<Page>((900.0, 1600.0));
+    wait_for_text(&mut app, "cmp_ef56 was found with its record lost");
+    assert!(shows(&mut app, "To check by hand: In the E2B dashboard, kill any sandbox whose metadata has buwiz-computer=cmp_ef56."), "{:?}", app.texts());
+    assert!(!shows(&mut app, "cmp_ef56 is being deleted"), "it isn't on its way out: {:?}", app.texts());
+    app.press("Keep cmp_ef56 on E2B");
+    let sent = wait_for_change(&mut app, 1);
+    assert_eq!((sent[0].0.as_str(), sent[0].1.as_str()), ("POST", "/v1/host/computer/providers/e2b/keep"));
+    assert_eq!(sent[0].2, json!({"id": "cmp_ef56"}));
+    wait_for_text(&mut app, "Nothing was deleted.");
+    assert!(shows(&mut app, "cmp_ef56 was found with its record lost"), "a refused Keep changes nothing: {:?}", app.texts());
+    app.press("Delete cmp_ef56 on E2B");
+    let sent = wait_for_change(&mut app, 2);
+    assert_eq!((sent[1].0.as_str(), sent[1].1.as_str()), ("POST", "/v1/host/computer/providers/e2b/delete"));
+    assert_eq!(sent[1].2, json!({"id": "cmp_ef56"}));
+    wait_for_text(&mut app, "cmp_ef56 is deleted.");
+    assert!(!shows(&mut app, "cmp_ef56 was found with its record lost"), "{:?}", app.texts());
+}
+
 #[component]
 fn Composer() -> impl IntoElement {
     let _ = crate::live::store();

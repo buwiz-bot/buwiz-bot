@@ -296,7 +296,9 @@ async fn a_lost_record_doesnt_strand_a_bot() {
         let fresh = Computers::new(b.mock.clone());
         let fresh = Arc::new(fresh);
         assert_eq!(fresh.live(&b.ctx, &b.ann.0).await.err(), Some(Problem::Gone));
-        assert_eq!(fresh.status(&b.ctx, &b.ann.0).await["code"], "gone");
+        let status = fresh.status(&b.ctx, &b.ann.0).await;
+        assert_eq!(status["code"], "lost");
+        assert!(status["message"].as_str().unwrap().contains("Click to look for it"), "a click may find it, and nothing says it's gone: {status}");
         fresh.click(&b.ctx, &b.ann.0).await.unwrap();
         for _ in 0..400 {
             if fresh.status(&b.ctx, &b.ann.0).await["state"] == "awake" {
@@ -307,9 +309,22 @@ async fn a_lost_record_doesnt_strand_a_bot() {
         let new = seated(&b.ctx, &b.ann.0).unwrap().computer;
         assert_ne!(new, old);
         assert_eq!(seated(&b.ctx, &b.bea.0).unwrap().computer, new, "the Bots at it come along");
-        fresh.sleep_the_idle(&b.ctx).await;
         assert!(b.mock.calls().iter().any(|c| c.starts_with(&format!("recover {old} Some(Container"))), "it looked for what's left first, by name: {:?}", b.mock.calls());
-        assert_eq!(Computers::ids(&b.ctx), [new]);
+        // the old one is lost, with nobody at it, and the timer never deletes it, however long
+        assert!(Computers::is_lost(&b.ctx, &old).unwrap());
+        assert!(Computers::seats(&b.ctx, &old).unwrap().is_empty());
+        assert_eq!(Computers::ids(&b.ctx), std::slice::from_ref(&new));
+        for _ in 0..3 {
+            past_just_gone(&b);
+            fresh.sleep_the_idle(&b.ctx).await;
+        }
+        assert_eq!(fresh.finish_retire(&b.ctx, &old).await.unwrap_err().code(), "lost");
+        assert!(!b.mock.calls().iter().any(|c| c.starts_with("sweep") || c == "destroy"), "a computer was deleted with nobody asked: {:?}", b.mock.calls());
+        let mut left = Computers::ids_where(&b.ctx, "1=1");
+        left.sort();
+        let mut both = [old.clone(), new];
+        both.sort();
+        assert_eq!(left, both, "both rows are still there");
     }
 }
 
@@ -799,6 +814,7 @@ async fn a_lost_record_is_rebuilt_from_what_is_left_and_no_files_go() {
     fresh.sleep_the_idle(&b.ctx).await;
     assert!(!b.mock.calls().iter().any(|c| c.starts_with("sweep") || c == "destroy" || c.starts_with("create")), "{:?}", b.mock.calls());
     assert!(Computers::dir(&b.ctx, &old).join("machine.json").exists());
+    assert_eq!(Computers::reach_of(&b.ctx, &old).unwrap(), Some(buwiz_computer::Reach::Container { name: "mock-kept".into() }), "its row says where it is now");
 }
 
 #[tokio::test]
@@ -1115,5 +1131,6 @@ fn a_computer_can_be_pinned_to_a_group() {
 
 mod homes;
 mod jobs;
+mod lost;
 mod remote;
 mod together;

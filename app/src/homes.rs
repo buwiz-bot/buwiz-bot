@@ -84,6 +84,9 @@ pub(crate) struct Home {
     pub computers: Vec<(String, Vec<String>)>,
     /// the ones on it being deleted, apart: (id, where a person looks for what's left of it)
     pub leaving: Vec<(String, String)>,
+    /// the ones found with their record lost and nothing of them found, apart: (id, where a person
+    /// looks). Nothing deletes one until a person presses Delete
+    pub lost: Vec<(String, String)>,
     /// a limited policy to copy, as JSON text; "" for none
     pub policy: String,
     /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
@@ -99,11 +102,14 @@ impl Home {
         if kind.is_empty() {
             return None;
         }
-        let (mut computers, mut leaving) = (Vec::new(), Vec::new());
+        let (mut computers, mut leaving, mut lost) = (Vec::new(), Vec::new(), Vec::new());
         for c in list("computers") {
             let Some(id) = c.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
-            if c.get("leaving").and_then(Value::as_bool) == Some(true) {
-                leaving.push((id, c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned()));
+            let look = || c.get("look").and_then(Value::as_str).unwrap_or_default().to_owned();
+            if c.get("lost").and_then(Value::as_bool) == Some(true) {
+                lost.push((id, look()));
+            } else if c.get("leaving").and_then(Value::as_bool) == Some(true) {
+                leaving.push((id, look()));
             } else {
                 let bots = c.get("bots").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
                 computers.push((id, bots));
@@ -119,6 +125,7 @@ impl Home {
             notes: list("notes").iter().filter_map(Value::as_str).filter(|n| !n.is_empty()).map(str::to_owned).collect(),
             computers,
             leaving,
+            lost,
             policy: text("policy"),
             // only a web page: it's opened in the browser
             launch: Some(text("launch")).filter(|u| u.starts_with("https://")).unwrap_or_default(),
@@ -401,6 +408,31 @@ pub(crate) async fn remove(kind: &str) -> Said {
 /// `POST providers/{kind}/forget`. The broker tries the keys in use once more first.
 pub(crate) async fn forget(kind: &str, id: &str) -> Said {
     let reply = ask("POST", &provider_path(kind, "/forget"), Some(json!({"id": id}))).await;
+    if let Said::Yes(v) = &reply
+        && let Some(home) = v.get("provider").and_then(Home::parse)
+    {
+        set_homes(|h| h.replace(home));
+    }
+    reply
+}
+
+/// Keeps computer `id`, found with its record lost: `POST providers/{kind}/keep`. The broker looks
+/// for it once more; found, it's a computer again with no Bot at it. Ok is the sentence to show.
+pub(crate) async fn keep_lost(kind: &str, id: &str) -> Result<String, String> {
+    match ask("POST", &provider_path(kind, "/keep"), Some(json!({"id": id}))).await {
+        Said::Yes(v) => {
+            if let Some(home) = v.get("provider").and_then(Home::parse) {
+                set_homes(|h| h.replace(home));
+            }
+            Ok(v.get("message").and_then(Value::as_str).map_or_else(|| format!("{id} is kept."), str::to_owned))
+        }
+        Said::No(why) => Err(why),
+    }
+}
+
+/// Deletes computer `id`, found with its record lost, on its platform: `POST providers/{kind}/delete`.
+pub(crate) async fn delete_lost(kind: &str, id: &str) -> Said {
+    let reply = ask("POST", &provider_path(kind, "/delete"), Some(json!({"id": id}))).await;
     if let Said::Yes(v) = &reply
         && let Some(home) = v.get("provider").and_then(Home::parse)
     {
@@ -723,6 +755,26 @@ fn run_forget(kind: String, id: String) {
     });
 }
 
+fn run_keep(kind: String, id: String) {
+    clear_note(&kind);
+    spawn_detached(async move {
+        match keep_lost(&kind, &id).await {
+            Ok(words) => set_note(&kind, true, words),
+            Err(why) => set_note(&kind, false, why),
+        }
+    });
+}
+
+fn run_delete_lost(kind: String, id: String) {
+    clear_note(&kind);
+    spawn_detached(async move {
+        match delete_lost(&kind, &id).await {
+            Said::Yes(_) => set_note(&kind, true, format!("{id} is deleted.")),
+            Said::No(why) => set_note(&kind, false, why),
+        }
+    });
+}
+
 fn run_default(kind: String) {
     clear_note("default");
     spawn_detached(async move {
@@ -809,6 +861,19 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
         }
         let (kind, id) = (home.kind.clone(), id.clone());
         col = col.child(line(words)).child(view().flex_row().child(small_button(format!("Forget {id} on {}", home.label), format!("Forget {id}"), move || run_forget(kind.clone(), id.clone()))));
+    }
+    for (id, look) in &home.lost {
+        let mut words = format!("{id} was found with its record lost, and couldn't be reached. It may still be there, with its files, and costing. Its Bots moved to a new computer. Keep looks for it again; Delete deletes it there for good. Nothing happens to it until you choose.");
+        if !look.is_empty() {
+            words.push_str(&format!(" To check by hand: {look}."));
+        }
+        let (keep_kind, keep_id, delete_kind, delete_id) = (home.kind.clone(), id.clone(), home.kind.clone(), id.clone());
+        let buttons = view()
+            .flex_row()
+            .gap_2()
+            .child(small_button(format!("Keep {id} on {}", home.label), "Keep".to_owned(), move || run_keep(keep_kind.clone(), keep_id.clone())))
+            .child(small_button(format!("Delete {id} on {}", home.label), "Delete".to_owned(), move || run_delete_lost(delete_kind.clone(), delete_id.clone())));
+        col = col.child(line(words)).child(buttons);
     }
     if home.built && home.kind != "remote" {
         let mut buttons = view().flex_row().flex_wrap().gap_2().pt(px(4.0));
@@ -1196,6 +1261,16 @@ mod tests {
         let h = Home::parse(&v).unwrap();
         assert_eq!(h.leaving, vec![("cmp_cd34".to_owned(), "Terminate any instance tagged buwiz:computer-id=cmp_cd34".to_owned())]);
         assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as being deleted");
+    }
+
+    #[test]
+    fn a_lost_computer_is_listed_apart_with_where_to_look() {
+        let mut v = ec2();
+        v["computers"] = json!([{"id": "cmp_ab12", "bots": ["Ann"]}, {"id": "cmp_ef56", "bots": [], "lost": true, "look": "Terminate any instance tagged buwiz:computer-id=cmp_ef56"}]);
+        let h = Home::parse(&v).unwrap();
+        assert_eq!(h.lost, vec![("cmp_ef56".to_owned(), "Terminate any instance tagged buwiz:computer-id=cmp_ef56".to_owned())]);
+        assert!(h.leaving.is_empty());
+        assert_eq!(h.computers_words(), "Computers here: cmp_ab12 (Ann)", "listed once, as lost");
     }
 
     #[test]
