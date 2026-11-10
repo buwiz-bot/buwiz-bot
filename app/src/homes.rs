@@ -897,7 +897,7 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
         col = col.child(line(words)).child(view().flex_row().child(small_button(format!("Forget {id} on {}", home.label), format!("Forget {id}"), move || run_forget(kind.clone(), id.clone()))));
     }
     for (id, look) in &home.lost {
-        let mut words = format!("{id} was found with its record lost, and couldn't be reached. It may still be there, with its files, and costing. Its Bots moved to a new computer. Keep looks for it again; Delete deletes it there for good. Nothing happens to it until you choose.");
+        let mut words = format!("{id} was found with its record lost, and couldn't be reached. It may still be there, with its files, and costing. No Bot sits at it. Keep looks for it again; Delete deletes it there for good. Nothing happens to it until you choose.");
         if !look.is_empty() {
             words.push_str(&format!(" To check by hand: {look}."));
         }

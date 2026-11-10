@@ -356,3 +356,58 @@ async fn keep_and_delete_answer_only_the_apps_token_and_say_what_happened() {
         "{said}"
     );
 }
+
+/// A person deletes the last Bot at a computer whose record can't be read: it may still be there
+/// with their files, so it's kept as lost, for their Keep or Delete, and nothing sweeps it.
+#[tokio::test]
+async fn deleting_the_last_bot_at_an_unreadable_record_keeps_it_as_lost() {
+    let b = bed("lost-bot-deleted");
+    let old = awake(&b, &b.ann.0).await;
+    std::fs::remove_file(Computers::dir(&b.ctx, &old).join("machine.json")).unwrap();
+    let fresh = Arc::new(Computers::new(b.mock.clone()));
+    fresh.set_sight(std::collections::HashMap::new());
+    b.mock.calls.lock().unwrap().clear();
+    fresh.detach(&b.ctx, &b.ann.0).await.unwrap();
+    assert!(seated(&b.ctx, &b.ann.0).is_none());
+    assert!(Computers::is_lost(&b.ctx, &old).unwrap());
+    assert!(!Computers::retired(&b.ctx, &old).unwrap(), "not on its way out");
+    assert!(Computers::seats(&b.ctx, &old).unwrap().is_empty());
+    for _ in 0..3 {
+        past_just_gone(&b);
+        fresh.sleep_the_idle(&b.ctx).await;
+    }
+    assert!(!deleted_anything(&b), "{:?}", b.mock.calls());
+    let row = docker_computers(&fresh, &b)
+        .into_iter()
+        .find(|c| c["id"] == old.as_str())
+        .unwrap();
+    assert_eq!(row["lost"], true, "{row}");
+    // a person's Delete is what deletes it
+    fresh
+        .delete_lost(&b.ctx, ProviderKind::Docker, &old)
+        .await
+        .unwrap();
+    assert!(
+        b.mock.calls().contains(&format!("sweep {old}")),
+        "{:?}",
+        b.mock.calls()
+    );
+    assert!(!Computers::ids_where(&b.ctx, "1=1").contains(&old));
+}
+
+/// One whose record reads goes with its last Bot, as a person's delete says.
+#[tokio::test]
+async fn deleting_the_last_bot_at_a_readable_record_still_deletes_it() {
+    let b = bed("lost-bot-deleted-readable");
+    let old = awake(&b, &b.ann.0).await;
+    b.computers.detach(&b.ctx, &b.ann.0).await.unwrap();
+    assert!(!Computers::is_lost(&b.ctx, &old).unwrap());
+    assert!(Computers::retired(&b.ctx, &old).unwrap());
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(
+        b.mock.calls().contains(&"destroy".to_owned()),
+        "{:?}",
+        b.mock.calls()
+    );
+    assert!(!Computers::ids_where(&b.ctx, "1=1").contains(&old));
+}

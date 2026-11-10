@@ -329,7 +329,7 @@ async fn a_lost_record_doesnt_strand_a_bot() {
 }
 
 #[tokio::test]
-async fn leaving_with_the_record_lost_is_leaving() {
+async fn leaving_with_the_record_lost_keeps_it_as_lost() {
     let b = bed("lost-leave");
     let id = awake(&b, &b.ann.0).await;
     std::fs::remove_file(Computers::dir(&b.ctx, &id).join("machine.json")).unwrap();
@@ -338,7 +338,8 @@ async fn leaving_with_the_record_lost_is_leaving() {
     assert!(seated(&b.ctx, &b.ann.0).is_none());
     past_just_gone(&b);
     fresh.sleep_the_idle(&b.ctx).await;
-    assert_eq!(Computers::ids_where(&b.ctx, "1=1"), Vec::<String>::new());
+    // nothing can say it's gone: a person's Delete in Settings is what deletes it (`tests/lost.rs`)
+    assert_eq!(Computers::ids_where(&b.ctx, "lost_at IS NOT NULL"), std::slice::from_ref(&id));
 }
 
 #[tokio::test]

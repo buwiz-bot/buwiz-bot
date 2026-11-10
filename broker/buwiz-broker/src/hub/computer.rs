@@ -21,7 +21,9 @@
 //! computer, and the old one is kept as **lost** (`lost_at`), unseated, for a person to Keep (look
 //! for it again) or Delete in Settings › Computers. It may still be on its platform with their
 //! files, so nothing automatic ever deletes it. A computer is only ever removed for a person who
-//! deleted its last Bot or a lost computer, or just made and empty.
+//! deleted its last Bot or a lost computer, or just made and empty. Deleting the last Bot at a
+//! computer whose record can't be read doesn't remove it either: it's kept as lost, unseated, for
+//! the same Keep or Delete.
 //!
 //! A person and an agent share a screen by these rules, all held in [`Now`] and changed only under
 //! its lock, so a click, a sweep and a run see the same thing:
@@ -716,7 +718,7 @@ impl Computers {
         let still_there = |ctx: &HubCtx| Self::seat(ctx, bot).map(|s| s.is_some_and(|s| s.computer == old));
         if let Some(machine) = recovered {
             let _seating = self.seating.lock().await;
-            // a Bot taken off meanwhile may have marked it for removal: nothing brings it back then
+            // a Bot taken off meanwhile may have marked it lost: nothing brings it back then
             if !still_there(ctx)? {
                 return Ok(None);
             }
@@ -1041,9 +1043,10 @@ impl Computers {
     /// `bot` is off its computer because a person deleted it. The last Bot's going marks the
     /// computer for removal, and the sweep removes it and what it kept
     /// ([`Computers::sleep_the_idle`]), so that removal isn't waited on: with Docker off or hung a
-    /// Bot still goes, and nobody else's click waits behind it. Taking a Bot off a shared computer
-    /// does ask the provider to bring its screen down, outside the lock and best effort. Fails if
-    /// the seats can't be read: nothing is removed on a guess.
+    /// Bot still goes, and nobody else's click waits behind it. A computer whose record can't be
+    /// read is marked lost instead, and nothing removes it ([`Computers::mark_lost`]). Taking a Bot
+    /// off a shared computer does ask the provider to bring its screen down, outside the lock and
+    /// best effort. Fails if the seats can't be read: nothing is removed on a guess.
     pub async fn detach(&self, ctx: &HubCtx, bot: &str) -> Result<(), Problem> {
         self.take_off(ctx, bot, true).await
     }
@@ -1058,9 +1061,14 @@ impl Computers {
             if last && !may_be_last {
                 return Err(Problem::Failed("the last Bot at a computer can't leave it: its files would go".to_owned()));
             }
+            // with no record to read it may still be on its platform with the person's files, and
+            // nothing here can say: it waits in Settings for their Keep or Delete
+            let lost = last && self.unreadable(ctx, &seat.computer)?;
             ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE bot_id=?", [bot])).map_err(db_problem)?;
             drop_ask(ctx, bot);
-            if last {
+            if lost {
+                Self::mark_lost(ctx, &seat.computer);
+            } else if last {
                 self.mark_retired(ctx, &seat.computer);
             }
             let mut now = self.now();
@@ -1091,8 +1099,23 @@ impl Computers {
         Ok(())
     }
 
+    /// Whether `id`'s record can't be read, and it isn't a remote computer, whose record is all
+    /// there is of it here: what's left of it on its platform can't be told then.
+    fn unreadable(&self, ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+        Ok(matches!(self.machine(ctx, id), Err(Problem::Gone)) && !Self::is_remote(ctx, id)?)
+    }
+
+    /// `id`, its record unreadable, has no Bots left: kept as lost, for a person's Keep or Delete
+    /// in Settings › Computers, and never swept. One already on its way out stays so.
+    fn mark_lost(ctx: &HubCtx, id: &str) {
+        let at = policy::now(ctx);
+        let _ = ctx.db.with(|c| c.execute("UPDATE computers SET lost_at=? WHERE id=? AND gone_at IS NULL AND lost_at IS NULL", rusqlite::params![at, id]));
+        let _ = ctx.db.with(|c| c.execute("DELETE FROM computer_seats WHERE computer_id=?", [id]));
+    }
+
     /// `id` has no Bots left, and a person agreed to that: it goes as soon as the provider can. Never
-    /// a lost one: only a person's Delete of it ([`Computers::delete_lost`]) marks that.
+    /// a lost one: only a person's Delete of it ([`Computers::delete_lost`]) marks that. Deleting the
+    /// last Bot at a computer whose record can't be read marks it lost instead ([`Computers::mark_lost`]).
     fn mark_retired(&self, ctx: &HubCtx, id: &str) {
         let at = policy::now(ctx);
         let _ = ctx.db.with(|c| c.execute("UPDATE computers SET gone_at=? WHERE id=? AND lost_at IS NULL", rusqlite::params![at, id]));
