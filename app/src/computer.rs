@@ -1045,9 +1045,9 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     if let Some(t) = &p.status.takeover {
         let (b1, n1, b2) = (bot.to_owned(), name.to_owned(), bot.to_owned());
-        let (t, name) = (t.clone(), name.to_owned());
+        let (t, asked) = (t.clone(), format!("{name} asked you to take over: {}", t.reason));
         let now = NOW.with(|s| *s);
-        out = out.child(view().test_id("computer-takeover").child(dynamic(move || note(format!("{name} asked you to take over: {} · {} left", t.reason, t.left_at(now.get()))).into_element()))).child(
+        out = out.child(view().test_id("computer-takeover").child(dynamic(move || note(format!("{asked} · {} left", t.left_at(now.get()))).into_element()))).child(
             view()
                 .flex_row()
                 .gap_2()
