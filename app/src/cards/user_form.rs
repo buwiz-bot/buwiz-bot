@@ -28,7 +28,7 @@
 //! (`vault::Vault::unlock`), held here unpainted ([`Held`]), and goes into
 //! `values` only inside the submit body (`savedLogin:true, savedLoginId`).
 //! That body is sent only to a broker that has just proven it holds the
-//! host token (`transport::submit_saved_login`, `POST /v1/host/prove`);
+//! host token (`transport::submit_user_form`, `POST /v1/host/prove`);
 //! otherwise it stays in the app and the card says so.
 //! Nothing secret is put on a turn, in the store, in a log line or in a
 //! `Debug` print: [`Values`] and [`Field`] redact theirs.

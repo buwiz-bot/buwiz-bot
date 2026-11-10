@@ -58,6 +58,8 @@ struct Broker {
     log: Mutex<Vec<(String, Value, bool)>>,
     submit: Mutex<(u16, Value)>,
     saved: Mutex<(u16, Value)>,
+    /// it answers the proof as a stranger on the broker's port would: with another token's
+    impostor: std::sync::atomic::AtomicBool,
 }
 
 struct Done;
@@ -79,7 +81,10 @@ impl Network for Broker {
         let token = request.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("x-buwiz-host") && v == TOKEN);
         self.log.lock().unwrap().push((path.clone(), body.clone(), token));
         let (status, answer) = match path.as_str() {
-            "/v1/host/prove" => (200, json!({"ok": true, "proof": buwiz_protocol::proof::broker_proof(TOKEN, body["nonce"].as_str().unwrap_or_default())})),
+            "/v1/host/prove" => {
+                let key = if self.impostor.load(std::sync::atomic::Ordering::SeqCst) { "not-the-host-token" } else { TOKEN };
+                (200, json!({"ok": true, "proof": buwiz_protocol::proof::broker_proof(key, body["nonce"].as_str().unwrap_or_default())}))
+            }
             SUBMIT => self.submit.lock().unwrap().clone(),
             SAVED => self.saved.lock().unwrap().clone(),
             DISMISS => (200, json!({"ok": true, "notice": {"kind": "user_form", "id": body["id"], "state": if body["mode"] == "escalated" { "escalated" } else { "dismissed" }}})),
@@ -104,7 +109,7 @@ fn submitted(state: &str) -> (u16, Value) {
 }
 
 fn start(submit: (u16, Value)) -> (Headless, Arc<Broker>) {
-    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), submit: Mutex::new(submit), saved: Mutex::new((200, json!({"ok": true, "usable": true}))) });
+    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), submit: Mutex::new(submit), saved: Mutex::new((200, json!({"ok": true, "usable": true}))), impostor: Default::default() });
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1000.0), px(900.0));
     config.network = Some(seen.clone());
@@ -399,4 +404,40 @@ fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {
     settle(&mut app);
     assert!(has_text(&app, "Not filled") && has_text(&app, "may have been typed"), "{:?}", app.texts());
     assert!(!app.has("Try again") && !app.has("Log in"), "no blind retry: {:?}", app.texts());
+}
+
+/// A stranger on the broker's port that can't prove it holds the host token gets no token and
+/// no card answer: not on Use, Dismiss, Open the screen or Log in.
+#[test]
+fn an_unproven_broker_gets_no_token_from_any_card_button() {
+    if !in_child("an_unproven_broker_gets_no_token_from_any_card_button") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    seen.impostor.store(true, std::sync::atomic::Ordering::SeqCst);
+    on(&mut app, || crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new(MARK)).unwrap());
+    with_card(&mut app);
+    app.press("Use");
+    wait_for(&mut app, &seen, "/v1/host/prove", 1);
+    settle(&mut app);
+    assert!(has_text(&app, "so no saved login was used"), "{:?}", app.texts());
+    app.press("Type it by hand");
+    settle(&mut app);
+    app.press("Open the screen");
+    wait_for(&mut app, &seen, "/v1/host/prove", 2);
+    settle(&mut app);
+    assert!(has_text(&app, "so nothing was sent"), "{:?}", app.texts());
+    app.press("Dismiss");
+    wait_for(&mut app, &seen, "/v1/host/prove", 3);
+    settle(&mut app);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, "/v1/host/prove", 4);
+    settle(&mut app);
+    let log = seen.log.lock().unwrap();
+    let card_calls: Vec<&String> = log.iter().map(|(p, _, _)| p).filter(|p| p.starts_with("/v1/host/computer/login/")).collect();
+    assert!(card_calls.is_empty(), "a card call went to an unproven broker: {card_calls:?}");
+    assert!(!log.iter().any(|(p, _, token)| *token && p.starts_with("/v1/host/prove")), "no token on a proof");
+    assert!(!log.iter().any(|(p, _, token)| *token && (p.starts_with("/v1/host/prove") || p.starts_with("/v1/host/computer/login/"))));
+    assert!(!log.iter().any(|(_, b, _)| b.to_string().contains(MARK)), "the password stayed in the app");
 }

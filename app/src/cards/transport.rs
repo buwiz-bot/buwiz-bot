@@ -186,12 +186,28 @@ pub(crate) fn dismiss_body(chat: &str, id: &str, mode: &str) -> Value {
     json!({ "chat": chat, "id": id, "mode": mode })
 }
 
-/// Dismiss, or Open the screen: with the host token, as every `/v1/host`
-/// call. It carries no value.
+/// What the card says when its broker didn't prove itself: nothing, the
+/// host token included, went to it.
+pub(crate) const UNPROVEN_NOTHING_SENT: &str = "Buwiz Bot couldn't verify its broker, so nothing was sent.";
+pub(crate) const UNPROVEN_NO_SAVED: &str = "Buwiz Bot couldn't verify its broker, so no saved login was used.";
+
+/// A fresh nonce for a proof.
+fn nonce() -> String {
+    buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>())
+}
+
+/// The real transport for [`proven_call`]: `POST path` with the token when given.
+async fn post_live(path: &'static str, body: Value, token: Option<String>) -> Option<(u16, Value)> {
+    call_as("POST", path, Some(&body), token.as_deref()).await
+}
+
+/// Dismiss, or Open the screen: with the host token, to a broker that has
+/// just proven it holds it, as every login-card call. It carries no value.
 pub(crate) async fn dismiss_user_form(body: Value) -> UserFormReply {
-    let reply = match call_as("POST", DISMISS_PATH, Some(&body), client::host_token().as_deref()).await {
-        Some((status, reply)) => user_form_action_from_http(status, &reply),
-        None => UserFormReply::MissingRoute,
+    let reply = match proven_call(client::host_token(), &nonce(), DISMISS_PATH, body.clone(), post_live).await {
+        Err(()) => UserFormReply::Refused(UNPROVEN_NOTHING_SENT.to_owned()),
+        Ok(Some((status, reply))) => user_form_action_from_http(status, &reply),
+        Ok(None) => UserFormReply::MissingRoute,
     };
     if reply == UserFormReply::MissingRoute {
         log_unsent("POST", DISMISS_PATH, &body);
@@ -201,10 +217,12 @@ pub(crate) async fn dismiss_user_form(body: Value) -> UserFormReply {
 
 /// Before Touch ID: whether the broker will use a saved login on this
 /// card's computer (never on one several Bots share). `Err` is the
-/// sentence the card shows; a broker that can't say is a no.
+/// sentence the card shows; a broker that can't say, or can't prove
+/// itself, is a no.
 pub(crate) async fn saved_login_usable(chat: &str, id: &str) -> Result<(), String> {
     let body = json!({ "chat": chat, "id": id });
-    match call_as("POST", SAVED_PATH, Some(&body), client::host_token().as_deref()).await {
+    let reply = proven_call(client::host_token(), &nonce(), SAVED_PATH, body, post_live).await.map_err(|()| UNPROVEN_NO_SAVED.to_owned())?;
+    match reply {
         Some((200, v)) if v.get("usable").and_then(Value::as_bool) == Some(true) => Ok(()),
         Some((_, v)) => Err(v
             .get("message")
@@ -232,29 +250,41 @@ pub(crate) const PROVE_PATH: &str = "/v1/host/prove";
 /// token in the 0600 file. Otherwise nothing leaves the app and the card
 /// says why.
 pub(crate) async fn submit_user_form(body: Value) -> UserFormReply {
-    let nonce = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
-    let reply = send_proven(client::host_token(), &nonce, body, |path, body, token| async move {
-        call_as("POST", path, Some(&body), token.as_deref()).await
-    })
-    .await;
+    let reply = send_proven(client::host_token(), &nonce(), body, post_live).await;
     if reply == UserFormReply::MissingRoute {
         log::info!("rox cards: the broker has no {SUBMIT_PATH}; the login went to it and was not used");
     }
     reply
 }
 
-/// [`submit_saved_login`] over `post(path, body, token)`, which answers
+/// [`submit_user_form`] over `post(path, body, token)`, which answers
 /// `(status, body)` or `None` when nothing could be reached: the proof
 /// first (no token on it), then the submit with the token, or nothing.
 /// Logs never carry a value.
-pub(crate) async fn send_proven<F, Fut>(token: Option<String>, nonce: &str, body: Value, mut post: F) -> UserFormReply
+pub(crate) async fn send_proven<F, Fut>(token: Option<String>, nonce: &str, body: Value, post: F) -> UserFormReply
+where
+    F: FnMut(&'static str, Value, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Option<(u16, Value)>>,
+{
+    match proven_call(token, nonce, SUBMIT_PATH, body, post).await {
+        Err(()) => UserFormReply::Refused(UNPROVEN.to_owned()),
+        Ok(Some((status, reply))) => user_form_action_from_http(status, &reply),
+        Ok(None) => UserFormReply::MissingRoute,
+    }
+}
+
+/// `path` with `body` and the host token, only once the server on the
+/// broker's port has proven it holds that token (`POST /v1/host/prove`,
+/// which carries none): `Err` when there is no token or no proof, and then
+/// nothing else is sent; `Ok(None)` when the call itself reached nothing.
+pub(crate) async fn proven_call<F, Fut>(token: Option<String>, nonce: &str, path: &'static str, body: Value, mut post: F) -> Result<Option<(u16, Value)>, ()>
 where
     F: FnMut(&'static str, Value, Option<String>) -> Fut,
     Fut: std::future::Future<Output = Option<(u16, Value)>>,
 {
     let Some(token) = token.filter(|t| !t.is_empty()) else {
-        log::warn!("rox cards: no host token to check the broker with; a login was not sent");
-        return UserFormReply::Refused(UNPROVEN.to_owned());
+        log::warn!("rox cards: no host token to check the broker with; {path} was not sent");
+        return Err(());
     };
     let proven = match post(PROVE_PATH, json!({ "nonce": nonce }), None).await {
         Some((200, reply)) => reply
@@ -262,19 +292,16 @@ where
             .and_then(Value::as_str)
             .is_some_and(|proof| buwiz_protocol::proof::proof_matches(&token, nonce, proof)),
         Some((status, _)) => {
-            log::warn!("rox cards: the broker answered {PROVE_PATH} {status}; a login was not sent");
+            log::warn!("rox cards: the broker answered {PROVE_PATH} {status}; {path} was not sent");
             false
         }
         None => false,
     };
     if !proven {
-        log::warn!("rox cards: the broker did not prove itself; a login was not sent");
-        return UserFormReply::Refused(UNPROVEN.to_owned());
+        log::warn!("rox cards: the broker did not prove itself; {path} was not sent");
+        return Err(());
     }
-    match post(SUBMIT_PATH, body, Some(token)).await {
-        Some((status, reply)) => user_form_action_from_http(status, &reply),
-        None => UserFormReply::MissingRoute,
-    }
+    Ok(post(path, body, Some(token)).await)
 }
 
 /// nativechat `user_form_action_from_http`, over the broker's answers too:
@@ -393,6 +420,27 @@ mod tests {
         let (reply, seen) = run(Some("tok"), |n| Some((200, json!({ "ok": true, "proof": buwiz_protocol::proof::broker_proof("tok", n) }))));
         assert!(matches!(reply, UserFormReply::Settled(_)), "{reply:?}");
         assert_eq!(seen, [(PROVE_PATH.to_owned(), None), (SUBMIT_PATH.to_owned(), Some("tok".to_owned()))], "no token on the proof");
+    }
+
+    #[test]
+    fn a_dismiss_or_a_saved_check_goes_with_the_token_only_to_a_broker_that_proves_itself() {
+        let nonce = buwiz_protocol::keys::b64(&[7u8; 32]);
+        for path in [DISMISS_PATH, SAVED_PATH] {
+            let seen = RefCell::new(Vec::new());
+            let impostor = ready(proven_call(Some("tok".to_owned()), &nonce, path, json!({"chat": "c", "id": "i"}), |p, _, token| {
+                seen.borrow_mut().push((p.to_owned(), token));
+                std::future::ready(Some((200, json!({ "proof": buwiz_protocol::proof::broker_proof("other", &nonce) }))))
+            }));
+            assert_eq!(impostor, Err(()), "{path}");
+            assert_eq!(seen.into_inner(), [(PROVE_PATH.to_owned(), None)], "{path}: only the proof, with no token");
+            let seen = RefCell::new(Vec::new());
+            let proven = ready(proven_call(Some("tok".to_owned()), &nonce, path, json!({}), |p, _, token| {
+                seen.borrow_mut().push((p.to_owned(), token));
+                std::future::ready(Some((200, json!({ "ok": true, "proof": buwiz_protocol::proof::broker_proof("tok", &nonce) }))))
+            }));
+            assert!(proven.is_ok(), "{path}");
+            assert_eq!(seen.into_inner(), [(PROVE_PATH.to_owned(), None), (path.to_owned(), Some("tok".to_owned()))]);
+        }
     }
 
     #[test]
