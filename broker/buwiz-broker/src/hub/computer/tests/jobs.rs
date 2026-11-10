@@ -480,8 +480,11 @@ async fn a_jobs_turn_that_fails_tells_the_chat_once() {
     until("no turn started", || script.calls.load(Ordering::SeqCst) >= 1).await;
     until("the turn never ended", || !b.ctx.jobs.busy(&b.ann.1)).await;
     b.computers.sleep_the_idle(&b.ctx).await;
+    let told = || -> Vec<String> { b.ctx.store.read(|s| s.thread(&b.ann.1).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_some_and(|n| n["reason"] == runs::FAILED)).map(|u| u.text.clone().unwrap()).collect()) };
+    until("the chat was never told", || !told().is_empty()).await;
+    // and not told twice
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let failures: Vec<String> = b.ctx.store.read(|s| s.thread(&b.ann.1).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_some_and(|n| n["reason"] == runs::FAILED)).map(|u| u.text.clone().unwrap()).collect());
+    let failures = told();
     assert_eq!(failures, [runs::failed_said(rejected)]);
 }
 

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use super::external::{signature, Externals, Post, BODY_MAX, HOOK_RATE};
 use super::run::{cards_to_chat, history_for, peer_prompt, Runs, PER_AGENT};
 use super::*;
+use crate::hub::agent::runs::tests::until;
 use crate::hub::ctx::HubCtx;
 use crate::hub::store::{Bot, Thread, Turn};
 use crate::hub::types::{BoxFuture, TurnCtx};
@@ -23,6 +24,8 @@ const START: f64 = 1_793_260_800_000.0; // 2026-10-29T08:00:00Z
 struct Stub {
     answer: Mutex<Option<String>>,
     delay_ms: u64,
+    /// When set, each request waits here until the test lets it finish.
+    gate: Option<Arc<tokio::sync::Notify>>,
     ran: Mutex<Vec<(String, String, String, Value)>>,
     open: Arc<AtomicUsize>,
     most: AtomicUsize,
@@ -36,9 +39,13 @@ impl Runs for Stub {
         self.ran.lock().unwrap().push(("request".into(), bot.id.clone(), js_str(msg.get("text")), json!(history)));
         let answer = self.answer.lock().unwrap().clone().map(|a| a.replace("{text}", &js_str(msg.get("text")))).unwrap_or_default();
         let delay = self.delay_ms;
+        let gate = self.gate.clone();
         let open = self.open.clone();
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(delay)).await;
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             open.fetch_sub(1, Ordering::SeqCst);
             Ok(answer)
         })
@@ -683,12 +690,12 @@ async fn hook_03_an_agents_answer_goes_out_signed_5xx_is_retried_4xx_dropped_wit
     assert_eq!(row("next_at"), rusqlite::types::Value::Integer(START as i64 + 30_000));
     // 500: tried again after a backoff, then 200
     assert!(w.ctx.clock.manual_step(None, true), "one retry timer");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // the row is marked after the POST returns
+    until("the retry was never marked delivered", || row("state") == rusqlite::types::Value::Text("delivered".into())).await;
     assert_eq!(w.posts.lock().unwrap().len(), 2);
-    assert_eq!(row("state"), rusqlite::types::Value::Text("delivered".into()));
     // the next answer gets a 404: dropped, and the conversation says so
     w.send_routed("boss", json!({"conversation": got["conversation"], "to": [format!("ext:{id}")], "text": "One more thing."})).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until("no drop notice", || w.conv(&got["conversation"]).turns.iter().any(|u| notice_kind(u) == Some("agents_undelivered"))).await;
     let t = w.conv(&got["conversation"]);
     let dropped = t.turns.iter().find(|u| notice_kind(u) == Some("agents_undelivered")).expect("the drop notice");
     assert_eq!(dropped.text.as_deref(), Some("Not delivered to CI (HTTP 404)"));
@@ -1185,11 +1192,14 @@ async fn a_sender_that_has_gone_stays_unheard() {
 
 #[tokio::test]
 async fn a_run_in_flight_sends_no_answer_once_its_bot_stops_hearing() {
-    let w = world_with(&["Scout", "Boss"], Stub { answer: Mutex::new(Some("Done".into())), delay_ms: 60, ..Default::default() }, Vec::new());
+    // the run stays in flight until Boss is turned off
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let w = world_with(&["Scout", "Boss"], Stub { answer: Mutex::new(Some("Done".into())), gate: Some(gate.clone()), ..Default::default() }, Vec::new());
     let r = w.send_routed("scout", json!({"to": ["boss"], "subject": "Tax check", "text": "Q?", "expects_reply": true})).unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    until("the run never started", || ran(&w, "request", "boss") >= 1).await;
     assert_eq!(ran(&w, "request", "boss"), 1, "running");
     none(&w, "boss");
+    gate.notify_one();
     w.settle().await;
     assert_eq!(w.messages(&r["conversation"]), 1, "no answer");
     assert_eq!(turned_away(&w.chat("scout")).len(), 1);
