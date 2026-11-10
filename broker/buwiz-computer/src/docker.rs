@@ -976,8 +976,9 @@ impl Provider for DockerProvider {
     /// gone. A box's own volumes are only ever its two, so its name says whose they were.
     async fn leftovers(&self) -> Result<Vec<Leftover>> {
         let format = format!("{{{{.Name}}}}\t{{{{.Label \"{LABEL}.id\"}}}}");
-        let volumes = self.docker(&["volume", "ls", "--format", &format], None).await?;
-        let containers = self.docker(&["ps", "-a", "--format", "{{.Names}}"], None).await?;
+        // both at once: the hub waits on the pair for a few seconds at most
+        let (ls, ps) = (["volume", "ls", "--format", format.as_str()], ["ps", "-a", "--format", "{{.Names}}"]);
+        let (volumes, containers) = tokio::try_join!(self.docker(&ls, None), self.docker(&ps, None))?;
         let there: HashSet<&str> = containers.lines().map(str::trim).collect();
         let mut out: Vec<Leftover> = volumes
             .lines()
@@ -1602,6 +1603,15 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         let down = tmp("leftovers-down");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&down, "echo 'Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?' >&2; exit 1"));
         assert!(p.leftovers().await.is_err(), "a Docker that can't say isn't one with nothing left");
+    }
+
+    #[tokio::test]
+    async fn leftovers_ask_docker_for_volumes_and_containers_at_once() {
+        let dir = tmp("leftovers-at-once");
+        // each answers only once both were asked: one after the other, the first never would
+        let body = format!("d='{}'; : > \"$d/in-$1\"; i=0; while [ ! -e \"$d/in-volume\" ] || [ ! -e \"$d/in-ps\" ]; do i=$((i+1)); [ $i -gt 100 ] && exit 1; sleep 0.1; done; case \"$1 $2\" in 'volume ls') printf 'c2-deadbeef-home\\t\\n';; esac", dir.display());
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
+        assert_eq!(p.leftovers().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
