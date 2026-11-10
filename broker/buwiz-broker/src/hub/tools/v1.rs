@@ -148,7 +148,11 @@ pub fn note_suggest(lt: &mut LinkTurn, suggest: &Value) {
 
 /// 16.2 `noteCard`: a card for the reply, never an open; a bad card is
 /// dropped and logged.
-fn note_card(run: &Run, row: &Row, open: &Value) {
+///
+/// The link also says which call made the card (`origin: {tool, args}`),
+/// so a card whose ticket its plugin lost can run that call again. Only an
+/// input the tool log would keep whole goes there.
+fn note_card(run: &Run, row: &Row, open: &Value, name: &str, input: &Value) {
     let card = match crate::helper::sessions::check_open(&row.manifest(), open) {
         Ok(c) => c,
         Err(e) => {
@@ -161,9 +165,13 @@ fn note_card(run: &Run, row: &Row, open: &Value) {
     let action = if card.get("placement").and_then(Value::as_str) == Some("inline") { "show" } else { "open" };
     let mut st = run.state();
     st.v1_cards.push(card.clone());
-    st.link_turn.get_or_insert_with(Default::default).links.push(json!({
+    let mut entry = json!({
         "provider": "buwiz-app", "id": link, "name": card["title"], "link": link, "action": action, "kind": "app", "file_type": "Mini app", "card": card,
-    }));
+    });
+    if let Some(args) = crate::hub::agent::tool_log::rerunnable(input) {
+        entry["origin"] = json!({"tool": name, "args": args});
+    }
+    st.link_turn.get_or_insert_with(Default::default).links.push(entry);
 }
 
 /// `v1AgentCall(plugins, job, name, input)`: a model call to a v1 tool
@@ -212,7 +220,7 @@ pub async fn call(run: &Run, name: &str, input: &Value) -> Out {
     }
     if let Some(open) = r.pointer("/_meta/buwiz~1open").filter(|o| js::truthy(o)) {
         if !failed {
-            note_card(run, &row, open);
+            note_card(run, &row, open, name, input);
         }
     }
     if let Some(suggest) = r.pointer("/_meta/buwiz~1suggest").filter(|o| js::truthy(o)) {
