@@ -29,12 +29,6 @@ const UNCONFIRMED: &str = "Couldn't confirm that change. Showing what the broker
 /// What pressing Some leaves in the box: the list opens for the first name.
 const ALLOW: &str = "/messages allow ";
 
-/// Whether `text`, trimmed, is `/messages`: `dispatch`'s reading of a
-/// built-in's name.
-pub(crate) fn is_command(text: &str) -> bool {
-    text.strip_prefix("/messages").is_some_and(|r| r.is_empty() || r.starts_with(|c: char| c == ':' || c.is_whitespace()))
-}
-
 /// The chat a command was typed in.
 enum Here {
     Plain,
@@ -640,10 +634,10 @@ mod tests {
     #[test]
     fn only_the_name_itself_is_the_command() {
         for t in ["/messages", "/messages none", "/messages\tnone", "/messages:none"] {
-            assert!(is_command(t), "{t}");
+            assert_eq!(crate::slash::names_a_builtin(t), Some("messages"), "{t}");
         }
         for t in ["/messagesx", "/message", "messages", "see /messages none", "/short:messages"] {
-            assert!(!is_command(t), "{t}");
+            assert_eq!(crate::slash::names_a_builtin(t), None, "{t}");
         }
     }
 

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::{CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Sleep, Spec, Viewer, Woke};
+use crate::{ActiveTab, BrowserOp, BrowserReply, CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Sleep, Spec, Viewer, Woke};
 
 /// Its computer's token and viewer password, for tests that look for them where they mustn't be.
 pub const TOKEN: &str = "mock-token-0123456789abcdef";
@@ -79,11 +79,76 @@ pub struct MockProvider {
     pub cant_keep: Mutex<Option<String>>,
     /// what `take_recover_note` gives, once
     pub recover_note: Mutex<Option<String>>,
+    /// the page in the screen's browser, for `/v1/browser/*`; `None`: no browser on a pipe
+    pub page: Mutex<Option<MockPage>>,
+    /// what `active_tab` reports, when set; else the page's own address
+    pub front: Mutex<Option<ActiveTab>>,
+    /// what `capabilities` answers
+    pub caps: Mutex<serde_json::Value>,
+    /// the next browser call whose op or act action is the first word is refused with this status
+    /// and code, once
+    pub browser_refusal: Mutex<Option<(String, u16, String)>>,
+    /// an act waits here until released, when set, as a browser that's slow to answer
+    pub hold_browser: AtomicBool,
+    /// what was typed into which field, by its label: kept apart from `calls`, which never hold
+    /// a typed text
+    pub typed: Mutex<Vec<(String, String)>>,
+}
+
+/// A page for the mock's browser: an address, its controls as a snap gives them, the number of its
+/// latest snap, and what happens on a key or a type.
+#[derive(Clone, Debug, Default)]
+pub struct MockPage {
+    pub url: String,
+    pub elements: Vec<serde_json::Value>,
+    pub snapshot: u64,
+    /// an Enter here needs a person's confirm of this label (a form whose button the box's confirm
+    /// words catch)
+    pub confirm_on_enter: Option<String>,
+    /// the page goes here after the first type, as a page that moved on would
+    pub moves_to: Option<String>,
+}
+
+impl MockPage {
+    /// A sign-in page on `url`: an email field, a password field the box calls sensitive, a search
+    /// box, and a button.
+    pub fn sign_in(url: &str) -> Self {
+        let field = |r: &str, label: &str, sensitive: bool| {
+            let mut e = serde_json::json!({"ref": r, "role": "text_field", "label": label, "actions": ["type"], "rect": {"x": 10, "y": 10, "width": 100, "height": 20}});
+            if sensitive {
+                e["sensitive"] = serde_json::json!(true);
+            }
+            e
+        };
+        Self {
+            url: url.to_owned(),
+            elements: vec![field("@e1", "Search", false), field("@e2", "Email", false), field("@e3", "Password", true), serde_json::json!({"ref": "@e4", "role": "button", "label": "Sign in", "actions": ["click"]})],
+            snapshot: 0,
+            confirm_on_enter: None,
+            moves_to: None,
+        }
+    }
+}
+
+/// The host of an `http(s)` address, lowercased.
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+fn on_list(url: &str, list: &serde_json::Value) -> bool {
+    let Some(host) = host_of(url) else { return false };
+    list.as_array().is_some_and(|l| l.iter().filter_map(serde_json::Value::as_str).any(|d| host == d || host.ends_with(&format!(".{d}"))))
+}
+
+fn refusal(status: u16, code: &str) -> BrowserReply {
+    BrowserReply { status, body: serde_json::json!({"error": {"code": code, "message": format!("mock {code}"), "status": status}}) }
 }
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default(), hold_browser: AtomicBool::new(false) }
     }
 }
 
@@ -94,6 +159,15 @@ impl MockProvider {
 
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// What was typed into the browser, by field label.
+    pub fn typed(&self) -> Vec<(String, String)> {
+        self.typed.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_page(&self, page: Option<MockPage>) {
+        *self.page.lock().unwrap_or_else(|e| e.into_inner()) = page;
     }
 
     pub fn set_power(&self, power: Power) {
@@ -326,6 +400,93 @@ impl Provider for MockProvider {
         self.awake()?;
         self.note(format!("open {} {url}", screen.display));
         Ok(())
+    }
+
+    async fn browser(&self, _: &Machine, screen: &Screen, op: BrowserOp, body: &serde_json::Value) -> Result<BrowserReply> {
+        use serde_json::json;
+        self.awake()?;
+        if op == BrowserOp::Act && self.hold_browser.load(Ordering::SeqCst) {
+            self.note(format!("browser {} act held", screen.display));
+            while self.hold_browser.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        let action = body.get("action").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+        let word = match op {
+            BrowserOp::Snap => "snap".to_owned(),
+            BrowserOp::State => "state".to_owned(),
+            BrowserOp::Act => action.clone(),
+        };
+        let refused = {
+            let mut r = self.browser_refusal.lock().unwrap_or_else(|e| e.into_inner());
+            if r.as_ref().is_some_and(|(w, _, _)| *w == word) { r.take() } else { None }
+        };
+        let mut guard = self.page.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(page) = guard.as_mut() else {
+            self.note(format!("browser {} {word} unavailable", screen.display));
+            return Ok(refusal(503, "browser_unavailable"));
+        };
+        if let Some((_, status, code)) = refused {
+            self.note(format!("browser {} {word} refused {code}", screen.display));
+            return Ok(refusal(status, &code));
+        }
+        match op {
+            BrowserOp::Snap => {
+                page.snapshot += 1;
+                self.note(format!("browser {} snap {}", screen.display, body.get("allow_domains").map(|d| d.to_string()).unwrap_or_default()));
+                Ok(BrowserReply { status: 200, body: json!({"snapshot": page.snapshot, "display": screen.display, "url": page.url, "elements": page.elements, "total": page.elements.len(), "truncated": false}) })
+            }
+            BrowserOp::State => {
+                let (what, name) = (body.get("op").and_then(serde_json::Value::as_str).unwrap_or_default(), body.get("name").and_then(serde_json::Value::as_str).unwrap_or_default());
+                self.note(format!("browser {} state {what} {name}", screen.display));
+                Ok(BrowserReply { status: 200, body: json!({"op": what, "name": name, "cookies": 2, "origins": [page.url]}) })
+            }
+            BrowserOp::Act => {
+                let r = body.get("ref").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                // what's typed is never in the calls: its length is
+                let len = body.get("text").and_then(serde_json::Value::as_str).map_or(0, |t| t.chars().count());
+                self.note(format!("browser {} act {action} {r} {len} chars allow={}", screen.display, body.get("allow_domains").map(|d| d.to_string()).unwrap_or_default()));
+                if body.get("snapshot").and_then(serde_json::Value::as_u64).is_some_and(|n| n != page.snapshot) {
+                    return Ok(refusal(409, "stale_ref"));
+                }
+                if body.get("allow_domains").is_some_and(|d| !on_list(&page.url, d)) {
+                    return Ok(refusal(403, "domain_not_allowed"));
+                }
+                let Some(label) = page.elements.iter().find(|e| e["ref"] == r.as_str()).map(|e| e["label"].as_str().unwrap_or_default().to_owned()) else { return Ok(refusal(409, "stale_ref")) };
+                match action.as_str() {
+                    "type" => {
+                        let text = body.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                        self.typed.lock().unwrap_or_else(|e| e.into_inner()).push((label, text));
+                        if let Some(next) = page.moves_to.take() {
+                            page.url = next;
+                        }
+                    }
+                    "key" if body.get("confirm").is_none() => {
+                        if let Some(label) = page.confirm_on_enter.clone() {
+                            return Ok(BrowserReply { status: 409, body: json!({"error": {"code": "confirm_required", "message": "needs a confirm", "details": {"label": label, "confirm": "mock-confirm-token"}}}) });
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(BrowserReply { status: 200, body: json!({"ok": true, "ref": r, "action": action}) })
+            }
+        }
+    }
+
+    async fn active_tab(&self, _: &Machine, screen: &Screen) -> Result<ActiveTab> {
+        self.awake()?;
+        self.note(format!("active_tab {}", screen.display));
+        if let Some(front) = self.front.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Ok(front);
+        }
+        let url = self.page.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|p| p.url.clone());
+        Ok(ActiveTab { url, focus: Some("none".to_owned()), seq: Some(1) })
+    }
+
+    async fn capabilities(&self, _: &Machine) -> Result<serde_json::Value> {
+        self.awake()?;
+        self.note("capabilities".to_owned());
+        Ok(self.caps.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     async fn read_file(&self, _: &Machine, path: &str) -> Result<Vec<u8>> {

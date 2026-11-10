@@ -1132,6 +1132,30 @@ impl Provider for BoatProvider {
         clean(machine, guest.open_url(screen, url).await)
     }
 
+    async fn browser(&self, machine: &Machine, screen: &Screen, op: crate::BrowserOp, body: &serde_json::Value) -> Result<crate::BrowserReply> {
+        let open = self.up(machine)?;
+        let Some(guest) = &open.guest else {
+            return Err(Problem::Asleep);
+        };
+        clean(machine, guest.browser(screen, op, body).await)
+    }
+
+    async fn active_tab(&self, machine: &Machine, screen: &Screen) -> Result<crate::ActiveTab> {
+        let open = self.up(machine)?;
+        let Some(guest) = &open.guest else {
+            return Err(Problem::Asleep);
+        };
+        clean(machine, guest.active_tab(screen).await)
+    }
+
+    async fn capabilities(&self, machine: &Machine) -> Result<serde_json::Value> {
+        let open = self.up(machine)?;
+        let Some(guest) = &open.guest else {
+            return Err(Problem::Asleep);
+        };
+        clean(machine, guest.capabilities().await)
+    }
+
     async fn resolve(&self, machine: &Machine, path: &str) -> Result<String> {
         let open = self.up(machine)?;
         let Some(guest) = &open.guest else {

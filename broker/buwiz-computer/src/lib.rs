@@ -448,6 +448,64 @@ fn jpeg(png_bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// One of the box's `/v1/browser/*` routes the broker uses: what reads a page's controls, acts on
+/// one by its ref, and keeps a screen's signed-in session. No model tool reaches them: only the
+/// broker's own login fill and a person's session commands do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowserOp {
+    Snap,
+    Act,
+    State,
+}
+
+impl BrowserOp {
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Snap => "/v1/browser/snap",
+            Self::Act => "/v1/browser/act",
+            Self::State => "/v1/browser/state",
+        }
+    }
+}
+
+/// The box's answer to a browser call, a refusal included: its status and body as they came, so
+/// its `error.code` (`stale_ref`, `confirm_required`, …) is the caller's to read. Never logged: a
+/// body could name what a page shows.
+#[derive(Clone, PartialEq)]
+pub struct BrowserReply {
+    pub status: u16,
+    pub body: serde_json::Value,
+}
+
+impl fmt::Debug for BrowserReply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "BrowserReply({} {})", self.status, self.code().unwrap_or("ok"))
+    }
+}
+
+impl BrowserReply {
+    pub fn ok(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+
+    /// A refusal's `error.code`.
+    pub fn code(&self) -> Option<&str> {
+        self.body.pointer("/error/code").and_then(serde_json::Value::as_str)
+    }
+}
+
+/// The page in front of a screen's browser, as the box's extension last reported it
+/// (`GET /v1/chrome/active-tab`). A desktop's own program writes the report, so it says which page
+/// is in front, and can't prove nothing lied about it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActiveTab {
+    /// `None` when nothing has reported
+    pub url: Option<String>,
+    /// `password`, `text`, `other` or `none`
+    pub focus: Option<String>,
+    pub seq: Option<u64>,
+}
+
 /// What a person or the model does to the screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
@@ -737,6 +795,22 @@ pub trait Provider: Send + Sync {
 
     async fn write_file(&self, _machine: &Machine, _path: &str, _content: &[u8]) -> Result<()> {
         unsupported("write files")
+    }
+
+    /// `POST /v1/browser/<op>` on `screen`, with `body` as given: the box's answer, refusals
+    /// included. `body` may hold what's typed, so nothing of it is logged here or below.
+    async fn browser(&self, _machine: &Machine, _screen: &Screen, _op: BrowserOp, _body: &serde_json::Value) -> Result<BrowserReply> {
+        unsupported("use a page by its controls")
+    }
+
+    /// The page in front of `screen`'s browser.
+    async fn active_tab(&self, _machine: &Machine, _screen: &Screen) -> Result<ActiveTab> {
+        unsupported("say which page is in front")
+    }
+
+    /// `GET /v1/info`'s `capabilities`: what the box's image says it can do.
+    async fn capabilities(&self, _machine: &Machine) -> Result<serde_json::Value> {
+        unsupported("say what it can do")
     }
 
     /// A mark to pass [`WaitFor::since`], when the provider numbers screen changes.

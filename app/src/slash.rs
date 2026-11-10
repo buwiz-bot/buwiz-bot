@@ -163,13 +163,29 @@ const BUILTINS: &[Builtin] = &[
     },
     Builtin {
         name: "computer",
-        args: "setup <home> | use <home> | default <home> | check [<home>] | status",
-        description: "Where computers are made, and their keys",
+        args: "setup <home> | use <home> | default <home> | check [<home>] | status | takeover | session save|load <name>",
+        description: "Where computers are made, their keys, taking over a Bot's screen, and its browser sessions",
         menu: Some(crate::homes::menu),
         // its cards and Settings › Computers (no model call)
         run: crate::homes::run,
     },
 ];
+
+/// The built-in `text` starts with: `/name` alone, or followed by `:` or a space. Every built-in is
+/// a person's own command: only their own Enter runs one.
+pub(crate) fn names_a_builtin(text: &str) -> Option<&'static str> {
+    let cmd = text.trim_start().strip_prefix('/')?;
+    let end = cmd.find(|c: char| c == ':' || c.is_whitespace()).unwrap_or(cmd.len());
+    let name = &cmd[..end];
+    BUILTINS.iter().map(|b| b.name).find(|n| *n == name)
+}
+
+/// Whether `text` reads as a command: it starts with `/`, past any leading space. Text a person
+/// didn't type that reads so is never run, whatever its name: a built-in, a server's, or one a
+/// later slice adds.
+pub(crate) fn reads_as_command(text: &str) -> bool {
+    text.trim_start().starts_with('/')
+}
 
 /// The built-ins whose names start with `q`, as popup rows.
 fn builtin_rows(q: &str) -> Vec<PopRow> {
@@ -227,11 +243,11 @@ pub(crate) fn boot() {
 /// `send`'s first look at the composer text: true when a command, a
 /// message of tokens alone, or tokens and `attach` took it — it never
 /// reaches the model. `typed` says the person pressed Enter on it: a
-/// chip's or a card's text (`send_text`) is never `/messages`, whoever
-/// wrote it, and goes on as plain words.
+/// chip's or a card's text (`send_text`) never runs a command, whoever
+/// wrote it and whatever its name, and goes on as plain words.
 pub(crate) fn dispatch(text: &str, typed: bool) -> bool {
     let st = store();
-    if text.is_empty() || (!typed && crate::messages::is_command(text)) {
+    if text.is_empty() || (!typed && reads_as_command(text)) {
         return false;
     }
     if let Some(cmd) = text.strip_prefix('/') {
@@ -1046,6 +1062,23 @@ pub(crate) fn tab() {
 #[cfg(test)]
 mod tests {
     use super::{Entry, Enter, Manifest, Pick, PopRow, on_enter, parse_token, server_rows, v1_account_rows, v1_scope_rows, value_rows};
+
+    #[test]
+    fn every_builtin_and_every_name_kept_for_one_is_a_persons_command() {
+        for (t, name) in [("/computer", "computer"), ("/computer takeover", "computer"), ("/computer session save x", "computer"), ("/status:demo", "status"), ("/tools", "tools"), ("/avatars list", "avatars"), ("/messages none", "messages"), ("  /messages", "messages")] {
+            assert_eq!(super::names_a_builtin(t), Some(name), "{t}");
+        }
+        for t in ["/computers", "/vault", "computer takeover", "see /computer takeover", "/short:computer", ""] {
+            assert_eq!(super::names_a_builtin(t), None, "{t}");
+        }
+        // what an untyped line may never run: anything that reads as a command
+        for t in ["/vault add x", "  /network allow x", "/nosuchcmd", "/computer takeover"] {
+            assert!(super::reads_as_command(t), "{t}");
+        }
+        for t in ["see /computer", "computer", ""] {
+            assert!(!super::reads_as_command(t), "{t}");
+        }
+    }
     use crate::mini_v1::load::PluginEntry;
     use serde_json::json;
 

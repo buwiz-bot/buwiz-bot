@@ -76,7 +76,7 @@ pub const ASK_PERSON: &str = "computer_ask_person";
 pub const ASK_KEY: &str = "computer_takeover";
 /// The model's one say in where its computer runs: a card that asks a person. It sees no key.
 pub const SETUP: &str = "computer_setup";
-pub const NAMES: [&str; 17] = [
+pub const NAMES: [&str; 18] = [
     "computer_screenshot",
     "computer_click",
     "computer_drag",
@@ -94,10 +94,12 @@ pub const NAMES: [&str; 17] = [
     "computer_job_stop",
     ASK_PERSON,
     SETUP,
+    super::login::NAME,
 ];
-/// The ones that don't need a card first. `computer_ask_person` is its own card, and so is
-/// `computer_setup`, which changes nothing itself.
-pub const READS: [&str; 6] = ["computer_screenshot", "computer_wait", "computer_read_file", "computer_job_status", ASK_PERSON, SETUP];
+/// The ones that don't need a card first. `computer_ask_person` is its own card, and so are
+/// `computer_setup`, which changes nothing itself, and `request_user_form`, whose card is the
+/// person's own answer.
+pub const READS: [&str; 7] = ["computer_screenshot", "computer_wait", "computer_read_file", "computer_job_status", ASK_PERSON, SETUP, super::login::NAME];
 
 /// How long a person gets, when the model doesn't say, and the most and least it can say.
 const TAKEOVER_S: u64 = 300;
@@ -138,7 +140,8 @@ pub fn defs() -> Vec<Value> {
         json!({"name": "computer_job_status", "description": "See how your jobs on your computer stand: with an id, that job and the end of what it printed; without, your latest jobs.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}}}),
         json!({"name": "computer_job_stop", "description": "Stop a job of yours on your computer, and everything it started.", "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}),
         json!({"name": SETUP, "description": "When you need a computer and have none (or yours is gone), ask the person to set one up: this puts a card in the chat where they pick where it runs and add their own keys. You never see, type or ask for a key, and you can't pick the place or wake it yourself. Say in one line what you need it for.", "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need the computer for, in one line"}}, "required": ["reason"]}}),
-        json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do, such as signing in or a one-time code: open the page first, and they use your own browser there. Your commands keep running; whatever you left running on the screen's own desktop is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
+        json!({"name": ASK_PERSON, "description": format!("Ask a person to take over your screen for what only they should do there: a captcha, a code sent to their phone, a passkey or an odd page. For a sign-in form, use request_user_form instead. Open the page first, and they use your own browser there. Your commands keep running; whatever you left running on the screen's own desktop is ended first. You wait until they hand it back or the time runs out, then you get the screen as they left it. Never ask for a password in chat.{tail}"), "input_schema": {"type": "object", "properties": {"reason": {"type": "string", "description": "what you need them to do, in one line"}, "time_limit_s": {"type": "integer", "description": "how long they have once they say yes: 30 to 1800; 300 when left out"}}, "required": ["reason"]}}),
+        super::login::def(),
     ]
 }
 
@@ -151,7 +154,8 @@ const REMOTE_NO_HANDOVER: &str = "A remote computer's screen can't be handed ove
 pub fn defs_for(run: &Run) -> Vec<Value> {
     let present = asking::present(&run.turn);
     let remote = remote_at(run).is_some();
-    let mut defs: Vec<Value> = defs().into_iter().filter(|d| (present && !remote) || d["name"] != ASK_PERSON).collect();
+    // a card is for a person who's there, on a screen walled off from what the model runs
+    let mut defs: Vec<Value> = defs().into_iter().filter(|d| (present && !remote) || (d["name"] != ASK_PERSON && d["name"] != super::login::NAME)).collect();
     if remote {
         if let Some(run_def) = defs.iter_mut().find(|d| d["name"] == "computer_run") {
             run_def["description"] = json!(RUN_REMOTE);
@@ -229,7 +233,9 @@ pub async fn prompt(run: &Run) -> String {
         format!("{REMOTE_WORDS} It has no screen: computer_run, computer_job_start, computer_job_status, computer_job_stop, computer_read_file and computer_write_file work there, and nothing else does.")
     } else if sees(run).await {
         let remote = if remote_at(run).is_some() { REMOTE_WORDS } else { "" };
-        let person = if remote.is_empty() { " When a page needs a person, such as a sign-in, use computer_ask_person rather than asking for a password." } else { " When a page needs a person, such as a sign-in, say so in chat rather than asking for a password." };
+        // what it says of a person matches what's offered: a sign-in card and a hand-over are only
+        // for a turn with someone there (`defs_for`)
+        let person = if !asking::present(&run.turn) { " Nobody can answer a card in this turn, so a page that needs a sign-in, a code or a person's hand waits: say in your report what needs them, and never type or ask for a password." } else if remote.is_empty() { " When a page asks for a site login, open it, look, and call request_user_form, then wait: you never receive a password or a code, and must never type one with computer_type or ask for one in chat. Filling is not signing in, so look afterwards. For a captcha, a code sent to their phone or an odd page, use computer_ask_person so they finish it on your screen." } else { " When a page needs a person, such as a sign-in, say so in chat rather than asking for a password." };
         format!("{remote}\n\nYour computer: the screen is for acting. To read a page or a file, use a text route where one exists (fetch_url, computer_read_file, computer_run), because each screenshot is costly and only the latest few stay with you.{person}")
     } else {
         format!("\n\nYour computer: if asked to use it, say this in your own words: {BLIND}")
@@ -311,7 +317,7 @@ async fn clear_to_act(run: &Run, computers: &Computers, live: Live, name: &str) 
             // it may have slept or moved while it waited
             live = computers.live(&run.ctx, &live.bot).await?;
         }
-        let looks_alone = matches!(name, "computer_screenshot" | "computer_wait" | "computer_run" | "computer_read_file" | "computer_write_file" | "computer_record" | "computer_job_start" | "computer_job_status" | "computer_job_stop" | ASK_PERSON);
+        let looks_alone = matches!(name, "computer_screenshot" | "computer_wait" | "computer_run" | "computer_read_file" | "computer_write_file" | "computer_record" | "computer_job_start" | "computer_job_status" | "computer_job_stop" | ASK_PERSON | super::login::NAME);
         let since = if looks_alone { None } else { live.provider.mark(&live.machine, &live.screen).await };
         if !computers.person_on(&live.bot) {
             return Ok((live, since));
@@ -357,29 +363,58 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
     if let Err(no_answer) = asking::ask(run, asked).await {
         return Out::err(no_answer);
     }
+    match hand_screen(run, computers, live, &reason, std::time::Duration::from_secs(limit)).await {
+        Ok((live, facts)) => look(run, &live, facts).await,
+        Err(out) => out,
+    }
+}
+
+/// The screen is the person's until they hand it back or `limit` runs out, as a person who said
+/// yes to it asked: [`begin_handover`], then [`finish_handover`]. → the computer as it is after,
+/// and the facts of how it went (`outcome`: `handed_back` or `timed_out`); `Err` what the model is
+/// told instead.
+pub(super) async fn hand_screen(run: &Run, computers: &std::sync::Arc<Computers>, live: Live, reason: &str, limit: std::time::Duration) -> Result<(Live, Value), Out> {
+    let handed = begin_handover(run, computers, live, reason, limit).await?;
+    finish_handover(run, computers, handed).await
+}
+
+/// A screen in a person's hands, from [`begin_handover`].
+pub(super) struct Handed {
+    live: Live,
+    handing: crate::hub::computer::Handing,
+    recording: Option<String>,
+    ended_programs: Vec<String>,
+}
+
+/// What the model was recording stops, what it left running on the desktop is ended, and the
+/// screen is handed over. `Err` (what the model is told) when it couldn't be: nothing is the
+/// person's then.
+pub(super) async fn begin_handover(run: &Run, computers: &std::sync::Arc<Computers>, live: Live, reason: &str, limit: std::time::Duration) -> Result<Handed, Out> {
     // the answer can take minutes: what was seen before it is no use now
-    let live = match computers.live(&run.ctx, &live.bot).await {
-        Ok(l) => l,
-        Err(p) => return no(&p),
-    };
-    let recording = match computers.end_recording(&live).await {
-        Ok(r) => r,
-        Err(p) => return no(&p),
-    };
+    let live = computers.live(&run.ctx, &live.bot).await.map_err(|p| no(&p))?;
+    let recording = computers.end_recording(&live).await.map_err(|p| no(&p))?;
     // what stopped is the model's to know, whatever happens next
     let refused = |p: &Problem| match &recording {
         Some(path) => Out::err(format!("{} Your recording was stopped and saved as {path}.", p.sentence())),
         None => no(p),
     };
     // nothing is handed over beside what can't be cleared: this Bot's desktop alone
-    let ended_programs = match live.provider.clear_strays(&live.machine, &live.screen).await {
-        Ok(names) => names,
-        Err(p) => return refused(&p),
-    };
-    let mut handing = match computers.hand_over(&live, &reason, std::time::Duration::from_secs(limit)) {
-        Ok(h) => h,
-        Err(p) => return refused(&p),
-    };
+    let ended_programs = live.provider.clear_strays(&live.machine, &live.screen).await.map_err(|p| refused(&p))?;
+    let handing = computers.hand_over(&live, reason, limit).map_err(|p| {
+        // what was ended stays ended: the model is told, whatever stopped the hand-over
+        let out = refused(&p);
+        if ended_programs.is_empty() {
+            return out;
+        }
+        let said = out.content.as_str().unwrap_or_default().to_owned();
+        Out::err(format!("{said} What you left running on your screen's desktop was ended first: {}. Start again what you still need.", ended_programs.join(", ")))
+    })?;
+    Ok(Handed { live, handing, recording, ended_programs })
+}
+
+/// Waits for the person to hand the screen back, or for its time to run out.
+pub(super) async fn finish_handover(run: &Run, computers: &std::sync::Arc<Computers>, handed: Handed) -> Result<(Live, Value), Out> {
+    let Handed { live, mut handing, recording, ended_programs } = handed;
     run.set_job("waiting", asking::WAITING);
     let ended = handing.ended().await;
     drop(handing);
@@ -387,14 +422,11 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
     let outcome = match ended {
         Some(Ended::HandedBack) => "handed_back",
         None => "timed_out",
-        Some(Ended::Asleep) => return no(&Problem::Asleep),
-        Some(Ended::Gone) => return no(&Problem::Gone),
+        Some(Ended::Asleep) => return Err(no(&Problem::Asleep)),
+        Some(Ended::Gone) => return Err(no(&Problem::Gone)),
     };
     Computers::touch(&run.ctx, &live.computer);
-    let live = match computers.live(&run.ctx, &live.bot).await {
-        Ok(l) => l,
-        Err(p) => return no(&p),
-    };
+    let live = computers.live(&run.ctx, &live.bot).await.map_err(|p| no(&p))?;
     let mut facts = json!({"outcome": outcome});
     if outcome == "timed_out" {
         facts["note"] = json!("Their time ran out, so they may not have finished.");
@@ -406,7 +438,7 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
         facts["programs_ended"] = json!(ended_programs);
         facts["programs_note"] = json!("What was left running on your screen's desktop was ended before the person started. Start again what you still need.");
     }
-    look(run, &live, facts).await
+    Ok((live, facts))
 }
 
 /// One of [`NAMES`]. The switches have had their say (`controls`).
@@ -449,7 +481,13 @@ pub async fn tool(run: &Run, name: &str, input: &Value) -> Out {
     };
     let computer = live.computer.clone();
     Computers::touch(ctx, &computer);
-    let out = if name == ASK_PERSON { ask_person(run, &computers, live, input).await } else { act(run, &computers, &live, name, input, since).await };
+    let out = if name == ASK_PERSON {
+        ask_person(run, &computers, live, input).await
+    } else if name == super::login::NAME {
+        super::login::request(run, &computers, live, input).await
+    } else {
+        act(run, &computers, &live, name, input, since).await
+    };
     Computers::touch(ctx, &computer);
     out
 }

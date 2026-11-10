@@ -149,6 +149,10 @@ pub(crate) fn settings_page() -> impl IntoElement {
                 )
                 .child(small_btn("Refresh", false, reload)),
         )
+        .child(match super::keychain::warning(&super::keychain::kind()) {
+            Some(w) => view().test_id("logins-store-warning").px_4().pb_2().child(text(w).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::WARN)).into_element(),
+            None => view().into_element(),
+        })
         .child(
             text("Saved from sign-in forms an agent asked you to fill. Passwords stay in the macOS Keychain; showing one asks for Touch ID.")
                 .text_size(px(12.0))

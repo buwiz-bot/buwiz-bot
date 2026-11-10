@@ -1278,11 +1278,12 @@ impl Store {
     }
 
     /// A command's `prompt` answer, placed in the box for the person to
-    /// send. Never a `/messages` line: who can reach a Bot is the person's
-    /// to type, not a plugin's to stage one Enter away.
+    /// send. Never a built-in's line (`/messages`, `/computer`, …): a
+    /// person's commands are theirs to type, not a plugin's to stage one
+    /// Enter away.
     pub(crate) fn v1_place_prompt(&'static self, text: &str) {
-        if crate::messages::is_command(text.trim()) {
-            return crate::toast::show("A plugin can't put /messages in the box.");
+        if let Some(name) = crate::slash::names_a_builtin(text.trim()) {
+            return crate::toast::show(format!("A plugin can't put /{name} in the box."));
         }
         self.draft.set(tokens::prompt_draft(&self.draft.get_untracked(), text));
         crate::composer::focus();
