@@ -893,7 +893,13 @@ impl Computers {
             self.adopt(ctx, id, machine)?;
             ctx.db.with(|c| c.execute("UPDATE computers SET lost_at=NULL WHERE id=?", [id])).map_err(db_problem)?;
         }
-        Ok((self.provider_json(ctx, kind), format!("Computer {id} was found again and kept, with its files. No Bot sits at it: add one from that Bot's Computer tab, or delete it.")))
+        let mut said = format!("Computer {id} was found again and kept, with its files. No Bot sits at it: add one from that Bot's Computer tab, or delete it.");
+        // what the platform has of it besides, left alone: a person decides
+        if let Some(note) = provider.take_recover_note(id) {
+            said.push(' ');
+            said.push_str(&note);
+        }
+        Ok((self.provider_json(ctx, kind), said))
     }
 
     /// A person's Delete of computer `id` on `kind`, found with its record lost: it's on its way

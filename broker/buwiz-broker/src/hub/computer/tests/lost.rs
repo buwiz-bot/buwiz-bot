@@ -449,3 +449,21 @@ async fn a_kind_that_cant_keep_offers_only_delete_and_says_why() {
         .unwrap();
     assert!(row["keep"] == true && row.get("why").is_none(), "{row}");
 }
+
+/// What the platform left alone when it found the computer again (other sandboxes labelled for it,
+/// on boat) is in the Keep's answer: they may still be costing.
+#[tokio::test]
+async fn keep_says_what_else_of_the_computer_was_left_as_it_is() {
+    let b = bed("lost-keep-note");
+    let (old, fresh) = lost_one(&b).await;
+    *b.mock.recoverable.lock().unwrap() = Some(buwiz_computer::Reach::Container {
+        name: "mock-found".into(),
+    });
+    *b.mock.recover_note.lock().unwrap() = Some("Other sandboxes are labelled for this computer: bx_2.".to_owned());
+    let (_, said) = fresh
+        .keep_lost(&b.ctx, ProviderKind::Docker, &old)
+        .await
+        .unwrap();
+    assert!(said.contains("No Bot sits at it") && said.ends_with("Other sandboxes are labelled for this computer: bx_2."), "{said}");
+    assert!(!deleted_anything(&b), "{:?}", b.mock.calls());
+}

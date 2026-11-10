@@ -330,6 +330,8 @@ pub struct BoatProvider {
     ssh: PathBuf,
     links: Mutex<HashMap<PathBuf, Arc<Open>>>,
     turns: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    /// by computer id: what the last recover left alone that a person should know of
+    recover_notes: Mutex<HashMap<String, String>>,
 }
 
 impl BoatProvider {
@@ -348,6 +350,7 @@ impl BoatProvider {
             ssh: PathBuf::from(ssh::SSH),
             links: Mutex::default(),
             turns: Mutex::default(),
+            recover_notes: Mutex::default(),
         }
     }
 
@@ -981,11 +984,14 @@ impl Provider for BoatProvider {
     /// and registered at the login. Nothing is stopped or deleted here. Only a usable sandbox is
     /// taken: one boat calls broken (`error`, `cancelled`, as [`Provider::power`] reads them) is
     /// passed over. Of several usable ones, the one the record named, else the first by id; the
-    /// others are left as they are. `None` when boat has nothing usable for this computer.
+    /// others are left as they are, and named in a log line and in
+    /// [`Provider::take_recover_note`], since they may still be billing. `None` when boat has
+    /// nothing usable for this computer.
     async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
         self.check().await?;
         let mut found = self.labelled(&spec.id).await?;
         found.sort_unstable();
+        let labelled: Vec<String> = found.iter().map(|(s, _)| s.clone()).collect();
         let last = match last {
             Some(Reach::Sandbox { id }) => Some(safe_id(id)?.to_owned()),
             _ => None,
@@ -1013,6 +1019,17 @@ impl Provider for BoatProvider {
             }
         }
         let Some(sandbox) = sandbox else { return Ok(None) };
+        // the others are left as they are, and may be running and billing: a person is told
+        let others: Vec<&str> = labelled.iter().filter(|s| **s != sandbox).map(String::as_str).collect();
+        let mut notes = self.recover_notes.lock().unwrap_or_else(|e| e.into_inner());
+        if others.is_empty() {
+            notes.remove(&spec.id);
+        } else {
+            let others = others.join(", ");
+            eprintln!("buwiz-computer: boat computer {} was found again on {sandbox}; other sandboxes labelled for it were left as they are: {others}", spec.id);
+            notes.insert(spec.id.clone(), format!("Other boat.dev sandboxes are labelled for this computer, and were left as they are, so they may still be running and costing: {others}. Delete them in boat.dev if you don't need them."));
+        }
+        drop(notes);
         Ok(Some(Machine {
             provider: ProviderKind::Boat,
             reach: Reach::Sandbox { id: sandbox },
@@ -1023,6 +1040,13 @@ impl Provider for BoatProvider {
             link: None,
             seen: None,
         }))
+    }
+
+    fn take_recover_note(&self, id: &str) -> Option<String> {
+        self.recover_notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id)
     }
 
     async fn guard(&self, machine: &Machine) -> Result<()> {

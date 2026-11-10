@@ -970,3 +970,26 @@ fn the_stage_reads_the_containers_layout_before_it_writes_anything() {
     assert!(at("docker inspect") < at("read -r t"), "{STAGE}");
     assert!(STAGE.contains(r#"{{if eq .Destination "/run/buwiz-computer"}}{{.RW}}"#), "{STAGE}");
 }
+
+#[tokio::test]
+async fn recover_names_the_other_labelled_sandboxes_it_leaves_as_they_are() {
+    let fake = serve(listing(
+        r#"{"id":"bx_zzzz2222","state":"ready"},{"id":"bx_aaaa2222","state":"archived"},{"id":"bx_bbbb2222","state":"error"}"#,
+        None,
+    ))
+    .await;
+    let (ssh, _) = refusing_ssh("recover-others");
+    let p = provider(fake.addr, ssh);
+    let spec = spec("recover-others");
+    let found = p.recover(&spec, None).await.unwrap().unwrap();
+    assert_eq!(sandbox_of(&found), "bx_aaaa2222");
+    let note = p.take_recover_note("comp1").unwrap();
+    assert!(note.contains("bx_bbbb2222, bx_zzzz2222") && !note.contains("bx_aaaa2222"), "{note}");
+    assert_eq!(p.take_recover_note("comp1"), None, "taken once");
+    assert!(calls(&fake).iter().all(|c| c.starts_with("GET ")), "nothing was deleted: {:?}", calls(&fake));
+    // one alone leaves nothing to say
+    let fake = serve(listing(r#"{"id":"bx_aaaa2222","state":"ready"}"#, None)).await;
+    let p = provider(fake.addr, refusing_ssh("recover-alone").0);
+    p.recover(&spec, None).await.unwrap().unwrap();
+    assert_eq!(p.take_recover_note("comp1"), None);
+}

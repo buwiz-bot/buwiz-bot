@@ -648,6 +648,12 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// What the last [`Provider::recover`] of computer `id` left alone that a person should know,
+    /// as a sentence: other things of it still there, say. Taken: a second ask has nothing.
+    fn take_recover_note(&self, _id: &str) -> Option<String> {
+        None
+    }
+
     /// Why a computer of this kind found with its record lost can't be kept, as the sentence a
     /// person reads: [`Provider::recover`] never gives one back, whatever is found. `None` when it
     /// can, which is what a person is offered Keep for.
