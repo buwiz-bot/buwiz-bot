@@ -480,6 +480,8 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
                         .on_press(|| store().close_mini()),
                 ),
         )
+        // a computer's mode and a hand-over's reason, under the bar and clear of its title
+        .when(crate::computer::bot_of_key(&key).is_some(), |v| v.child(crate::computer::mode_line(&key)))
         .child(
             view()
                 .flex_1()
