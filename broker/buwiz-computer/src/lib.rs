@@ -476,6 +476,18 @@ impl Default for WaitFor {
     }
 }
 
+/// Something of a computer that's gone, still on the machine its provider runs on: a Docker
+/// volume whose box is no more, say. Only ever listed: what's in it is a person's to keep or not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leftover {
+    /// the provider's own name for it, as a person would look it up
+    pub name: String,
+    /// the computer it was made for, when it says
+    pub id: Option<String>,
+    /// the box it belonged to: the name its record would have
+    pub owner: String,
+}
+
 /// How a wait ended. `fallback` is a fixed pause: no viewer could say.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Settled {
@@ -620,6 +632,12 @@ pub trait Provider: Send + Sync {
     /// is where it was, when that's still known.
     async fn sweep(&self, _id: &str, _last: Option<&Reach>) -> Result<()> {
         Ok(())
+    }
+
+    /// What's left of computers whose box is gone, files and all, whether or not a record names
+    /// them: the caller knows which records it has. Nothing is removed.
+    async fn leftovers(&self) -> Result<Vec<Leftover>> {
+        Ok(Vec::new())
     }
 
     /// A record for computer `spec.id` from what's left of it, with new secrets, when its saved

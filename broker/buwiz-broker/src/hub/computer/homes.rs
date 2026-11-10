@@ -22,13 +22,13 @@
 //!   expired), a save or a removal says where to look, and a person who looked can forget it: no
 //!   key change is ever held up by a row nothing can clear.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use buwiz_computer::ec2::{self, creds, sigv4::Credentials};
-use buwiz_computer::{cloud, provider_for, BoatProvider, DockerProvider, E2bProvider, Ec2Provider, Power, Problem, Provider, ProviderKind, Secret, Shared};
+use buwiz_computer::{cloud, provider_for, BoatProvider, DockerProvider, E2bProvider, Ec2Provider, Power, Problem, Provider, ProviderKind, Reach, Secret, Shared};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Map, Value};
 
@@ -639,6 +639,40 @@ impl Computers {
     pub fn providers_json(&self, ctx: &HubCtx) -> Value {
         let providers: Vec<Value> = OFFERED.iter().map(|k| self.provider_json(ctx, *k)).collect();
         json!({"default": default_json(ctx), "providers": providers})
+    }
+
+    /// [`Computers::providers_json`], with what's left on this Mac of Docker computers that are
+    /// gone on Docker's entry: `leftovers`, the volumes no computer here names. Files nothing else
+    /// shows, and only listed: a person decides what's in them, so nothing here removes them.
+    pub async fn providers_seen(&self, ctx: &HubCtx) -> Value {
+        let mut out = self.providers_json(ctx);
+        let left = self.docker_leftovers(ctx).await;
+        if let Some(home) = out["providers"].as_array_mut().and_then(|l| l.iter_mut().find(|h| h["kind"] == ProviderKind::Docker.as_str())) {
+            home["leftovers"] = json!(left);
+        }
+        out
+    }
+
+    /// Docker's leftovers that are no computer's here, by its id or its box's name. Not knowing
+    /// which computers there are, any volume could be one's, so then none is listed.
+    async fn docker_leftovers(&self, ctx: &HubCtx) -> Vec<Value> {
+        let Ok(ids) = Self::try_ids_where(ctx, "1=1") else { return Vec::new() };
+        let mut boxes = HashSet::new();
+        for id in &ids {
+            let Ok(reach) = Self::reach_of(ctx, id) else { return Vec::new() };
+            if let Some(Reach::Container { name }) = reach.or_else(|| self.machine(ctx, id).ok().map(|m| m.reach)) {
+                boxes.insert(name);
+            }
+        }
+        let Ok(found) = self.homes.provider(ctx, ProviderKind::Docker).leftovers().await else { return Vec::new() };
+        found
+            .into_iter()
+            .filter(|l| !boxes.contains(&l.owner) && !l.id.as_ref().is_some_and(|id| ids.contains(id)))
+            .map(|l| match l.id {
+                Some(id) => json!({"name": l.name, "id": id}),
+                None => json!({"name": l.name}),
+            })
+            .collect()
     }
 
     /// Saves what a person gave `kind`, once it works. `values` holds the fields they filled in (a

@@ -1827,7 +1827,7 @@ async fn providers(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         return host::unauthorized();
     }
     let Some(computers) = Computers::of(&ctx) else { return unavailable() };
-    types::json(StatusCode::OK, &computers.providers_json(&ctx))
+    types::json(StatusCode::OK, &computers.providers_seen(&ctx).await)
 }
 
 /// `PUT /v1/host/computer/providers/{kind} {values, clear?}`: checked, then kept, or nothing kept.

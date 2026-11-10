@@ -379,6 +379,30 @@ async fn a_sleep_that_couldnt_keep_whats_open_says_so_until_the_next_wake() {
 }
 
 #[tokio::test]
+async fn files_left_by_a_docker_computer_thats_gone_are_listed_and_a_known_ones_arent() {
+    let b = bed("leftovers");
+    let id = awake(&b, &b.ann.0).await;
+    let left = |name: &str, id: Option<&str>, owner: &str| buwiz_computer::Leftover { name: name.to_owned(), id: id.map(str::to_owned), owner: owner.to_owned() };
+    *b.mock.leftovers.lock().unwrap() = vec![
+        // this computer's, by its box's name and by its label: a wake rebuilds on them
+        left(&format!("mock-{id}-home"), None, &format!("mock-{id}")),
+        left("c2-renamed-home", Some(&id), "c2-renamed"),
+        left("c2-0a1b2c3d-workspace", Some("cmp_gone"), "c2-0a1b2c3d"),
+        left("c2-deadbeef-home", None, "c2-deadbeef"),
+    ];
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([{"name": "c2-0a1b2c3d-workspace", "id": "cmp_gone"}, {"name": "c2-deadbeef-home"}]));
+    assert!(!b.mock.calls().iter().any(|c| c.starts_with("destroy") || c.starts_with("sweep")), "only listed: {:?}", b.mock.calls());
+    // a list that can't tell which computers are here lists nothing
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers RENAME TO computers_away", [])).unwrap();
+    let seen = b.computers.providers_seen(&b.ctx).await;
+    b.ctx.db.with(|c| c.execute("ALTER TABLE computers_away RENAME TO computers", [])).unwrap();
+    let docker = seen["providers"].as_array().unwrap().iter().find(|h| h["kind"] == "docker").unwrap();
+    assert_eq!(docker["leftovers"], json!([]));
+}
+
+#[tokio::test]
 async fn a_join_that_fails_leaves_no_seat() {
     let b = bed("join");
     let id = awake(&b, &b.ann.0).await;
