@@ -22,6 +22,10 @@
 //! - "Open the screen" is the hand-over `computer_ask_person` makes, without a second card: the
 //!   person asked for it on this one.
 //! - Logs name a field by its id and label, and say how long its value was. Never a value.
+//! - Why no Ask card comes first (it's in `computer::READS`, under the `computer` switch): the
+//!   card is the person's own yes. It names the site it types into and says when Return is pressed,
+//!   and nothing reaches the box, not even a look at the page, until a person presses Log in (or
+//!   Open the screen, which hands the screen to them). A switch at Off still takes the tool away.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};

@@ -581,3 +581,20 @@ async fn the_prompt_names_the_card_and_the_hand_over_only_when_they_are_offered(
     assert!(!said.is_empty() && !said.contains(login::NAME) && !said.contains(tools::ASK_PERSON), "{said}");
     assert!(said.contains("Nobody can answer a card"), "{said}");
 }
+
+#[tokio::test]
+async fn nothing_reaches_the_box_before_a_person_answers_the_card() {
+    let b = login_bed("login-before-submit");
+    awake(&b, &b.ann.0).await;
+    b.mock.calls.lock().unwrap().clear();
+    let (card, call) = asked(&b, card_input()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let touched: Vec<String> = b.mock.calls().into_iter().filter(|c| ["browser", "active_tab", "capabilities", "input", "screenshot", "open", "run"].iter().any(|w| c.starts_with(w))).collect();
+    assert!(touched.is_empty(), "the box was used before a person answered: {touched:?}");
+    assert!(b.mock.typed().is_empty());
+    assert_eq!(card["form"]["domain"], SITE, "the card names the site");
+    assert_eq!(card["form"]["submit"], true, "and says Return is pressed");
+    login::host_dismiss(&b.ctx, &json!({"chat": card["chat"], "id": card["id"], "mode": "dismissed"})).await;
+    call.await.unwrap();
+    assert!(b.mock.calls().iter().all(|c| !c.starts_with("browser") && !c.starts_with("active_tab")), "nor after a dismiss");
+}
