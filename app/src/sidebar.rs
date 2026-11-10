@@ -530,22 +530,64 @@ fn rail() -> impl IntoElement {
                 ),
             ),
         )
-        // The rail footer, as Grok Bot's: New Bot (＋) and Connect apps
-        // (grid) as 28pt circles with its own 16pt glyphs at 64% ink, 6pt
-        // apart, then the 54pt account plate; the list ends where it
-        // starts.
+        .child(rail_footer())
+}
+
+/// The rail footer, as Grok Bot's: New Bot (＋) and Connect apps
+/// (grid) as 28pt circles with its own 16pt glyphs at 64% ink, 6pt
+/// apart, then the 54pt account plate; the list ends where it
+/// starts.
+pub(crate) fn rail_footer() -> impl IntoElement {
+    view()
+        .items_center()
+        .gap(px(6.0))
+        // Its tooltips reach past the rail, over the chat.
+        .z_index(30)
+        .child(rail_circle("grokPlus", "New Bot", || {
+            crate::ctx::open_at(20.0, window().height.0 - 270.0, crate::ctx::add_items());
+        }))
+        // a press lands on Updates when any wait, as the pill's does
         .child(
             view()
-                .items_center()
-                .gap(px(6.0))
-                // Its tooltips reach past the rail, over the chat.
-                .z_index(30)
-                .child(rail_circle("grokPlus", "New Bot", || {
-                    crate::ctx::open_at(20.0, window().height.0 - 270.0, crate::ctx::add_items());
-                }))
-                .child(rail_circle("grokGridPlus", "Connect apps", || store().open_plugins()))
-                .child(rail_account()),
+                .size(px(28.0))
+                .child(rail_circle("grokGridPlus", "Connect apps", crate::plugins::open_connect_apps))
+                .child(updates_badge(|| store().v1_updates_waiting().len())),
         )
+        .child(rail_account())
+}
+
+/// How many updates wait (`waiting`, tracked), on the corner of the
+/// Connect apps button it sits in, out of its layout: none when none wait.
+fn updates_badge(waiting: impl Fn() -> usize + 'static) -> impl IntoElement {
+    use crate::mini_v1::connect;
+    dynamic(move || {
+        let n = waiting();
+        let said = connect::badge_text(n)?;
+        Some(
+            view()
+                .absolute()
+                .top(px(-5.0))
+                .right(px(-5.0))
+                .h(px(16.0))
+                .min_w(px(16.0))
+                .px(px(4.0))
+                .rounded(px(8.0))
+                .items_center()
+                .justify_center()
+                .bg(theme::ACCENT)
+                .pointer_events(PointerEvents::None)
+                .label(connect::badge_label(n))
+                .child(
+                    text(said)
+                        .text_size(px(10.0))
+                        .line_height(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0))
+                        .number_of_lines(1),
+                )
+                .into_element(),
+        )
+    })
 }
 
 /// Grok Bot's rail hover fill (`rgba(245,245,245,.04)` on dark).
@@ -1213,20 +1255,22 @@ fn full_sidebar() -> impl IntoElement {
                 ),
             ),
         )
-        // The footer, Grok Bot's: the account pill fills the row; hovering
-        // the connect pill folds the account to its circle and spells out
-        // "Connect apps" beside the logos.
-        .child({
-            let connect = signal(false);
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .px_4()
-                .pb_4()
-                .child(account_pill(connect))
-                .child(connect_pill(connect))
-        })
+        .child(footer())
+}
+
+/// The footer: the account pill fills the row beside the Connect apps
+/// pill, which keeps its width whatever the pointer does, so the account's
+/// name stays. Its tooltip reaches over the list above.
+pub(crate) fn footer() -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px_4()
+        .pb_4()
+        .z_index(30)
+        .child(account_pill())
+        .child(connect_pill())
 }
 
 /// The rail's account plate, Grok Bot's: the 36pt circle on a 54pt
@@ -1295,38 +1339,35 @@ fn account_circle() -> impl IntoElement {
 
 /// The account pill (→ popover): the circle and the name on the card
 /// fill, growing into the row; the name ellipsizes to the room the
-/// connect pill leaves, and drops out while that pill is hovered.
-fn account_pill(connect: Signal<bool>) -> impl IntoElement {
+/// connect pill leaves.
+fn account_pill() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
         .h(px(36.0))
         .min_w(px(36.0))
-        .flex_grow(move || if connect.get() { 0.0f32 } else { 1.0 })
+        .flex_grow(1.0f32)
         .flex_shrink(1.0)
         .rounded(px(18.0))
         .overflow_hidden()
         .bg(move || if store().account_open.get() { theme::CARD2 } else { theme::CARD })
         .child(account_circle())
-        .child(when(
-            move || !connect.get(),
-            || {
-                view()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .ml(px(8.0))
-                    .mr(px(17.0))
-                    .child(
-                        text(account_name())
-                            .text_size(px(14.0))
-                            .line_height(px(20.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::TEXT)
-                            .number_of_lines(1),
-                    )
-                    .into_element()
-            },
-        ))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .ml(px(8.0))
+                .mr(px(17.0))
+                .label("Account name")
+                .child(
+                    text(account_name())
+                        .text_size(px(14.0))
+                        .line_height(px(20.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::TEXT)
+                        .number_of_lines(1),
+                ),
+        )
         .on_press(|| store().account_open.update(|v| *v = !*v))
         .label("Account")
 }
@@ -1345,56 +1386,38 @@ pub(crate) fn connect_apps() -> Vec<String> {
     v1.chain(st.plugins.get().iter().filter(|p| p.installed).map(|p| p.name.clone())).take(3).collect()
 }
 
+/// How long the pointer rests on the Connect apps pill before its
+/// tooltip shows.
+const PILL_TIP_MS: u64 = 500;
+
 /// The connect pill, Grok Bot's: the connected apps' logos (v1 plugins
-/// first) stacked 12pt apart (each on an 18pt card ring); hovered it takes
-/// the row and leads with "Connect apps", keeping the logos that still fit.
-fn connect_pill(hovered: Signal<bool>) -> impl IntoElement {
-    const LABEL: &str = "Connect apps";
-    // The row is the 240pt sidebar less its 0.5 rim and 16pt gutters.
-    const ROW: f32 = 240.0 - 0.5 - 32.0;
-    let label_w = measure_text("500 14px -apple-system, system-ui, sans-serif", LABEL).0.ceil();
-    // Hovered: row − gap − circle − border − 16/12 padding − label − 6.
-    let room = ROW - 8.0 - 36.0 - 2.0 - 16.0 - 12.0 - label_w - 6.0;
-    let fits = ((room - 18.0) / 12.0).floor().max(0.0) as usize + 1;
+/// first) stacked 12pt apart (each on an 18pt card ring). It keeps its
+/// width hovered: a tooltip above it says "Connect apps" and how many
+/// updates wait, and a badge on its corner counts them (1 to 9, then
+/// "9+"). A press opens Connect Apps, on its Updates section when any wait.
+fn connect_pill() -> impl IntoElement {
+    use crate::mini_v1::connect;
+    let tip = signal(false);
+    let epoch = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let epoch2 = epoch.clone();
     let apps = connect_apps;
+    let waiting = computed(|| store().v1_updates_waiting().len());
     view()
         .flex_row()
         .items_center()
         .h(px(36.0))
         .min_w(px(36.0))
-        .flex_grow(move || if hovered.get() { 1.0f32 } else { 0.0 })
+        .flex_grow(0.0f32)
         .flex_shrink(0.0)
         .px(px(12.0))
         .rounded(px(18.0))
         .bg(theme::CARD)
         .border(px(1.0))
         .border_color(theme::tc("#f5f5f50f"))
-        .child(when(
-            move || hovered.get(),
-            move || {
-                view()
-                    .flex_row()
-                    .items_center()
-                    .ml(px(4.0))
-                    .mr(px(6.0))
-                    .child(
-                        text(LABEL)
-                            .text_size(px(14.0))
-                            .line_height(px(20.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::TEXT)
-                            .number_of_lines(1),
-                    )
-                    .into_element()
-            },
-        ))
         .child(dynamic(move || {
-            let mut names = apps();
+            let names = apps();
             if names.is_empty() {
                 return icon_sized("grokGridPlus", 16.0).into_element();
-            }
-            if hovered.get() {
-                names.truncate(fits);
             }
             let n = names.len();
             names
@@ -1419,10 +1442,56 @@ fn connect_pill(hovered: Signal<bool>) -> impl IntoElement {
                 )
                 .into_element()
         }))
-        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
-        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
-        .on_press(|| store().open_plugins())
-        .label(LABEL)
+        // the badge: on the pill's corner, out of its layout
+        .child(updates_badge(move || waiting.get()))
+        // the tooltip: 8pt above, its right edge the pill's, over the list
+        .child(when(
+            move || tip.get(),
+            move || {
+                let said = connect::pill_tip(waiting.get_untracked());
+                view()
+                    .absolute()
+                    .bottom(px(36.0 + 8.0))
+                    .right(px(0.0))
+                    .z_index(40)
+                    .pointer_events(PointerEvents::None)
+                    .w(px(measure_text("420 12px -apple-system, system-ui, sans-serif", &said).0.ceil() + 12.0))
+                    .py(px(4.0))
+                    .px(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(theme::tone(theme::hsla(0.0, 0.0, 1.0, 1.0), theme::hsla(0.0, 0.0, 0.122, 1.0)))
+                    .label("Connect apps tooltip")
+                    .child(
+                        text(said)
+                            .text_size(px(12.0))
+                            .line_height(px(16.0))
+                            .font_weight(FontWeight(420))
+                            .text_color(theme::TEXT)
+                            .number_of_lines(1),
+                    )
+                    .into_element()
+            },
+        ))
+        .on_mouse_enter(move |_: &MouseEvent| {
+            let e = epoch.get().wrapping_add(1);
+            epoch.set(e);
+            let epoch = epoch.clone();
+            spawn(async move {
+                timer(std::time::Duration::from_millis(PILL_TIP_MS)).await;
+                if epoch.get() == e {
+                    tip.set(true);
+                }
+            });
+        })
+        .on_mouse_leave(move |_: &MouseEvent| {
+            epoch2.set(epoch2.get().wrapping_add(1));
+            tip.set(false);
+        })
+        .on_press(move || {
+            tip.set(false);
+            crate::plugins::open_connect_apps()
+        })
+        .label("Connect apps")
 }
 
 /// The account popover (App.tsx:3099): scrim closes on press +

@@ -342,6 +342,8 @@ fn market_page() -> impl IntoElement {
                             .child(view().flex_1())
                             .child(conn_chip()),
                     )
+                    // what waits to be updated leads the page
+                    .child(updates_section())
                     // category pills scroll with the content.
                     .child(
                         view()
@@ -3264,6 +3266,122 @@ fn private_skill_editor() -> impl IntoElement {
 
 /// Connect Apps' v1 plugins: each with its state, version and publisher;
 /// Add… inspects a plugin's command and shows its review.
+/// A press on the Connect apps pill: Connect Apps, on its first page from
+/// the top, where the Updates section is when any update waits.
+pub(crate) fn open_connect_apps() {
+    let st = store();
+    if !st.v1_updates_waiting_untracked().is_empty() {
+        // the section shows on the whole catalog, not inside a category
+        st.plugin_cat.set("All".to_owned());
+    }
+    st.open_plugins();
+}
+
+/// Connect Apps' "Updates (n)": a row for each update that waits, with
+/// Update, and Update all. Both only put the install review's card in the
+/// chat: nothing installs before Install is pressed there. Nothing shows
+/// when none wait, or while a search or a category narrows the page.
+pub(crate) fn updates_section() -> impl IntoElement {
+    use crate::mini_v1::connect;
+    let rows = computed(|| store().v1_updates_waiting());
+    dynamic(move || {
+        let waiting = rows.get();
+        if waiting.is_empty() || !store().plugin_query.get().is_empty() || store().plugin_cat.get() != "All" {
+            return None;
+        }
+        let n = waiting.len();
+        let all: Vec<String> = waiting.iter().map(|(p, _)| p.id.clone()).collect();
+        let mut section = view().label("Updates").pb(px(14.0)).child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .pb_2()
+                .child(
+                    text(format!("Updates ({n})"))
+                        .text_size(px(15.0))
+                        .line_height(px(20.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::TEXT),
+                )
+                .child(sm_btn(Btn::Secondary, || "Update all".to_owned(), move || store().v1_review_updates(&all)).label("Update all")),
+        );
+        for (p, u) in waiting {
+            let title = if p.title.is_empty() { p.id.clone() } else { p.title.clone() };
+            let id = p.id.clone();
+            let mut words = view()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(text(title.clone()).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT))
+                .child(text(connect::update_step(&u)).number_of_lines(1).text_size(px(12.0)).line_height(px(16.0)).text_color(ink3()));
+            if let Some(access) = connect::update_access(&u) {
+                words = words.child(text(access).number_of_lines(2).text_size(px(12.0)).line_height(px(16.0)).text_color(warn_ink()));
+            }
+            section = section.child(
+                card()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(14.0))
+                    .py(px(10.0))
+                    .mb(px(8.0))
+                    .label(format!("{} update", connect::update_heading(&title, &u)))
+                    .child(plug_tile(&title, 32.0))
+                    .child(words)
+                    .child(sm_btn(Btn::Primary, || "Update".to_owned(), move || store().v1_review_update(&id)).label(format!("Update {title}"))),
+            );
+        }
+        Some(section.into_element())
+    })
+}
+
+impl crate::store::Store {
+    /// [`Store::v1_updates_waiting`] for a press: untracked.
+    fn v1_updates_waiting_untracked(&'static self) -> Vec<(crate::mini_v1::connect::Listed, crate::mini_v1::connect::Update)> {
+        untracked(|| self.v1_updates_waiting())
+    }
+
+    /// Update and Update all: the install review's card for each of
+    /// `plugins` in the chat on screen, one after the other, so the cards
+    /// come in the order shown. Connect Apps closes to show them. Nothing
+    /// installs: each card's own Install does that.
+    pub fn v1_review_updates(&'static self, plugins: &[String]) {
+        let chat = self.active_id.get_untracked();
+        if chat.is_empty() {
+            crate::toast::show("Open a chat to review the update in");
+            return;
+        }
+        if plugins.is_empty() {
+            return;
+        }
+        self.v1.update_panel.set(None);
+        if self.plugins_open.get_untracked() {
+            self.close_plugins();
+        }
+        let plugins = plugins.to_vec();
+        self.v1.update_failed.update(|f| f.retain(|p, _| !plugins.contains(p)));
+        Owner::detached().run(|| {
+            spawn(async move {
+                let c = chat.clone();
+                let failed = crate::vault::off_main(move || {
+                    let b = crate::mini_v1::host_api::HttpBroker::configured();
+                    plugins.iter().filter_map(|p| crate::mini_v1::host_api::review_update(&b, p, &c).err().map(|e| e.message)).collect::<Vec<_>>()
+                })
+                .await;
+                // the cards are turns of that chat: read them now
+                if self.active_id.get_untracked() == chat {
+                    self.refresh_turns();
+                }
+                match failed.as_deref() {
+                    Some([]) => {}
+                    Some([e, ..]) => crate::toast::show(format!("Could not fetch the update: {e}")),
+                    None => crate::toast::show("Could not fetch the update"),
+                }
+            })
+        });
+    }
+}
+
 fn v1_section() -> impl IntoElement {
     store().v1_refresh();
     view()

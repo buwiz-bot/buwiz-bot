@@ -306,6 +306,42 @@ pub fn waiting(listed: &[Listed], skipped: impl Fn(&str, &str) -> bool) -> Vec<(
     listed.iter().filter_map(|p| p.update.clone().filter(|u| !skipped(&p.id, &u.version)).map(|u| (p.clone(), u))).collect()
 }
 
+/// What the Connect apps badge reads for `n` updates waiting: nothing at
+/// none, the count to 9, then "9+".
+pub fn badge_text(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1..=9 => Some(n.to_string()),
+        _ => Some("9+".to_owned()),
+    }
+}
+
+/// The badge's accessible name: "3 updates waiting".
+pub fn badge_label(n: usize) -> String {
+    format!("{n} update{} waiting", if n == 1 { "" } else { "s" })
+}
+
+/// The Connect apps pill's tooltip: "Connect apps · 3 updates", the
+/// name alone when none wait.
+pub fn pill_tip(n: usize) -> String {
+    match n {
+        0 => "Connect apps".to_owned(),
+        1 => "Connect apps · 1 update".to_owned(),
+        _ => format!("Connect apps · {n} updates"),
+    }
+}
+
+/// A waiting update's line in Connect Apps: "1.4.0 → 1.5.0".
+pub fn update_step(u: &Update) -> String {
+    format!("{} → {}", bare_version(&u.from_version), bare_version(&u.version))
+}
+
+/// "Needs new access: Google Drive, Contacts"; `None` when the new
+/// version asks for nothing more.
+pub fn update_access(u: &Update) -> Option<String> {
+    (!u.access.is_empty()).then(|| format!("Needs new access: {}", u.access.join(", ")))
+}
+
 /// What an update's panel is headed: "Google Workspace 1.4.0 → 1.5.0".
 pub fn update_heading(title: &str, u: &Update) -> String {
     format!("{title} {} → {}", bare_version(&u.from_version), bare_version(&u.version))
@@ -1184,6 +1220,30 @@ pub fn log_file(plugin: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_badge_counts_to_nine_and_the_tooltip_says_how_many() {
+        use super::{badge_label, badge_text, pill_tip};
+        assert_eq!(badge_text(0), None);
+        assert_eq!(badge_text(1).as_deref(), Some("1"));
+        assert_eq!(badge_text(9).as_deref(), Some("9"));
+        assert_eq!(badge_text(10).as_deref(), Some("9+"));
+        assert_eq!(badge_text(12).as_deref(), Some("9+"));
+        assert_eq!((badge_label(1), badge_label(12)), ("1 update waiting".to_owned(), "12 updates waiting".to_owned()));
+        assert_eq!(pill_tip(0), "Connect apps");
+        assert_eq!(pill_tip(1), "Connect apps · 1 update");
+        assert_eq!(pill_tip(3), "Connect apps · 3 updates");
+        assert_eq!(pill_tip(12), "Connect apps · 12 updates", "the tooltip has room for the number");
+    }
+
+    #[test]
+    fn a_waiting_updates_row_says_the_step_and_any_new_access() {
+        use super::{Update, update_access, update_step};
+        let u = Update { version: "v1.5.0".into(), from_version: "1.4.0".into(), access: vec!["Google Drive".into(), "Contacts".into()], ..Default::default() };
+        assert_eq!(update_step(&u), "1.4.0 → 1.5.0");
+        assert_eq!(update_access(&u).as_deref(), Some("Needs new access: Google Drive, Contacts"));
+        assert_eq!(update_access(&Update::default()), None);
+    }
+
     #[test]
     fn a_failed_update_says_why_and_what_stays() {
         assert_eq!(super::update_failed_line("the download stopped", "v1.4.0"), "Update failed: the download stopped. Still on 1.4.0.");
