@@ -33,7 +33,7 @@
 //!
 //! A card offers and lists only the saved logins shared with its own Bot
 //! (the notice's `bot`), or every login with share-all on, and only those
-//! saved for its site ([`vault::Vault::offered`]). A pick goes by the row's
+//! saved for its site ([`vault::Vault::offered_on`]). A pick goes by the row's
 //! id, and the vault checks that id again before the broker is asked or
 //! Touch ID shows, and once more before the submit leaves
 //! ([`vault::Vault::usable`]): a login that isn't shared with this Bot, or is

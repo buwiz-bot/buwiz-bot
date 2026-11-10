@@ -31,7 +31,7 @@
 //! Who enforces what: this app is the only authority on "shared with this
 //! Bot", since the vault and its shares live here and the broker never sees
 //! them. A card offers, lists and uses only a login shared with its Bot (or
-//! with share-all on) whose site matches the card's ([`Vault::offered`],
+//! with share-all on) whose site matches the card's ([`Vault::offered_on`],
 //! [`Vault::usable`]), checked again by id before Touch ID and again before
 //! anything is sent, so a login named by id alone gets nowhere. The broker is
 //! the authority on "this Bot's own computer": it refuses a saved login on a
@@ -55,7 +55,9 @@ use rusqlite::Connection;
 pub(crate) use db::SiteLogin;
 use keychain::SecretStore;
 pub(crate) use origin::{SiteMatch, plausible_site, site_match, site_origin};
-pub(crate) use page::{SHARE_ALL_MEANS, SITE_CHANGE_UNSHARES, open_add, open_page, settings_page};
+pub(crate) use page::{SHARE_ALL_MEANS, open_add, open_page, settings_page};
+#[cfg(test)]
+pub(crate) use page::SITE_CHANGE_UNSHARES;
 #[cfg(test)]
 pub(crate) use touch_id::owner_asks;
 use touch_id::{AuthOutcome, OwnerGate};
@@ -355,14 +357,16 @@ impl Vault {
         if code { self.has_code(row) } else { row.kind == KIND_PASSWORD }
     }
 
-    /// The rows a card for `bot` offers on `site`: shared with that Bot (or
-    /// share-all on), saved for that site ([`site_match`]), and of the kind
-    /// the card wants. The only list a card shows.
+    /// [`Vault::offered_on`] for one site.
+    #[cfg(test)]
     pub(crate) fn offered(&self, site: &str, bot: &str, code: bool) -> Vec<SiteLogin> {
         self.offered_on(&[Some(site.to_owned())], bot, code).pop().unwrap_or_default()
     }
 
-    /// [`Vault::offered`] for each of `sites` (none: nothing), the table read once.
+    /// The rows a card for `bot` offers on each of `sites` (none: nothing):
+    /// shared with that Bot (or share-all on), saved for that site
+    /// ([`site_match`]), and of the kind the card wants, the table read once.
+    /// The only lists a card shows.
     pub(crate) fn offered_on(&self, sites: &[Option<String>], bot: &str, code: bool) -> Vec<Vec<SiteLogin>> {
         let none = || sites.iter().map(|_| Vec::new()).collect();
         if bot.trim().is_empty() {
@@ -404,7 +408,7 @@ impl Vault {
     /// The rows of `kind` for the site `origin` names: saved for that exact
     /// site, or legacy rows of its domain ([`SiteMatch::Legacy`]), whoever
     /// they're shared with. The site rule alone, for its tests: a card lists
-    /// [`Vault::offered`].
+    /// [`Vault::offered_on`].
     #[cfg(test)]
     pub(crate) fn rows_for(&self, origin: &str, kind: &str) -> Vec<SiteLogin> {
         self.list()
@@ -806,8 +810,10 @@ mod tests {
     /// thread while a save waited on the Keychain.
     struct Hooked {
         inner: MemorySecrets,
-        hook: std::sync::Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>,
+        hook: std::sync::Arc<Mutex<Option<Hook>>>,
     }
+
+    type Hook = Box<dyn FnOnce() + Send>;
 
     impl SecretStore for Hooked {
         fn set(&self, account: &str, secret: &Secret) -> Result<(), String> {
