@@ -158,14 +158,18 @@ pub fn scope_words(scope: &str) -> String {
 }
 
 /// The scopes `next`'s accounts ask for that `prev`'s don't, in words,
-/// each said once.
+/// each said once. A product's read-only scope is no new access where its
+/// wider scope is held already or asked for too.
 pub fn added_scopes(prev: &[Account], next: &[Account]) -> Vec<String> {
     let had: HashSet<(&str, &str)> = prev.iter().flat_map(|a| a.scopes.iter().map(|s| (a.provider.as_str(), s.as_str()))).collect();
+    let asks: HashSet<(&str, &str)> = next.iter().flat_map(|a| a.scopes.iter().map(|s| (a.provider.as_str(), s.as_str()))).collect();
+    let covered = |provider: &str, scope: &str| {
+        had.contains(&(provider, scope)) || scope.strip_suffix(".readonly").is_some_and(|wide| had.contains(&(provider, wide)) || asks.contains(&(provider, wide)))
+    };
     let mut out: Vec<String> = Vec::new();
     for a in next {
-        for s in a.scopes.iter().filter(|s| !had.contains(&(a.provider.as_str(), s.as_str()))) {
+        for s in a.scopes.iter().filter(|s| !covered(&a.provider, s)) {
             let words = scope_words(s);
-            // the wider scope of a product covers what its read-only one said
             if !out.contains(&words) {
                 out.push(words);
             }
@@ -214,10 +218,11 @@ pub async fn latest(api: &str, src: &Source, row: &Row, accounts: &[Account], tr
     if manifest::compare_semver(&version, &row.version) != Some(1) {
         return Ok(None);
     }
+    // the access it adds is part of what is announced: no manifest, no update
     if let Some((name, sha256)) = next {
-        if let Some(m) = manifest_of(name, sha256).await.filter(|m| m.get("id").and_then(Value::as_str) == Some(row.id.as_str())) {
-            access.extend(manifest::added_permissions(&row.manifest(), &m));
-        }
+        let m = manifest_of(name, sha256).await.filter(|m| m.get("id").and_then(Value::as_str) == Some(row.id.as_str()));
+        let Some(m) = m else { return Err(format!("{version}'s manifest can't be read or doesn't match its signature")) };
+        access.extend(manifest::added_permissions(&row.manifest(), &m));
     }
     let tag = rel.get("tag_name").and_then(Value::as_str).unwrap_or_default().to_owned();
     if tag.is_empty() {
@@ -284,6 +289,11 @@ mod tests {
         assert_eq!(added_scopes(&prev, &next), ["Google Drive", "Google Contacts (read only)", "openid"]);
         assert!(added_scopes(&next, &prev).is_empty(), "a scope dropped is no new access");
         assert_eq!(scope_words(&g("cloud-platform")), "Google cloud-platform");
+        // a read-only scope under a wider one held, or asked for with it, is no new access
+        let held = [acct(&[&g("drive")])];
+        assert!(added_scopes(&held, &[acct(&[&g("drive.readonly")])]).is_empty());
+        assert_eq!(added_scopes(&prev, &[acct(&[&g("drive"), &g("drive.readonly")])]), ["Google Drive"]);
+        assert_eq!(added_scopes(&held, &[acct(&[&g("gmail.readonly")])]), ["Gmail (read only)"]);
     }
 
     #[test]
