@@ -192,7 +192,11 @@ import fnmatch, json, os, signal, stat, sys, time
 ALLOWED = ['/usr/local/bin/voxl', '/usr/bin/Xvfb', '/usr/bin/dbus-launch', '/usr/bin/dbus-daemon', '/usr/bin/xfce4-session', '/usr/bin/xfwm4', '/usr/bin/xfsettingsd', '/usr/bin/xfce4-panel', '/usr/bin/Thunar', '/usr/bin/thunar', '/usr/bin/xfdesktop', '/usr/lib/*/xfce4/*', '/usr/lib/*/tumbler-1/*', '/usr/lib/chromium/*', '/usr/local/bin/box-active-tab']
 LIBRARIES = ('/usr/', '/lib/', '/opt/box/')
 VOXL, KEEPER = '/usr/local/bin/voxl', '/usr/local/bin/box-keeper'
-LAUNCHER, SHELL, SCRIPT = '/usr/local/bin/box-chrome-pipe', '/usr/bin/dash', '/usr/local/bin/box-chromium'
+# the box image's own (buwiz-bot/computer, docker/Dockerfile, on Debian): nothing here installs
+# them. Its /bin/sh is dash, whose exe reads /usr/bin/dash where /bin is merged into /usr, as in
+# bookworm, and /bin/dash where it isn't
+LAUNCHER, SCRIPT = '/usr/local/bin/box-chrome-pipe', '/usr/local/bin/box-chromium'
+SHELLS = ('/usr/bin/dash', '/bin/dash')
 SYSTEM_PATH = ('/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin')
 path = '/home/box/.box/bots/' + sys.argv[1]
 info = os.lstat(path)
@@ -232,7 +236,7 @@ def chain(pid, exe):
     if exe == LAUNCHER:
         argv = words(pid, 'cmdline')
         return 'launcher' if len(argv) > 3 and argv[2] == b'--' and argv[3] == b'chromium' and system_path(pid) else ''
-    if exe == SHELL:
+    if exe in SHELLS:
         argv = words(pid, 'cmdline')
         held = False
         for f in os.listdir('/proc/%s/fd' % pid):
@@ -1626,6 +1630,12 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         fake_process(&root, 503, 502, "chromium", 20001, CHROMIUM);
         // an fd the loop closes while it's read: it held nothing, and the loop is still the loop
         std::os::unix::fs::symlink("/vanished", root.join("proc/500/fd/11")).unwrap();
+        // the same on an image whose /bin isn't merged into /usr, where dash runs as /bin/dash
+        fake_process(&root, 510, 1, "box-chromium", 20001, "/bin/dash");
+        fake_start(&root, 510, &looped, SYSTEM, true);
+        fake_process(&root, 511, 510, "box-chrome-pipe", 20001, PIPE);
+        fake_start(&root, 511, &launched("/run/box/x/2/run/cdp.sock", "chromium"), SYSTEM, false);
+        fake_process(&root, 512, 511, "chromium", 20001, CHROMIUM);
         // a stray that exits as it's read: nothing to end, and the scan goes on
         fake_process(&root, 590, 1, "python3", 20001, "/exited");
         // something the desktop's user left running
@@ -1673,7 +1683,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"["box-chrome-pipe", "box-chromium", "python3", "sh"]"#);
         let ended = |pid: u32| root.join(format!("ended-{pid}")).exists();
         assert!(root.join("exited-590").exists() && !ended(590), "the one that exited was ended");
-        for pid in [500, 501, 502, 503, 611, 612, 622, 641, 661, 671, 672, 700] {
+        for pid in [500, 501, 502, 503, 510, 511, 512, 611, 612, 622, 641, 661, 671, 672, 700] {
             assert!(!ended(pid) && root.join(format!("proc/{pid}")).exists(), "{pid} was ended");
         }
         for pid in [600, 610, 620, 621, 630, 631, 640, 650, 651, 660, 670] {
