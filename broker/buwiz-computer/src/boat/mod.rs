@@ -46,7 +46,8 @@
 //!   the secrets again and `docker start`, and the box checked. **A stop keeps the disk and drops
 //!   memory, so wake is a cold boot of the box**: its processes and screens are gone, and its
 //!   workspace and home (the browser profile in it) are the ones on disk. A computer made before
-//!   the home volume keeps the container it was made with.
+//!   the home volume keeps the container it was made with, and its image, and its secrets are
+//!   staged as that container expects: plain files owned by uid 1000 in its writable mount.
 //! - *sleep*: `POST /sandboxes/{id}/stop`. Only Docker containers get a stop signal, with 30 s to
 //!   exit. Both depths are the same, since boat keeps no memory at either.
 //! - *destroy*: `DELETE /sandboxes/{id}` with `X-Ascii-Confirm-Delete: {id}`. Irreversible.
@@ -139,8 +140,9 @@ const FIRST_OPEN_PORT: u16 = 6906;
 /// ([`STAGE`]), and mounted read-only, as Docker's is: [`CLEAR`] removes each start's secrets.
 ///
 /// A computer made before this layout keeps its container as it was (a `-chrome` volume, the old
-/// settings, and no capabilities, which today's image may not start with): wake only starts what
-/// create made, and nothing here deletes a person's container or volumes. Only new computers get
+/// settings, no capabilities, a writable secrets mount) and the image it was made with: wake only
+/// starts what create made, never pulls, and nothing here deletes a person's container or volumes.
+/// Its secrets are staged the way that container reads them ([`STAGE`]). Only new computers get
 /// this one. Arguments: image, container name, computer id.
 fn prep() -> String {
     let caps: String = BOX_CAPS.iter().map(|c| format!(" --cap-add {c}")).collect();
@@ -168,12 +170,24 @@ docker create --name "$2" --label app.buwiz.computer=1 --label "app.buwiz.comput
 /// inside the mount. A failed start removes this start's folder, and so does the VM five minutes
 /// on whatever happens; [`CLEAR`] does once the box answers. Each removal is of its own start's
 /// folder alone, so a timer from an earlier start never removes a later start's secrets.
-/// Arguments: the container name, and this start's id (hex, not a secret).
+///
+/// A container made before this layout ([`prep`]'s doc) mounts the folder writable, and runs the
+/// image it was made with, whose box-keeper ran as uid 1000 (`USER box`) and unlinks what it read.
+/// Its secrets are staged as they were then: plain files at the two names, the folder and files
+/// 1000's, with no timer, since the box removes them itself. Told apart by that mount: read-only
+/// is this layout. Arguments: the container name, and this start's id (hex, not a secret).
 const STAGE: &str = r#"# buwiz:stage
 set -e
 d=/dev/shm/buwiz-start
 s=$2
 case "$s" in ""|*[!0-9a-f]*) exit 2;; esac
+rw=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/run/buwiz-computer"}}{{.RW}}{{end}}{{end}}' "$1")
+if [ "$rw" = true ]; then
+  sudo install -d -m 0700 -o 1000 -g 1000 "$d"
+  sudo sh -c 'umask 077 && read -r t && read -r v && rm -f -- "$1/token" "$1/viewer" && printf "%s" "$t" > "$1/token" && printf "%s" "$v" > "$1/viewer" && chown 1000:1000 "$1/token" "$1/viewer"' sh "$d"
+  docker start "$1" >/dev/null || { sudo rm -f -- "$d/token" "$d/viewer"; exit 1; }
+  exit 0
+fi
 o=0; g=0
 if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then o=$(id -u); g=$(id -g); fi
 sudo install -d -m 0700 -o "$o" -g "$g" "$d"
@@ -183,11 +197,14 @@ docker start "$1" >/dev/null || { sudo rm -rf -- "$d/s-$s"; exit 1; }"#;
 
 /// This start's staged secrets, gone: box-keeper has read them, or the start failed. Safe to
 /// repeat. `token` and `viewer` are left pointing at nothing until the next start points them
-/// again. Argument: the start's id.
+/// again. Plain files at those names are an old-layout container's, staged by this very start
+/// (starts of one computer take turns): they go too. Argument: the start's id.
 const CLEAR: &str = r#"# buwiz:clear
 s=$1
 case "$s" in ""|*[!0-9a-f]*) exit 2;; esac
-sudo rm -rf -- "/dev/shm/buwiz-start/s-$s""#;
+d=/dev/shm/buwiz-start
+sudo rm -rf -- "$d/s-$s"
+for f in token viewer; do [ -L "$d/$f" ] || sudo rm -f -- "$d/$f"; done"#;
 
 /// [`CLEAR`] of start `stage` over `master`. A clear that fails leaves them to the VM's own, five
 /// minutes on.

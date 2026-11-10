@@ -771,7 +771,8 @@ fn vm(name: &str) -> (PathBuf, PathBuf) {
     let timers = root.join("timers");
     for (tool, body) in [
         ("sudo", "exec \"$@\"".to_owned()),
-        ("docker", "case \"$1\" in info) echo '[name=rootless]';; esac\nexit 0".to_owned()),
+        ("docker", format!("case \"$1\" in info) echo '[name=rootless]';; inspect) cat '{r}/rw' 2>/dev/null || echo false;; start) echo \"$2\" >> '{r}/started';; esac\nexit 0", r = root.display())),
+        ("chown", format!("echo \"$*\" >> '{r}/chowns'", r = root.display())),
         ("install", "for a; do last=$a; done\nmkdir -p \"$last\" && chmod 700 \"$last\"".to_owned()),
         ("setsid", format!("[ \"$1\" = -f ] && shift\nn=$(ls '{t}' | wc -l | tr -d ' ')\nfor a; do printf '%s\\0' \"$a\"; done > '{t}'/\"$n\"", t = timers.display())),
         ("sleep", "exit 0".to_owned()),
@@ -926,4 +927,46 @@ fn boats_box_is_set_up_as_dockers_except_where_it_says_why() {
     let docker_secrets = values_of(&docker, "--mount").into_iter().find(|m| m.starts_with("type=bind,")).unwrap();
     assert!(boat_secrets.ends_with(":/run/buwiz-computer:ro"), "{boat_secrets}");
     assert!(docker_secrets.contains(",target=/run/buwiz-computer,") && docker_secrets.ends_with(",readonly"), "{docker_secrets}");
+}
+
+#[test]
+fn a_container_from_before_this_layout_gets_its_secrets_as_it_reads_them() {
+    let (root, bin) = vm("stage-old-layout");
+    std::fs::write(root.join("rw"), "true\n").unwrap();
+    let shm = root.join("shm");
+    run_here(STAGE, &shm, &bin, &["buwiz-box", "aaaa1111aaaa1111"], "tok-1\npw-1\n");
+    // plain files at the names its box-keeper reads, uid 1000's, in the folder it can unlink from
+    for (name, want) in [("token", "tok-1"), ("viewer", "pw-1")] {
+        let meta = std::fs::symlink_metadata(shm.join(name)).unwrap();
+        assert!(meta.file_type().is_file(), "{name} is a plain file");
+        assert_eq!(std::fs::read_to_string(shm.join(name)).unwrap(), want);
+    }
+    let chowns = std::fs::read_to_string(root.join("chowns")).unwrap();
+    assert!(chowns.contains("1000:1000") && chowns.contains("/token") && chowns.contains("/viewer"), "{chowns}");
+    assert!(!shm.join("s-aaaa1111aaaa1111").exists(), "no folder of this layout's");
+    assert_eq!(std::fs::read_dir(root.join("timers")).unwrap().count(), 0, "its box removes them itself");
+    assert_eq!(std::fs::read_to_string(root.join("started")).unwrap().trim(), "buwiz-box");
+    // and the clear once it answers
+    run_here(CLEAR, &shm, &bin, &["aaaa1111aaaa1111"], "");
+    assert!(!shm.join("token").exists() && !shm.join("viewer").exists());
+}
+
+#[test]
+fn a_container_of_this_layout_gets_root_only_secrets_through_links() {
+    let (root, bin) = vm("stage-new-layout");
+    std::fs::write(root.join("rw"), "false\n").unwrap();
+    let shm = root.join("shm");
+    run_here(STAGE, &shm, &bin, &["buwiz-box", "bbbb2222bbbb2222"], "tok-2\npw-2\n");
+    assert!(std::fs::symlink_metadata(shm.join("token")).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(shm.join("token")).unwrap(), "tok-2");
+    let chowns = std::fs::read_to_string(root.join("chowns")).unwrap();
+    assert!(!chowns.contains("1000"), "{chowns}");
+    assert_eq!(std::fs::read_dir(root.join("timers")).unwrap().count(), 1);
+}
+
+#[test]
+fn the_stage_reads_the_containers_layout_before_it_writes_anything() {
+    let at = |word: &str| STAGE.find(word).unwrap_or_else(|| panic!("{word}"));
+    assert!(at("docker inspect") < at("read -r t"), "{STAGE}");
+    assert!(STAGE.contains(r#"{{if eq .Destination "/run/buwiz-computer"}}{{.RW}}"#), "{STAGE}");
 }
