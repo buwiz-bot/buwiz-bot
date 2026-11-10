@@ -46,7 +46,7 @@ mod page;
 pub(crate) mod totp;
 mod touch_id;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -324,12 +324,8 @@ impl Vault {
         if bot.is_empty() {
             return Err("a share needs a Bot".into());
         }
-        let mut row = self.get(id).ok_or("that login isn't saved any more")?;
-        let changed = if on { row.shared_with.insert(bot.to_owned()) } else { row.shared_with.remove(bot) };
-        if changed {
-            self.db(|c| db::set_shares(c, id, &row.shared_with))?;
-        }
-        Ok(row)
+        self.db(|c| db::change_share(c, id, bot, on))?;
+        self.get(id).ok_or_else(|| "that login isn't saved any more".to_owned())
     }
 
     /// Takes `bot` off every login (the Bot was deleted).
@@ -425,18 +421,19 @@ impl Vault {
             origin,
             username: username.to_owned(),
             exact: true,
-            shared_with: {
-                let mut set = existing.as_ref().map(|r| r.shared_with.clone()).unwrap_or_default();
-                set.extend(bot.map(str::trim).filter(|b| !b.is_empty()).map(str::to_owned));
-                set
-            },
+            // not written by the save: the shares are read fresh below
+            shared_with: BTreeSet::new(),
         };
         if !secret.is_empty() {
             let account = if kind == KIND_CODE { code_account(&row.id) } else { row.id.clone() };
             self.secrets.set(&account, secret)?;
         }
         self.db(|c| db::upsert(c, &row))?;
-        Ok(row)
+        // the card's Bot is added to the shares as they stand now, after the Keychain write
+        if let Some(bot) = bot.map(str::trim).filter(|b| !b.is_empty()) {
+            self.db(|c| db::change_share(c, &row.id, bot, true))?;
+        }
+        self.get(&row.id).ok_or_else(|| "the login wasn't saved".to_owned())
     }
 
     /// A login added by hand (Settings › Logins, `/vault add`): its password,
@@ -494,7 +491,7 @@ impl Vault {
         row.exact = true;
         row.updated_at = now_ms();
         self.db(|c| db::update(c, &row))?;
-        Ok(row)
+        self.get(&row.id).ok_or_else(|| "that login isn't saved any more".to_owned())
     }
 
     /// Drops the row and its Keychain items.
@@ -769,6 +766,58 @@ mod tests {
         // unshared again: gone from Nova's cards
         v.share(&shop.id, "nova", false).expect("unshare");
         assert!(v.offered("shop.example", "nova", false).is_empty());
+    }
+
+    /// A store whose next write runs `hook` first, as a share changed on the UI
+    /// thread while a save waited on the Keychain.
+    struct Hooked {
+        inner: MemorySecrets,
+        hook: std::sync::Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>,
+    }
+
+    impl SecretStore for Hooked {
+        fn set(&self, account: &str, secret: &Secret) -> Result<(), String> {
+            if let Some(hook) = self.hook.lock().unwrap().take() {
+                hook();
+            }
+            self.inner.set(account, secret)
+        }
+        fn get(&self, account: &str) -> Result<Option<Secret>, String> {
+            self.inner.get(account)
+        }
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.inner.delete(account)
+        }
+        fn contains(&self, account: &str) -> bool {
+            self.inner.contains(account)
+        }
+    }
+
+    #[test]
+    fn a_share_changed_while_a_save_or_an_edit_waits_on_the_keychain_stays_changed() {
+        let path = std::env::temp_dir().join(format!("buwiz-vault-race-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let c = Connection::open(&path).expect("sqlite");
+        db::migrate(&c).expect("schema");
+        let hook = std::sync::Arc::new(Mutex::new(None));
+        let v = Vault::with(Some(c), None, Box::new(Hooked { inner: MemorySecrets::default(), hook: hook.clone() }), Box::new(Answer(AuthOutcome::Verified)));
+        let arm = |f: Box<dyn FnOnce() + Send>| *hook.lock().unwrap() = Some(f);
+        let row = v.save_for("shop.example", "kid", KIND_PASSWORD, &Secret::new("fake-pw"), Some("nova")).expect("save");
+        // Orbit's card saves it again; Nova's share is taken back while the Keychain is written
+        let (p, id) = (path.clone(), row.id.clone());
+        arm(Box::new(move || db::set_shares(&Connection::open(&p).unwrap(), &id, &BTreeSet::new()).unwrap()));
+        let again = v.save_for("shop.example", "kid", KIND_PASSWORD, &Secret::new("fake-pw2"), Some("orbit")).expect("save");
+        assert_eq!(again.shared_with.iter().map(String::as_str).collect::<Vec<_>>(), ["orbit"], "Nova's unshare isn't put back");
+        // an edit of its password while Nova is shared again: the share stays
+        let (p, id) = (path.clone(), row.id.clone());
+        arm(Box::new(move || {
+            let c = Connection::open(&p).unwrap();
+            db::change_share(&c, &id, "nova", true).unwrap();
+        }));
+        let edited = v.edit(&row.id, "shop.example", "kid", &Secret::new("fake-pw3"), &Secret::new("")).expect("edit");
+        assert_eq!(edited.shared_with.iter().map(String::as_str).collect::<Vec<_>>(), ["nova", "orbit"], "the share made meanwhile isn't undone");
+        drop(v);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

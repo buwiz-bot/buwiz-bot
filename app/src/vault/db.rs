@@ -123,28 +123,43 @@ pub(crate) fn by_id(c: &Connection, id: &str) -> rusqlite::Result<Option<SiteLog
 }
 
 /// Inserts `r`, or updates the row already saved for its origin and
-/// username (which keeps its id, so its Keychain item stays put).
+/// username (which keeps its id, so its Keychain item stays put). Never its
+/// shares: a new row is shared with no Bot, and [`change_share`] and
+/// [`set_shares`] are the only writers of `shared_with`, so a save that
+/// waited on the Keychain can't put back shares changed meanwhile.
 pub(crate) fn upsert(c: &Connection, r: &SiteLogin) -> rusqlite::Result<()> {
     c.execute(
-        "INSERT INTO site_logins (id, origin, username, label, kind, notes, last_used_at_ms, created_at, updated_at, exact, shared_with)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "INSERT INTO site_logins (id, origin, username, label, kind, notes, last_used_at_ms, created_at, updated_at, exact)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(origin, username) DO UPDATE SET
             label = excluded.label, kind = excluded.kind, notes = excluded.notes,
-            updated_at = excluded.updated_at, exact = excluded.exact, shared_with = excluded.shared_with",
-        params![r.id, r.origin, r.username, r.label, r.kind, r.notes, r.last_used_at_ms, r.created_at, r.updated_at, r.exact, shares_to(&r.shared_with)],
+            updated_at = excluded.updated_at, exact = excluded.exact",
+        params![r.id, r.origin, r.username, r.label, r.kind, r.notes, r.last_used_at_ms, r.created_at, r.updated_at, r.exact],
     )?;
     Ok(())
 }
 
 /// Writes row `r` over the row with its id (an edit: its site and name may
-/// change). The pair is unique: a clash with another row is an error, and
-/// nothing changes.
+/// change), all but its shares (as [`upsert`]). The pair is unique: a clash
+/// with another row is an error, and nothing changes.
 pub(crate) fn update(c: &Connection, r: &SiteLogin) -> rusqlite::Result<()> {
     c.execute(
-        "UPDATE site_logins SET origin = ?1, username = ?2, label = ?3, kind = ?4, exact = ?5, updated_at = ?6, shared_with = ?7 WHERE id = ?8",
-        params![r.origin, r.username, r.label, r.kind, r.exact, r.updated_at, shares_to(&r.shared_with), r.id],
+        "UPDATE site_logins SET origin = ?1, username = ?2, label = ?3, kind = ?4, exact = ?5, updated_at = ?6 WHERE id = ?7",
+        params![r.origin, r.username, r.label, r.kind, r.exact, r.updated_at, r.id],
     )?;
     Ok(())
+}
+
+/// Row `id`'s shares as they stand now, with `bot` added (`on`) or taken off:
+/// read and written in one call, under the vault's one connection. Whether
+/// anything changed.
+pub(crate) fn change_share(c: &Connection, id: &str, bot: &str, on: bool) -> rusqlite::Result<bool> {
+    let Some(mut r) = by_id(c, id)? else { return Ok(false) };
+    let changed = if on { r.shared_with.insert(bot.to_owned()) } else { r.shared_with.remove(bot) };
+    if changed {
+        set_shares(c, id, &r.shared_with)?;
+    }
+    Ok(changed)
 }
 
 /// Row `id`'s Bots, as given.
