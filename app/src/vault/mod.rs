@@ -309,6 +309,12 @@ impl Vault {
         self.db(db::list).unwrap_or_default()
     }
 
+    /// The row saved for site `origin` (any form of it) as `username`, if any.
+    pub(crate) fn find(&self, origin: &str, username: &str) -> Option<SiteLogin> {
+        let site = site_origin(origin)?;
+        self.db(|c| db::find(c, &site, username.trim())).ok().flatten()
+    }
+
     /// The row `id`, read now.
     pub(crate) fn get(&self, id: &str) -> Option<SiteLogin> {
         self.db(|c| db::by_id(c, id)).ok().flatten()

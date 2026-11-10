@@ -1400,7 +1400,7 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
     if r == FormResolution::Submitted && loc.offer.get_untracked() {
         let entry = spec.entry_id.clone();
         if let Some((origin, username)) = vault().pending_who(&entry) {
-            let offer = save_login::SaveLoginSpec { form_entry_id: entry.clone(), origin, username, bot_name: spec.bot_name.clone() };
+            let offer = save_login::SaveLoginSpec { form_entry_id: entry.clone(), origin, username, bot: spec.agent_id.clone(), bot_name: spec.bot_name.clone() };
             v = v.child(save_login::card(offer, format!("save-login-{entry}")));
         }
     }

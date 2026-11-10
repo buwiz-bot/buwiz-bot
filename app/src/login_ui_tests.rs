@@ -168,6 +168,11 @@ fn with_card(app: &mut Headless) {
 
 /// [`with_card`], the card's id `id`.
 fn with_card_as(app: &mut Headless, id: &'static str) {
+    with_card_for(app, id, Some("nova"));
+}
+
+/// [`with_card_as`], the card's Bot id `bot` (none: a card that names only its Bot's name).
+fn with_card_for(app: &mut Headless, id: &'static str, bot: Option<&'static str>) {
     on(app, move || {
         let st = store();
         st.mcp_loaded.set(true);
@@ -175,7 +180,7 @@ fn with_card_as(app: &mut Headless, id: &'static str) {
         st.active_id.set("t_nova".to_owned());
         st.turns_of.set("t_nova".to_owned());
         st.add_local_wire_turn(&json!({"role": "notice", "text": "Sign in to Shop", "notice": {
-            "kind": "user_form", "id": id, "bot": "nova", "botName": "Nova", "chat": "t_nova", "title": "Sign in to Shop", "state": "pending",
+            "kind": "user_form", "id": id, "bot": bot, "botName": "Nova", "chat": "t_nova", "title": "Sign in to Shop", "state": "pending",
             "takeoverNote": "You'd use its own browser on its own screen.",
             "form": {"title": "Sign in to Shop", "domain": "shop.example", "samePage": true, "submit": true, "fields": [
                 {"id": "email", "label": "Email", "type": "email", "required": true},
@@ -850,7 +855,7 @@ fn a_login_saved_from_a_bots_card_is_shared_with_that_bot_only() {
     app.press("Log in");
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
-    assert!(has_text(&app, "It's offered to Nova only; share it with other Bots in Settings › Logins."), "{:?}", app.texts());
+    assert!(has_text(&app, "Saved, it's offered to Nova only. Share it with other Bots in Settings › Logins."), "{:?}", app.texts());
     app.press("Save");
     settle(&mut app);
     assert!(has_text(&app, "Saved kid@example.com for shop.example"), "{:?}", app.texts());
@@ -902,5 +907,52 @@ fn a_password_typed_into_the_logins_form_goes_when_settings_closes_or_vault_reop
     app.press("Save login");
     settle(&mut app);
     assert!(saved(&mut app), "the password typed before /vault wasn't saved");
+    no_mark(&app);
+}
+
+/// The offer's words are true for a login saved already with another Bot: Nova is added, and
+/// Orbit keeps it.
+#[test]
+fn the_save_offer_says_who_else_keeps_a_login_saved_already() {
+    if !in_child("the_save_offer_says_who_else_keeps_a_login_saved_already") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    on(&mut app, || save_shared("kid@example.com", &["orbit"]));
+    with_card(&mut app);
+    assert!(!app.has("Use kid@example.com"), "Orbit's, not Nova's");
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, it's offered to Nova, and still to Orbit."), "{:?}", app.texts());
+    app.press("Save");
+    settle(&mut app);
+    let shares = on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.into_iter().collect::<Vec<_>>());
+    assert_eq!(shares, ["nova", "orbit"]);
+    no_mark(&app);
+}
+
+/// A card that names its Bot only by name records no share, and says so.
+#[test]
+fn a_card_with_no_bot_id_saves_a_login_shared_with_no_bot_and_says_so() {
+    if !in_child("a_card_with_no_bot_id_saves_a_login_shared_with_no_bot_and_says_so") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    with_card_for(&mut app, "uf_1", None);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins."), "{:?}", app.texts());
+    assert!(!has_text(&app, "offered to Nova"), "{:?}", app.texts());
+    app.press("Save");
+    settle(&mut app);
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.is_empty()), "no share without an id");
     no_mark(&app);
 }

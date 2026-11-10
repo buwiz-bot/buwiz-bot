@@ -11,9 +11,10 @@
 //! that came from the vault) the card paints nothing. Where the offer
 //! stands is the cards' shared state under its key.
 //!
-//! A login saved here is shared with the Bot whose card typed it, and no
-//! other (`Vault::save_for`): that Bot just used it on its own computer.
-//! Settings › Logins shares it further.
+//! A login saved here is shared with the Bot whose card typed it, by that
+//! Bot's id (`Vault::save_for`): that Bot just used it on its own computer.
+//! A login saved already keeps the Bots it had. A card that names no Bot id
+//! shares it with none. The offer says which of these it will be.
 
 use std::borrow::Borrow;
 
@@ -32,7 +33,9 @@ pub(crate) struct SaveLoginSpec {
     pub form_entry_id: String,
     pub origin: String,
     pub username: String,
-    /// The card's Bot, to say who it's shared with; "" when unknown.
+    /// The card's Bot (its id), whom a Save shares the login with; "" shares it with none.
+    pub bot: String,
+    /// That Bot's name, to say so; "" when unknown.
     pub bot_name: String,
 }
 
@@ -55,6 +58,7 @@ impl SaveLoginSpec {
             origin: at(&["origin"])?,
             username: at(&["username"])?,
             form_entry_id: at(&["formEntryId", "form_entry_id", "entryId"]).unwrap_or_default(),
+            bot: String::new(),
             bot_name: String::new(),
         })
     }
@@ -93,10 +97,31 @@ fn save(spec: &SaveLoginSpec, key: &str) {
     });
 }
 
-/// What Save means: where the password goes, and which Bot gets it.
-fn saved_note(bot_name: &str) -> String {
-    let who = if bot_name.is_empty() { "this Bot".to_owned() } else { bot_name.to_owned() };
-    format!("The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID. It's offered to {who} only; share it with other Bots in Settings › Logins.")
+/// What Save means: where the password goes, and which Bots it's offered to
+/// after: the card's Bot (by its id), the Bots the saved login has already,
+/// and every Bot under Share all.
+fn saved_note(spec: &SaveLoginSpec) -> String {
+    let keep = "The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID.";
+    let bots = crate::live::store().bots.get_untracked();
+    let name = |id: &str| crate::agents::name_of(id, &bots);
+    let others: Vec<String> = vault()
+        .find(&spec.origin, &spec.username)
+        .map(|r| r.shared_with.into_iter().filter(|b| *b != spec.bot).map(|b| name(&b)).collect())
+        .unwrap_or_default();
+    let all = if vault().share_all() { " Share all is on, so every Bot is offered it." } else { "" };
+    let who = match (spec.bot.is_empty(), others.is_empty()) {
+        (true, true) => "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins.".to_owned(),
+        (true, false) => format!("Saved, it stays shared with {} only.", others.join(", ")),
+        (false, _) => {
+            let me = if spec.bot_name.is_empty() { name(&spec.bot) } else { spec.bot_name.clone() };
+            if others.is_empty() {
+                format!("Saved, it's offered to {me} only. Share it with other Bots in Settings › Logins.")
+            } else {
+                format!("Saved, it's offered to {me}, and still to {}.", others.join(", "))
+            }
+        }
+    };
+    format!("{keep} {who}{all}")
 }
 
 /// Not now: the held password is dropped.
@@ -128,7 +153,7 @@ pub(crate) fn card(spec: impl Borrow<SaveLoginSpec>, key: impl AsRef<str>) -> im
         shell(&id)
             .label(format!("Save login for {}", spec.origin))
             .child(title(format!("Save login for {} as {}?", spec.origin, spec.username)))
-            .child(note(saved_note(&spec.bot_name)))
+            .child(note(saved_note(&spec)))
             .child(
                 view()
                     .flex_row()
