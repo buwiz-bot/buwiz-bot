@@ -41,6 +41,8 @@ pub struct Headless {
     pub live: HashSet<NodeId>,
     pub labels: Vec<(NodeId, String)>,
     texts: HashMap<NodeId, String>,
+    /// Each text view's content as the engine sent it: its runs, line limit and how it's cut.
+    attributed: HashMap<NodeId, std::sync::Arc<nsh_core::AttributedText>>,
     inputs: HashMap<NodeId, (String, u32)>,
     keymap: Option<std::sync::Arc<Keymap>>,
     pub frames: HashMap<NodeId, Bounds<Points>>,
@@ -70,6 +72,7 @@ pub fn run(config: EngineConfig) -> Headless {
         live: HashSet::new(),
         labels: Vec::new(),
         texts: HashMap::new(),
+        attributed: HashMap::new(),
         inputs: HashMap::new(),
         keymap: None,
         frames: HashMap::new(),
@@ -91,6 +94,7 @@ impl Headless {
                 MountItem::Delete { id } => {
                     self.live.remove(id);
                     self.texts.remove(id);
+                    self.attributed.remove(id);
                 }
                 MountItem::AccessibilityLabel { id, label: Some(l) } => self.labels.push((*id, l.to_string())),
                 MountItem::ViewProps { id, props } => {
@@ -100,6 +104,7 @@ impl Headless {
                 }
                 MountItem::Text { id, text, .. } => {
                     self.texts.insert(*id, text.text.clone());
+                    self.attributed.insert(*id, text.clone());
                 }
                 MountItem::Input { id, .. } => {
                     self.inputs.entry(*id).or_default();
@@ -133,6 +138,13 @@ impl Headless {
 
     pub fn texts(&self) -> Vec<&str> {
         self.texts.iter().filter(|(id, _)| self.live.contains(id)).map(|(_, t)| t.as_str()).collect()
+    }
+
+    /// The live text view showing `text`, whole, and its content as the engine sent it (its line
+    /// limit, how it's cut): its frame is in `frames`.
+    pub fn text_view(&self, text: &str) -> (NodeId, std::sync::Arc<nsh_core::AttributedText>) {
+        let id = self.texts.iter().find(|(id, t)| t.as_str() == text && self.live.contains(id)).map(|(id, _)| *id).unwrap_or_else(|| panic!("no text {text:?} in {:?}", self.texts()));
+        (id, self.attributed[&id].clone())
     }
 
     /// The newest live view labelled `label`.

@@ -118,7 +118,7 @@ fn a_hand_overs_time_counts_down_between_polls() {
 }
 
 /// The words the broker gave for a hand-over: longer than the bar has room for.
-const LONG: &str = "Sign in to the shop with the account the owner uses for every order, then pass the code it sends";
+const LONG: &str = "Sign in to the shop with the account the owner uses for every order, then pass the code it sends to the phone, and stay on the page until it says you're in, so I can go on with the cart";
 
 /// A computer full screen, as the window shows it.
 #[component]
@@ -133,6 +133,8 @@ fn Full() -> impl IntoElement {
         }))
         .child(text("probe ready=1").text_size(px(8.0)))
         .child(view().flex_1().child(crate::mini::full_layer()))
+        // the reason with no line limit, as wide as the row's text has room for: what it would take
+        .child(view().absolute().left(px(16.0)).top(px(0.0)).w(px(668.0)).child(text(LONG).text_size(px(12.0))))
 }
 
 /// The frame of `id` in the window, by the frames of what holds it.
@@ -153,7 +155,8 @@ fn in_window(app: &Headless, mut id: nsh_core::NodeId) -> (f32, f32, f32, f32) {
 
 /// A long reason has a row of its own under the bar, one line the window's width, and so never
 /// runs under the centred "Ann's computer". The bar holds the title and its buttons, and no words of
-/// the hand-over.
+/// the hand-over. The reason needs more than a line at that width, and the row's shows one, cut at
+/// its end with an ellipsis.
 #[test]
 fn a_long_reason_has_its_own_row_under_the_title() {
     if !in_child("a_long_reason_has_its_own_row_under_the_title") {
@@ -179,6 +182,15 @@ fn a_long_reason_has_its_own_row_under_the_title() {
         assert_ne!(*p, bar, "the reason is in the bar again");
         up = *p;
     }
+    let (shown, said) = app.text_view(&words);
+    let (whole, _) = app.text_view(LONG);
+    assert_eq!(app.parents[&shown], row, "the words aren't the row's");
+    assert_eq!((said.max_lines, said.ellipsize), (1, nsh_core::EllipsizeMode::Tail), "the row's words aren't one line cut with an ellipsis");
+    let (_, _, sw, sh) = in_window(&app, shown);
+    let (_, _, ww, wh) = in_window(&app, whole);
+    println!("shown {sw}x{sh}; whole {ww}x{wh}");
+    assert!(wh > sh * 1.5, "the reason fits a line anyway ({wh} against {sh}), so nothing was cut");
+    assert!(sw <= rw - 32.0 && sh <= rh, "the row's words run past it: {sw}x{sh} in {rw}x{rh}");
 }
 
 #[component]
