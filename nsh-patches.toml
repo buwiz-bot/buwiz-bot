@@ -11,8 +11,9 @@
 [[topic]]
 branch = "pr/macos-press-stops-momentum"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1511
+status = "open"
+note = "a press stops the momentum a trackpad flick left running; native check tests/native/press_momentum.rs"
 
 [[topic]]
 branch = "pr/gpui-agent"
@@ -24,8 +25,9 @@ note = "upstream declined #449 on 2026-10-27 (\"not ready to accept this feature
 [[topic]]
 branch = "pr/macos-embedded-scroll"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1515
+status = "open"
+note = "an AppView in a host's view passes on scrolls it cannot use (no movable scroll view under the pointer), so the Bot's page scrolls over a mini app's card; upstream version also uses input::event_root; native check tests/native/embedded_scroll.rs"
 
 [[topic]]
 branch = "pr/perf-jank-log"
@@ -95,14 +97,16 @@ status = "local"
 [[topic]]
 branch = "pr/macos-detach-subtree"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1513
+status = "open"
+note = "a subtree a batch deletes leaves the window with its root, in one removeFromSuperview; upstream version still detaches modals and header items on their own; native check deleted_subtree in tests/native/mount.rs"
 
 [[topic]]
 branch = "pr/macos-cursor-on-change"
 kind = "fix"
-pr = 0
-status = "local"
+pr = 1512
+status = "open"
+note = "the cursor is set only when it changes as the mouse moves: with a customized pointer each NSCursor set costs ~10 ms; unit test input::tests::the_cursor_is_set_only_when_it_changes"
 
 [[topic]]
 branch = "pr/macos-shot-video"
