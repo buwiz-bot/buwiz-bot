@@ -180,8 +180,9 @@ except FileNotFoundError:
 /// any thread lives, and a leader that exited shows `Z` with its threads running, so a process only
 /// counts as gone when every thread has. `/proc/<pid>/exe` needs `CAP_SYS_PTRACE` for another user,
 /// so this needs `--privileged`: `docker exec` can't add just that. A file that can't be read makes
-/// a stray, and so does a process of that user that can't be read at all. The Bot's number comes
-/// from a file only root writes, and without it nothing is handed over.
+/// a stray, and so does a process of that user that can't be read at all. One that exits while it's
+/// read, or an fd it closes, is nothing to end and says nothing of anything else. The Bot's number
+/// comes from a file only root writes, and without it nothing is handed over.
 ///
 /// It's no wall: a page in the browser is a page, and the list of what the desktop runs is kept by
 /// hand. It ends what was left running on that screen, which is what's there to be left.
@@ -215,6 +216,12 @@ def foreign(pid):
 def keepers_own(pid, status):
     parent = status[status.index(b'\nPPid:') + 6:].split()[0].decode()
     return os.readlink('/proc/%s/exe' % parent) == KEEPER and os.stat('/proc/%s' % parent).st_uid == 0
+def gone(pid):
+    # exited since it was listed: nothing to end, and no word on anything else
+    try:
+        return not alive(pid)
+    except FileNotFoundError:
+        return True
 def words(pid, what):
     return open('/proc/%s/%s' % (pid, what), 'rb').read().split(b'\0')[:-1]
 def system_path(pid):
@@ -227,7 +234,14 @@ def chain(pid, exe):
         return 'launcher' if len(argv) > 3 and argv[2] == b'--' and argv[3] == b'chromium' and system_path(pid) else ''
     if exe == SHELL:
         argv = words(pid, 'cmdline')
-        held = any(os.readlink('/proc/%s/fd/%s' % (pid, f)) == SCRIPT for f in os.listdir('/proc/%s/fd' % pid))
+        held = False
+        for f in os.listdir('/proc/%s/fd' % pid):
+            try:
+                # every one is read: one there that won't say makes it a stray, whatever came first
+                held = os.readlink('/proc/%s/fd/%s' % (pid, f)) == SCRIPT or held
+            except FileNotFoundError:
+                # closed since the folder was read: it held nothing
+                continue
         return 'loop' if len(argv) > 1 and argv[1] == SCRIPT.encode() and held and system_path(pid) else ''
     return ''
 def table():
@@ -247,6 +261,11 @@ def table():
                 exe = os.readlink('/proc/%s/exe' % d)
                 strange = foreign(d) or (exe == VOXL and not keepers_own(d, status))
                 part = '' if strange else chain(d, exe)
+            except FileNotFoundError:
+                # a process that went while it was read is no stray; one still there that won't say is
+                if gone(d):
+                    continue
+                exe, strange, part = '', True, ''
             except OSError:
                 exe, strange, part = '', True, ''
             out[int(d)] = (exe, name, strange, parent, part)
@@ -1505,7 +1524,10 @@ mod tests {
 
     /// Runs [`CLEAR`] on this Mac against a made-up `/proc` and `/home/box` under argv[2]: the
     /// owner of each path is root unless `OWNERS` says, as the kernel shows a process that isn't
-    /// dumpable, and a kill moves the process's folder away instead of signalling anything here.
+    /// dumpable, and a kill moves the process's folder away instead of signalling anything here. A
+    /// link to `/vanished` reads as an fd closed after its folder was listed, one to `/exited` as one
+    /// whose process exits as it's read (its folder moves to `exited-<pid>`), and one to `/denied` as
+    /// one the kernel won't show.
     const FAKE_PROC: &str = r#"
 import builtins, os, sys
 ROOT = sys.argv[2]
@@ -1522,7 +1544,17 @@ builtins.open = lambda p, *a, **k: _open(_at(p), *a, **k)
 os.listdir = lambda p: _listdir(_at(p))
 os.stat = lambda p: _owned(p, _stat(_at(p)))
 os.lstat = lambda p: _owned(p, _lstat(_at(p)))
-os.readlink = lambda p: _readlink(_at(p))
+def _link(p):
+    target = _readlink(_at(p))
+    if target == '/exited':
+        pid = os.fspath(p).split('/')[2]
+        _rename(ROOT + '/proc/' + pid, ROOT + '/exited-' + pid)
+    if target in ('/vanished', '/exited'):
+        raise FileNotFoundError(2, 'No such file or directory', p)
+    if target == '/denied':
+        raise PermissionError(13, 'Permission denied', p)
+    return target
+os.readlink = _link
 os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' % pid)
 "#;
 
@@ -1592,6 +1624,10 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         fake_start(&root, 501, &launched("/run/box/x/2/run/cdp.sock", "chromium"), SYSTEM, false);
         fake_process(&root, 502, 501, "chromium", 20001, CHROMIUM);
         fake_process(&root, 503, 502, "chromium", 20001, CHROMIUM);
+        // an fd the loop closes while it's read: it held nothing, and the loop is still the loop
+        std::os::unix::fs::symlink("/vanished", root.join("proc/500/fd/11")).unwrap();
+        // a stray that exits as it's read: nothing to end, and the scan goes on
+        fake_process(&root, 590, 1, "python3", 20001, "/exited");
         // something the desktop's user left running
         fake_process(&root, 600, 1, "python3", 20001, "/usr/bin/python3");
         // a shell of its own around a real launcher, holding box-chromium open to look like it
@@ -1622,6 +1658,13 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         fake_process(&root, 660, 1, "box-chromium", 20001, SH);
         fake_start(&root, 660, &looped, SYSTEM, false);
         fake_process(&root, 661, 660, "chromium", 20001, CHROMIUM);
+        // the loop in every other way, with an fd that's there and can't be read: no word is no loop
+        fake_process(&root, 670, 1, "box-chromium", 20001, SH);
+        fake_start(&root, 670, &looped, SYSTEM, true);
+        std::os::unix::fs::symlink("/denied", root.join("proc/670/fd/12")).unwrap();
+        fake_process(&root, 671, 670, "box-chrome-pipe", 20001, PIPE);
+        fake_start(&root, 671, &launched("s", "chromium"), SYSTEM, false);
+        fake_process(&root, 672, 671, "chromium", 20001, CHROMIUM);
         // a command's, as the Bot's agent user
         fake_process(&root, 700, 1, "python3", 20000, "/usr/bin/python3");
         std::fs::create_dir_all(root.join("proc/self")).unwrap();
@@ -1629,10 +1672,11 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"["box-chrome-pipe", "box-chromium", "python3", "sh"]"#);
         let ended = |pid: u32| root.join(format!("ended-{pid}")).exists();
-        for pid in [500, 501, 502, 503, 611, 612, 622, 641, 661, 700] {
+        assert!(root.join("exited-590").exists() && !ended(590), "the one that exited was ended");
+        for pid in [500, 501, 502, 503, 611, 612, 622, 641, 661, 671, 672, 700] {
             assert!(!ended(pid) && root.join(format!("proc/{pid}")).exists(), "{pid} was ended");
         }
-        for pid in [600, 610, 620, 621, 630, 631, 640, 650, 651, 660] {
+        for pid in [600, 610, 620, 621, 630, 631, 640, 650, 651, 660, 670] {
             assert!(ended(pid), "{pid} was left");
         }
     }
