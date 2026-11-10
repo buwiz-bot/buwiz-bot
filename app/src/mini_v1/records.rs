@@ -116,7 +116,14 @@ pub struct Records {
     pub versions: Vec<Seen>,
     /// What the person did about each plugin's waiting update.
     pub updates: Vec<UpdateSeen>,
+    /// Module key → the plugin version its card was first drawn with,
+    /// oldest first ([`MADE_MAX`] at most): a card keeps saying "Made with
+    /// 1.4.0" after a relaunch, until its Refresh.
+    pub made: Vec<(String, String)>,
 }
+
+/// The most cards whose version [`Records::made`] keeps.
+pub const MADE_MAX: usize = 400;
 
 /// What the person did about a plugin's waiting update: the version whose
 /// panel they opened (its dot is gone) and the one they skipped. Each
@@ -243,6 +250,8 @@ impl Records {
                 .and_then(Value::as_object)
                 .map(|m| m.iter().map(|(k, x)| UpdateSeen { plugin: k.clone(), seen: s(x, "seen"), skipped: s(x, "skipped") }).collect())
                 .unwrap_or_default(),
+            // a list, so the oldest goes first when it is full
+            made: list("made").iter().map(|m| (s(m, "key"), s(m, "version"))).filter(|(k, v)| !k.is_empty() && !v.is_empty()).collect(),
         }
     }
 
@@ -269,6 +278,7 @@ impl Records {
             "updates": self.updates.iter().map(|x| (x.plugin.clone(), json!({
                 "seen": x.seen, "skipped": x.skipped,
             }))).collect::<serde_json::Map<_, _>>(),
+            "made": self.made.iter().map(|(k, v)| json!({"key": k, "version": v})).collect::<Vec<_>>(),
         })
     }
 
@@ -368,6 +378,29 @@ impl Records {
                 None
             }
         }
+    }
+
+    /// The plugin version card `key` was first drawn with; `version` (the
+    /// plugin's now) becomes it when the card has none yet.
+    pub fn made(&mut self, key: &str, version: &str) -> String {
+        if let Some((_, v)) = self.made.iter().find(|(k, _)| k == key) {
+            return v.clone();
+        }
+        if !version.is_empty() {
+            if self.made.len() >= MADE_MAX {
+                self.made.remove(0);
+            }
+            self.made.push((key.to_owned(), version.to_owned()));
+        }
+        version.to_owned()
+    }
+
+    /// Card `key` is drawn again from scratch (its Refresh): whatever
+    /// version it opens with next is the one it was made with.
+    pub fn remade(&mut self, key: &str) -> bool {
+        let before = self.made.len();
+        self.made.retain(|(k, _)| k != key);
+        self.made.len() != before
     }
 
     /// Records the `(plugin, version)`s the broker lists now, at `now`
@@ -657,6 +690,31 @@ mod tests {
         assert_eq!(Records::load(&dir), Records::default());
         assert_eq!(major("2.1.0"), 2);
         assert_eq!(major("1.0.0-rc.1"), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cards_version_outlives_a_relaunch_until_its_refresh() {
+        let dir = temp("made");
+        let mut r = Records::default();
+        assert_eq!(r.made("v1:p/card", "1.4.0"), "1.4.0");
+        r.save(&dir).unwrap();
+        // relaunched on 1.5.0: the card still says what it was made with
+        let mut back = Records::load(&dir);
+        assert_eq!(back, r);
+        assert_eq!(back.made("v1:p/card", "1.5.0"), "1.4.0");
+        assert_eq!(back.made("v1:p/new", ""), "", "an unknown version is not kept");
+        // its Refresh draws it again: the version now is the one it was made with
+        assert!(back.remade("v1:p/card"));
+        assert!(!back.remade("v1:p/card"));
+        assert_eq!(back.made("v1:p/card", "1.5.0"), "1.5.0");
+        // full: the oldest goes
+        for i in 0..MADE_MAX {
+            back.made(&format!("v1:p/c{i}"), "1.0.0");
+        }
+        assert_eq!(back.made.len(), MADE_MAX);
+        assert_eq!(back.made[0].0, "v1:p/c0");
+        assert!(!back.made.iter().any(|(k, _)| k == "v1:p/card"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
