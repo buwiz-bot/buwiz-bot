@@ -806,8 +806,8 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
     Ok((answer, out))
 }
 
-/// "Open the screen": the card settles escalated and the screen is the person's, as a hand-over
-/// is. `None` when it can't be handed over now: the card stays open.
+/// "Open the screen": the screen is the person's, as a hand-over is, and then the card settles
+/// escalated. `None` when it can't be handed over now: the card stays open, and says why.
 async fn escalated(run: &Run, computers: &Arc<Computers>, chat: &str, id: &str, form: &Form, reply: oneshot::Sender<Answer>) -> Option<Out> {
     let ctx = &run.ctx;
     let live = match computers.live(ctx, &bot_of(ctx, chat, id)).await {
@@ -821,10 +821,19 @@ async fn escalated(run: &Run, computers: &Arc<Computers>, chat: &str, id: &str, 
         let _ = reply.send(Err((409, "not_apart", "This computer's commands can't be confirmed walled off from its screen right now, so the screen wasn't handed over.".to_owned())));
         return None;
     }
+    // the screen is the person's first: only then does the card say so
+    let reason = format!("Sign in: {}", form.title);
+    let handed = match tools::begin_handover(run, computers, live, &reason, Duration::from_secs(HANDOVER_S)).await {
+        Ok(h) => h,
+        Err(out) => {
+            let why = out.content.as_str().map(str::to_owned).unwrap_or_else(|| "The screen couldn't be handed over now.".to_owned());
+            let _ = reply.send(Err((409, "not_handed_over", format!("The screen wasn't handed over: {why}"))));
+            return None;
+        }
+    };
     let n = settle(ctx, chat, id, "escalated", Value::Null).unwrap_or(Value::Null);
     let _ = reply.send(Ok(json!({"ok": true, "notice": n})));
-    let reason = format!("Sign in: {}", form.title);
-    let out = match tools::hand_screen(run, computers, live, &reason, Duration::from_secs(HANDOVER_S)).await {
+    let out = match tools::finish_handover(run, computers, handed).await {
         Ok((_, facts)) if facts["outcome"] == "handed_back" => Out::ok(HANDED_BACK.to_owned()),
         Ok(_) => Out::ok(HANDOVER_TIMED_OUT.to_owned()),
         Err(out) => out,

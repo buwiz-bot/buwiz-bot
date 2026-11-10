@@ -368,10 +368,26 @@ async fn ask_person(run: &Run, computers: &std::sync::Arc<Computers>, live: Live
 }
 
 /// The screen is the person's until they hand it back or `limit` runs out, as a person who said
-/// yes to it asked: what the model was recording stops, what it left running on the desktop is
-/// ended, and the screen is handed over. → the computer as it is after, and the facts of how it
-/// went (`outcome`: `handed_back` or `timed_out`); `Err` what the model is told instead.
+/// yes to it asked: [`begin_handover`], then [`finish_handover`]. → the computer as it is after,
+/// and the facts of how it went (`outcome`: `handed_back` or `timed_out`); `Err` what the model is
+/// told instead.
 pub(super) async fn hand_screen(run: &Run, computers: &std::sync::Arc<Computers>, live: Live, reason: &str, limit: std::time::Duration) -> Result<(Live, Value), Out> {
+    let handed = begin_handover(run, computers, live, reason, limit).await?;
+    finish_handover(run, computers, handed).await
+}
+
+/// A screen in a person's hands, from [`begin_handover`].
+pub(super) struct Handed {
+    live: Live,
+    handing: crate::hub::computer::Handing,
+    recording: Option<String>,
+    ended_programs: Vec<String>,
+}
+
+/// What the model was recording stops, what it left running on the desktop is ended, and the
+/// screen is handed over. `Err` (what the model is told) when it couldn't be: nothing is the
+/// person's then.
+pub(super) async fn begin_handover(run: &Run, computers: &std::sync::Arc<Computers>, live: Live, reason: &str, limit: std::time::Duration) -> Result<Handed, Out> {
     // the answer can take minutes: what was seen before it is no use now
     let live = computers.live(&run.ctx, &live.bot).await.map_err(|p| no(&p))?;
     let recording = computers.end_recording(&live).await.map_err(|p| no(&p))?;
@@ -382,7 +398,13 @@ pub(super) async fn hand_screen(run: &Run, computers: &std::sync::Arc<Computers>
     };
     // nothing is handed over beside what can't be cleared: this Bot's desktop alone
     let ended_programs = live.provider.clear_strays(&live.machine, &live.screen).await.map_err(|p| refused(&p))?;
-    let mut handing = computers.hand_over(&live, reason, limit).map_err(|p| refused(&p))?;
+    let handing = computers.hand_over(&live, reason, limit).map_err(|p| refused(&p))?;
+    Ok(Handed { live, handing, recording, ended_programs })
+}
+
+/// Waits for the person to hand the screen back, or for its time to run out.
+pub(super) async fn finish_handover(run: &Run, computers: &std::sync::Arc<Computers>, handed: Handed) -> Result<(Live, Value), Out> {
+    let Handed { live, mut handing, recording, ended_programs } = handed;
     run.set_job("waiting", asking::WAITING);
     let ended = handing.ended().await;
     drop(handing);

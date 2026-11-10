@@ -487,3 +487,28 @@ async fn a_password_the_model_called_text_is_masked_typed_into_the_password_box_
     }
     assert!(login::logged().iter().any(|l| l.contains("field secret_thing") && l.contains("secret=true")));
 }
+
+#[tokio::test]
+async fn a_hand_over_that_fails_leaves_the_card_open_and_says_why() {
+    let b = login_bed("login-escalate-fails");
+    awake(&b, &b.ann.0).await;
+    let (card, call) = asked(&b, card_input()).await;
+    *b.mock.stray_problem.lock().unwrap() = Some(Problem::Failed("the desktop couldn't be cleared".into()));
+    let (status, reply) = login::host_dismiss(&b.ctx, &json!({"chat": card["chat"], "id": card["id"], "mode": "escalated"})).await;
+    assert_eq!((status, reply["code"].as_str()), (409, Some("not_handed_over")), "{reply}");
+    assert!(reply["message"].as_str().unwrap().starts_with("The screen wasn't handed over"), "{reply}");
+    assert_eq!(login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap()["state"], "pending");
+    assert!(b.computers.status(&b.ctx, &b.ann.0).await.get("takeover").is_none(), "the screen isn't the person's");
+    assert!(!call.is_finished());
+    // fixed, it goes
+    *b.mock.stray_problem.lock().unwrap() = None;
+    let (status, _) = login::host_dismiss(&b.ctx, &json!({"chat": card["chat"], "id": card["id"], "mode": "escalated"})).await;
+    assert_eq!(status, 200);
+    for _ in 0..600 {
+        if b.computers.hand_back(&b.ann.0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(words(&call.await.unwrap()), login::HANDED_BACK);
+}
