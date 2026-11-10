@@ -466,8 +466,9 @@ impl BoatProvider {
         }
     }
 
-    /// Every sandbox labelled with computer `id`, across boat's pages (at most [`MAX_PAGES`]), with
-    /// its state when the listing says it.
+    /// Every sandbox labelled with computer `id`, across boat's pages, with its state when the
+    /// listing says it. More than [`MAX_PAGES`] is an error, never a part of the list: a recover or
+    /// a sweep that acted on a part would miss what's past it.
     async fn labelled(&self, id: &str) -> Result<Vec<(String, Option<String>)>> {
         let computer = safe_id(id)?;
         let mut found = Vec::new();
@@ -511,10 +512,12 @@ impl BoatProvider {
                         "boat's listing came with a cursor the broker won't use.".to_owned(),
                     ))
                 }
-                None => break,
+                None => return Ok(found),
             }
         }
-        Ok(found)
+        Err(Problem::Failed(format!(
+            "boat listed more than {MAX_PAGES} pages of sandboxes for this computer, so nothing was done with them. Try again later."
+        )))
     }
 
     /// Registers `public` as a login key for `id` and returns where and who the machine is now:

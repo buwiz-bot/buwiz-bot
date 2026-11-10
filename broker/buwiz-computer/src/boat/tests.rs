@@ -728,3 +728,24 @@ async fn recover_with_only_broken_sandboxes_finds_none_and_deletes_nothing() {
     assert!(got.contains(&"GET /api/v1/sandboxes/bx_eeee2222".to_owned()), "{got:?}");
     assert!(got.iter().all(|c| c.starts_with("GET ")), "nothing is stopped or deleted: {got:?}");
 }
+
+#[tokio::test]
+async fn a_listing_longer_than_the_cap_is_an_error_and_nothing_acts_on_a_part_of_it() {
+    // every page says there's another
+    let fake = serve(|req: &Seen| match req.method.as_str() {
+        "GET" if req.path.contains("label=buwiz-computer%3Dcomp1") => ok(200, r#"{"ok":true,"sandboxes":[{"id":"bx_aaaa2222","state":"ready"}],"pageInfo":{"hasMore":true,"nextCursor":"more"}}"#),
+        "DELETE" | "POST" => ok(202, "{}"),
+        _ => ok(404, r#"{"ok":false,"code":"not_found"}"#),
+    })
+    .await;
+    let (ssh, _) = refusing_ssh("listing-cap");
+    let p = provider(fake.addr, ssh);
+    let last = Reach::Sandbox { id: "bx_cccc2222".to_owned() };
+    let swept = p.sweep("comp1", Some(&last)).await.unwrap_err();
+    assert!(swept.sentence().contains("more than 10 pages"), "{}", swept.sentence());
+    assert!(p.recover(&spec("listing-cap"), None).await.is_err());
+    assert!(p.finds("comp1", None).await.is_err());
+    let got = calls(&fake);
+    assert_eq!(got.iter().filter(|c| c.starts_with("GET ")).count(), 30, "ten pages each: {got:?}");
+    assert!(got.iter().all(|c| c.starts_with("GET ")), "nothing was deleted: {got:?}");
+}
