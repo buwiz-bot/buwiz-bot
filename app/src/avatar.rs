@@ -349,6 +349,9 @@ struct Inner {
     mark: mark::Mark,
     dir: mark::Director,
     gs: GazeState,
+    /// The shape as given, before `themed` recolours it.
+    last_src: String,
+    /// The shape as drawn.
     last_shape: String,
     last_state: &'static str,
     last_compact: bool,
@@ -364,11 +367,11 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(props: &BotBlobProps, tab: Rc<mark::Tables>) -> Self {
+    /// `light`: the theme is light now.
+    fn new(props: &BotBlobProps, tab: Rc<mark::Tables>, light: bool) -> Self {
         #[cfg(test)]
         BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // Untracked like the state below: `sync`, in the paint, follows a theme flip.
-        let flipped = themed(&props.shape, !untracked(dark));
+        let flipped = themed(&props.shape, light);
         let shape = flipped.as_deref().unwrap_or(&props.shape);
         let body = body_of(shape);
         let seed = props
@@ -405,6 +408,7 @@ impl Inner {
             mark,
             dir,
             gs,
+            last_src: props.shape.clone(),
             last_shape: shape.to_owned(),
             last_state: state,
             last_compact: box_ < 48.0,
@@ -422,20 +426,29 @@ impl Inner {
 
     /// `draw`'s prop-diff section (blob.tsx: shape/state/compact/emphasis/
     /// gaze/pokes/resting), then the clock advance.
-    fn sync(&mut self, props: &BotBlobProps) -> bool {
+    /// `light`: the theme is light now; a flip can change a rich body's colours.
+    fn sync(&mut self, props: &BotBlobProps, light: bool) -> bool {
         let now = Instant::now();
         let mut dirty = false;
-        // Reading `dark()` here follows a theme flip, which can change a rich body's colours.
-        let flipped = themed(&props.shape, !dark());
+        let flipped = themed(&props.shape, light);
         let shape = flipped.as_deref().unwrap_or(&props.shape);
         if shape != self.last_shape {
-            self.mark.set_body(body_of(shape), false);
-            if props.morph_shape {
-                self.grace_until = now + Duration::from_millis(1400);
+            // The same shape on the other theme is a change of colour, not of
+            // body: it swaps at once. A morph between two bodies draws neither
+            // one's solids, so the hat would lose its brim until it ended.
+            let recoloured = props.shape == self.last_src;
+            self.mark.set_body(body_of(shape), recoloured);
+            if !recoloured {
+                if props.morph_shape {
+                    self.grace_until = now + Duration::from_millis(1400);
+                }
+                self.live_until = now + Duration::from_millis(1200);
             }
-            self.live_until = now + Duration::from_millis(1200);
             self.last_shape = shape.to_owned();
             dirty = true;
+        }
+        if props.shape != self.last_src {
+            self.last_src = props.shape.clone();
         }
         let state = props
             .state_src
@@ -602,7 +615,8 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
     let size = props.size;
     let canvas_size = size * 1.5;
     let offset = -size * 0.25;
-    let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables())));
+    // Untracked like the state in `Inner::new`: `sync`, in the paint, follows a theme flip.
+    let st = Rc::new(RefCell::new(Inner::new(&props, mark::shared_tables(), !untracked(dark))));
     let lane = Cell::new((0, 0));
     let props = Rc::new(props);
     view()
@@ -611,7 +625,8 @@ pub(crate) fn bot_blob(props: BotBlobProps) -> impl IntoElement {
             canvas(move || {
                 let mut st = st.borrow_mut();
                 let props = &*props;
-                st.sync(props);
+                // Reading `dark()` here repaints on a theme flip.
+                st.sync(props, !dark());
                 let now = Instant::now();
                 let resting = props.paused || (st.last_state == "idle" && now >= st.grace_until);
                 // out of sight it draws nothing at all, a state change included:
@@ -840,6 +855,36 @@ mod tests {
         assert!(hat.contains(dark_bits) && !light.contains(dark_bits), "the grin and eyes aren't left dark on a black hat");
         assert!(drawable(&light), "the light hat is a recipe the engine draws");
         assert!(std::rc::Rc::ptr_eq(&light, &themed(&hat, true).unwrap()), "it's worked out once, not every frame");
+    }
+
+    /// A theme flip turns the hat's colours over at once. A morph between its two recipes
+    /// draws neither one's brim, so the hat showed without it for over a second. A new shape
+    /// still morphs.
+    #[test]
+    fn a_theme_flip_recolours_the_hat_at_once() {
+        let props = super::BotBlobProps { shape: crate::store::wiz_hat().shape, size: 64.0, ..Default::default() };
+        let mut avatar = super::Inner::new(&props, mark::shared_tables(), false);
+        avatar.sync(&props, true);
+        let light = themed(&props.shape, true).unwrap();
+        let frame = avatar.mark.frame();
+        let bodies: Vec<&str> = frame.bodies.iter().map(|b| b.body).collect();
+        assert_eq!(bodies, [body_of(&light)], "the light hat alone, not a blend");
+        let extent = 64.0 * 0.82 * 0.92 / 0.6;
+        let tree = mark::uh(
+            &frame,
+            &mark::PaintOpts { cutout: true, ..Default::default() },
+            extent,
+            "m",
+            &mark::UhSize { display_size: Some(64.0 * 0.82), extent },
+            &mark::shared_tables(),
+        );
+        fn solids(t: &mark::MarkTree) -> usize {
+            t.attr("data-solid").is_some() as usize + t.children.iter().map(solids).sum::<usize>()
+        }
+        assert!(solids(&tree) > 5, "the brim draws");
+        avatar.sync(&super::BotBlobProps { shape: "blob".into(), ..props }, true);
+        avatar.mark.advance(1.0 / 30.0);
+        assert!(avatar.mark.frame().bodies.len() > 1, "a new shape morphs");
     }
 
     /// Only a rich body whose shell is the adaptive white is turned over: a plain shape keeps
