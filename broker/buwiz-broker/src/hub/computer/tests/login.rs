@@ -550,3 +550,18 @@ async fn a_live_host_on_another_site_types_nothing_there() {
     assert!(b.mock.calls().iter().filter(|c| c.contains(" snap ") || c.contains(" act ")).all(|c| !c.contains("evil.test")), "the allow-list is the card's site");
     call.abort();
 }
+
+#[tokio::test]
+async fn a_submit_with_every_field_empty_types_nothing_and_says_so() {
+    let b = login_bed("login-empty");
+    awake(&b, &b.ann.0).await;
+    let (card, call) = asked(&b, json!({"title": "Sign in to Shop", "domain": SITE, "samePage": true, "fields": [{"id": "email", "label": "Email"}, {"id": "password", "label": "Password", "type": "password"}]})).await;
+    b.mock.calls.lock().unwrap().clear();
+    let (status, reply) = submit(&b, &card, json!({"email": "", "password": ""}), false).await;
+    assert_eq!(status, 200, "{reply}");
+    let said = words(&call.await.unwrap());
+    assert!(said.contains("with every field empty, so nothing was typed into the page") && !said.contains("filled into the page"), "{said}");
+    assert_eq!(reply["notice"]["state"], "fill_failed");
+    assert_eq!(reply["notice"]["note"], login::EMPTY_NOTE);
+    assert!(acts(&b).is_empty() && b.mock.typed().is_empty());
+}

@@ -339,6 +339,8 @@ pub enum Fill {
     /// so a value may be in the page
     Failed { outcomes: Vec<Outcome>, reason: String, uncertain: bool },
     Filled { outcomes: Vec<Outcome>, pressed: Pressed },
+    /// every field the fill would type was empty: nothing was typed, and nothing reached the box
+    Empty,
 }
 
 /// The sentence for an image without the browser layer on a `BOX_CHROME=0` computer.
@@ -386,6 +388,10 @@ fn uncertain(reply: &BrowserReply) -> bool {
 /// field's whole value (ultra-instinct's DOM setter), so a new card's fill of that field replaces
 /// it; a press on another element may have left a value there.
 pub const MAYBE_TYPED: &str = "A value may have been typed into the page before it stopped: take a screenshot before anything else. A new card's fill sets each field's whole value rather than adding to it, but a press that landed on another element may have left a value there.";
+
+/// The card's note when every field was empty.
+pub const EMPTY_NOTE: &str = "Nothing was typed: every field was empty.";
+const EMPTY_NEXT: &str = "Continue without those credentials, or ask the person in chat whether they meant to; do not raise the same card again.";
 
 /// The site list for every fill call: the site and the hosts under it.
 fn allow(site: &str) -> Value {
@@ -501,13 +507,16 @@ async fn front_page(live: &Live, site: &str) -> Result<(), String> {
 /// Types `values` into the page on `live`'s screen by OpenGrok's rules (see the module's words).
 /// No picture is taken. `values` are by field id, this card's alone.
 pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>) -> Fill {
+    let to_type: Vec<&Field> = form.fields.iter().take(if form.types_only_first_field() { 1 } else { form.fields.len() }).filter(|f| values.get(&f.id).is_some_and(|v| !v.expose().is_empty())).collect();
+    if to_type.is_empty() {
+        return Fill::Empty;
+    }
     if let Err(message) = browser_layer(live).await {
         return Fill::Failed { outcomes: Vec::new(), reason: message, uncertain: false };
     }
     if let Err(message) = front_page(live, &form.site).await {
         return Fill::Refused { code: "wrong-page", message };
     }
-    let to_type: Vec<&Field> = form.fields.iter().take(if form.types_only_first_field() { 1 } else { form.fields.len() }).filter(|f| values.get(&f.id).is_some_and(|v| !v.expose().is_empty())).collect();
     let mut outcomes: Vec<Outcome> = form.fields.iter().map(|f| Outcome { id: f.id.clone(), filled: false, sensitive: false }).collect();
     let mut taken: Vec<String> = Vec::new();
     let mut last: Option<&Field> = None;
@@ -619,6 +628,7 @@ pub fn result_text(form: &Form, fill: &Fill, shared: &BTreeMap<String, String>) 
             format!("The person submitted the form \"{title}\" but it could not be filled into the page: {reason}{maybe} {observe} {SECRET_NOTE} Do not type secrets with computer_type.")
         }
         Fill::Refused { message, .. } => format!("The form \"{title}\" wasn't filled: {message}"),
+        Fill::Empty => format!("The person submitted the form \"{title}\" with every field empty, so nothing was typed into the page. {EMPTY_NEXT}"),
     }
 }
 
@@ -811,6 +821,7 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
             let note = if *uncertain { format!("{reason} {MAYBE_TYPED}") } else { reason.clone() };
             ("fill_failed", outcomes.clone(), json!({"note": note, "uncertain": uncertain}))
         }
+        Fill::Empty => ("fill_failed", form.fields.iter().map(|f| Outcome { id: f.id.clone(), filled: false, sensitive: false }).collect(), json!({"note": EMPTY_NOTE})),
         Fill::Refused { .. } => unreachable!("handled above"),
     };
     let mut extra = extra;
