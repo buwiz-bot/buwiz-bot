@@ -393,3 +393,10 @@ async fn new_settings_reach_a_running_provider() {
     shared.set(Settings::new(Some(Secret::new("key-1")), Some("tpl".to_owned())));
     p.check().await.unwrap();
 }
+
+#[test]
+fn a_lost_computer_is_never_offered_keep_and_the_sentence_says_why() {
+    let p = E2bProvider::new(Settings::new(None, Some("tpl".to_owned())));
+    let why = p.cant_keep_lost().unwrap();
+    assert!(why.contains("new secrets") && why.contains("deleted"), "{why}");
+}

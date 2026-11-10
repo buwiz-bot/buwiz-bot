@@ -476,6 +476,18 @@ impl Default for WaitFor {
     }
 }
 
+/// Something of a computer that's gone, still on the machine its provider runs on: a Docker
+/// volume whose box is no more, say. Only ever listed: what's in it is a person's to keep or not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leftover {
+    /// the provider's own name for it, as a person would look it up
+    pub name: String,
+    /// the computer it was made for, when it says
+    pub id: Option<String>,
+    /// the box it belonged to: the name its record would have
+    pub owner: String,
+}
+
 /// How a wait ended. `fallback` is a fixed pause: no viewer could say.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Settled {
@@ -605,6 +617,13 @@ pub trait Provider: Send + Sync {
 
     async fn sleep(&self, machine: &Machine, depth: Sleep) -> Result<()>;
 
+    /// What the last [`Provider::sleep`] of it did that a person should know, as a sentence: a
+    /// light sleep that couldn't keep what was open, say. The sleep still worked, so it isn't a
+    /// [`Problem`]. Taken: a second ask has nothing until another sleep leaves one.
+    fn take_sleep_note(&self, _machine: &Machine) -> Option<String> {
+        None
+    }
+
     /// Removes it and everything it kept. Only for a computer a person agreed to delete, or one
     /// just made that holds nothing yet.
     async fn destroy(&self, machine: &Machine) -> Result<()>;
@@ -615,10 +634,37 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
+    /// What's left of computers whose box is gone, files and all, whether or not a record names
+    /// them: the caller knows which records it has. Nothing is removed. `None` when this provider
+    /// can't say, which is never "none left".
+    async fn leftovers(&self) -> Result<Option<Vec<Leftover>>> {
+        Ok(None)
+    }
+
     /// A record for computer `spec.id` from what's left of it, with new secrets, when its saved
     /// one is lost: its files are still there. `last` is where it was, when that's still known, so
     /// its files can be found with nothing else left. `None` when nothing of it is found.
     async fn recover(&self, _spec: &Spec, _last: Option<&Reach>) -> Result<Option<Machine>> {
+        Ok(None)
+    }
+
+    /// What the last [`Provider::recover`] of computer `id` left alone that a person should know,
+    /// as a sentence: other things of it still there, say. Taken: a second ask has nothing.
+    fn take_recover_note(&self, _id: &str) -> Option<String> {
+        None
+    }
+
+    /// Why a computer of this kind found with its record lost can't be kept, as the sentence a
+    /// person reads: [`Provider::recover`] never gives one back, whatever is found. `None` when it
+    /// can, which is what a person is offered Keep for.
+    fn cant_keep_lost(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether anything of computer `id`, its saved record lost, is there with these settings: what
+    /// [`Provider::sweep`] would find, by its id and `last`. Nothing is changed. `None` when this
+    /// provider can't tell.
+    async fn finds(&self, _id: &str, _last: Option<&Reach>) -> Result<Option<bool>> {
         Ok(None)
     }
 

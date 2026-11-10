@@ -65,11 +65,25 @@ pub struct MockProvider {
     pub stray_problem: Mutex<Option<Problem>>,
     /// what `users_apart` answers; left alone, no
     pub apart: Mutex<Option<Result<bool>>>,
+    /// what a light sleep leaves for `take_sleep_note`
+    pub sleep_note: Mutex<Option<String>>,
+    /// what the last sleep left, until taken
+    noted: Mutex<Option<String>>,
+    /// what `leftovers` finds
+    pub leftovers: Mutex<Vec<crate::Leftover>>,
+    /// `leftovers` waits while this is set, as a Docker that hangs does
+    pub hang_leftovers: AtomicBool,
+    /// `leftovers` can't say while this is set, as a provider with none to tell of
+    pub leftovers_unknown: AtomicBool,
+    /// what `cant_keep_lost` says: a kind whose lost computers can't be kept
+    pub cant_keep: Mutex<Option<String>>,
+    /// what `take_recover_note` gives, once
+    pub recover_note: Mutex<Option<String>>,
 }
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None) }
     }
 }
 
@@ -177,7 +191,23 @@ impl Provider for MockProvider {
         self.note(format!("sleep {depth:?}"));
         self.paused.store(depth == Sleep::Light, Ordering::SeqCst);
         self.set_power(Power::Asleep);
+        let left = if depth == Sleep::Light { self.sleep_note.lock().unwrap_or_else(|e| e.into_inner()).clone() } else { None };
+        *self.noted.lock().unwrap_or_else(|e| e.into_inner()) = left;
         Ok(())
+    }
+
+    fn take_sleep_note(&self, _: &Machine) -> Option<String> {
+        self.noted.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    async fn leftovers(&self) -> Result<Option<Vec<crate::Leftover>>> {
+        while self.hang_leftovers.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if self.leftovers_unknown.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(Some(self.leftovers.lock().unwrap_or_else(|e| e.into_inner()).clone()))
     }
 
     async fn destroy(&self, _: &Machine) -> Result<()> {
@@ -228,6 +258,14 @@ impl Provider for MockProvider {
             link: None,
             seen: None,
         }))
+    }
+
+    fn take_recover_note(&self, _: &str) -> Option<String> {
+        self.recover_note.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    fn cant_keep_lost(&self) -> Option<String> {
+        self.cant_keep.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     async fn sweep(&self, id: &str, _: Option<&Reach>) -> Result<()> {
