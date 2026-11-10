@@ -157,6 +157,28 @@ pub fn settle_notice(b: &dyn Broker, chat: &str, kind: &str, id: &str, state: &s
     post(b, "/v1/host/notices/settle", json!({"chat": chat, "kind": kind, "id": id, "state": state}), SHORT_TIMEOUT).map(drop)
 }
 
+/// `POST /v1/host/plugins/updates/check`: asks each plugin's release
+/// source for a newer version now; the list comes back with what it found
+/// (`update` on each plugin).
+pub fn check_updates(b: &dyn Broker) -> Result<Vec<Value>, RoxError> {
+    let v = post(b, "/v1/host/plugins/updates/check", json!({}), Duration::from_secs(60))?;
+    Ok(v.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default())
+}
+
+/// `POST /v1/host/plugins/updates/review {id, chat}`: fetches and inspects
+/// `plugin`'s waiting update and puts its install-review card in chat
+/// `chat` (one while pending). Nothing is installed: only the card's
+/// Install does that.
+pub fn review_update(b: &dyn Broker, plugin: &str, chat: &str) -> Result<Value, RoxError> {
+    post(b, "/v1/host/plugins/updates/review", json!({"id": plugin, "chat": chat}), Duration::from_secs(120))
+}
+
+/// `POST /v1/host/plugins/updates/failed {id, chat, reason}`: a line in
+/// chat `chat` that `plugin`'s update failed and which version stays.
+pub fn update_failed(b: &dyn Broker, plugin: &str, chat: &str, reason: &str) -> Result<(), RoxError> {
+    post(b, "/v1/host/plugins/updates/failed", json!({"id": plugin, "chat": chat, "reason": reason}), SHORT_TIMEOUT).map(drop)
+}
+
 /// What the broker does to an installed plugin (13.4 to 13.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginAction {

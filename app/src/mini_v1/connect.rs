@@ -252,6 +252,72 @@ pub struct Listed {
     /// The host's account commands under its `@short:` (`login`, `logout`,
     /// `switch`, `setup`), for a package with accounts; empty otherwise.
     pub account_commands: Vec<String>,
+    /// A newer release waiting (`update` of the plugin list); `None` when
+    /// the installed version is the newest the broker knows.
+    pub update: Option<Update>,
+}
+
+/// A newer release of a plugin, as the broker's list announces it
+/// (`update`): nothing of it is installed until the person reviews it and
+/// presses Install.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Update {
+    /// The version waiting ("1.5.0"), and the one installed when the
+    /// broker checked.
+    pub version: String,
+    pub from_version: String,
+    /// Up to three lines of the release's notes.
+    pub notes: Vec<String>,
+    /// The release's page ("Read more"); "" when it has none.
+    pub url: String,
+    /// What the new version asks for that the installed one doesn't, in
+    /// words ("Needs new access: …"); empty when nothing is added.
+    pub access: Vec<String>,
+}
+
+/// The most notes an update's panel shows.
+pub const UPDATE_NOTES: usize = 3;
+
+impl Update {
+    /// `v`, a plugin's `update` in the list, while it is newer than
+    /// `installed`: an update at or below the installed version is no
+    /// news (it was installed since the broker looked).
+    pub fn of(v: &Value, installed: &str) -> Option<Update> {
+        let version = s(v, "version");
+        if !newer(&version, installed) {
+            return None;
+        }
+        let lines = |k: &str| list(v, k).iter().filter_map(Value::as_str).map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+        let url = Some(s(v, "url")).filter(|u| u.starts_with("https://")).unwrap_or_default();
+        Some(Update { version, from_version: installed.to_owned(), notes: lines("notes").into_iter().take(UPDATE_NOTES).collect(), url, access: lines("access") })
+    }
+
+    /// The main button: "Review access" when the new version asks for
+    /// more, else "Review update".
+    pub fn review_label(&self) -> &'static str {
+        if self.access.is_empty() { "Review update" } else { "Review access" }
+    }
+}
+
+/// A version's numbers ("v1.5.0", "1.5.0-rc.1" → [1, 5, 0]); `None` for
+/// anything else.
+fn version_numbers(v: &str) -> Option<Vec<u64>> {
+    let core = v.trim().trim_start_matches('v').split(['-', '+']).next().unwrap_or_default();
+    let parts: Option<Vec<u64>> = core.split('.').map(|p| p.parse().ok()).collect();
+    parts.filter(|p| !p.is_empty())
+}
+
+/// Whether version `a` is above `b` (their numbers compared; a version
+/// that is not numbers is never newer).
+pub fn newer(a: &str, b: &str) -> bool {
+    match (version_numbers(a), version_numbers(b)) {
+        (Some(a), Some(b)) => {
+            let n = a.len().max(b.len());
+            let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+            (0..n).map(|i| at(&a, i).cmp(&at(&b, i))).find(|o| o.is_ne()).is_some_and(|o| o.is_gt())
+        }
+        _ => false,
+    }
 }
 
 /// What a provider's sign-in needs first (`setup` of the plugin list):
@@ -574,6 +640,7 @@ impl Listed {
                 .collect(),
             setup: list(v, "setup").iter().map(Setup::of).filter(|x| !x.provider.is_empty() && !x.fields.is_empty()).collect(),
             account_commands: list(v, "account_commands").iter().filter_map(Value::as_str).filter(|c| super::tokens::ACCOUNT_COMMANDS.contains(c)).map(str::to_owned).collect(),
+            update: v.get("update").filter(|u| u.is_object()).and_then(|u| Update::of(u, &s(v, "version"))),
         }
     }
 
@@ -1078,6 +1145,27 @@ pub fn log_file(plugin: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_update_is_announced_only_while_it_is_newer_than_what_is_installed() {
+        use serde_json::json;
+        let listed = |installed: &str, update: serde_json::Value| super::Listed::of(&json!({"id": "app.buwiz.fixture", "version": installed, "update": update}));
+        let waiting = json!({"version": "1.5.0", "notes": ["Faster search", " ", "Drafts keep their place", "Three", "Four"], "url": "https://github.com/buwiz-app/fixture/releases/tag/v1.5.0", "access": ["Google Drive files"]});
+        let u = listed("1.4.0", waiting.clone()).update.expect("1.5.0 is above 1.4.0");
+        assert_eq!((u.version.as_str(), u.from_version.as_str()), ("1.5.0", "1.4.0"));
+        assert_eq!(u.notes, ["Faster search", "Drafts keep their place", "Three"], "three lines, none blank");
+        assert_eq!(u.access, ["Google Drive files"]);
+        assert_eq!(u.review_label(), "Review access");
+        assert_eq!(listed("1.4.0", json!({"version": "1.5.0"})).update.unwrap().review_label(), "Review update");
+        // installed since the broker looked, or never an update at all
+        assert_eq!(listed("1.5.0", waiting.clone()).update, None);
+        assert_eq!(listed("1.6.0", waiting).update, None);
+        assert_eq!(listed("1.4.0", serde_json::Value::Null).update, None);
+        assert_eq!(listed("1.4.0", json!({"version": "soon"})).update, None);
+        // a link that is not https is not offered
+        assert_eq!(listed("1.4.0", json!({"version": "1.5.0", "url": "javascript:alert(1)"})).update.unwrap().url, "");
+        assert!(super::newer("v1.10.0", "1.9.9") && super::newer("2", "1.9") && !super::newer("1.5", "1.5.0") && !super::newer("1.4.9", "1.5.0"));
+    }
+
     use std::sync::Mutex;
 
     use super::*;
