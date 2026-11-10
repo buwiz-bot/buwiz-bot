@@ -76,6 +76,7 @@ fn Stage() -> impl IntoElement {
     Owner::detached().run(|| {
         let _ = store();
     });
+    let rail = signal(false);
     view()
         .size_full()
         .child(
@@ -95,8 +96,15 @@ fn Stage() -> impl IntoElement {
                 .child(button("modal open", || store().plugins_open.set(true))),
         )
         .child(text(|| format!("probe open={} cat={}", store().plugins_open.get(), store().plugin_cat.get())))
-        // the sidebar's width, so the two pills share its row
-        .child(view().label("row").w(px(240.0)).pt(px(60.0)).child(crate::sidebar::footer()))
+        .child(button("collapse", move || rail.set(true)))
+        // the sidebar's width, so the two pills share its row; collapsed, the rail's footer
+        .child(dynamic(move || {
+            if rail.get() {
+                view().label("rail").w(px(60.0)).pt(px(60.0)).child(crate::sidebar::rail_footer()).into_element()
+            } else {
+                view().label("row").w(px(240.0)).pt(px(60.0)).child(crate::sidebar::footer()).into_element()
+            }
+        }))
         .child(view().label("modal").w(px(600.0)).child(crate::plugins::updates_section()))
 }
 
@@ -236,6 +244,25 @@ fn a_press_on_the_pill_opens_connect_apps_on_its_updates() {
     app.press("3 wait");
     app.press("Connect apps");
     assert!(says(&app, "probe open=true cat=All"), "{:?}", app.texts());
+}
+
+/// F4-1, collapsed: the rail's Connect apps counts what waits as the
+/// pill does, and its press lands on the Updates section too.
+#[test]
+fn the_collapsed_rails_connect_apps_counts_and_opens_the_updates() {
+    if !in_child("the_collapsed_rails_connect_apps_counts_and_opens_the_updates") {
+        return;
+    }
+    let mut app = start();
+    app.press("collapse");
+    app.press("a category");
+    app.press("3 wait");
+    assert!(app.has("3 updates waiting") && says(&app, "3"), "{:?}", app.texts());
+    app.press("Connect apps");
+    assert!(says(&app, "probe open=true cat=All"), "{:?}", app.texts());
+    app.press("modal closed");
+    app.press("none wait");
+    assert!(!app.has("0 updates waiting"), "no badge at none: {:?}", app.texts());
 }
 
 /// F3-1: "Updates (n)" with a row for each update waiting; Update asks

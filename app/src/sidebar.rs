@@ -530,22 +530,64 @@ fn rail() -> impl IntoElement {
                 ),
             ),
         )
-        // The rail footer, as Grok Bot's: New Bot (＋) and Connect apps
-        // (grid) as 28pt circles with its own 16pt glyphs at 64% ink, 6pt
-        // apart, then the 54pt account plate; the list ends where it
-        // starts.
+        .child(rail_footer())
+}
+
+/// The rail footer, as Grok Bot's: New Bot (＋) and Connect apps
+/// (grid) as 28pt circles with its own 16pt glyphs at 64% ink, 6pt
+/// apart, then the 54pt account plate; the list ends where it
+/// starts.
+pub(crate) fn rail_footer() -> impl IntoElement {
+    view()
+        .items_center()
+        .gap(px(6.0))
+        // Its tooltips reach past the rail, over the chat.
+        .z_index(30)
+        .child(rail_circle("grokPlus", "New Bot", || {
+            crate::ctx::open_at(20.0, window().height.0 - 270.0, crate::ctx::add_items());
+        }))
+        // a press lands on Updates when any wait, as the pill's does
         .child(
             view()
-                .items_center()
-                .gap(px(6.0))
-                // Its tooltips reach past the rail, over the chat.
-                .z_index(30)
-                .child(rail_circle("grokPlus", "New Bot", || {
-                    crate::ctx::open_at(20.0, window().height.0 - 270.0, crate::ctx::add_items());
-                }))
-                .child(rail_circle("grokGridPlus", "Connect apps", || store().open_plugins()))
-                .child(rail_account()),
+                .size(px(28.0))
+                .child(rail_circle("grokGridPlus", "Connect apps", crate::plugins::open_connect_apps))
+                .child(updates_badge(|| store().v1_updates_waiting().len())),
         )
+        .child(rail_account())
+}
+
+/// How many updates wait (`waiting`, tracked), on the corner of the
+/// Connect apps button it sits in, out of its layout: none when none wait.
+fn updates_badge(waiting: impl Fn() -> usize + 'static) -> impl IntoElement {
+    use crate::mini_v1::connect;
+    dynamic(move || {
+        let n = waiting();
+        let said = connect::badge_text(n)?;
+        Some(
+            view()
+                .absolute()
+                .top(px(-5.0))
+                .right(px(-5.0))
+                .h(px(16.0))
+                .min_w(px(16.0))
+                .px(px(4.0))
+                .rounded(px(8.0))
+                .items_center()
+                .justify_center()
+                .bg(theme::ACCENT)
+                .pointer_events(PointerEvents::None)
+                .label(connect::badge_label(n))
+                .child(
+                    text(said)
+                        .text_size(px(10.0))
+                        .line_height(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0))
+                        .number_of_lines(1),
+                )
+                .into_element(),
+        )
+    })
 }
 
 /// Grok Bot's rail hover fill (`rgba(245,245,245,.04)` on dark).
@@ -1401,34 +1443,7 @@ fn connect_pill() -> impl IntoElement {
                 .into_element()
         }))
         // the badge: on the pill's corner, out of its layout
-        .child(dynamic(move || {
-            let n = waiting.get();
-            let said = connect::badge_text(n)?;
-            Some(
-                view()
-                    .absolute()
-                    .top(px(-5.0))
-                    .right(px(-5.0))
-                    .h(px(16.0))
-                    .min_w(px(16.0))
-                    .px(px(4.0))
-                    .rounded(px(8.0))
-                    .items_center()
-                    .justify_center()
-                    .bg(theme::ACCENT)
-                    .pointer_events(PointerEvents::None)
-                    .label(connect::badge_label(n))
-                    .child(
-                        text(said)
-                            .text_size(px(10.0))
-                            .line_height(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::hsla(0.0, 0.0, 1.0, 1.0))
-                            .number_of_lines(1),
-                    )
-                    .into_element(),
-            )
-        }))
+        .child(updates_badge(move || waiting.get()))
         // the tooltip: 8pt above, its right edge the pill's, over the list
         .child(when(
             move || tip.get(),
