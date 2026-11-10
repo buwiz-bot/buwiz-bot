@@ -31,7 +31,7 @@
 //!   `docker stop`: the memory is free, and the files stay on the volumes. The holder stays up
 //!   through both, a `sleep` and little else.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
@@ -44,7 +44,7 @@ use tokio::process::Command;
 
 use crate::guest::BoxGuest;
 use crate::{
-    random_hex, CommandOutput, Input, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Seen, Settled, Sleep, Spec, Viewer, WaitFor, Woke, DOCKER_PORT_LAST, PORT_FIRST,
+    random_hex, CommandOutput, Input, Leftover, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Seen, Settled, Sleep, Spec, Viewer, WaitFor, Woke, DOCKER_PORT_LAST, PORT_FIRST,
 };
 
 /// The image's tag on this Mac (the computer repo's compose file builds it).
@@ -613,7 +613,23 @@ impl DockerProvider {
         Ok(false)
     }
 
+    /// `name`'s two volumes, labelled with the computer they're for, so they can be told apart once
+    /// nothing else of it is left. Docker hands back one that's already there as it is, label or
+    /// none: one made before labels goes on working, and [`DockerProvider::remove`] finds it by name.
+    async fn make_volumes(&self, name: &str, id: &str) -> Result<()> {
+        let (ours, its) = (format!("{LABEL}=1"), format!("{LABEL}.id={id}"));
+        for volume in [format!("{name}-workspace"), format!("{name}-home")] {
+            match self.docker(&["volume", "create", "--label", &ours, "--label", &its, &volume], None).await {
+                Ok(_) => {}
+                Err(Problem::Failed(why)) if why.contains("already exists") => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
     async fn make_containers(&self, image: &str, name: &str, id: &str, start: &Path) -> Result<()> {
+        self.make_volumes(name, id).await?;
         let net = holder_args(image, name, &self.network(), id);
         self.docker(&net.iter().map(String::as_str).collect::<Vec<_>>(), None).await?;
         let args = create_args(image, name, id, start);
@@ -803,6 +819,11 @@ fn clear_secrets(dir: &Path) {
 }
 
 impl DockerProvider {
+    /// Whether `owner` is a box name [`Provider::create`] makes: the prefix and four random bytes.
+    fn named_here(&self, owner: &str) -> bool {
+        owner.strip_prefix(&self.prefix).and_then(|r| r.strip_prefix('-')).is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    }
+
     /// The container and its volumes. Already gone is fine.
     async fn remove(&self, name: &str) -> Result<()> {
         self.walled.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
@@ -947,6 +968,26 @@ impl Provider for DockerProvider {
             self.remove(name).await?;
         }
         Ok(())
+    }
+
+    /// Volumes of a computer, by its label or by this provider's naming, whose box container is
+    /// gone. A box's own volumes are only ever its two, so its name says whose they were.
+    async fn leftovers(&self) -> Result<Vec<Leftover>> {
+        let format = format!("{{{{.Name}}}}\t{{{{.Label \"{LABEL}.id\"}}}}");
+        let volumes = self.docker(&["volume", "ls", "--format", &format], None).await?;
+        let containers = self.docker(&["ps", "-a", "--format", "{{.Names}}"], None).await?;
+        let there: HashSet<&str> = containers.lines().map(str::trim).collect();
+        let mut out: Vec<Leftover> = volumes
+            .lines()
+            .filter_map(|line| {
+                let (name, id) = line.split_once('\t').unwrap_or((line, ""));
+                let (name, id) = (name.trim(), id.trim());
+                let owner = name.strip_suffix("-workspace").or_else(|| name.strip_suffix("-home"))?;
+                (!there.contains(owner) && (!id.is_empty() || self.named_here(owner))).then(|| Leftover { name: name.to_owned(), id: (!id.is_empty()).then(|| id.to_owned()), owner: owner.to_owned() })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
@@ -1421,6 +1462,59 @@ mod tests {
         assert!(!calls(&dir).contains("exec"), "{}", calls(&dir));
     }
 
+    /// Runs [`CLEAR`] on this Mac against a made-up `/proc` and `/home/box` under argv[2]: the
+    /// owner of each path is root unless `OWNERS` says, as the kernel shows a process that isn't
+    /// dumpable, and a kill moves the process's folder away instead of signalling anything here.
+    const FAKE_PROC: &str = r#"
+import builtins, os, sys
+ROOT = sys.argv[2]
+OWNERS = {'/proc/400': 20001}
+def _at(p):
+    p = os.fspath(p)
+    return ROOT + p if p.startswith(('/proc', '/home/box')) else p
+_open, _listdir, _stat, _lstat, _readlink, _rename = builtins.open, os.listdir, os.stat, os.lstat, os.readlink, os.rename
+def _owned(p, st):
+    f = list(st)
+    f[4] = OWNERS.get(os.fspath(p), 0)
+    return os.stat_result(f)
+builtins.open = lambda p, *a, **k: _open(_at(p), *a, **k)
+os.listdir = lambda p: _listdir(_at(p))
+os.stat = lambda p: _owned(p, _stat(_at(p)))
+os.lstat = lambda p: _owned(p, _lstat(_at(p)))
+os.readlink = lambda p: _readlink(_at(p))
+os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' % pid)
+"#;
+
+    /// A process in the made-up `/proc`: its `status` says `uid`, and it runs `exe`.
+    fn fake_process(root: &Path, pid: u32, name: &str, uid: u32, exe: &str) {
+        let dir = root.join(format!("proc/{pid}"));
+        std::fs::create_dir_all(dir.join(format!("task/{pid}"))).unwrap();
+        let stat = format!("{pid} ({name}) S 1 1 1 0 -1 0\n");
+        std::fs::write(dir.join("stat"), &stat).unwrap();
+        std::fs::write(dir.join(format!("task/{pid}/stat")), &stat).unwrap();
+        std::fs::write(dir.join("status"), format!("Name:\t{name}\nUmask:\t0022\nState:\tS (sleeping)\nPPid:\t1\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nGid:\t{uid}\t{uid}\t{uid}\t{uid}\n")).unwrap();
+        std::fs::write(dir.join("maps"), "").unwrap();
+        std::os::unix::fs::symlink(exe, dir.join("exe")).unwrap();
+    }
+
+    /// A process that isn't dumpable has its `/proc` folder owned by root, whoever it runs as: only
+    /// the `Uid:` line of its `status` says who that is. One of the Bot's like that is still found,
+    /// and another user's is left alone whatever its folder's owner.
+    #[test]
+    fn clearing_reads_a_processs_user_from_its_status_not_its_folders_owner() {
+        let root = tmp("fake-proc");
+        std::fs::create_dir_all(root.join("home/box/.box/bots")).unwrap();
+        std::fs::write(root.join("home/box/.box/bots/b_ann"), "0\n").unwrap();
+        // the Bot's desktop user is 20001: this one is its, and not dumpable
+        fake_process(&root, 300, "hidden", 20001, "/home/box/hidden");
+        fake_process(&root, 400, "someone", 1000, "/home/box/someone");
+        std::fs::create_dir_all(root.join("proc/self")).unwrap();
+        let out = std::process::Command::new("python3").args(["-I", "-S", "-c", &format!("{FAKE_PROC}{CLEAR}"), "b_ann"]).arg(&root).output().expect("python3 runs the scan on this Mac");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"["hidden"]"#);
+        assert!(root.join("ended-300").exists() && root.join("proc/400").exists(), "only the Bot's own is ended");
+    }
+
     #[tokio::test]
     async fn clearing_is_for_one_bots_desktop() {
         let dir = tmp("clear");
@@ -1443,6 +1537,64 @@ mod tests {
         let none = tmp("recover-none");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&none, "true"));
         assert_eq!(p.recover(&Spec { id: "cmp_1".into(), dir: none.clone() }, None).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_new_computers_volumes_carry_its_label_and_old_ones_are_used_as_they_are() {
+        let dir = tmp("labelled");
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in image) echo 1;; esac"));
+        let m = p.create(&Spec { id: "cmp_1".into(), dir: dir.clone() }).await.unwrap();
+        let Reach::Container { name } = &m.reach else { panic!("{:?}", m.reach) };
+        let seen = calls(&dir);
+        for volume in [format!("{name}-workspace"), format!("{name}-home")] {
+            let made = format!("volume create --label app.buwiz.computer=1 --label app.buwiz.computer.id=cmp_1 {volume}\n");
+            assert!(seen.contains(&made), "{seen}");
+            assert!(seen.find(&made).unwrap() < seen.find(&format!("create --name {name} ")).unwrap(), "made before the box mounts it: {seen}");
+        }
+        // one from before labels: a Docker that won't make it again still gives the box its files
+        let old = tmp("unlabelled");
+        let body = "case \"$1 $2\" in 'volume create') echo 'Error response from daemon: volume c2-x-home already exists' >&2; exit 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&old, body));
+        p.make_volumes("c2-x", "cmp_1").await.unwrap();
+        p.destroy(&machine(&old)).await.unwrap();
+        assert!(calls(&old).contains("volume rm c2-x-workspace") && calls(&old).contains("volume rm c2-x-home"), "{}", calls(&old));
+        let down = tmp("volume-down");
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&down, "echo 'Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?' >&2; exit 1"));
+        assert_eq!(p.make_volumes("c2-x", "cmp_1").await.unwrap_err(), Problem::ProviderDown("Docker".into()));
+    }
+
+    #[tokio::test]
+    async fn leftovers_are_volumes_whose_box_is_gone_by_label_or_by_name() {
+        let dir = tmp("leftovers");
+        let volumes = [
+            // labelled, its box gone
+            "c2-0a1b2c3d-workspace\tcmp_1",
+            "c2-0a1b2c3d-home\tcmp_1",
+            // from before labels, its box gone: the name says whose
+            "c2-deadbeef-home\t",
+            // its box is there
+            "c2-11223344-workspace\tcmp_2",
+            "c2-55667788-home\t",
+            // a person's own, and names that only look like ours
+            "postgres-data\t",
+            "c2-notahex1-home\t",
+            "c2-0a1b2c3d-cache\tcmp_1",
+        ]
+        .join("\\n");
+        let body = format!("case \"$1 $2\" in 'volume ls') printf '{volumes}\\n';; 'ps -a') printf 'c2-11223344\\nc2-11223344-wall\\nc2-55667788\\nc2-0a1b2c3d-wall\\n';; esac");
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
+        let found = p.leftovers().await.unwrap();
+        let shown: Vec<(&str, Option<&str>, &str)> = found.iter().map(|l| (l.name.as_str(), l.id.as_deref(), l.owner.as_str())).collect();
+        assert_eq!(
+            shown,
+            [("c2-0a1b2c3d-home", Some("cmp_1"), "c2-0a1b2c3d"), ("c2-0a1b2c3d-workspace", Some("cmp_1"), "c2-0a1b2c3d"), ("c2-deadbeef-home", None, "c2-deadbeef")],
+            "a holder left alone doesn't keep a box's files from showing"
+        );
+        assert!(calls(&dir).contains("volume ls --format {{.Name}}\t{{.Label \"app.buwiz.computer.id\"}}"), "{}", calls(&dir));
+        assert!(!calls(&dir).contains(" rm"), "only listed: {}", calls(&dir));
+        let down = tmp("leftovers-down");
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&down, "echo 'Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?' >&2; exit 1"));
+        assert!(p.leftovers().await.is_err(), "a Docker that can't say isn't one with nothing left");
     }
 
     #[tokio::test]

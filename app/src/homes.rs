@@ -91,6 +91,8 @@ pub(crate) struct Home {
     pub policy: String,
     /// the cloud's own page that sets the home up (AWS's Launch Stack); "" for none
     pub launch: String,
+    /// what's left on this Mac of computers that are gone: Docker's volume names, listed only
+    pub leftovers: Vec<String>,
 }
 
 impl Home {
@@ -129,8 +131,17 @@ impl Home {
             policy: text("policy"),
             // only a web page: it's opened in the browser
             launch: Some(text("launch")).filter(|u| u.starts_with("https://")).unwrap_or_default(),
+            leftovers: list("leftovers").iter().filter_map(|l| l.get("name")?.as_str()).map(str::to_owned).collect(),
             kind,
         })
+    }
+
+    /// The sentence naming what's left of computers that are gone; "" when nothing is.
+    pub(crate) fn leftovers_words(&self) -> String {
+        if self.leftovers.is_empty() {
+            return String::new();
+        }
+        format!("Files from a computer that's gone are still on this Mac, in these Docker volumes: {}. Nothing here deletes them.", self.leftovers.join(", "))
     }
 
     /// Whether it takes a key of its own.
@@ -227,9 +238,15 @@ impl Homes {
         self.list.iter().filter(|h| h.kind != "remote" && h.ready()).collect()
     }
 
-    fn replace(&mut self, home: Home) {
+    fn replace(&mut self, mut home: Home) {
         match self.list.iter_mut().find(|h| h.kind == home.kind) {
-            Some(h) => *h = home,
+            Some(h) => {
+                // only the full list looks for leftovers: one home's reply doesn't say they went
+                if home.leftovers.is_empty() {
+                    home.leftovers = std::mem::take(&mut h.leftovers);
+                }
+                *h = home;
+            }
             None => self.list.push(home),
         }
     }
@@ -854,6 +871,10 @@ fn home_part(home: &Home, form: KeyForm) -> impl IntoElement {
     if !on.is_empty() {
         col = col.child(line(on));
     }
+    let left = home.leftovers_words();
+    if !left.is_empty() {
+        col = col.child(view().test_id(&format!("home-{}-leftovers", home.kind)).child(line(left)));
+    }
     for (id, look) in &home.leaving {
         let mut words = format!("{id} is being deleted. If it stays listed, the keys in use can't reach it, and it may still be there and costing.");
         if !look.is_empty() {
@@ -1211,6 +1232,20 @@ mod tests {
             {"kind": "boat", "label": "boat.dev", "configured": false, "canDefault": true, "fields": [{"key": "token", "label": "Token", "secret": true}]},
             {"kind": "remote", "label": "A remote computer", "canDefault": false, "fields": []}
         ]}))
+    }
+
+    #[test]
+    fn files_left_by_a_gone_computer_are_named_and_only_named() {
+        let v = json!({"kind": "docker", "label": "Docker on this Mac", "fields": [], "leftovers": [{"name": "buwiz-computer-0a1b2c3d-workspace", "id": "cmp_1"}, {"name": "buwiz-computer-0a1b2c3d-home"}]});
+        let home = Home::parse(&v).unwrap();
+        assert_eq!(home.leftovers, ["buwiz-computer-0a1b2c3d-workspace", "buwiz-computer-0a1b2c3d-home"]);
+        assert_eq!(home.leftovers_words(), "Files from a computer that's gone are still on this Mac, in these Docker volumes: buwiz-computer-0a1b2c3d-workspace, buwiz-computer-0a1b2c3d-home. Nothing here deletes them.");
+        assert_eq!(Home::parse(&json!({"kind": "docker"})).unwrap().leftovers_words(), "");
+        // one home's reply has no list of them: what the full list said stays
+        let mut h = listed();
+        h.replace(home.clone());
+        h.replace(Home::parse(&json!({"kind": "docker", "label": "Docker on this Mac"})).unwrap());
+        assert_eq!(h.get("docker").unwrap().leftovers, home.leftovers);
     }
 
     #[test]

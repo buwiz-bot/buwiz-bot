@@ -786,7 +786,7 @@ impl Computers {
         }
         if woke.is_ok() {
             Self::touch(ctx, id);
-            let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL WHERE id=?", [id]));
+            let _ = ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=NULL, sleep_note=NULL WHERE id=?", [id]));
             self.freeze_jobs(id, false);
         }
         woke
@@ -924,7 +924,10 @@ impl Computers {
             }
         }
         let at = if depth == Sleep::Light { Some(policy::now(ctx)) } else { None };
-        ctx.db.with(|c| c.execute("UPDATE computers SET slept_at=? WHERE id=?", rusqlite::params![at, id])).map(|_| ()).map_err(db_problem)
+        // a light sleep says what it did, or that nothing needs saying; a deep one after it keeps that
+        let note = provider.take_sleep_note(&machine);
+        let sql = if depth == Sleep::Light { "UPDATE computers SET slept_at=?, sleep_note=? WHERE id=?" } else { "UPDATE computers SET slept_at=?, sleep_note=COALESCE(?, sleep_note) WHERE id=?" };
+        ctx.db.with(|c| c.execute(sql, rusqlite::params![at, note, id])).map(|_| ()).map_err(db_problem)
     }
 
     /// One look at every computer: its jobs first, then the ones nobody needs go to sleep, then
@@ -1515,6 +1518,9 @@ impl Computers {
         if let Some(ms) = wake_ms {
             out["wakeMs"] = json!(ms);
         }
+        if let Some(note) = Self::sleep_note(ctx, &id) {
+            out["sleepNote"] = json!(note);
+        }
         let state = if waking {
             "waking".to_owned()
         } else if let Some(p) = problem {
@@ -1557,6 +1563,11 @@ impl Computers {
         };
         out["state"] = json!(state);
         out
+    }
+
+    /// What its last sleep left a person to know, until a wake works.
+    fn sleep_note(ctx: &HubCtx, id: &str) -> Option<String> {
+        ctx.db.with(|c| c.query_row("SELECT sleep_note FROM computers WHERE id=?", [id], |r| r.get(0)).optional()).ok().flatten().flatten()
     }
 
     /// The computers another Bot could join, for the tab's picker.
@@ -1954,7 +1965,7 @@ async fn providers(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         return host::unauthorized();
     }
     let Some(computers) = Computers::of(&ctx) else { return unavailable() };
-    types::json(StatusCode::OK, &computers.providers_json(&ctx))
+    types::json(StatusCode::OK, &computers.providers_seen(&ctx).await)
 }
 
 /// `PUT /v1/host/computer/providers/{kind} {values, clear?}`: checked, then kept, or nothing kept.

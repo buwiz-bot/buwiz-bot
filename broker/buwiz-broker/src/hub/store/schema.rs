@@ -162,6 +162,9 @@ const TRIED: &[&str] = &[
     // its record was lost and nothing of it could be found: it may still be on its platform, and
     // only a person keeps or deletes it. Nothing automatic removes such a row (`hub/computer.rs`)
     "ALTER TABLE computers ADD COLUMN lost_at INTEGER",
+    // what its last sleep did that a person should know (a hibernation that became a stop), until
+    // a wake works
+    "ALTER TABLE computers ADD COLUMN sleep_note TEXT",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but
