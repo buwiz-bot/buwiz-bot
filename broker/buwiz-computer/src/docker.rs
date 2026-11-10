@@ -169,10 +169,11 @@ except FileNotFoundError:
 /// The browser's launcher chain stays, by the process tree, so an open browser lives through a
 /// hand-over: Chromium dies with `box-chrome-pipe` (`PR_SET_PDEATHSIG`), and `box-chromium`'s shell
 /// loop starts it again when `box-exec` lets go of its pipe. A `box-chrome-pipe` stays only while
-/// it's the parent of a Chromium that stays, and only as `box-chromium` starts it: its arguments
-/// name `chromium`, to be found on a `PATH` of the system's folders alone. The shell stays only while
-/// it's the parent of a launcher or a Chromium that stays, and runs the system's `dash` on `box-chromium` (its
-/// first argument, and a file it holds open), on that same `PATH`. Both run root's files, and
+/// it's the parent of the system's Chromium itself (`/usr/lib/chromium/chromium`, not just anything
+/// the desktop may run), and only as `box-chromium` starts it: its arguments name `chromium`, to be
+/// found on a `PATH` of the system's folders alone. The shell stays only while it's the parent of
+/// such a launcher or of that Chromium, and runs the system's `dash` on `box-chromium` (its first
+/// argument, and a file it holds open), on that same `PATH`. Both run root's files, and
 /// neither can start anything again but the system's Chromium. A launcher whose Chromium went, and a
 /// shell that runs anything else, go like any stray.
 ///
@@ -196,6 +197,8 @@ VOXL, KEEPER = '/usr/local/bin/voxl', '/usr/local/bin/box-keeper'
 # them. Its /bin/sh is dash, whose exe reads /usr/bin/dash where /bin is merged into /usr, as in
 # bookworm, and /bin/dash where it isn't
 LAUNCHER, SCRIPT = '/usr/local/bin/box-chrome-pipe', '/usr/local/bin/box-chromium'
+# the browser itself, of the '/usr/lib/chromium/*' ALLOWED keeps: /usr/bin/chromium execs it
+CHROMIUM = '/usr/lib/chromium/chromium'
 SHELLS = ('/usr/bin/dash', '/bin/dash')
 SYSTEM_PATH = ('/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin')
 path = '/home/box/.box/bots/' + sys.argv[1]
@@ -287,9 +290,12 @@ ended = []
 for _ in range(20):
     procs = table()
     kept = {p for p, (exe, _, strange, _, _) in procs.items() if not strange and any(fnmatch.fnmatch(exe, a) for a in ALLOWED)}
-    # the browser's launcher by the Chromium it started, and its loop by that launcher
-    for part in ('launcher', 'loop'):
-        kept |= {p for p, v in procs.items() if v[4] == part and any(c[3] == p and q in kept for q, c in procs.items())}
+    # the browser's launcher by the Chromium it started, and its loop by that launcher or Chromium:
+    # a child that's only allowed, xfce4-panel say, keeps neither
+    browser = {p for p in kept if procs[p][0] == CHROMIUM}
+    launchers = {p for p, v in procs.items() if v[4] == 'launcher' and any(c[3] == p and q in browser for q, c in procs.items())}
+    loops = {p for p, v in procs.items() if v[4] == 'loop' and any(c[3] == p and q in browser | launchers for q, c in procs.items())}
+    kept |= launchers | loops
     strays = [p for p in procs if p not in kept]
     if not strays:
         print(json.dumps(sorted(set(ended))))
@@ -1675,6 +1681,17 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         fake_process(&root, 671, 670, "box-chrome-pipe", 20001, PIPE);
         fake_start(&root, 671, &launched("s", "chromium"), SYSTEM, false);
         fake_process(&root, 672, 671, "chromium", 20001, CHROMIUM);
+        // the loop and the launcher in every way, each the parent of an allowed program that isn't
+        // the browser: the panel, and Chromium's crash handler
+        fake_process(&root, 680, 1, "box-chromium", 20001, SH);
+        fake_start(&root, 680, &looped, SYSTEM, true);
+        fake_process(&root, 681, 680, "xfce4-panel", 20001, "/usr/bin/xfce4-panel");
+        fake_process(&root, 690, 1, "box-chrome-pipe", 20001, PIPE);
+        fake_start(&root, 690, &launched("s", "chromium"), SYSTEM, false);
+        fake_process(&root, 691, 690, "xfce4-panel", 20001, "/usr/bin/xfce4-panel");
+        fake_process(&root, 695, 1, "box-chrome-pipe", 20001, PIPE);
+        fake_start(&root, 695, &launched("s", "chromium"), SYSTEM, false);
+        fake_process(&root, 696, 695, "chrome_crashpad", 20001, "/usr/lib/chromium/chrome_crashpad_handler");
         // a command's, as the Bot's agent user
         fake_process(&root, 700, 1, "python3", 20000, "/usr/bin/python3");
         std::fs::create_dir_all(root.join("proc/self")).unwrap();
@@ -1683,10 +1700,10 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"["box-chrome-pipe", "box-chromium", "python3", "sh"]"#);
         let ended = |pid: u32| root.join(format!("ended-{pid}")).exists();
         assert!(root.join("exited-590").exists() && !ended(590), "the one that exited was ended");
-        for pid in [500, 501, 502, 503, 510, 511, 512, 611, 612, 622, 641, 661, 671, 672, 700] {
+        for pid in [500, 501, 502, 503, 510, 511, 512, 611, 612, 622, 641, 661, 671, 672, 681, 691, 696, 700] {
             assert!(!ended(pid) && root.join(format!("proc/{pid}")).exists(), "{pid} was ended");
         }
-        for pid in [600, 610, 620, 621, 630, 631, 640, 650, 651, 660, 670] {
+        for pid in [600, 610, 620, 621, 630, 631, 640, 650, 651, 660, 670, 680, 690, 695] {
             assert!(ended(pid), "{pid} was left");
         }
     }
