@@ -647,6 +647,13 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// Whether anything of computer `id`, its saved record lost, is there with these settings: what
+    /// [`Provider::sweep`] would find, by its id and `last`. Nothing is changed. `None` when this
+    /// provider can't tell.
+    async fn finds(&self, _id: &str, _last: Option<&Reach>) -> Result<Option<bool>> {
+        Ok(None)
+    }
+
     /// Before anyone uses an awake computer: whatever must hold for it to be safe to use, checked
     /// for this start of it. A computer that fails this is stopped.
     async fn guard(&self, _machine: &Machine) -> Result<()> {

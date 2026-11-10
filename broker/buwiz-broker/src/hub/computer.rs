@@ -1115,12 +1115,7 @@ impl Computers {
                 // its record is all there is here
                 (Ok(true), _) => Ok(()),
                 (Ok(false), Ok(reach)) => match Self::kind_of(ctx, id) {
-                    Ok(Some(kind)) => match self.provider_of_kind(ctx, kind).sweep(id, reach.as_ref()).await {
-                        // a platform can take a while to list what was just made (EC2's tags are
-                        // eventually consistent): finding nothing yet isn't its word that it's gone
-                        Ok(()) if Self::just_gone(ctx, id)? => Err(Problem::Remote("It was made a moment ago, and its platform can take a minute to list it, so it's looked for again then.".to_owned())),
-                        swept => swept,
-                    },
+                    Ok(Some(kind)) => self.sweep_by_id(ctx, kind, id, reach.as_ref()).await,
                     // a kind this build doesn't know: nothing here can delete it, so its row and
                     // folder stay for a build that can
                     Ok(None) => Err(Problem::Failed("this computer's kind isn't one this build knows".to_owned())),
@@ -1139,6 +1134,24 @@ impl Computers {
             return Err(Problem::Failed("its key couldn't be removed from this Mac's Keychain".to_owned()));
         }
         self.drop_record(ctx, id)
+    }
+
+    /// [`Computers::finish_retire`] of computer `id` on `kind` with no record: deleted by its id and
+    /// where it last was. `Ok` is the platform's word that nothing of it is left.
+    async fn sweep_by_id(&self, ctx: &HubCtx, kind: ProviderKind, id: &str, reach: Option<&Reach>) -> Result<(), Problem> {
+        let provider = self.provider_of_kind(ctx, kind);
+        // keys saved since it was made may be another account's, and a sweep with them finds
+        // nothing: that isn't the platform's word that it's gone, so its row stays, for a person
+        // who looked to Forget
+        if homes::keys_changed_since_made(ctx, id)? && provider.finds(id, reach).await? == Some(false) {
+            return Err(Problem::Refused { code: "unseen", message: format!("Computer {id} can't be found with the keys in use, and they were changed after it was made, so it may still be there under the keys it was made with.") });
+        }
+        match provider.sweep(id, reach).await {
+            // a platform can take a while to list what was just made (EC2's tags are eventually
+            // consistent): finding nothing yet isn't its word that it's gone
+            Ok(()) if Self::just_gone(ctx, id)? => Err(Problem::Remote("It was made a moment ago, and its platform can take a minute to list it, so it's looked for again then.".to_owned())),
+            swept => swept,
+        }
     }
 
     /// Whether computer `id` went on its way out within [`JUST_GONE_MS`] of being made. Counted from

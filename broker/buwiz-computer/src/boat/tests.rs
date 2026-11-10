@@ -668,3 +668,18 @@ async fn a_start_that_fails_leaves_no_secret_staged() {
     };
     assert!(at("buwiz:stage") < at("buwiz:clear"), "{calls}");
 }
+
+#[tokio::test]
+async fn finds_looks_by_label_then_by_the_last_sandbox_and_changes_nothing() {
+    let (ssh, _) = refusing_ssh("finds");
+    let fake = serve(listing(r#"{"id":"bx_aaaa2222"}"#, None)).await;
+    assert_eq!(provider(fake.addr, ssh.clone()).finds("comp1", None).await.unwrap(), Some(true));
+    let fake = serve(listing("", None)).await;
+    let p = provider(fake.addr, ssh);
+    let kept = Reach::Sandbox { id: "bx_cccc2222".to_owned() };
+    let gone = Reach::Sandbox { id: "bx_dddd2222".to_owned() };
+    assert_eq!(p.finds("comp1", Some(&kept)).await.unwrap(), Some(true));
+    assert_eq!(p.finds("comp1", Some(&gone)).await.unwrap(), Some(false));
+    assert_eq!(p.finds("comp1", None).await.unwrap(), Some(false));
+    assert!(calls(&fake).iter().all(|c| c.starts_with("GET ")), "{:?}", calls(&fake));
+}

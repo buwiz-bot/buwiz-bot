@@ -917,6 +917,19 @@ impl Provider for BoatProvider {
         Ok(())
     }
 
+    /// Any sandbox labelled with the computer, or the one the record named, as sweep finds them.
+    async fn finds(&self, id: &str, last: Option<&Reach>) -> Result<Option<bool>> {
+        if !self.labelled(id).await?.is_empty() {
+            return Ok(Some(true));
+        }
+        match last {
+            Some(Reach::Sandbox { id: last }) => {
+                Ok(Some(self.sandbox(safe_id(last)?).await?.is_some()))
+            }
+            _ => Ok(Some(false)),
+        }
+    }
+
     /// The computer's sandbox, found by its label, else the one the record named if boat still has
     /// it, with new secrets. Its disk kept the workspace and the home, and the secrets are made
     /// again, not kept: each start stages them anew and the SSH key is rebuilt from the new token

@@ -23,7 +23,10 @@
 //!   key change is ever held up by a row nothing can clear.
 //! - A computer found with its record lost, that nothing of could be found, is listed as lost, with
 //!   where to look. Nothing deletes it but a person's Delete; their Keep looks for it again. Its
-//!   keys aren't removed while it's there, and a save doesn't ask about it: nothing can.
+//!   keys aren't removed while it's there, and new keys are kept only when they find it by its id,
+//!   as a sweep would (or the keys in use can't find it either). A Delete with keys saved since it
+//!   was made that find nothing keeps its row, with where to look, for a person to Forget: those
+//!   keys may be another account's.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -483,6 +486,16 @@ fn forget(ctx: &HubCtx, kind: ProviderKind) -> Result<(), Problem> {
     ctx.db.with(|c| c.execute("DELETE FROM computer_providers WHERE kind=?", [kind.as_str()])).map(|_| ()).map_err(db_problem)
 }
 
+/// Whether what a person saved for computer `id`'s home was saved after it was made: keys that
+/// may not be the ones it was made with. No way to tell for keys from the environment: no.
+pub(super) fn keys_changed_since_made(ctx: &HubCtx, id: &str) -> Result<bool, Problem> {
+    let changed: Option<Option<bool>> = ctx
+        .db
+        .with(|c| c.query_row("SELECT p.updated_at > COALESCE(c.created_at, c.gone_at, 0) FROM computers c JOIN computer_providers p ON p.kind = c.provider WHERE c.id=?", [id], |r| r.get(0)).optional())
+        .map_err(db_problem)?;
+    Ok(changed.flatten() == Some(true))
+}
+
 /// Where the Mac's new computers go, and who said: `saved` (a person), `env` or `builtin`.
 pub fn default_home(ctx: &HubCtx) -> (ProviderKind, &'static str) {
     let saved: Option<String> = ctx.db.with(|c| c.query_row("SELECT kind FROM computer_home WHERE id=1", [], |r| r.get(0)).optional()).ok().flatten();
@@ -745,9 +758,10 @@ impl Computers {
         let gone = |p: &Result<Power, Problem>| matches!(p, Ok(Power::Absent) | Err(Problem::Gone));
         let live = self.homes.provider(ctx, kind);
         for o in computers_on(ctx, kind)? {
-            // nothing can ask about a lost one: it's listed with where to look, and a person may
-            // need these very keys to Keep it
+            // a lost one has no record to ask about: it's looked for by its id, as a sweep and a
+            // Keep look for it. Keys that can't find it could never keep or delete it
             if o.lost {
+                self.sees_lost(ctx, kind, &o.id, candidate, &*live).await?;
                 continue;
             }
             let id = o.id;
@@ -777,6 +791,26 @@ impl Computers {
             seen?;
         }
         Ok(())
+    }
+
+    /// Whether `candidate`'s keys find lost computer `id` on `kind`, by its id and where it last was.
+    /// Not found by them, it counts only when the keys in use can't find it either, by the
+    /// platform's own word: then nothing of it is there to keep or delete.
+    async fn sees_lost(&self, ctx: &HubCtx, kind: ProviderKind, id: &str, candidate: &dyn Provider, live: &dyn Provider) -> Result<(), Problem> {
+        let last = Self::reach_of(ctx, id)?;
+        if candidate.finds(id, last.as_ref()).await? == Some(true) {
+            return Ok(());
+        }
+        if live.finds(id, last.as_ref()).await == Ok(Some(false)) {
+            return Ok(());
+        }
+        Err(refusal(
+            "other_account",
+            format!(
+                "These keys can't find computer {id} on {}, which was found with its record lost (they may be another account's), so with them it could never be kept or deleted, and it may still be there and costing. Nothing was changed: Keep or Delete it in Settings › Computers first, with the keys in use.",
+                kind.label()
+            ),
+        ))
     }
 
     /// Has the keys in use delete the computers on `kind` on their way out that they still can:
@@ -848,7 +882,9 @@ impl Computers {
     }
 
     /// A person's Delete of computer `id` on `kind`, found with its record lost: it's on its way
-    /// out now, and the keys in use delete it on the platform, now and at each look after.
+    /// out now, and the keys in use delete it on the platform, now and at each look after. Keys
+    /// saved since it was made that find nothing of it leave it listed, with where to look, for a
+    /// person to Forget ([`Computers::sweep_by_id`]).
     pub async fn delete_lost(&self, ctx: &HubCtx, kind: ProviderKind, id: &str) -> Result<Value, Problem> {
         let _making = self.making(&format!("computer {id}")).await;
         self.lost_on(ctx, kind, id)?;

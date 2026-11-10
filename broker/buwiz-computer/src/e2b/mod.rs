@@ -639,6 +639,20 @@ impl Provider for E2bProvider {
         Ok(())
     }
 
+    /// Any sandbox whose metadata names the computer, or the one the record named, as sweep finds
+    /// them.
+    async fn finds(&self, id: &str, last: Option<&Reach>) -> Result<Option<bool>> {
+        if !self.listed(safe_id(id)?).await?.is_empty() {
+            return Ok(Some(true));
+        }
+        match last {
+            Some(Reach::Sandbox { id: last }) => {
+                Ok(Some(self.state(safe_id(last)?).await?.is_some()))
+            }
+            _ => Ok(Some(false)),
+        }
+    }
+
     /// Nothing: a box that has read its secrets can't be given new ones, since envd's token came
     /// with the create call's answer and isn't kept. Sweep finds its sandbox and deletes it.
     async fn recover(&self, _: &Spec, _: Option<&Reach>) -> Result<Option<Machine>> {

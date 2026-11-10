@@ -644,6 +644,11 @@ impl Provider for Ec2Provider {
         Ok(())
     }
 
+    /// Any instance tagged as computer `id`'s, or the one it was, as [`Provider::sweep`] finds them.
+    async fn finds(&self, id: &str, last: Option<&Reach>) -> Result<Option<bool>> {
+        Ok(Some(!self.found(id, last).await?.is_empty()))
+    }
+
     /// Its instance, found by its tags, with new secrets: the box is started again with them at the
     /// next wake. Only while its key is still in its folder: no other way in is left.
     async fn recover(&self, spec: &Spec, last: Option<&Reach>) -> Result<Option<Machine>> {
