@@ -534,10 +534,22 @@ impl UserFormSpec {
         }
     }
 
-    /// Every required field filled; `held` (a saved login's secret held
-    /// for the submit) counts as filled.
+    /// What must still be filled before the card can be sent, the one rule the primary and its
+    /// hint both follow: the required fields still empty, or, with nothing filled at all, any
+    /// one of its fields (`any`: a card is never sent with every field empty). `held` (a saved
+    /// login's secret held for the submit) counts as filled.
+    pub(crate) fn missing(&self, values: &Values, held: &[&str]) -> Missing {
+        let filled = |f: &Field| held.contains(&f.id.as_str()) || values.filled(f);
+        let labels: Vec<String> = self.fields.iter().filter(|f| f.required && !filled(f)).map(|f| f.label.clone()).collect();
+        if !labels.is_empty() || self.fields.iter().any(filled) {
+            return Missing { labels, any: false };
+        }
+        Missing { labels: self.fields.iter().filter(|f| f.kind != FieldKind::Checkbox).map(|f| f.label.clone()).collect(), any: true }
+    }
+
+    /// Nothing is [`Self::missing`].
     pub(crate) fn required_filled(&self, values: &Values, held: &[&str]) -> bool {
-        self.fields.iter().filter(|f| f.required).all(|f| held.contains(&f.id.as_str()) || values.filled(f))
+        self.missing(values, held).labels.is_empty()
     }
 
     fn field(&self, id: &str) -> Option<&Field> {
@@ -551,6 +563,26 @@ pub(crate) fn merge_into(cards: &mut Vec<UserFormSpec>, incoming: UserFormSpec) 
     match cards.iter_mut().find(|c| c.same_card(&incoming)) {
         Some(card) => card.merge(incoming),
         None => cards.push(incoming),
+    }
+}
+
+/// What a card still needs before it can be sent ([`UserFormSpec::missing`]): field labels,
+/// each one needed, or any one of them (`any`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Missing {
+    pub labels: Vec<String>,
+    pub any: bool,
+}
+
+impl Missing {
+    /// "Enter email and password", "Enter email or code"; "" when nothing is missing.
+    pub(crate) fn words(&self) -> String {
+        let l: Vec<String> = self.labels.iter().map(|l| l.to_lowercase()).collect();
+        match l.as_slice() {
+            [] => String::new(),
+            [one] => format!("Enter {one}"),
+            [rest @ .., last] => format!("Enter {} {} {last}", rest.join(", "), if self.any { "or" } else { "and" }),
+        }
     }
 }
 
@@ -2015,24 +2047,16 @@ fn form_body(spec: Rc<UserFormSpec>, key: String, target: Option<CardTarget>) ->
     v
 }
 
-/// Why the primary can't be pressed yet: the required fields still empty.
+/// Why the primary can't be pressed yet, from the same rule as its enabled state
+/// ([`UserFormSpec::missing`]): never empty while it's disabled.
 fn missing_words(spec: &UserFormSpec, loc: Local) -> String {
-    let values = loc.values.get();
-    let held = matches!(loc.pick.get(), Pick::Ready { .. });
     let target = card_target(spec);
-    let empty: Vec<String> = spec
-        .fields
-        .iter()
-        .filter(|f| f.required && !values.filled(f))
-        .filter(|f| !(held && target.as_ref().and_then(CardTarget::secret_field) == Some(f.id.as_str())))
-        .map(|f| f.label.to_lowercase())
-        .collect();
-    match empty.as_slice() {
-        [] if !spec.has_entry_id() => "This form has no server entry yet, so it can't be sent.".to_owned(),
-        [] => String::new(),
-        [one] => format!("Enter {one}"),
-        [rest @ .., last] => format!("Enter {} and {last}", rest.join(", ")),
-    }
+    let held: Vec<&str> = match (loc.pick.get(), &target) {
+        (Pick::Ready { .. }, Some(t)) => t.secret_field().into_iter().collect(),
+        _ => Vec::new(),
+    };
+    let words = loc.values.with(|v| spec.missing(v, &held).words());
+    if words.is_empty() && !spec.has_entry_id() { "This form has no server entry yet, so it can't be sent.".to_owned() } else { words }
 }
 
 /// The confirm step: what handing the screen over means, then Back or Open the screen.
@@ -2614,6 +2638,7 @@ mod tests {
         values.0.remove("password");
         assert!(!spec.required_filled(&values, &[]));
         assert!(spec.required_filled(&values, &["password"]), "a held secret counts as filled");
+        assert_eq!(spec.missing(&values, &[]).words(), "Enter password");
         values.0.insert("password".into(), "hunter2".into());
         let save = save_candidate(&spec, &values).expect("candidate");
         assert_eq!((save.origin.as_str(), save.username.as_str()), ("accounts.example.com", "ada@example.com"));
@@ -2856,6 +2881,32 @@ mod tests {
         let a = facts(json!({"pressed": true, "outcomes": both, "note": "Typed, and Return was pressed."}));
         let b = facts(json!({"pressed": true, "outcomes": both, "note": "Something else entirely."}));
         assert_eq!(line(FormResolution::Submitted, &a), line(FormResolution::Submitted, &b));
+    }
+
+    #[test]
+    fn a_card_is_never_sent_with_every_field_empty_and_says_what_it_needs() {
+        let form = |fields: Value| UserFormSpec::parse(&json!({ "formRequest": { "title": "x", "fields": fields } }), None).expect("form");
+        let mut v = Values::default();
+        // one optional field: it can't be sent blank
+        let one = form(json!([{"id": "otp", "label": "Code", "type": "otp"}]));
+        assert!(!one.required_filled(&v, &[]));
+        assert_eq!(one.missing(&v, &[]).words(), "Enter code");
+        v.0.insert("otp".into(), "  ".into());
+        assert!(!one.required_filled(&v, &[]), "blanks aren't a value");
+        v.0.insert("otp".into(), "123456".into());
+        assert!(one.required_filled(&v, &[]) && one.missing(&v, &[]).words().is_empty());
+        // all optional: any one of them
+        let two = form(json!([{"id": "e", "label": "Email", "type": "email"}, {"id": "p", "label": "Password", "type": "password"}]));
+        let none = Values::default();
+        assert_eq!(two.missing(&none, &[]), Missing { labels: vec!["Email".into(), "Password".into()], any: true });
+        assert_eq!(two.missing(&none, &[]).words(), "Enter email or password");
+        assert!(two.required_filled(&none, &["p"]), "a held secret is a value");
+        // a required one: that one, and the rule's words match the rule
+        let req = form(json!([{"id": "e", "label": "Email", "type": "email", "required": true}, {"id": "p", "label": "Password", "type": "password", "required": true}]));
+        assert_eq!(req.missing(&none, &[]).words(), "Enter email and password");
+        for (spec, vals) in [(&one, &none), (&two, &none), (&req, &none)] {
+            assert_eq!(spec.required_filled(vals, &[]), spec.missing(vals, &[]).words().is_empty(), "one rule, one hint");
+        }
     }
 
     #[test]
