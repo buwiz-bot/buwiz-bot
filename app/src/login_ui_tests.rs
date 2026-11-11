@@ -1213,6 +1213,38 @@ fn the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outsi
     assert!(seen.log.lock().unwrap().iter().all(|(p, _, _)| !p.starts_with("/v1/host/computer/login/")), "the ⓘ answers nothing");
 }
 
+/// Every secret field is secure entry, carries its label, and gives the accessibility tree no
+/// value: on the card (a password, a one-time code) and on the Logins page. A plain field isn't.
+#[test]
+fn every_secret_field_is_secure_and_reads_back_nothing() {
+    if !in_child("every_secret_field_is_secure_and_reads_back_nothing") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_form(&mut app, json!({"title": "Sign in", "domain": "shop.example", "samePage": true, "fields": [
+        {"id": "email", "label": "Email", "type": "email", "required": true},
+        {"id": "password", "label": "Password", "type": "password", "required": true},
+        {"id": "code", "label": "One-time code", "type": "otp"},
+        {"id": "pin", "label": "PIN", "type": "text", "secret": true}]}));
+    app.type_text("Email", "kid@example.com");
+    for label in ["Password", "One-time code", "PIN"] {
+        app.type_text(label, MARK);
+        assert!(app.secure(label), "{label} is secure entry");
+        assert_eq!(app.access_value(label), "", "{label} gives accessibility no value");
+        assert_ne!(app.access(label).0, AccessibilityRole::Text, "{label} is a field, not text");
+    }
+    assert!(!app.secure("Email"), "a plain field isn't masked");
+    no_mark(&app);
+    typed(&mut app, "/vault add shop.example");
+    app.wait_for("Login password");
+    for label in ["Login password", "Login authenticator secret"] {
+        app.type_text(label, MARK);
+        assert!(app.secure(label) && app.access_value(label).is_empty(), "{label}");
+    }
+    assert!(!app.secure("Login user name"));
+    no_mark(&app);
+}
+
 /// A refused hand-over keeps the card open and says, in the broker's words, that the screen
 /// wasn't handed over; nothing typed goes with it.
 #[test]

@@ -54,6 +54,10 @@ pub struct Headless {
     access: HashMap<NodeId, (AccessibilityRole, bool, Option<nsh_core::Checked>)>,
     /// Each view's accessibility hint (what a screen reader adds after its label), as last sent.
     hints: HashMap<NodeId, String>,
+    /// Each view's accessibility value's text, as last sent.
+    values: HashMap<NodeId, String>,
+    /// The inputs made secure (masked) entry, as last configured.
+    secure: HashMap<NodeId, bool>,
     /// The file requests (open dialogs) not answered yet.
     files: Vec<u32>,
 }
@@ -87,6 +91,8 @@ pub fn run(config: EngineConfig) -> Headless {
         children: HashMap::new(),
         access: HashMap::new(),
         hints: HashMap::new(),
+        values: HashMap::new(),
+        secure: HashMap::new(),
         files: Vec::new(),
     };
     until(&mut app, "the first render", |_| true);
@@ -116,13 +122,18 @@ impl Headless {
                         Some(h) => self.hints.insert(*id, h.to_owned()),
                         None => self.hints.remove(id),
                     };
+                    match props.accessibility.value.as_ref().and_then(|v| v.text.as_deref()) {
+                        Some(v) => self.values.insert(*id, v.to_owned()),
+                        None => self.values.remove(id),
+                    };
                 }
                 MountItem::Text { id, text, .. } => {
                     self.texts.insert(*id, text.text.clone());
                     self.attributed.insert(*id, text.clone());
                 }
-                MountItem::Input { id, .. } => {
+                MountItem::Input { id, config } => {
                     self.inputs.entry(*id).or_default();
+                    self.secure.insert(*id, config.secure);
                 }
                 MountItem::InputValue { id, text, .. } => {
                     self.inputs.entry(*id).or_default().0 = text.clone();
@@ -401,6 +412,20 @@ impl Headless {
     pub fn access_hint(&self, label: &str) -> String {
         let id = self.view(label);
         self.hints.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// The accessibility value's text of the view labelled `label` ("" with none): what a screen
+    /// reader, or any app reading the accessibility tree, is given beside its label.
+    pub fn access_value(&self, label: &str) -> String {
+        let id = self.view(label);
+        self.values.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// Whether the input labelled `label` is secure entry: masked, which the platform makes its
+    /// secure text field.
+    pub fn secure(&self, label: &str) -> bool {
+        let id = self.view(label);
+        self.secure.get(&id).copied().unwrap_or(false)
     }
 
     pub fn has(&self, label: &str) -> bool {
