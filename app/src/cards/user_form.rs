@@ -1483,7 +1483,11 @@ pub(crate) fn guidance(spec: &UserFormSpec) -> Vec<(String, Vec<String>)> {
             format!("Nothing is typed until you press {label}."),
         ],
     )];
-    let Some(note) = spec.takeover_note.as_deref().filter(|_| brokers(spec)) else { return out };
+    if !brokers(spec) {
+        return out;
+    }
+    // with no note from the broker, the note this build knows: as the confirm step says
+    let note = spec.takeover_note.as_deref().unwrap_or(TAKEOVER_NOTE);
     let bot = if spec.bot_name.is_empty() { "the Bot".to_owned() } else { spec.bot_name.clone() };
     let lines = if note == TAKEOVER_NOTE {
         vec![
@@ -2694,6 +2698,11 @@ mod tests {
         assert_eq!(guidance(&other)[1].1, ["It's yours.", "Hand it back after."]);
         assert_eq!(confirm_words(&other), "It's yours. Hand it back after.");
         assert!(confirm_words(&spec).contains("only use a real password if you trust this Bot's work so far"));
+        // no note from the broker: the popover and the confirm step use the same default
+        let mut bare = spec.clone();
+        bare.takeover_note = None;
+        assert_eq!(guidance(&bare), g, "the default note's lines");
+        assert_eq!(confirm_words(&bare), confirm_words(&spec));
         // a card that isn't the broker's has no Do it myself
         let mut wire = spec.clone();
         wire.chat.clear();
