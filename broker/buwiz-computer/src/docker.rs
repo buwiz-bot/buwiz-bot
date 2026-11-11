@@ -1147,15 +1147,16 @@ impl Provider for DockerProvider {
             }
             (None, _) => return Ok(None),
         };
-        // as it was made, by what Docker says its container was made with; with only its files
-        // left, as a new computer would be: the wake makes it again. Not knowing is without: its
-        // rules are refused then, never claimed
+        // as it was made, by what Docker says its containers were made with, never by what's wanted;
+        // with only its files left, as a new computer would be on this image, which the wake makes
+        // it again on: with the proxy only if the image has it. Not knowing is without: its rules
+        // are refused then, never claimed
         let egress = match self.inspect(&name).await {
             Ok(found) => match found.egress {
                 Some(tunnel) => egress_for(if tunnel { Network::Tunnel } else { Network::Proxy })?,
                 None => None,
             },
-            Err(Problem::Gone) => egress_for(spec.network)?,
+            Err(Problem::Gone) if self.has_proxy().await => egress_for(spec.network)?,
             Err(_) => None,
         };
         Ok(Some(Machine {
@@ -1341,7 +1342,9 @@ impl Inspected {
         let users = |v: &Value| v.pointer("/Config/Labels").and_then(|l| l.get(USERS_LABEL)).and_then(Value::as_str) == Some(USERS_VERSION);
         let users_apart = users(entry) && users(net);
         let env: Vec<&str> = entry.pointer("/Config/Env").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
-        let egress = env.contains(&"BOX_EGRESS_PROXY=1").then(|| env.contains(&"BOX_EGRESS_TUNNEL=1"));
+        // the tunnel by both halves of it: the box's setting, and its holder's published port
+        let binds = |v: &Value| v.pointer("/HostConfig/PortBindings").and_then(Value::as_object).is_some_and(|b| b.contains_key(&format!("{EGRESS_PORT}/tcp")));
+        let egress = env.contains(&"BOX_EGRESS_PROXY=1").then(|| env.contains(&"BOX_EGRESS_TUNNEL=1") && binds(net));
         Ok(Self { status, started, net_running, net_missing, box_started, users_apart, ports, egress })
     }
 
@@ -1533,12 +1536,42 @@ mod tests {
         assert_eq!(egress_for(Network::Proxy).unwrap(), Some(Egress { tunnel: false, bearer: None }));
     }
 
+    /// `docker inspect` of a box made with `env`, its holder publishing `ports`.
+    fn made(env: &str, ports: &str) -> String {
+        format!(r#"[{{"Name":"/c2-x","Config":{{"Env":[{env}]}},"State":{{"Status":"exited"}}}},{{"Name":"/c2-x-wall","HostConfig":{{"PortBindings":{{{ports}}}}},"State":{{"Status":"running"}}}}]"#)
+    }
+
     #[test]
-    fn what_a_container_was_made_with_is_read_from_its_settings() {
-        let made = |env: &str| format!(r#"[{{"Name":"/c2-x","Config":{{"Env":[{env}]}},"State":{{"Status":"exited"}}}}]"#);
-        assert_eq!(Inspected::parse(&made(r#""BOX_TOKEN_FILE=/x""#), "c2-x").unwrap().egress, None);
-        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1""#), "c2-x").unwrap().egress, Some(false));
-        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#), "c2-x").unwrap().egress, Some(true));
+    fn what_a_container_was_made_with_is_read_from_its_settings_and_its_holders_ports() {
+        let port = r#""8790/tcp":[{"HostIp":"127.0.0.1","HostPort":"47000-47199"}]"#;
+        assert_eq!(Inspected::parse(&made(r#""BOX_TOKEN_FILE=/x""#, port), "c2-x").unwrap().egress, None);
+        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1""#, ""), "c2-x").unwrap().egress, Some(false));
+        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, port), "c2-x").unwrap().egress, Some(true));
+        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, ""), "c2-x").unwrap().egress, Some(false), "no published port, no tunnel");
+    }
+
+    #[tokio::test]
+    async fn a_lost_record_is_recovered_as_its_containers_were_made_whatever_is_wanted() {
+        let dir = tmp("recover-made");
+        std::fs::write(dir.join("state"), made(r#""BOX_TOKEN_FILE=/x""#, "")).unwrap();
+        let body = format!("case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) cat \"{}/state\";; image) echo 1;; esac", dir.display());
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, None).await.unwrap().unwrap();
+        assert_eq!(m.egress, None, "made before the proxy, it stays without it");
+        std::fs::write(dir.join("state"), made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, r#""8790/tcp":[]"#)).unwrap();
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Plain }, None).await.unwrap().unwrap();
+        assert!(m.egress.is_some_and(|e| e.tunnel && e.bearer.is_some()), "made with the tunnel, it keeps it, with a new bearer");
+    }
+
+    #[tokio::test]
+    async fn files_alone_are_recovered_with_the_proxy_only_on_an_image_that_has_it() {
+        for (label, proxied) in [("1", true), ("", false)] {
+            let dir = tmp("recover-files");
+            let body = format!("case \"$1 $4\" in ps*) ;; volume*) echo c2-x-home;; inspect*) echo '[]'; echo 'Error: No such container: c2-x' >&2; exit 1;; image*app.buwiz.box.egress*) echo '{label}';; image*) echo 1;; esac");
+            let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
+            let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap().unwrap();
+            assert_eq!(m.egress.is_some(), proxied, "label {label:?}");
+        }
     }
 
     #[test]
