@@ -1162,6 +1162,8 @@ fn a_card_whose_return_depends_on_what_is_filled_promises_nothing_before_the_pre
     }
     let mut reply = submitted("submitted");
     reply.1["notice"]["note"] = json!("Typed. Return is left to you, or to the AI once it has looked.");
+    reply.1["notice"]["pressed"] = json!(false);
+    reply.1["notice"]["outcomes"] = json!([{"id": "email", "filled": true}, {"id": "password", "filled": false}]);
     let (mut app, seen) = start(reply);
     with_form(&mut app, json!({"title": "Sign in", "domain": "shop.example", "samePage": true, "fields": [
         {"id": "email", "label": "Email", "type": "email", "required": true},
@@ -1173,7 +1175,8 @@ fn a_card_whose_return_depends_on_what_is_filled_promises_nothing_before_the_pre
     app.press("Fill in");
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
-    assert!(app.texts().contains(&"Filled in on shop.example. Return is left to you, or to the AI once it has looked. Secret values were never shown to the AI."), "the receipt says what happened: {:?}", app.texts());
+    assert!(app.texts().contains(&"Email was typed on shop.example; Password wasn't. Secret values were never shown to the AI."), "the receipt says what went in: {:?}", app.texts());
+    assert!(app.texts().contains(&"Typed. Return is left to you, or to the AI once it has looked."), "and the broker's note beside it, whole: {:?}", app.texts());
 }
 
 /// The ⓘ's popover holds the guidance: the pointer resting on the ⓘ peeks it and leaving closes

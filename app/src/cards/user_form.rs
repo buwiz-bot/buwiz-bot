@@ -230,6 +230,51 @@ impl FormResolution {
     }
 }
 
+/// How a broker's card's fill went, as its notice states it: the receipt is made of these, and
+/// the broker's note shows beside it in its own words.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Facts {
+    /// The broker's sentence (a press left to the person, a reason).
+    pub note: Option<String>,
+    /// Not filled in full, but a value may have gone in (`uncertain`).
+    pub uncertain: bool,
+    /// That value was a secret's (`secretMaybe`).
+    pub secret_maybe: bool,
+    /// Return was pressed (`pressed`); `None` when the notice doesn't say.
+    pub pressed: Option<bool>,
+    /// Each field and whether it went in (`outcomes`), by id: never a value.
+    pub outcomes: Vec<(String, bool)>,
+}
+
+impl Facts {
+    pub(crate) fn of(n: &Value) -> Self {
+        Self {
+            note: n.get("note").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+            uncertain: n.get("uncertain").and_then(Value::as_bool).unwrap_or(false),
+            secret_maybe: n.get("secretMaybe").and_then(Value::as_bool).unwrap_or(false),
+            pressed: n.get("pressed").and_then(Value::as_bool),
+            outcomes: n
+                .get("outcomes")
+                .and_then(Value::as_array)
+                .map(|o| o.iter().filter_map(|o| Some((o.get("id")?.as_str()?.to_owned(), o.get("filled")?.as_bool()?))).collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Nothing but defaults: the notice said nothing of the fill.
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn unsure(&self) -> Unsure {
+        match (self.uncertain, self.secret_maybe) {
+            (false, _) => Unsure::No,
+            (true, false) => Unsure::Value,
+            (true, true) => Unsure::Secret,
+        }
+    }
+}
+
 /// A user-form card as the wire describes it. No typed value is ever on it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct UserFormSpec {
@@ -257,14 +302,10 @@ pub(crate) struct UserFormSpec {
     /// The chat the broker's card is in (its `chat`); "" for a wire frame.
     pub chat: String,
     pub bot_name: String,
-    /// What the broker said of how it went (a press left for the person).
-    pub note: Option<String>,
+    /// What the broker's card says of how its fill went ([`Facts`]).
+    pub facts: Facts,
     /// What Open the screen hands over, as the broker words it.
     pub takeover_note: Option<String>,
-    /// The broker's card settled as not filled, but a value may have gone in (its `uncertain`).
-    pub uncertain: bool,
-    /// The value that may have gone in was a secret's (its `secretMaybe`).
-    pub secret_maybe: bool,
     /// What the broker will do with Return (`always`, `never`, `maybe`; its `returnPress`).
     pub return_press: Option<String>,
 }
@@ -290,10 +331,8 @@ impl UserFormSpec {
             "expired" => Some(FormResolution::TimedOut),
             other => Some(FormResolution::parse(other)),
         };
-        spec.note = Some(s("note")).filter(|t| !t.is_empty());
+        spec.facts = Facts::of(n);
         spec.takeover_note = Some(s("takeoverNote")).filter(|t| !t.is_empty());
-        spec.uncertain = n.get("uncertain").and_then(Value::as_bool).unwrap_or(false);
-        spec.secret_maybe = n.get("secretMaybe").and_then(Value::as_bool).unwrap_or(false);
         spec.return_press = Some(s("returnPress")).filter(|t| !t.is_empty());
         // a card's fields never carry a value from the broker: a login card has none
         for f in &mut spec.fields {
@@ -940,16 +979,12 @@ struct Local {
     show_asked: Signal<bool>,
     /// The broker offered to save the typed login.
     offer: Signal<bool>,
-    /// What the broker said of the fill, until its card says it.
-    said: Signal<String>,
+    /// What the broker's answer said of the fill, until its card says it.
+    said: Signal<Facts>,
     /// The chat the broker's card is in.
     chat: Signal<String>,
     /// Try again on a card the wire settled as not filled.
     retry: Signal<bool>,
-    /// The broker said a value may have gone in before the fill stopped.
-    unsure: Signal<bool>,
-    /// And the value that may have gone in was a secret's.
-    secret_maybe: Signal<bool>,
     /// What is on its way while the card is sending: a fill, the screen or a dismiss.
     going: Signal<Going>,
     /// Do it myself was pressed: the card asks once more before the screen is handed over.
@@ -998,11 +1033,9 @@ fn local(key: &str) -> Local {
         by_hand: signal(false),
         show_asked: signal(false),
         offer: signal(false),
-        said: signal(String::new()),
+        said: signal(Facts::default()),
         chat: signal(String::new()),
         retry: signal(false),
-        unsure: signal(false),
-        secret_maybe: signal(false),
         going: signal(Going::Fill),
         confirm: signal(false),
     });
@@ -1106,11 +1139,9 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
             match reply {
                 UserFormReply::Settled(body) => {
                     let r = settled_from(&body);
-                    if let Some(said) = body.pointer("/notice/note").and_then(Value::as_str) {
-                        loc.said.set(said.to_owned());
+                    if let Some(n) = body.get("notice") {
+                        loc.said.set(Facts::of(n));
                     }
-                    loc.unsure.set(body.pointer("/notice/uncertain").and_then(Value::as_bool).unwrap_or(false));
-                    loc.secret_maybe.set(body.pointer("/notice/secretMaybe").and_then(Value::as_bool).unwrap_or(false));
                     // the typed login is held past here only for the broker's offer to save it
                     let offered = r == FormResolution::Submitted && login_id.is_none() && body.get("offerSave").is_some_and(Value::is_object);
                     if offered && vault().has_pending(entry) {
@@ -1756,19 +1787,27 @@ pub(crate) enum Unsure {
     Secret,
 }
 
-/// What a settled card says, in one line, and its glyph: each ending kept apart (a fill that may
-/// have typed is never "nothing was filled", a check-the-screen never "dismissed").
-pub(crate) fn receipt(spec: &UserFormSpec, r: FormResolution, unsure: Unsure, said: bool) -> (&'static str, AdaptiveColor, AdaptiveColor, String) {
+/// What a settled card says, in one line, and its glyph, made from the notice's facts (never
+/// from the broker's prose, which shows beside it): each ending kept apart (a fill that may have
+/// typed is never "nothing was filled", a check-the-screen never "dismissed").
+pub(crate) fn receipt(spec: &UserFormSpec, r: FormResolution, f: &Facts) -> (&'static str, AdaptiveColor, AdaptiveColor, String) {
     let on_site = site_of(spec).map(|s| format!(" on {s}")).unwrap_or_default();
     const SECRETS: &str = "Secret values were never shown to the AI.";
     const MAYBE_SECRET: &str = "A secret value may have been typed into the page; it was never shown to the AI.";
+    let pressed = if f.pressed == Some(true) { " Return was pressed." } else { "" };
+    let (typed, not) = went_in(spec, f);
     match r {
         FormResolution::Sending => ("…", theme::DIM, theme::HOVER, "Sending…".to_owned()),
-        FormResolution::Submitted => ("✓", theme::UP, theme::UP_TINT, format!("Filled in{on_site}. {SECRETS}")),
-        FormResolution::FillFailed if unsure == Unsure::Secret => ("!", theme::WARN, theme::WARN_TINT, format!("May have been typed{on_site}: check the screen. {MAYBE_SECRET}")),
-        FormResolution::FillFailed if unsure == Unsure::Value => ("!", theme::WARN, theme::WARN_TINT, format!("May have been typed{on_site}: check the screen. {SECRETS}")),
-        FormResolution::FillFailed if said => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}. {SECRETS}")),
-        FormResolution::FillFailed => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}: the page may have moved or changed. {SECRETS}")),
+        FormResolution::Submitted if typed.is_empty() || not.is_empty() => ("✓", theme::UP, theme::UP_TINT, format!("Filled in{on_site}.{pressed} {SECRETS}")),
+        FormResolution::Submitted => ("✓", theme::UP, theme::UP_TINT, format!("{}{on_site}; {}.{pressed} {SECRETS}", were(&typed, "typed"), werent(&not))),
+        FormResolution::FillFailed => {
+            let secrets = if f.unsure() == Unsure::Secret { MAYBE_SECRET } else { SECRETS };
+            match f.unsure() {
+                Unsure::No if f.note.is_some() => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}. {secrets}")),
+                Unsure::No => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}: the page may have moved or changed. {secrets}")),
+                _ => ("!", theme::WARN, theme::WARN_TINT, format!("May have been typed{on_site}: check the screen. {secrets}")),
+            }
+        }
         FormResolution::Escalated => ("↗", theme::ACCENT, theme::ACCENT_TINT, format!("Handed over: {} is yours. Hand it back when you're done.", screen_of(spec))),
         FormResolution::Dismissed => ("–", theme::MUTED, theme::HOVER, "Dismissed. Nothing was filled.".to_owned()),
         FormResolution::Skipped => ("–", theme::MUTED, theme::HOVER, "Skipped. Nothing was filled.".to_owned()),
@@ -1778,15 +1817,29 @@ pub(crate) fn receipt(spec: &UserFormSpec, r: FormResolution, unsure: Unsure, sa
     }
 }
 
-/// The fill's receipt (`line`: "Filled in on <site>. Secret values …") with the broker's note of
-/// it put after the site, its leading "Typed" dropped as the receipt says it already.
-pub(crate) fn filled_line(line: &str, note: &str) -> String {
-    let rest = ["Typed, and ", "Typed, but ", "Typed. "].iter().find_map(|p| note.strip_prefix(p)).unwrap_or(note);
-    let mut c = rest.chars();
-    let rest = c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default();
-    match line.split_once(". ") {
-        Some((head, tail)) => format!("{head}. {rest} {tail}"),
-        None => format!("{line} {rest}"),
+/// The labels of the card's fields that went in, and of those that didn't, by the notice's
+/// outcomes (none: the notice didn't say).
+fn went_in(spec: &UserFormSpec, f: &Facts) -> (Vec<String>, Vec<String>) {
+    let label = |id: &str| spec.field(id).map_or_else(|| id.to_owned(), |f| f.label.clone());
+    let (yes, no): (Vec<_>, Vec<_>) = f.outcomes.iter().partition(|(_, filled)| *filled);
+    (yes.iter().map(|(id, _)| label(id)).collect(), no.iter().map(|(id, _)| label(id)).collect())
+}
+
+/// "Email was typed", "Email and Password were typed".
+fn were(labels: &[String], what: &str) -> String {
+    format!("{} {} {what}", and_list(labels), if labels.len() == 1 { "was" } else { "were" })
+}
+
+/// "Password wasn't", "Name and Code weren't".
+fn werent(labels: &[String]) -> String {
+    format!("{} {}", and_list(labels), if labels.len() == 1 { "wasn't" } else { "weren't" })
+}
+
+fn and_list(labels: &[String]) -> String {
+    match labels {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -1795,22 +1848,10 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
     // an ending (a supersede included) takes any held or typed secret with it
     drop_held(&key);
     forget_secrets(&spec, loc);
-    let said = spec.note.clone().unwrap_or_else(|| loc.said.get_untracked());
-    let said = Some(said).filter(|s| !s.is_empty() && matches!(r, FormResolution::Submitted | FormResolution::FillFailed));
-    let unsure = match (spec.uncertain || loc.unsure.get_untracked(), spec.secret_maybe || loc.secret_maybe.get_untracked()) {
-        (false, _) => Unsure::No,
-        (true, false) => Unsure::Value,
-        (true, true) => Unsure::Secret,
-    };
-    let (g, ink, tint, mut line) = receipt(&spec, r, unsure, said.is_some());
-    // a fill's receipt is one line: where, what became of Return, and that secrets stayed hidden
-    let said = match said {
-        Some(note) if r == FormResolution::Submitted => {
-            line = filled_line(&line, &note);
-            None
-        }
-        other => other,
-    };
+    // the card's own notice once it has settled, else what the broker's answer said
+    let facts = if spec.facts.is_empty() { loc.said.get_untracked() } else { spec.facts.clone() };
+    let (g, ink, tint, line) = receipt(&spec, r, &facts);
+    let said = facts.note.clone().filter(|_| matches!(r, FormResolution::Submitted | FormResolution::FillFailed));
     // nothing here is cut: a safety sentence is never ellipsised
     let mut words = view().flex_1().min_w(px(0.0)).gap(px(4.0)).child(text(line.clone()).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT));
     if r == FormResolution::Unsure {
@@ -2756,47 +2797,59 @@ mod tests {
     #[test]
     fn every_ending_keeps_its_own_words() {
         let spec = brokers_card("Sign in", "");
-        let line = |r, unsure, said| receipt(&spec, r, unsure, said).3;
+        let f = |uncertain: bool, secret_maybe: bool, note: bool| Facts { uncertain, secret_maybe, note: note.then(|| "why".to_owned()), ..Facts::default() };
+        let line = |r, f: Facts| receipt(&spec, r, &f).3;
+        let none = || f(false, false, false);
         let want = [
-            (FormResolution::Submitted, Unsure::No, "Filled in on shop.example. Secret values were never shown to the AI."),
-            (FormResolution::FillFailed, Unsure::Secret, "May have been typed on shop.example: check the screen. A secret value may have been typed into the page; it was never shown to the AI."),
-            (FormResolution::FillFailed, Unsure::Value, "May have been typed on shop.example: check the screen. Secret values were never shown to the AI."),
-            (FormResolution::FillFailed, Unsure::No, "Nothing was filled on shop.example: the page may have moved or changed. Secret values were never shown to the AI."),
-            (FormResolution::Escalated, Unsure::No, "Handed over: Nova's screen is yours. Hand it back when you're done."),
-            (FormResolution::Dismissed, Unsure::No, "Dismissed. Nothing was filled."),
-            (FormResolution::Skipped, Unsure::No, "Skipped. Nothing was filled."),
-            (FormResolution::TimedOut, Unsure::No, "Expired: nobody answered in time, so nothing was filled."),
-            (FormResolution::Superseded, Unsure::No, "Moved on to your next message."),
-            (FormResolution::Unsure, Unsure::No, "Check the screen: Buwiz Bot didn't hear how this went."),
+            (FormResolution::Submitted, none(), "Filled in on shop.example. Secret values were never shown to the AI."),
+            (FormResolution::FillFailed, f(true, true, false), "May have been typed on shop.example: check the screen. A secret value may have been typed into the page; it was never shown to the AI."),
+            (FormResolution::FillFailed, f(true, false, false), "May have been typed on shop.example: check the screen. Secret values were never shown to the AI."),
+            (FormResolution::FillFailed, none(), "Nothing was filled on shop.example: the page may have moved or changed. Secret values were never shown to the AI."),
+            (FormResolution::Escalated, none(), "Handed over: Nova's screen is yours. Hand it back when you're done."),
+            (FormResolution::Dismissed, none(), "Dismissed. Nothing was filled."),
+            (FormResolution::Skipped, none(), "Skipped. Nothing was filled."),
+            (FormResolution::TimedOut, none(), "Expired: nobody answered in time, so nothing was filled."),
+            (FormResolution::Superseded, none(), "Moved on to your next message."),
+            (FormResolution::Unsure, none(), "Check the screen: Buwiz Bot didn't hear how this went."),
         ];
-        for (r, unsure, words) in want {
-            assert_eq!(line(r, unsure, false), words, "{r:?}");
+        for (r, facts, words) in want.clone() {
+            assert_eq!(line(r, facts), words, "{r:?}");
         }
-        let lines: std::collections::BTreeSet<String> = want.iter().map(|(r, u, _)| line(*r, *u, false)).collect();
+        let lines: std::collections::BTreeSet<String> = want.iter().map(|(r, f, _)| line(*r, f.clone())).collect();
         assert_eq!(lines.len(), want.len(), "no two endings read alike");
-        // with the broker's reason under it, a failure doesn't guess at one
-        assert_eq!(line(FormResolution::FillFailed, Unsure::No, true), "Nothing was filled on shop.example. Secret values were never shown to the AI.");
+        // with the broker's reason beside it, a failure doesn't guess at one
+        assert_eq!(line(FormResolution::FillFailed, f(false, false, true)), "Nothing was filled on shop.example. Secret values were never shown to the AI.");
         // a may-have-typed ending is never "nothing was filled"
-        assert!(!line(FormResolution::FillFailed, Unsure::Value, true).contains("Nothing was filled") && !line(FormResolution::FillFailed, Unsure::Secret, true).contains("Nothing was filled"));
-        assert!(!line(FormResolution::Unsure, Unsure::No, false).contains("Nothing"));
+        assert!(!line(FormResolution::FillFailed, f(true, false, true)).contains("Nothing was filled") && !line(FormResolution::FillFailed, f(true, true, true)).contains("Nothing was filled"));
+        assert!(!line(FormResolution::Unsure, none()).contains("Nothing"));
     }
 
     #[test]
-    fn a_fills_receipt_is_one_line_with_what_became_of_return() {
-        let line = receipt(&brokers_card("Sign in", ""), FormResolution::Submitted, Unsure::No, true).3;
-        assert_eq!(filled_line(&line, "Typed, and Return was pressed."), "Filled in on shop.example. Return was pressed. Secret values were never shown to the AI.");
-        assert_eq!(filled_line(&line, "Typed. Return is left to you, or to the AI once it has looked."), "Filled in on shop.example. Return is left to you, or to the AI once it has looked. Secret values were never shown to the AI.");
-        assert_eq!(filled_line(&line, "Typed, but Return wasn't pressed: the tab went away."), "Filled in on shop.example. Return wasn't pressed: the tab went away. Secret values were never shown to the AI.");
-        assert_eq!(filled_line(&line, "Typed the first step (Email); the rest is for the page that comes next."), "Filled in on shop.example. Typed the first step (Email); the rest is for the page that comes next. Secret values were never shown to the AI.");
+    fn a_fills_receipt_is_made_of_the_notices_facts() {
+        let mut spec = brokers_card("Sign in", "");
+        spec.fields = parse_fields(&json!([{"id": "email", "label": "Email", "type": "email"}, {"id": "password", "label": "Password", "type": "password"}]));
+        let facts = |n: Value| Facts::of(&n);
+        let line = |r, f: &Facts| receipt(&spec, r, f).3;
+        let both = json!([{"id": "email", "filled": true}, {"id": "password", "filled": true}]);
+        assert_eq!(line(FormResolution::Submitted, &facts(json!({"pressed": true, "outcomes": both, "note": "anything"}))), "Filled in on shop.example. Return was pressed. Secret values were never shown to the AI.");
+        // not pressed, or not said: the receipt doesn't guess, the note beside it says
+        assert_eq!(line(FormResolution::Submitted, &facts(json!({"pressed": false, "outcomes": both}))), "Filled in on shop.example. Secret values were never shown to the AI.");
+        // a stepped card: what went in, by label
+        let first = json!([{"id": "email", "filled": true}, {"id": "password", "filled": false}]);
+        assert_eq!(line(FormResolution::Submitted, &facts(json!({"pressed": false, "outcomes": first}))), "Email was typed on shop.example; Password wasn't. Secret values were never shown to the AI.");
+        // the broker's prose never changes the line
+        let a = facts(json!({"pressed": true, "outcomes": both, "note": "Typed, and Return was pressed."}));
+        let b = facts(json!({"pressed": true, "outcomes": both, "note": "Something else entirely."}));
+        assert_eq!(line(FormResolution::Submitted, &a), line(FormResolution::Submitted, &b));
     }
 
     #[test]
     fn a_notice_says_when_a_value_may_have_gone_in() {
         let n = json!({"kind": "user_form", "id": "uf_1", "chat": "t_1", "state": "fill_failed", "uncertain": true, "secretMaybe": true, "note": "x"});
         let spec = UserFormSpec::from_notice(&n).unwrap();
-        assert!(spec.uncertain && spec.secret_maybe);
+        assert!(spec.facts.uncertain && spec.facts.secret_maybe && spec.facts.note.as_deref() == Some("x"));
         let n = json!({"kind": "user_form", "id": "uf_1", "chat": "t_1", "state": "fill_failed"});
-        assert!(!UserFormSpec::from_notice(&n).unwrap().uncertain);
+        assert!(!UserFormSpec::from_notice(&n).unwrap().facts.uncertain);
         assert_eq!(sentences("A. B! c? d"), ["A.", "B!", "c?", "d"]);
         assert_eq!(sentences("Go to shop.example now."), ["Go to shop.example now."]);
     }
