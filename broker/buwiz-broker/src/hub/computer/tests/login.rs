@@ -301,6 +301,9 @@ async fn the_boxs_refusals_are_plain_sentences_with_nothing_of_the_box_in_them()
         assert_eq!(said.contains(login::MAYBE_TYPED), maybe, "{code}: {said}");
         assert_eq!(settled["uncertain"], maybe, "{code}: {settled}");
         assert_eq!(settled["note"].as_str().unwrap().contains("may have been typed"), maybe, "{code}");
+        // the refused type was the email's: no secret is in the page, maybe or otherwise
+        assert_eq!(settled["secretMaybe"], false, "{code}: {settled}");
+        assert!(!said.contains(login::MAYBE_SECRET_NOTE) && !said.contains("Secret field values were typed"), "{code}: {said}");
     }
 
     // no browser on a pipe
@@ -446,17 +449,29 @@ fn a_log_line_takes_a_length_and_never_a_value() {
 }
 
 #[test]
-fn a_failed_fill_says_secrets_were_typed_only_when_one_was() {
+fn a_failed_fill_says_whether_a_secret_was_typed_may_have_been_or_was_not() {
     let form = login::sanitize(&card_input()).unwrap();
     let outcome = |id: &str, filled: bool| login::Outcome { id: id.to_owned(), filled, sensitive: false };
-    let secret = "Secret field values were typed into the page and never shown to you.";
-    let failed = |outcomes| Fill::Failed { outcomes, reason: "The page isn't on shop.test any more, so nothing more was typed.".to_owned(), uncertain: false };
-    let none = login::result_text(&form, &failed(vec![]), &Default::default());
-    assert!(!none.contains(secret) && none.contains("Do not type secrets with computer_type."), "{none}");
-    let name_only = login::result_text(&form, &failed(vec![outcome("email", true), outcome("password", false)]), &Default::default());
-    assert!(!name_only.contains(secret), "{name_only}");
-    let both = login::result_text(&form, &failed(vec![outcome("email", true), outcome("password", true)]), &Default::default());
-    assert!(both.contains(secret), "{both}");
+    let typed = "Secret field values were typed into the page and never shown to you.";
+    let maybe = login::MAYBE_SECRET_NOTE;
+    let failed = |outcomes, uncertain, maybe_secret| Fill::Failed { outcomes, reason: "The browser didn't answer in time.".to_owned(), uncertain, maybe_secret };
+    let said = |fill: &Fill| login::result_text(&form, fill, &Default::default());
+    // nothing reached the page: no note
+    let none = said(&failed(vec![], false, false));
+    assert!(!none.contains(typed) && !none.contains(maybe) && none.contains("Do not type secrets with computer_type."), "{none}");
+    let name_only = said(&failed(vec![outcome("email", true), outcome("password", false)], false, false));
+    assert!(!name_only.contains(typed) && !name_only.contains(maybe), "{name_only}");
+    // the name went in and the password's type may have landed: said so
+    let unsure = failed(vec![outcome("email", true), outcome("password", false)], true, true);
+    let text = said(&unsure);
+    assert!(text.contains(maybe) && !text.contains(typed) && text.contains(login::MAYBE_TYPED), "{text}");
+    assert_eq!(login::secret_typed(&form, &[outcome("email", true)], true), login::SecretTyped::Maybe);
+    // a maybe on a plain field is no secret's
+    let plain = said(&failed(vec![outcome("email", false)], true, false));
+    assert!(!plain.contains(maybe) && !plain.contains(typed), "{plain}");
+    // the password went in
+    let both = said(&failed(vec![outcome("email", true), outcome("password", true)], false, false));
+    assert!(both.contains(typed) && !both.contains(maybe), "{both}");
 }
 
 #[test]
@@ -721,6 +736,7 @@ async fn a_run_stopped_mid_fill_leaves_the_card_saying_a_value_may_have_been_typ
     let _ = call.await;
     let settled = login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap();
     assert_eq!((settled["state"].as_str(), settled["uncertain"].as_bool()), (Some("fill_failed"), Some(true)), "{settled}");
+    assert_eq!(settled["secretMaybe"], true, "the card has a password, and which value was in flight isn't known: {settled}");
     assert!(settled["note"].as_str().unwrap().contains("may have been typed"));
     b.mock.hold_browser.store(false, Ordering::SeqCst);
     let _ = sending.await;

@@ -356,8 +356,8 @@ pub enum Fill {
     Refused { code: &'static str, message: String },
     /// it stopped: what was typed before is in `outcomes`. `uncertain`: the last type went out and
     /// its answer didn't say how it went (a timeout, a broken answer, a press on another element),
-    /// so a value may be in the page
-    Failed { outcomes: Vec<Outcome>, reason: String, uncertain: bool },
+    /// so a value may be in the page; `maybe_secret`: that value was a secret's
+    Failed { outcomes: Vec<Outcome>, reason: String, uncertain: bool, maybe_secret: bool },
     Filled { outcomes: Vec<Outcome>, pressed: Pressed },
     /// every field the fill would type was empty: nothing was typed, and nothing reached the box
     Empty,
@@ -557,7 +557,7 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>, t
         return Fill::Empty;
     }
     if let Err(message) = browser_layer(live).await {
-        return Fill::Failed { outcomes: Vec::new(), reason: message, uncertain: false };
+        return Fill::Failed { outcomes: Vec::new(), reason: message, uncertain: false, maybe_secret: false };
     }
     if let Err(message) = front_page(live, &form.site).await {
         return Fill::Refused { code: "wrong-page", message };
@@ -612,7 +612,9 @@ pub async fn fill(live: &Live, form: &Form, values: &BTreeMap<String, Secret>, t
             }
             Err((reason, uncertain)) => {
                 log(field_log_line(field, false, value.expose().chars().count(), if uncertain { "may have been typed" } else { "not typed" }));
-                return Fill::Failed { outcomes, reason, uncertain };
+                // the value whose type may have landed was a secret: the page may hold it
+                let maybe_secret = uncertain && field.is_secret();
+                return Fill::Failed { outcomes, reason, uncertain, maybe_secret };
             }
         }
     }
@@ -649,6 +651,26 @@ async fn press_return(live: &Live, form: &Form, field: &Field, others: &[String]
 // ---- what the model reads ----
 
 const SECRET_NOTE: &str = "Secret field values were typed into the page and never shown to you.";
+/// A failed fill whose last type, a secret's, may have landed.
+pub const MAYBE_SECRET_NOTE: &str = "A secret value may have been typed into the page; it was never shown to you.";
+
+/// Whether a failed fill put a secret into the page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SecretTyped {
+    Yes,
+    /// the type of one went out and its answer didn't say how it went
+    Maybe,
+    No,
+}
+
+/// [`SecretTyped`] of a failed fill: a secret field filled, else `maybe_secret`.
+pub fn secret_typed(form: &Form, outcomes: &[Outcome], maybe_secret: bool) -> SecretTyped {
+    match () {
+        _ if form.fields.iter().filter(|f| f.is_secret()).any(|f| outcomes.iter().any(|o| o.id == f.id && o.filled)) => SecretTyped::Yes,
+        _ if maybe_secret => SecretTyped::Maybe,
+        _ => SecretTyped::No,
+    }
+}
 const OBSERVE: &str = "Take a screenshot and confirm what the page shows now; do not claim login succeeded until you see it. If another challenge appears on the page (a one-time code), call request_user_form again with otp fields; never raise a card that already settled again. A captcha, or a prompt outside the page, is for computer_ask_person.";
 const ONLY_FIRST: &str = "Only the FIRST field was typed: this card had several fields but no samePage. Take a screenshot and confirm what the page shows now; do not claim login succeeded. If the rest are on the same page, raise ONE new card for them with samePage true; if a password page comes next, raise a password-only card (challengeKind \"password\"). Never raise a card that already settled again.";
 pub const DISMISSED: &str = "without filling anything. Continue without those credentials; do not type secrets with computer_type, and do not raise the same card again.";
@@ -673,11 +695,14 @@ pub fn result_text(form: &Form, fill: &Fill, shared: &BTreeMap<String, String>) 
             let shared = if shared.is_empty() { "No non-secret fields were shared.".to_owned() } else { format!("Shared fields: {}.", shared.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", ")) };
             format!("The person submitted the form \"{title}\". It was filled into the page. {pressed} {observe} {shared} {SECRET_NOTE}")
         }
-        Fill::Failed { outcomes, reason, uncertain } => {
+        Fill::Failed { outcomes, reason, uncertain, maybe_secret } => {
             let maybe = if *uncertain { format!(" {MAYBE_TYPED}") } else { String::new() };
-            // only a secret that went in was typed into the page: "nothing more was typed" stays true
-            let typed = form.fields.iter().filter(|f| f.is_secret()).any(|f| outcomes.iter().any(|o| o.id == f.id && o.filled));
-            let secret = if typed { format!("{SECRET_NOTE} ") } else { String::new() };
+            // a secret that went in, one that may have, or none: "nothing more was typed" stays true
+            let secret = match secret_typed(form, outcomes, *maybe_secret) {
+                SecretTyped::Yes => format!("{SECRET_NOTE} "),
+                SecretTyped::Maybe => format!("{MAYBE_SECRET_NOTE} "),
+                SecretTyped::No => String::new(),
+            };
             format!("The person submitted the form \"{title}\" but it could not be filled into the page: {reason}{maybe} {observe} {secret}Do not type secrets with computer_type.")
         }
         Fill::Refused { message, .. } => format!("The form \"{title}\" wasn't filled: {message}"),
@@ -758,6 +783,8 @@ struct Parked {
     id: String,
     /// a fill sent a value to the box: a run stopped after that may have left it in the page
     typing: Arc<AtomicBool>,
+    /// the card has a secret field: which value was in flight isn't known, so it may be one
+    secret: bool,
 }
 
 impl Drop for Parked {
@@ -765,7 +792,7 @@ impl Drop for Parked {
         waiting().remove(&self.id);
         if find(&self.ctx, &self.chat, &self.id).is_some_and(|n| n["state"] == "pending") {
             if self.typing.load(Ordering::SeqCst) {
-                settle(&self.ctx, &self.chat, &self.id, "fill_failed", json!({"uncertain": true, "note": format!("The run stopped part way through the fill. {MAYBE_TYPED}")}));
+                settle(&self.ctx, &self.chat, &self.id, "fill_failed", json!({"uncertain": true, "secretMaybe": self.secret, "note": format!("The run stopped part way through the fill. {MAYBE_TYPED}")}));
             } else {
                 settle(&self.ctx, &self.chat, &self.id, "expired", Value::Null);
             }
@@ -799,7 +826,7 @@ pub async fn request(run: &Run, computers: &Arc<Computers>, live: Live, input: &
     let (tx, mut rx) = mpsc::channel::<Ask>(4);
     waiting().insert(id.clone(), tx);
     let typing = Arc::new(AtomicBool::new(false));
-    let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone(), typing: typing.clone() };
+    let parked = Parked { ctx: ctx.clone(), chat: chat.clone(), id: id.clone(), typing: typing.clone(), secret: form.has_secret() };
     if !crate::hub::tools::miniapps::post_in(ctx, &chat, &n) {
         return Out::err("The card couldn't be put in this chat, so nothing was asked.".to_owned());
     }
@@ -882,9 +909,11 @@ async fn submitted(run: &Run, computers: &Arc<Computers>, form: &Form, chat: &st
             };
             ("submitted", outcomes.clone(), json!({"pressed": matches!(pressed, Pressed::Yes), "note": note}))
         }
-        Fill::Failed { outcomes, reason, uncertain } => {
+        Fill::Failed { outcomes, reason, uncertain, maybe_secret } => {
             let note = if *uncertain { format!("{reason} {MAYBE_TYPED}") } else { reason.clone() };
-            ("fill_failed", outcomes.clone(), json!({"note": note, "uncertain": uncertain}))
+            // the card says so when a secret may be in the page
+            let secret_maybe = secret_typed(form, outcomes, *maybe_secret) == SecretTyped::Maybe;
+            ("fill_failed", outcomes.clone(), json!({"note": note, "uncertain": uncertain, "secretMaybe": secret_maybe}))
         }
         Fill::Empty => ("fill_failed", form.fields.iter().map(|f| Outcome { id: f.id.clone(), filled: false, sensitive: false }).collect(), json!({"note": EMPTY_NOTE})),
         Fill::Refused { .. } => unreachable!("handled above"),

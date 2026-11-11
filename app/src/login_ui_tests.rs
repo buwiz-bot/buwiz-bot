@@ -449,7 +449,7 @@ fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {
         return;
     }
     let note = "The browser didn't answer in time. A value may have been typed into the page before it stopped: take a screenshot before anything else.";
-    let (mut app, seen) = start((200, json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "fill_failed", "uncertain": true, "note": note}})));
+    let (mut app, seen) = start((200, json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "fill_failed", "uncertain": true, "secretMaybe": true, "note": note}})));
     with_card(&mut app);
     typed_login(&mut app);
     app.press(FILL);
@@ -457,6 +457,7 @@ fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {
     settle(&mut app);
     assert!(has_text(&app, "May have been typed on shop.example: check the screen.") && has_text(&app, note), "{:?}", app.texts());
     assert!(!has_text(&app, "Nothing was filled"), "never nothing-filled beside a maybe: {:?}", app.texts());
+    assert!(has_text(&app, "A secret value may have been typed into the page; it was never shown to the AI."), "a secret's maybe is said: {:?}", app.texts());
     assert!(!app.has("Try again") && !app.has(FILL), "no blind retry: {:?}", app.texts());
 }
 
