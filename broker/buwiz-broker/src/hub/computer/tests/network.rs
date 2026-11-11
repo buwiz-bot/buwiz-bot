@@ -279,10 +279,13 @@ async fn a_box_that_doesnt_take_its_rules_after_a_wake_gets_them_on_the_sweep() 
     awake(&b, &b.ann.0).await;
     assert!(rules_in_box(&b).is_null());
     assert!(b.computers.network_status(&b.ctx, &b.ann.0).await["notes"].to_string().contains("isn't using these rules yet"));
-    // still refusing: the sweep tries, and it's still behind
+    // the sweep tries when its wait is up (here, made up at once), and it's still behind
+    let due = |b: &Bed| b.computers.tunnels.behind.lock().unwrap().get_mut(&id).unwrap().next = std::time::Instant::now();
+    due(&b);
     b.computers.sleep_the_idle(&b.ctx).await;
     assert!(rules_in_box(&b).is_null());
     *b.mock.egress_problem.lock().unwrap() = None;
+    due(&b);
     b.computers.sleep_the_idle(&b.ctx).await;
     assert_eq!(rules_in_box(&b)["block"], json!(["a.example"]));
     assert_eq!(b.computers.network_status(&b.ctx, &b.ann.0).await["inForce"], true);
@@ -314,4 +317,85 @@ async fn a_box_that_refuses_the_bearer_is_told_by_the_clients_own_outcome() {
     }
     assert_eq!(state, "refused");
     assert!(b.computers.network_status(&b.ctx, &b.ann.0).await["notes"].to_string().contains("refused this Mac's key"));
+}
+
+#[tokio::test]
+async fn a_refused_push_waits_for_the_next_wake_and_one_that_wasnt_answered_backs_off() {
+    let b = bed("net-backoff");
+    let id = awake(&b, &b.ann.0).await;
+    let pushes = |b: &Bed| b.mock.calls().iter().filter(|c| *c == "set egress rules").count();
+    // the box says it can't take them: not tried on the sweep
+    *b.mock.egress_problem.lock().unwrap() = Some(Problem::Guest { status: 409, message: "can't".into() });
+    b.computers.network_change(&b.ctx, &b.ann.0, &Change::Block("a.example".into()), false).await;
+    let before = pushes(&b);
+    b.computers.sleep_the_idle(&b.ctx).await;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(pushes(&b), before, "a 4xx isn't retried until the next wake or change");
+    // not answered: the first try waits its turn, and a second sweep right after does nothing
+    *b.mock.egress_problem.lock().unwrap() = Some(Problem::Guest { status: 503, message: "busy".into() });
+    b.computers.network_change(&b.ctx, &b.ann.0, &Change::Block("b.example".into()), false).await;
+    let before = pushes(&b);
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(pushes(&b), before, "backed off");
+    // its time come, it's tried, and a box that takes it is caught up
+    *b.mock.egress_problem.lock().unwrap() = None;
+    b.computers.tunnels.behind.lock().unwrap().get_mut(&id).unwrap().next = std::time::Instant::now();
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(pushes(&b), before + 1);
+    assert_eq!(rules_in_box(&b)["block"], json!(["a.example", "b.example"]));
+}
+
+#[tokio::test]
+async fn a_refused_tunnel_client_is_left_alone_by_the_sweep() {
+    let b = bed("net-settled");
+    let id = awake(&b, &b.ann.0).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    *b.mock.tunnel_at.lock().unwrap() = Some(format!("ws://{}", listener.local_addr().unwrap()));
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = listener.accept().await {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf).await;
+            let _ = s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await;
+        }
+    });
+    b.computers.network_change(&b.ctx, &b.ann.0, &Change::Tunnel(true), false).await;
+    for _ in 0..300 {
+        if b.computers.tunnels.status(&id)["state"] == "refused" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(b.computers.tunnels.status(&id)["state"], "refused");
+    assert!(b.computers.tunnels.settled(&id), "a refused client stays down until something changes");
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(b.computers.tunnels.status(&id)["state"], "refused", "the sweep didn't start it again");
+}
+
+#[tokio::test]
+async fn an_image_without_the_proxy_says_to_update_it_and_an_older_computer_says_to_remake_it() {
+    let b = bed("net-why");
+    let id = awake(&b, &b.ann.0).await;
+    let old = Machine { egress: None, ..b.computers.machine(&b.ctx, &id).unwrap() };
+    Computers::save_machine(&b.ctx, &id, &old).unwrap();
+    b.computers.machines.lock().unwrap().insert(id.clone(), old);
+    let why = |s: &Value| s["why"].as_str().unwrap_or_default().to_owned();
+    // the image has the proxy now: this computer predates it
+    assert!(why(&b.computers.network_status(&b.ctx, &b.ann.0).await).starts_with("This computer was made before browsing rules"));
+    // the image still hasn't it: making it again wouldn't help
+    b.mock.no_proxy_image.store(true, Ordering::SeqCst);
+    let s = b.computers.network_status(&b.ctx, &b.ann.0).await;
+    assert!(why(&s).starts_with("This computer's image has no browser proxy") && why(&s).contains("Update the computer's image"), "{s}");
+    let out = b.computers.network_change(&b.ctx, &b.ann.0, &Change::Block("x.example".into()), false).await;
+    assert!(out["message"].as_str().unwrap().contains("Update the computer's image"));
+}
+
+#[tokio::test]
+async fn a_block_list_says_addresses_are_refused_too_and_replies_carry_the_one_limit() {
+    let b = bed("net-addr");
+    awake(&b, &b.ann.0).await;
+    assert!(!b.computers.network_status(&b.ctx, &b.ann.0).await["notes"].to_string().contains("addresses typed as numbers"));
+    let out = b.computers.network_change(&b.ctx, &b.ann.0, &Change::Block("x.example".into()), false).await;
+    assert_eq!(out["limit"], LIMIT_BROWSER);
+    assert!(out["network"]["notes"].to_string().contains("addresses typed as numbers aren't reached either"));
 }

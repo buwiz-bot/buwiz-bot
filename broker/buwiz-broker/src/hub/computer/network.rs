@@ -29,7 +29,7 @@
 //! **The network rule** (allow / ask / never, OpenGrok's `egress_policy`) is not built in this
 //! slice: `/network rule` is refused in a sentence that says so, and nothing is stored for it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,8 @@ const CLOUD: &str = "This computer browses from its provider's network: browsing
 const REMOTE: &str = "This computer browses from its own network: browsing rules and the tunnel apply to computers on this Mac.";
 const REMAKE: &str = "This computer was made before browsing rules, so its browser can't take them. To use them, make the computer again: its files are kept, and the programs running on it and its open browser are lost. Nothing was changed.";
 const REMAKE_TUNNEL: &str = "This computer was made without the tunnel, so its browser can't go out through this Mac. To use it, make the computer again: its files are kept, and the programs running on it and its open browser are lost. Nothing was changed.";
+const NO_PROXY_IMAGE: &str = "This computer's image has no browser proxy, so its browser can't take browsing rules, and making the computer again on that image wouldn't change it. Update the computer's image (it's built from the computer repo), then make the computer again: its files are kept, and the programs running on it and its open browser are lost. Nothing was changed.";
+const ADDRESSES: &str = "With sites blocked, addresses typed as numbers aren't reached either: a rule names sites, and can't tell which site an address is.";
 const OLD_IMAGE: &str = "This computer's software has no browser proxy, so its rules aren't in force: update the computer's image, then make the computer again.";
 const UNREAD: &str = "This computer's browsing rules couldn't be read, so none were sent: its browser reaches no site until they can be.";
 const RULE_NOT_BUILT: &str = "The network rule (allow, ask or never) isn't built yet, so nothing was changed. The allow and block lists and the tunnel switch work today.";
@@ -139,7 +141,7 @@ fn tunnel_made(machine: &Machine) -> bool {
     machine.egress.as_ref().is_some_and(|e| e.tunnel && e.bearer.is_some())
 }
 
-/// Why this computer can't take browsing settings, as the sentence a person reads; `None` when it can.
+/// Why this computer can't take browsing settings, by its record alone; `None` when it can.
 fn unsupported(machine: &Machine) -> Option<&'static str> {
     match machine.provider {
         ProviderKind::Remote => Some(REMOTE),
@@ -274,6 +276,23 @@ impl Drop for Running {
     }
 }
 
+/// A box that didn't take its rules: when the sweep tries again, and whether it said it can't take
+/// them at all (a 4xx), which waits for the next wake or change.
+pub(super) struct Behind {
+    pub(super) next: Instant,
+    wait: Duration,
+    refused: bool,
+}
+
+/// The first wait before the sweep tries a box again, doubling to the last.
+const BEHIND_FIRST: Duration = Duration::from_secs(30);
+const BEHIND_MAX: Duration = Duration::from_secs(600);
+
+/// The rules a computer whose saved settings don't read is given: no site.
+fn no_site() -> Value {
+    json!({"v": 1, "exit": "direct", "mode": "listed", "allow": [], "block": []})
+}
+
 /// How often the sweep looks again at a computer whose client runs: a wake, a sleep, a switch and
 /// a retire set it right as they happen, so this only catches what changed under them.
 const LOOK_AGAIN: Duration = Duration::from_secs(300);
@@ -285,7 +304,7 @@ pub struct Tunnels {
     /// one change to a computer's network at a time: load, save and push are one step
     turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// computers whose box didn't take their saved rules: tried again on the sweep while awake
-    behind: Mutex<HashSet<String>>,
+    pub(super) behind: Mutex<HashMap<String, Behind>>,
     /// when the sweep last looked at each running client
     looked: Mutex<HashMap<String, Instant>>,
 }
@@ -336,10 +355,13 @@ impl Tunnels {
         self.lock().get(id).is_some_and(|r| r.url == url)
     }
 
-    /// A client is running for `id` and the sweep looked at it lately: nothing to do on a tick.
-    fn settled(&self, id: &str) -> bool {
-        let live = self.lock().get(id).is_some_and(|r| !r.task.is_finished());
-        live && locked(&self.looked).get(id).is_some_and(|at| at.elapsed() < LOOK_AGAIN)
+    /// Nothing for the sweep to do for `id` on a tick: its client is running and was looked at
+    /// lately, or it ended. The client retries what can pass by itself, with its own backoff, and
+    /// ends only for what can't (a refused bearer, a bad address): it stays down until the switch,
+    /// a wake or a sleep changes something.
+    pub(super) fn settled(&self, id: &str) -> bool {
+        let Some(finished) = self.lock().get(id).map(|r| r.task.is_finished()) else { return false };
+        finished || locked(&self.looked).get(id).is_some_and(|at| at.elapsed() < LOOK_AGAIN)
     }
 
     fn update(&self, id: &str, rules: Rules) {
@@ -369,6 +391,17 @@ fn in_force(egress: &Value, settings: &Settings) -> bool {
 }
 
 impl Computers {
+    /// Why this computer can't take browsing settings, as the sentence a person reads; `None` when
+    /// it can. A local computer made without the proxy is told apart: made before the image had
+    /// it (make it again), or on an image that still hasn't (update the image first).
+    async fn why_not(&self, ctx: &HubCtx, machine: &Machine) -> Option<&'static str> {
+        let why = unsupported(machine)?;
+        if why == REMAKE && self.provider_of(ctx, machine).image_has_proxy().await == Some(false) {
+            return Some(NO_PROXY_IMAGE);
+        }
+        Some(why)
+    }
+
     /// Before a start: the rules the box reads first, from what's saved. Unreadable is none staged,
     /// and the box then reaches no site.
     pub(super) fn stage_network(&self, ctx: &HubCtx, id: &str, machine: &Machine) {
@@ -389,26 +422,48 @@ impl Computers {
         if !proxy_made(&machine) {
             return;
         }
-        {
-            let _turn = self.tunnels.turn(id).await;
-            let doc = Settings::load(ctx, id).and_then(|s| s.doc(&machine)).unwrap_or_else(|_| json!({"v": 1, "exit": "direct", "mode": "listed", "allow": [], "block": []}));
-            let _ = self.push_rules(ctx, id, &machine, &doc).await;
-        }
+        let _ = self.push_saved(ctx, id, &machine).await;
         self.reconcile_tunnel(ctx, id, false).await;
+    }
+
+    /// The saved rules (no site, if they don't read) in force on awake computer `id`, in its turn.
+    async fn push_saved(&self, ctx: &HubCtx, id: &str, machine: &Machine) -> Result<(), Problem> {
+        let _turn = self.tunnels.turn(id).await;
+        let doc = Settings::load(ctx, id).and_then(|s| s.doc(machine)).unwrap_or_else(|_| no_site());
+        self.push_rules(ctx, id, machine, &doc).await
     }
 
     /// Puts `doc` in force on the awake computer `id`. One the box didn't take is logged, naming no
     /// site, and tried again on the sweep while the computer is awake ([`Computers::catch_up`]).
     async fn push_rules(&self, ctx: &HubCtx, id: &str, machine: &Machine, doc: &Value) -> Result<(), Problem> {
         let provider = self.provider_of(ctx, machine);
-        match provider.set_egress_rules(machine, doc).await {
+        let pushed = provider.set_egress_rules(machine, doc).await;
+        let mut behind = locked(&self.tunnels.behind);
+        match pushed {
             Ok(_) => {
-                locked(&self.tunnels.behind).remove(id);
+                if behind.remove(id).is_some() {
+                    eprintln!("buwiz-broker: computer {id} takes its browsing rules again");
+                }
                 Ok(())
             }
             Err(p) => {
-                eprintln!("buwiz-broker: computer {id} didn't take its browsing rules ({}): tried again while it's awake", p.code());
-                locked(&self.tunnels.behind).insert(id.to_owned());
+                // a box that says it can't take them waits for the next wake or change; one that
+                // didn't answer is tried again, less and less often. Said once per state, not per try
+                let refused = matches!(p, Problem::Guest { status, .. } if (400..500).contains(&status));
+                let now = Instant::now();
+                let entry = behind.entry(id.to_owned());
+                let was = match &entry {
+                    std::collections::hash_map::Entry::Occupied(o) => Some(o.get().refused),
+                    std::collections::hash_map::Entry::Vacant(_) => None,
+                };
+                let b = entry.or_insert(Behind { next: now, wait: BEHIND_FIRST / 2, refused });
+                b.wait = (b.wait * 2).min(BEHIND_MAX);
+                b.next = now + b.wait;
+                b.refused = refused;
+                if was != Some(refused) {
+                    let then = if refused { "tried again at its next wake or change" } else { "tried again while it's awake" };
+                    eprintln!("buwiz-broker: computer {id} didn't take its browsing rules ({}): {then}", p.code());
+                }
                 Err(p)
             }
         }
@@ -416,7 +471,8 @@ impl Computers {
 
     /// The sweep: each awake computer whose box didn't take its saved rules gets them again.
     pub(super) async fn catch_up(&self, ctx: &HubCtx) {
-        let behind: Vec<String> = locked(&self.tunnels.behind).iter().cloned().collect();
+        let now = Instant::now();
+        let behind: Vec<String> = locked(&self.tunnels.behind).iter().filter(|(_, b)| !b.refused && b.next <= now).map(|(id, _)| id.clone()).collect();
         for id in behind {
             let Ok(machine) = self.machine(ctx, &id) else {
                 locked(&self.tunnels.behind).remove(&id);
@@ -425,9 +481,7 @@ impl Computers {
             if self.now().sleeping.contains(&id) || !matches!(self.provider_of(ctx, &machine).power(&machine).await, Ok(Power::Awake)) {
                 continue;
             }
-            let _turn = self.tunnels.turn(&id).await;
-            let doc = Settings::load(ctx, &id).and_then(|s| s.doc(&machine)).unwrap_or_else(|_| json!({"v": 1, "exit": "direct", "mode": "listed", "allow": [], "block": []}));
-            let _ = self.push_rules(ctx, &id, &machine, &doc).await;
+            let _ = self.push_saved(ctx, &id, &machine).await;
         }
     }
 
@@ -505,7 +559,7 @@ impl Computers {
             ProviderKind::Remote => "remote",
             _ => "cloud",
         });
-        if let Some(why) = unsupported(&machine) {
+        if let Some(why) = self.why_not(ctx, &machine).await {
             out["supported"] = json!(false);
             out["why"] = json!(why);
             out["notes"] = json!([why]);
@@ -562,6 +616,9 @@ impl Computers {
                 _ => "The tunnel is on and this Mac's side isn't attached yet, so the browser on this computer can't reach any site until it is.".to_owned(),
             });
         }
+        if !settings.block.is_empty() {
+            notes.push(ADDRESSES.to_owned());
+        }
         if settings.mode == ListMode::Listed && settings.allow.is_empty() {
             notes.push("Only allowed sites load, and none is allowed: the browser reaches no site.".to_owned());
         }
@@ -591,6 +648,8 @@ impl Computers {
         }
         let ok = results.iter().all(|r| r["ok"] == json!(true));
         let mut out = if all { json!({"ok": ok, "results": results}) } else { json!({"ok": ok, "message": results.first().map(|r| r["message"].clone()).unwrap_or_default()}) };
+        // the limit, in the one wording the app shows
+        out["limit"] = json!(LIMIT_BROWSER);
         if !all {
             out["network"] = self.network_status(ctx, bot).await;
         }
@@ -604,7 +663,7 @@ impl Computers {
             Ok(m) => m,
             Err(p) => return (false, p.sentence()),
         };
-        if let Some(why) = unsupported(&machine) {
+        if let Some(why) = self.why_not(ctx, &machine).await {
             return (false, why.to_owned());
         }
         let Ok(mut settings) = Settings::load(ctx, id) else { return (false, UNREAD.to_owned()) };
