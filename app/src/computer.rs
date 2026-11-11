@@ -41,6 +41,7 @@ const COUNT: std::time::Duration = std::time::Duration::from_millis(250);
 const WOKE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 const LEFT_THE_GATE: &str = "This computer's page tried to take this view somewhere else, so it was closed. Click to open it again.";
 const UPDATE_WORDS: &str = "This makes the computer again on the current image. Its files stay; the programs running on it and its open browser are lost.";
+const RESET_WORDS: &str = "This erases the computer's files and everything on it. The computer itself stays; the next wake makes it again, empty.";
 
 /// What the broker says about this Bot's computer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -63,6 +64,8 @@ pub(crate) struct Status {
     pub jobs: Vec<Job>,
     /// where this Bot's next new computer would be made
     pub home: Option<homes::Next>,
+    /// its provider can make it again: update and reset are worth offering
+    pub remake: bool,
 }
 
 /// A command a Bot left running on this computer.
@@ -166,6 +169,7 @@ impl Status {
             remote: v.get("remote").and_then(Remote::parse),
             jobs: v.get("jobs").and_then(Value::as_array).into_iter().flatten().filter_map(Job::parse).collect(),
             home: v.get("home").and_then(homes::Next::parse),
+            remake: v.get("remake").and_then(Value::as_bool).unwrap_or(false),
         }
     }
 
@@ -297,6 +301,8 @@ thread_local! {
     static DELETE_ASK: Signal<Option<DeleteAsk>> = Owner::detached().run(|| keep("computer.delete-ask", || None));
     /// The Bot whose computer a person is asked to make again.
     static UPDATE_ASK: Signal<Option<String>> = Owner::detached().run(|| keep("computer.update-ask", || None));
+    /// The Bot whose computer a person is asked to wipe.
+    static RESET_ASK: Signal<Option<String>> = Owner::detached().run(|| keep("computer.reset-ask", || None));
     /// The Bots whose screen a person pressed Take control on.
     static DRIVING: Signal<std::collections::HashSet<String>> = Owner::detached().run(|| keep("computer.driving", Default::default));
     /// What the viewer open full screen last heard, with whose it is.
@@ -631,6 +637,11 @@ pub(crate) fn ask_update(bot: String) {
     UPDATE_ASK.with(|s| s.set(Some(bot)));
 }
 
+/// The first press on Reset: the tab asks before the files go.
+pub(crate) fn ask_reset(bot: String) {
+    RESET_ASK.with(|s| s.set(Some(bot)));
+}
+
 /// The second press: the computer is made again on the provider's current image.
 fn update_computer(bot: String) {
     UPDATE_ASK.with(|s| s.set(None));
@@ -640,14 +651,25 @@ fn update_computer(bot: String) {
     });
     spawn_detached(async move {
         let reply = form_post(&route(&bot, "/update"), json!({})).await;
-        let ok = matches!(reply.as_ref(), Some(v) if v.get("ok").and_then(Value::as_bool) != Some(false));
-        match reply {
-            Some(v) if ok => update(&bot, |p| p.status = Status::parse(&v)),
-            Some(v) => update(&bot, |p| p.note = v.get("message").and_then(Value::as_str).unwrap_or("The computer said no.").to_owned()),
-            None => update(&bot, |p| p.note = "The broker didn't answer.".to_owned()),
-        }
-        if !ok {
+        if let Some(why) = refusal(reply.as_ref()) {
+            update(&bot, |p| p.note = why);
             refresh(bot).await;
+        } else if let Some(v) = reply {
+            update(&bot, |p| p.status = Status::parse(&v));
+        }
+    });
+}
+
+/// The second press on Reset: the computer's files are wiped; the record stays.
+fn reset_computer(bot: String) {
+    RESET_ASK.with(|s| s.set(None));
+    spawn_detached(async move {
+        let reply = form_post(&route(&bot, "/reset"), json!({})).await;
+        if let Some(why) = refusal(reply.as_ref()) {
+            update(&bot, |p| p.note = why);
+            refresh(bot).await;
+        } else if let Some(v) = reply {
+            update(&bot, |p| p.status = Status::parse(&v));
         }
     });
 }
@@ -1037,14 +1059,17 @@ pub(crate) fn body_of(status: Status) -> impl IntoElement {
 /// broker has said.
 pub(crate) fn menu_items(bot: &str, name: &str, status: &Status) -> Vec<CtxItem> {
     let wake = CtxItem::row("Wake computer", "sun", "computer-wake", bot.to_owned());
-    let update = (status.remote.is_none() && status.state != "absent").then(|| CtxItem::row("Update computer", "retry", "computer-update", bot.to_owned()));
+    // only a provider that can make it again gets the rows: a remote or unbuilt one doesn't
+    let remade = status.remake && status.remote.is_none() && status.state != "absent";
+    let update = remade.then(|| CtxItem::row("Update computer", "retry", "computer-update", bot.to_owned()));
+    let reset = remade.then(|| CtxItem::danger("Reset computer", "trash", "computer-reset", bot.to_owned()));
     match status.state.as_str() {
         "awake" => {
             let open = status.has_screen().then(|| CtxItem::row("Open", "external", "computer-open", format!("{bot}\u{1f}{name}")));
             let sleep = CtxItem::row(sleep_words(status), if status.remote.is_some() { "powerOff" } else { "moon" }, "computer-sleep", bot.to_owned());
-            open.into_iter().chain(update).chain([sleep]).collect()
+            open.into_iter().chain(update).chain([sleep]).chain(reset).collect()
         }
-        "asleep" | "error" => [wake].into_iter().chain(update).collect(),
+        "asleep" | "error" => [wake].into_iter().chain(update).chain(reset).collect(),
         "absent" => vec![wake],
         _ => Vec::new(),
     }
@@ -1088,17 +1113,29 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     if !p.status.sleep_note.is_empty() {
         out = out.child(view().test_id("computer-sleep-note").child(note(p.status.sleep_note.clone())));
     }
-    if UPDATE_ASK.with(|s| s.with(|a| a.as_deref() == Some(bot))) {
-        let update = bot.to_owned();
+    let ask_update = UPDATE_ASK.with(|s| s.with(|a| a.as_deref() == Some(bot)));
+    let ask_reset = RESET_ASK.with(|s| s.with(|a| a.as_deref() == Some(bot)));
+    if ask_update || ask_reset {
+        let (words, yes) = if ask_update { (UPDATE_WORDS, "Update") } else { (RESET_WORDS, "Reset") };
+        let b = bot.to_owned();
         out = out
-            .child(view().test_id("computer-update-ask").child(note(UPDATE_WORDS.to_owned())))
+            .child(view().test_id("computer-update-ask").child(note(words.to_owned())))
             .child(
                 view()
                     .flex_row()
                     .gap_2()
                     .pt(px(10.0))
-                    .child(small_button("computer-update-cancel", "Cancel", || UPDATE_ASK.with(|s| s.set(None))))
-                    .child(small_button("computer-update-yes", "Update", move || update_computer(update.clone()))),
+                    .child(small_button("computer-update-cancel", "Cancel", || {
+                        UPDATE_ASK.with(|s| s.set(None));
+                        RESET_ASK.with(|s| s.set(None));
+                    }))
+                    .child(small_button("computer-update-yes", yes, move || {
+                        if ask_update {
+                            update_computer(b.clone());
+                        } else {
+                            reset_computer(b.clone());
+                        }
+                    })),
             );
     }
     let shared = p.status.shared_with(bot);
@@ -1509,13 +1546,19 @@ mod tests {
     }
 
     #[test]
-    fn update_is_offered_for_a_computer_that_exists_and_not_for_a_remote_one() {
+    fn update_and_reset_are_offered_only_for_a_computer_its_provider_can_make_again() {
         let acts = |status: Status| menu_items("b1", "Ann", &status).into_iter().map(|i| i.act).collect::<Vec<_>>();
-        assert!(acts(seen("awake", "", None)).contains(&"computer-update".to_owned()));
-        assert!(acts(seen("asleep", "", None)).contains(&"computer-update".to_owned()));
-        assert!(!acts(seen("absent", "", None)).contains(&"computer-update".to_owned()));
-        let remote = Status { remote: Some(Remote::default()), ..seen("awake", "", None) };
-        assert!(!acts(remote).contains(&"computer-update".to_owned()));
+        let remade = |state: &str| Status { state: state.to_owned(), remake: true, ..Status::default() };
+        for state in ["awake", "asleep", "error"] {
+            let acts = acts(remade(state));
+            assert!(acts.contains(&"computer-update".to_owned()) && acts.contains(&"computer-reset".to_owned()), "{state}: {acts:?}");
+        }
+        assert!(!acts(remade("absent")).contains(&"computer-update".to_owned()));
+        // a provider that can't make it again gets neither, and nor does a remote one
+        assert!(!acts(seen("awake", "", None)).contains(&"computer-update".to_owned()));
+        let remote = Status { remote: Some(Remote::default()), remake: true, ..seen("awake", "", None) };
+        let acts = acts(remote);
+        assert!(!acts.contains(&"computer-update".to_owned()) && !acts.contains(&"computer-reset".to_owned()), "{acts:?}");
     }
 
     #[test]

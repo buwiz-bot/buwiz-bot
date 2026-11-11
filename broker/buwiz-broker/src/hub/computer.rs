@@ -117,6 +117,8 @@ const REMOTE_ACTOR: &str = "remote-computer";
 const UNREAD: &str = "This computer's record couldn't be read. Try again in a moment.";
 const LOST_LOCAL: &str = "This computer's record is lost. Click to look for it. If it can't be found, this Bot gets a new computer, and the old one waits in Settings › Computers for you to keep or delete: nothing on it is deleted until you say.";
 const LOST_REMOTE: &str = "This remote computer's saved connection is lost. Nothing happened to the machine: remove it and add it again.";
+/// A computer a person connected isn't this Mac's to make again or wipe, and its files aren't here.
+const CONNECTED: &str = "This computer was connected by a person, not made here, so there's no image to make it again on and no files here to wipe. Nothing happened to it.";
 
 /// A Bot's place at a computer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,7 +172,17 @@ impl Now {
     /// Whether a run or a person has a screen on `computer`, or a job needs it. From what's here,
     /// not the seats: this has no read to fail.
     fn in_use(&self, computer: &str) -> bool {
-        self.holds.values().any(|(_, c)| c == computer) || self.handovers.values().any(|h| h.computer == computer) || self.jobs.values().any(|j| j.computer == computer && !j.past && !j.unread)
+        self.busy(computer, true, false)
+    }
+
+    /// Whether `computer` is in use: a screen held or handed over, a job that needs it — frozen
+    /// jobs count only when `count_frozen` says their files still matter — or a recording when
+    /// `count_recordings` says so.
+    fn busy(&self, computer: &str, count_frozen: bool, count_recordings: bool) -> bool {
+        self.holds.values().any(|(_, c)| c == computer)
+            || self.handovers.values().any(|h| h.computer == computer)
+            || self.jobs.values().any(|j| j.computer == computer && !j.past && !j.unread && (count_frozen || !j.frozen))
+            || (count_recordings && self.recordings.values().any(|r| r.computer == computer))
     }
 }
 
@@ -646,21 +658,24 @@ impl Computers {
     pub async fn update(self: &Arc<Self>, ctx: &Arc<HubCtx>, bot: &str) -> Result<(), Problem> {
         let seat = Self::seat(ctx, bot)?.ok_or(Problem::Gone)?;
         let id = seat.computer.clone();
+        if Self::is_remote(ctx, &id)? {
+            return Err(Problem::Remote(CONNECTED.to_owned()));
+        }
         {
             let now = self.now();
             if now.waking.contains(&id) || now.sleeping.contains(&id) {
                 return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
             }
-            let busy = now.holds.values().any(|(_, c)| *c == id)
-                || now.handovers.values().any(|h| h.computer == id)
-                || now.jobs.values().any(|j| j.computer == id && !j.frozen && !j.past && !j.unread)
-                || now.recordings.values().any(|r| r.computer == id);
-            if busy {
+            // its files stay, so a frozen job's are still its own
+            if now.busy(&id, false, true) {
                 return Err(Problem::Failed("Something is using this computer right now: a run, a hand-over, a job or a recording. Try again when it's idle.".to_owned()));
             }
         }
         let machine = self.machine(ctx, &id)?;
         let provider = self.provider_of(ctx, &machine);
+        if !provider.remakes() {
+            return Err(Problem::Unsupported("make it again on the current image".to_owned()));
+        }
         let wanted = network_for(machine.provider);
         if wanted != buwiz_computer::Network::Plain && provider.image_has_proxy().await == Some(false) {
             return Err(Problem::Refused { code: "image", message: network::NO_PROXY_IMAGE.to_owned() });
@@ -692,6 +707,40 @@ impl Computers {
                 }
             }
         });
+        Ok(())
+    }
+
+    /// A person wipes `bot`'s computer's files: the provider removes what it kept, and the record
+    /// stays, so the next wake makes it again, empty. It stays absent until then.
+    pub async fn reset(self: &Arc<Self>, ctx: &Arc<HubCtx>, bot: &str) -> Result<(), Problem> {
+        let seat = Self::seat(ctx, bot)?.ok_or(Problem::Gone)?;
+        let id = seat.computer.clone();
+        if Self::is_remote(ctx, &id)? {
+            return Err(Problem::Remote(CONNECTED.to_owned()));
+        }
+        {
+            let now = self.now();
+            if now.waking.contains(&id) || now.sleeping.contains(&id) {
+                return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+            }
+            // its files go, frozen jobs' included
+            if now.busy(&id, true, true) {
+                return Err(Problem::Failed("Something is using this computer right now: a run, a hand-over, a job or a recording. Try again when it's idle.".to_owned()));
+            }
+        }
+        let machine = self.machine(ctx, &id)?;
+        let provider = self.provider_of(ctx, &machine);
+        if !provider.remakes() {
+            return Err(Problem::Unsupported("wipe its files".to_owned()));
+        }
+        // held like a wake, so a click can't make it again while its files are going
+        if !self.now().waking.insert(id.clone()) {
+            return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+        }
+        let done = provider.reset(&machine).await;
+        self.now().waking.remove(&id);
+        done?;
+        self.tunnels.stop(&id);
         Ok(())
     }
 
@@ -1666,7 +1715,9 @@ impl Computers {
             match record {
                 Ok(m) => {
                     out["provider"] = json!(m.provider.label());
-                    match self.provider_of(ctx, &m).power(&m).await {
+                    let provider = self.provider_of(ctx, &m);
+                    out["remake"] = json!(provider.remakes());
+                    match provider.power(&m).await {
                         Ok(Power::Broken(why)) => {
                             out["message"] = json!(why);
                             "error".to_owned()
@@ -1933,6 +1984,16 @@ async fn wake(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 async fn update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
     match computers.update(&ctx, &bot).await {
+        Ok(()) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),
+        Err(p) => refused(&p),
+    }
+}
+
+/// `POST /v1/host/computer/bot/{bot}/reset`: a person wipes this Bot's computer's files. The
+/// record stays; the next wake makes it again, empty.
+async fn reset(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    match computers.reset(&ctx, &bot).await {
         Ok(()) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),
         Err(p) => refused(&p),
     }
@@ -2304,6 +2365,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Get, S("/v1/host/computer/bot/*"), status);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/wake"), wake);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/update"), update);
+    routes.route(Verb::Post, S("/v1/host/computer/bot/*/reset"), reset);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/sleep"), sleep);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/open"), open);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/handback"), hand_back);

@@ -297,7 +297,7 @@ fn pick(app: &mut Headless, row: &str) {
 }
 
 fn in_state(state: &str) -> Status {
-    Status { state: state.to_owned(), ..Status::default() }
+    Status { state: state.to_owned(), remake: true, ..Status::default() }
 }
 
 fn sent() -> Vec<String> {
@@ -316,8 +316,8 @@ fn the_tab_has_no_open_or_sleep_button_and_a_right_click_has_them() {
     assert!(!app.texts().iter().any(|t| *t == "Open" || t.starts_with("Sleep")), "{:?}", app.texts());
 
     app.right_click("Open computer", 20.0, 20.0);
-    assert!(shows(&mut app, "menu=[Open+Update computer+Sleep]"), "{:?}", app.texts());
-    assert!(app.texts().contains(&"Open") && app.texts().contains(&"Update computer") && app.texts().contains(&"Sleep"), "the card draws them: {:?}", app.texts());
+    assert!(shows(&mut app, "menu=[Open+Update computer+Sleep+Reset computer]"), "{:?}", app.texts());
+    assert!(app.texts().contains(&"Open") && app.texts().contains(&"Update computer") && app.texts().contains(&"Sleep") && app.texts().contains(&"Reset computer"), "the card draws them: {:?}", app.texts());
     pick(&mut app, "Open");
     assert!(shows(&mut app, "open=[computer:b1 Ann's computer]") && shows(&mut app, "menu=[shut]"), "{:?}", app.texts());
 
@@ -353,6 +353,25 @@ fn the_update_asks_first_and_then_posts() {
     assert_eq!(sent(), ["/v1/host/computer/bot/b1/update"]);
 }
 
+/// Reset asks first too, and says the files go: the menu's row only opens the question.
+#[test]
+fn the_reset_asks_first_and_then_posts() {
+    if !in_child("the_reset_asks_first_and_then_posts") {
+        return;
+    }
+    let mut app = on_the_tab();
+    put(&mut app, "b1", in_state("awake"), Some(PICTURE));
+
+    app.right_click("Open computer", 20.0, 20.0);
+    pick(&mut app, "Reset computer");
+    assert!(shows(&mut app, "menu=[shut]") && shows(&mut app, "makes it again, empty"), "{:?}", app.texts());
+    assert!(sent().is_empty(), "the first press asked, it didn't send");
+
+    app.press("Reset");
+    wait_until_sent(&mut app);
+    assert_eq!(sent(), ["/v1/host/computer/bot/b1/reset"]);
+}
+
 fn wait_until_sent(app: &mut Headless) {
     for _ in 0..100 {
         if !crate::computer::CANNED.lock().unwrap().1.is_empty() {
@@ -369,7 +388,7 @@ fn the_menu_offers_what_the_state_allows() {
         return;
     }
     let mut app = on_the_tab();
-    let remote = |screen, state: &str| Status { remote: Some(crate::computer::Remote { screen, place: "me@h".to_owned() }), ..in_state(state) };
+    let remote = |screen, state: &str| Status { remote: Some(crate::computer::Remote { screen, place: "me@h".to_owned() }), remake: false, ..in_state(state) };
 
     // an SSH host has no screen to open, and a remote's sleep is its disconnect
     put(&mut app, "b1", remote(false, "awake"), None);
@@ -385,7 +404,7 @@ fn the_menu_offers_what_the_state_allows() {
     for state in ["asleep", "error"] {
         put(&mut app, "b1", in_state(state), None);
         app.right_click("Wake computer", 20.0, 20.0);
-        assert!(shows(&mut app, "menu=[Wake computer+Update computer]"), "{state}: {:?}", app.texts());
+        assert!(shows(&mut app, "menu=[Wake computer+Update computer+Reset computer]"), "{state}: {:?}", app.texts());
         pick(&mut app, "Wake computer");
         wait_until_sent(&mut app);
         assert_eq!(sent(), ["/v1/host/computer/bot/b1/wake"], "{state}");

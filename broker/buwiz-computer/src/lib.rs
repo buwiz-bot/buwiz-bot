@@ -306,6 +306,18 @@ pub struct Egress {
 /// The box's port for the tunnel's WebSocket, published on loopback with the tunnel only.
 pub const EGRESS_PORT: u16 = 8790;
 
+impl Network {
+    /// The egress a computer on this network is made with; `bearer` mints the tunnel's secret,
+    /// asked for only when the network has a tunnel.
+    pub fn egress(self, bearer: impl FnOnce() -> Result<Secret>) -> Result<Option<Egress>> {
+        Ok(match self {
+            Self::Plain => None,
+            Self::Proxy => Some(Egress { tunnel: false, bearer: None }),
+            Self::Tunnel => Some(Egress { tunnel: true, bearer: Some(bearer()?) }),
+        })
+    }
+}
+
 /// What a provider saw of a computer: one read, good for one request and no longer. Ports can
 /// change with a start, and an old port can be another computer's by then.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -876,6 +888,18 @@ pub trait Provider: Send + Sync {
     /// `network` is what a new computer of its kind would get. What runs on it ends.
     async fn remake(&self, _machine: &Machine, _network: Network) -> Result<Machine> {
         unsupported("make it again on the current image")
+    }
+
+    /// Whether this provider can make a computer again at all: [`Provider::remake`] and
+    /// [`Provider::reset`]. `false` is the default, and the person's routes refuse on it.
+    fn remakes(&self) -> bool {
+        false
+    }
+
+    /// Removes what the computer kept, its files, and leaves it absent: the next wake makes it
+    /// again, empty. The record stays.
+    async fn reset(&self, _machine: &Machine) -> Result<()> {
+        unsupported("wipe its files")
     }
 
     /// Where this Mac reaches the tunnel's WebSocket (`ws://127.0.0.1:port`), for an awake computer
