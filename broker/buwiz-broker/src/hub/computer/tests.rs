@@ -1254,6 +1254,34 @@ fn a_computer_can_be_pinned_to_a_group() {
     assert!(crate::hub::library::groups::group_item(&b.ctx, &bad).is_err());
 }
 
+#[tokio::test]
+async fn update_makes_the_computer_again_and_brings_it_back_awake() {
+    let b = bed("update");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.update(&b.ctx, &b.ann.0).await.unwrap();
+    for _ in 0..400 {
+        if b.mock.calls().contains(&"remake".to_owned()) && b.computers.status(&b.ctx, &b.ann.0).await["state"] == "awake" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let calls = b.mock.calls();
+    let remake = calls.iter().position(|c| c == "remake").expect("it was made again");
+    assert!(calls[remake..].contains(&"wake".to_owned()), "{calls:?}");
+    assert_eq!(seated(&b.ctx, &b.ann.0).unwrap().computer, id, "the same computer, its files kept");
+}
+
+#[tokio::test]
+async fn update_with_no_computer_is_gone_and_a_busy_one_is_refused() {
+    let b = bed("update-refused");
+    assert_eq!(b.computers.update(&b.ctx, &b.ann.0).await.unwrap_err(), Problem::Gone);
+    let id = awake(&b, &b.ann.0).await;
+    let _hold = b.computers.hold(&b.ann.0, &id).unwrap();
+    let e = b.computers.update(&b.ctx, &b.ann.0).await.unwrap_err();
+    assert!(e.sentence().contains("using this computer"), "{e}");
+    assert!(!b.mock.calls().contains(&"remake".to_owned()));
+}
+
 mod homes;
 mod jobs;
 mod login;

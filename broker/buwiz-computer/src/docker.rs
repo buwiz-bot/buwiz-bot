@@ -1271,6 +1271,20 @@ impl Provider for DockerProvider {
         Some(self.has_proxy().await)
     }
 
+    async fn remake(&self, machine: &Machine, network: Network) -> Result<Machine> {
+        self.check().await?;
+        let name = container(machine)?;
+        let egress = if network != Network::Plain && self.has_proxy().await { egress_for(network)? } else { None };
+        let found = match self.inspect(name).await {
+            Ok(found) => Some(found),
+            Err(Problem::Gone) => None,
+            Err(e) => return Err(e),
+        };
+        let wanted = Machine { egress, image: Some(self.image.clone()), seen: None, ..machine.clone() };
+        self.rebuild(&wanted, name, found.as_ref()).await?;
+        Ok(wanted)
+    }
+
     async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
         if !tunnel_of(machine) {
             return Ok(None);

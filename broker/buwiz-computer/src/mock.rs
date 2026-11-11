@@ -532,6 +532,15 @@ impl Provider for MockProvider {
         Some(!self.no_proxy_image.load(Ordering::SeqCst))
     }
 
+    async fn remake(&self, machine: &Machine, network: crate::Network) -> Result<Machine> {
+        self.check().await?;
+        self.note("remake".to_owned());
+        self.set_power(Power::Asleep);
+        let proxy = network != crate::Network::Plain && !self.no_proxy_image.load(Ordering::SeqCst);
+        let egress = proxy.then(|| crate::Egress { tunnel: network == crate::Network::Tunnel, bearer: (network == crate::Network::Tunnel).then(|| Secret::new(BEARER)) });
+        Ok(Machine { egress, image: Some("mock:1".to_owned()), seen: None, ..machine.clone() })
+    }
+
     async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
         if !machine.egress.as_ref().is_some_and(|e| e.tunnel) || self.awake().is_err() {
             return Ok(None);
