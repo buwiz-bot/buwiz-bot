@@ -242,6 +242,7 @@ async fn a_page_that_moves_mid_fill_stops_it_before_the_next_value() {
     let said = words(&call.await.unwrap());
     assert!(said.contains("could not be filled") && said.contains("evil.test"), "{said}");
     assert_eq!(b.mock.typed(), [("Email".to_owned(), "kid@example.com".to_owned())]);
+    assert!(!said.contains("Secret field values were typed"), "no secret went in: {said}");
     assert_eq!(login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap()["outcomes"], json!([{"id": "email", "filled": true}, {"id": "password", "filled": false}]));
 }
 
@@ -442,6 +443,20 @@ fn a_log_line_takes_a_length_and_never_a_value() {
     assert!(login::field_log_line(&form.fields[0], true, 3, "typed").contains("secret=true"));
     let fill = Fill::Filled { outcomes: vec![], pressed: Pressed::Yes };
     assert!(!login::result_text(&form, &fill, &Default::default()).contains("password="));
+}
+
+#[test]
+fn a_failed_fill_says_secrets_were_typed_only_when_one_was() {
+    let form = login::sanitize(&card_input()).unwrap();
+    let outcome = |id: &str, filled: bool| login::Outcome { id: id.to_owned(), filled, sensitive: false };
+    let secret = "Secret field values were typed into the page and never shown to you.";
+    let failed = |outcomes| Fill::Failed { outcomes, reason: "The page isn't on shop.test any more, so nothing more was typed.".to_owned(), uncertain: false };
+    let none = login::result_text(&form, &failed(vec![]), &Default::default());
+    assert!(!none.contains(secret) && none.contains("Do not type secrets with computer_type."), "{none}");
+    let name_only = login::result_text(&form, &failed(vec![outcome("email", true), outcome("password", false)]), &Default::default());
+    assert!(!name_only.contains(secret), "{name_only}");
+    let both = login::result_text(&form, &failed(vec![outcome("email", true), outcome("password", true)]), &Default::default());
+    assert!(both.contains(secret), "{both}");
 }
 
 #[test]

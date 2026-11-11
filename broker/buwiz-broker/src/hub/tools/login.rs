@@ -535,7 +535,11 @@ async fn snap(live: &Live, site: &str) -> Result<(u64, Vec<Value>), SnapErr> {
 }
 
 /// The page in front, by the box's extension: on the card's site, or why not. Read before anything
-/// is typed; an unreadable report is a no.
+/// is typed; an unreadable report is a no. It can only stop a fill, never let one through: the
+/// extension's report can lag a navigation by a moment, so each value goes only after box-exec's
+/// own snap of the page says it's on the site ([`snap`]), and its type carries `allow_domains`
+/// (`a_page_off_the_cards_site_types_nothing_and_the_card_stays_open` holds the extension agreeing
+/// while the page is elsewhere).
 async fn front_page(live: &Live, site: &str) -> Result<(), String> {
     let front = live.provider.active_tab(&live.machine, &live.screen).await.map_err(|_| "The page in front couldn't be read, so nothing was typed.".to_owned())?;
     match front.url {
@@ -669,9 +673,12 @@ pub fn result_text(form: &Form, fill: &Fill, shared: &BTreeMap<String, String>) 
             let shared = if shared.is_empty() { "No non-secret fields were shared.".to_owned() } else { format!("Shared fields: {}.", shared.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", ")) };
             format!("The person submitted the form \"{title}\". It was filled into the page. {pressed} {observe} {shared} {SECRET_NOTE}")
         }
-        Fill::Failed { reason, uncertain, .. } => {
+        Fill::Failed { outcomes, reason, uncertain } => {
             let maybe = if *uncertain { format!(" {MAYBE_TYPED}") } else { String::new() };
-            format!("The person submitted the form \"{title}\" but it could not be filled into the page: {reason}{maybe} {observe} {SECRET_NOTE} Do not type secrets with computer_type.")
+            // only a secret that went in was typed into the page: "nothing more was typed" stays true
+            let typed = form.fields.iter().filter(|f| f.is_secret()).any(|f| outcomes.iter().any(|o| o.id == f.id && o.filled));
+            let secret = if typed { format!("{SECRET_NOTE} ") } else { String::new() };
+            format!("The person submitted the form \"{title}\" but it could not be filled into the page: {reason}{maybe} {observe} {secret}Do not type secrets with computer_type.")
         }
         Fill::Refused { message, .. } => format!("The form \"{title}\" wasn't filled: {message}"),
         Fill::Empty => format!("The person submitted the form \"{title}\" with every field empty, so nothing was typed into the page. {EMPTY_NEXT}"),
