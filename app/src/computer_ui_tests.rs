@@ -316,8 +316,8 @@ fn the_tab_has_no_open_or_sleep_button_and_a_right_click_has_them() {
     assert!(!app.texts().iter().any(|t| *t == "Open" || t.starts_with("Sleep")), "{:?}", app.texts());
 
     app.right_click("Open computer", 20.0, 20.0);
-    assert!(shows(&mut app, "menu=[Open+Sleep]"), "{:?}", app.texts());
-    assert!(app.texts().contains(&"Open") && app.texts().contains(&"Sleep"), "the card draws them: {:?}", app.texts());
+    assert!(shows(&mut app, "menu=[Open+Update computer+Sleep]"), "{:?}", app.texts());
+    assert!(app.texts().contains(&"Open") && app.texts().contains(&"Update computer") && app.texts().contains(&"Sleep"), "the card draws them: {:?}", app.texts());
     pick(&mut app, "Open");
     assert!(shows(&mut app, "open=[computer:b1 Ann's computer]") && shows(&mut app, "menu=[shut]"), "{:?}", app.texts());
 
@@ -326,6 +326,31 @@ fn the_tab_has_no_open_or_sleep_button_and_a_right_click_has_them() {
     assert!(shows(&mut app, "menu=[shut]"), "{:?}", app.texts());
     wait_until_sent(&mut app);
     assert_eq!(sent(), ["/v1/host/computer/bot/b1/sleep"]);
+}
+
+/// Update asks first, in the tab: the menu's row only opens the question, and the tab's own
+/// Update is what posts.
+#[test]
+fn the_update_asks_first_and_then_posts() {
+    if !in_child("the_update_asks_first_and_then_posts") {
+        return;
+    }
+    let mut app = on_the_tab();
+    put(&mut app, "b1", in_state("awake"), Some(PICTURE));
+
+    app.right_click("Open computer", 20.0, 20.0);
+    pick(&mut app, "Update computer");
+    assert!(shows(&mut app, "menu=[shut]") && shows(&mut app, "Its files stay"), "{:?}", app.texts());
+    assert!(sent().is_empty(), "the first press asked, it didn't send");
+
+    app.press("Cancel");
+    assert!(!shows(&mut app, "Its files stay"), "{:?}", app.texts());
+
+    app.right_click("Open computer", 20.0, 20.0);
+    pick(&mut app, "Update computer");
+    app.press("Update");
+    wait_until_sent(&mut app);
+    assert_eq!(sent(), ["/v1/host/computer/bot/b1/update"]);
 }
 
 fn wait_until_sent(app: &mut Headless) {
@@ -357,14 +382,22 @@ fn the_menu_offers_what_the_state_allows() {
     put(&mut app, "b1", shared, None);
     assert!(shows(&mut app, "Leave this computer") && shows(&mut app, "Remove"), "{:?}", app.texts());
 
-    for state in ["asleep", "absent", "error"] {
+    for state in ["asleep", "error"] {
         put(&mut app, "b1", in_state(state), None);
         app.right_click("Wake computer", 20.0, 20.0);
-        assert!(shows(&mut app, "menu=[Wake computer]"), "{state}: {:?}", app.texts());
+        assert!(shows(&mut app, "menu=[Wake computer+Update computer]"), "{state}: {:?}", app.texts());
         pick(&mut app, "Wake computer");
         wait_until_sent(&mut app);
         assert_eq!(sent(), ["/v1/host/computer/bot/b1/wake"], "{state}");
     }
+
+    // an absent computer is made again from scratch: there's nothing to update
+    put(&mut app, "b1", in_state("absent"), None);
+    app.right_click("Wake computer", 20.0, 20.0);
+    assert!(shows(&mut app, "menu=[Wake computer]"), "absent: {:?}", app.texts());
+    pick(&mut app, "Wake computer");
+    wait_until_sent(&mut app);
+    assert_eq!(sent(), ["/v1/host/computer/bot/b1/wake"], "absent");
 
     // nothing to ask of a computer that's coming up, or of one not heard from yet
     for state in ["waking", ""] {
