@@ -416,7 +416,7 @@ dependencies = [
 [[package]]
 name = "box-egress"
 version = "0.1.0"
-source = "git+https://github.com/buwiz-bot/computer?rev=bb3ac562eec0ab2c7ba0697513296d81d2756ea3#bb3ac562eec0ab2c7ba0697513296d81d2756ea3"
+source = "git+https://github.com/buwiz-bot/computer?rev=5dc84a23d00e04a07fcac7d6e3f2289ac3f92d27#5dc84a23d00e04a07fcac7d6e3f2289ac3f92d27"
 dependencies = [
  "futures-util",
  "serde",

@@ -15,7 +15,7 @@ async-trait = "0.1"
 # box-egress-v1's client, the browsing rules and the address policy, from the computer repo, so the
 # Mac's side of a computer's tunnel speaks the box's own wire and judges by the box's own rules:
 # the crate alone, with none of the box's daemons (tokio-tungstenite, plain ws:// only)
-box-egress = { git = "https://github.com/buwiz-bot/computer", rev = "bb3ac562eec0ab2c7ba0697513296d81d2756ea3" }
+box-egress = { git = "https://github.com/buwiz-bot/computer", rev = "5dc84a23d00e04a07fcac7d6e3f2289ac3f92d27" }
 base64 = "0.22"
 bytes = "1"
 getrandom = "0.2"
