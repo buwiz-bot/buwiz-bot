@@ -442,6 +442,27 @@ fn a_chip_or_a_card_never_runs_a_builtin_and_typed_it_does() {
     assert_eq!(heard(&seen, "/chat").len(), 7, "neither went to the AI");
 }
 
+/// A fill that stopped after the email went in says what went in and what didn't, by label,
+/// never "nothing was filled", and never a value.
+#[test]
+fn a_fill_that_stopped_part_way_says_which_fields_went_in() {
+    if !in_child("a_fill_that_stopped_part_way_says_which_fields_went_in") {
+        return;
+    }
+    let why = "The page isn't on shop.example any more, so nothing more was typed.";
+    let (mut app, seen) = start((200, json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "fill_failed", "uncertain": false, "note": why,
+        "outcomes": [{"id": "email", "filled": true}, {"id": "password", "filled": false}]}})));
+    with_card(&mut app);
+    typed_login(&mut app);
+    app.press(FILL);
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(app.texts().contains(&"Email was typed on shop.example; Password wasn't. Check the screen. Secret values were never shown to the AI."), "{:?}", app.texts());
+    assert!(app.texts().contains(&why) && !has_text(&app, "Nothing was filled"), "{:?}", app.texts());
+    assert!(!has_text(&app, "kid@example.com"), "never a value: {:?}", app.texts());
+    no_mark(&app);
+}
+
 /// A fill that may have typed something says so, and offers no blind retry.
 #[test]
 fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {

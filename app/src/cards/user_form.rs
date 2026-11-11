@@ -1802,10 +1802,12 @@ pub(crate) fn receipt(spec: &UserFormSpec, r: FormResolution, f: &Facts) -> (&'s
         FormResolution::Submitted => ("✓", theme::UP, theme::UP_TINT, format!("{}{on_site}; {}.{pressed} {SECRETS}", were(&typed, "typed"), werent(&not))),
         FormResolution::FillFailed => {
             let secrets = if f.unsure() == Unsure::Secret { MAYBE_SECRET } else { SECRETS };
-            match f.unsure() {
-                Unsure::No if f.note.is_some() => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}. {secrets}")),
-                Unsure::No => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}: the page may have moved or changed. {secrets}")),
-                _ => ("!", theme::WARN, theme::WARN_TINT, format!("May have been typed{on_site}: check the screen. {secrets}")),
+            match (f.unsure(), typed.is_empty()) {
+                (Unsure::No, true) if f.note.is_some() => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}. {secrets}")),
+                (Unsure::No, true) => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}: the page may have moved or changed. {secrets}")),
+                (Unsure::No, false) => ("!", theme::WARN, theme::WARN_TINT, format!("{}{on_site}; {}. Check the screen. {secrets}", were(&typed, "typed"), werent(&not))),
+                (_, true) => ("!", theme::WARN, theme::WARN_TINT, format!("May have been typed{on_site}: check the screen. {secrets}")),
+                (_, false) => ("!", theme::WARN, theme::WARN_TINT, format!("{}{on_site}; the rest may have been: check the screen. {secrets}", were(&typed, "typed"))),
             }
         }
         FormResolution::Escalated => ("↗", theme::ACCENT, theme::ACCENT_TINT, format!("Handed over: {} is yours. Hand it back when you're done.", screen_of(spec))),
@@ -2837,6 +2839,13 @@ mod tests {
         // a stepped card: what went in, by label
         let first = json!([{"id": "email", "filled": true}, {"id": "password", "filled": false}]);
         assert_eq!(line(FormResolution::Submitted, &facts(json!({"pressed": false, "outcomes": first}))), "Email was typed on shop.example; Password wasn't. Secret values were never shown to the AI.");
+        // a fill that stopped after the email: never "nothing was filled"
+        let moved = facts(json!({"outcomes": first, "note": "The page isn't on shop.example any more, so nothing more was typed."}));
+        assert_eq!(line(FormResolution::FillFailed, &moved), "Email was typed on shop.example; Password wasn't. Check the screen. Secret values were never shown to the AI.");
+        let maybe = facts(json!({"outcomes": first, "uncertain": true, "secretMaybe": true, "note": "x"}));
+        assert_eq!(line(FormResolution::FillFailed, &maybe), "Email was typed on shop.example; the rest may have been: check the screen. A secret value may have been typed into the page; it was never shown to the AI.");
+        let none = facts(json!({"outcomes": [{"id": "email", "filled": false}, {"id": "password", "filled": false}], "note": "x"}));
+        assert_eq!(line(FormResolution::FillFailed, &none), "Nothing was filled on shop.example. Secret values were never shown to the AI.");
         // the broker's prose never changes the line
         let a = facts(json!({"pressed": true, "outcomes": both, "note": "Typed, and Return was pressed."}));
         let b = facts(json!({"pressed": true, "outcomes": both, "note": "Something else entirely."}));
