@@ -1282,6 +1282,49 @@ async fn update_with_no_computer_is_gone_and_a_busy_one_is_refused() {
     assert!(!b.mock.calls().contains(&"remake".to_owned()));
 }
 
+#[tokio::test]
+async fn a_provider_that_cant_make_it_again_is_refused() {
+    let b = bed("cant-remake");
+    awake(&b, &b.ann.0).await;
+    b.mock.no_remake.store(true, Ordering::SeqCst);
+    let e = b.computers.update(&b.ctx, &b.ann.0).await.unwrap_err();
+    assert_eq!(e, Problem::Unsupported("make it again on the current image".to_owned()));
+    let e = b.computers.reset(&b.ctx, &b.ann.0).await.unwrap_err();
+    assert_eq!(e, Problem::Unsupported("wipe its files".to_owned()));
+    let calls = b.mock.calls();
+    assert!(!calls.contains(&"remake".to_owned()) && !calls.contains(&"reset".to_owned()), "{calls:?}");
+}
+
+#[tokio::test]
+async fn reset_wipes_the_computer_and_the_next_wake_makes_it_again_empty() {
+    let b = bed("reset");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.reset(&b.ctx, &b.ann.0).await.unwrap();
+    assert!(b.mock.calls().contains(&"reset".to_owned()));
+    for _ in 0..400 {
+        if b.computers.status(&b.ctx, &b.ann.0).await["state"] == "absent" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["state"], "absent");
+    // the same computer comes back on a wake, its files gone with it
+    let again = awake(&b, &b.ann.0).await;
+    assert_eq!(again, id, "the same computer, made again empty");
+    assert_eq!(seated(&b.ctx, &b.ann.0).unwrap().computer, id);
+}
+
+#[tokio::test]
+async fn reset_with_no_computer_is_gone_and_a_busy_one_is_refused() {
+    let b = bed("reset-refused");
+    assert_eq!(b.computers.reset(&b.ctx, &b.ann.0).await.unwrap_err(), Problem::Gone);
+    let id = awake(&b, &b.ann.0).await;
+    let _hold = b.computers.hold(&b.ann.0, &id).unwrap();
+    let e = b.computers.reset(&b.ctx, &b.ann.0).await.unwrap_err();
+    assert!(e.sentence().contains("using this computer"), "{e}");
+    assert!(!b.mock.calls().contains(&"reset".to_owned()));
+}
+
 mod homes;
 mod jobs;
 mod login;

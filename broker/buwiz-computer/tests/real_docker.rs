@@ -1496,3 +1496,60 @@ async fn tunnel(m: &Machine, dir: &std::path::Path) {
     client.abort();
     let _ = p.screen_down(&m, "c2e_a").await;
 }
+
+/// A remake keeps what the named volumes keep and loses what runs; a reset loses the files too.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_remake_keeps_the_files_and_a_reset_wipes_them() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2r-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image.clone(), "c2r");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2remake".into(), dir: dir.clone(), network: buwiz_computer::Network::Tunnel }).await.unwrap();
+    let outcome = tokio::spawn({
+        let m = m.clone();
+        async move {
+            let p = DockerProvider::new(std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned()), "c2r");
+            remake_and_reset(&p, &m, &image).await
+        }
+    })
+    .await;
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2r-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn remake_and_reset(p: &DockerProvider, m: &buwiz_computer::Machine, image: &str) {
+    p.wake(m).await.unwrap();
+    let s = p.screen_up(m, "c2r_a").await.unwrap();
+    // a file in each kept volume, and a process that must not come back
+    p.write_file(m, "keep-workspace.txt", b"kept").await.unwrap();
+    docker(&["exec", "--user", "0", &name_of(m), "sh", "-c", "echo home > /home/box/keep-home.txt"]);
+    p.run(m, &s, "setsid sleep 297 >/dev/null 2>&1 </dev/null & echo go", 20_000).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_ne!(p.run(m, &s, "pgrep -cf 'sleep 29[7]'", 10_000).await.unwrap().stdout.trim(), "0", "it was running");
+
+    let name = name_of(m);
+    let container_id = docker(&["inspect", "-f", "{{.Id}}", &name]);
+    let image_id = docker(&["image", "inspect", "-f", "{{.Id}}", image]);
+    let bearer = |m: &buwiz_computer::Machine| m.egress.as_ref().and_then(|e| e.bearer.as_ref()).map(|b| b.expose().to_owned());
+
+    let m2 = p.remake(m, buwiz_computer::Network::Tunnel).await.unwrap();
+    assert_ne!(docker(&["inspect", "-f", "{{.Id}}", &name]), container_id, "the box was made again");
+    assert_eq!(docker(&["inspect", "-f", "{{.Image}}", &name]), image_id, "on the provider's current image");
+    assert_ne!(bearer(&m2), bearer(m), "a new tunnel bearer");
+
+    p.wake(&m2).await.unwrap();
+    let s2 = p.screen_up(&m2, "c2r_a").await.unwrap();
+    assert_eq!(p.read_file(&m2, "keep-workspace.txt").await.unwrap(), b"kept", "the workspace volume kept it");
+    assert_eq!(docker(&["exec", "--user", "0", &name, "cat", "/home/box/keep-home.txt"]), "home", "the home volume kept it");
+    assert_eq!(p.run(&m2, &s2, "pgrep -cf 'sleep 29[7]'", 10_000).await.unwrap().stdout.trim(), "0", "what ran on it ended");
+
+    p.reset(&m2).await.unwrap();
+    assert_eq!(p.power(&m2).await.unwrap(), Power::Absent);
+    p.wake(&m2).await.unwrap();
+    assert!(p.read_file(&m2, "keep-workspace.txt").await.is_err(), "the reset left the file");
+    assert!(docker(&["exec", "--user", "0", &name, "cat", "/home/box/keep-home.txt"]).is_empty(), "the reset left the home file");
+}
