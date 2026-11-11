@@ -163,7 +163,6 @@ impl BoxGuest {
         Ok(active_tab_of(&v))
     }
 
-    /// `GET /v1/info`'s `capabilities` (`Null` when it has none).
     /// `GET /v1/egress`: the browser's proxy and tunnel. The box names no site in it.
     pub async fn egress(&self) -> Result<Value> {
         parse(&self.send(Method::GET, &format!("{}/v1/egress", self.host), "application/json", None, PATIENCE).await?)
@@ -174,6 +173,7 @@ impl BoxGuest {
         parse(&self.send(Method::PUT, &format!("{}/v1/egress/rules", self.host), "application/json", Some(rules.to_string()), PATIENCE).await?)
     }
 
+    /// `GET /v1/info`'s `capabilities` (`Null` when it has none).
     pub async fn capabilities(&self) -> Result<Value> {
         Ok(self.info().await?.get("capabilities").cloned().unwrap_or(Value::Null))
     }
