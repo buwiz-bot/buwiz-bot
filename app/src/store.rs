@@ -7606,11 +7606,18 @@ impl Store {
         self.copy_text(&text);
     }
 
-    /// `deleteBot` — `POST /bot/delete`, then refresh threads + turns.
+    /// `deleteBot` — `POST /bot/delete`, then refresh threads + turns. Once
+    /// the broker says it's gone, the Bot is taken off every saved login.
     pub fn delete_bot(&'static self, id: String) {
         // detached: the question it answers closes as this starts, and its task with it
         spawn_detached(async move {
-            let _ = client::post("/bot/delete", serde_json::json!({"id": id})).await;
+            let gone = client::post("/bot/delete", serde_json::json!({"id": id.clone()})).await;
+            if gone.is_some_and(|v| v.get("ok").and_then(|o| o.as_bool()) == Some(true)) {
+                match crate::vault::vault().forget_bot(&id) {
+                    Ok(()) => crate::vault::changed(),
+                    Err(e) => log::warn!("rox: the deleted Bot's login shares weren't removed: {e}"),
+                }
+            }
             if let Some(v) = client::get("/threads").await {
                 self.set_threads(v);
             }

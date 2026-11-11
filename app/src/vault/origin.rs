@@ -153,6 +153,28 @@ fn port_of(raw: &str) -> Option<String> {
     (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())).then(|| port.to_owned())
 }
 
+/// The site `raw` names when it looks like one, as a person types a site:
+/// past a scheme and before a path, only host characters, and a host that is
+/// `localhost` (or under it), an IP address, or two or more dot-separated
+/// labels ending in letters. `hunter2` or `p@ss` is no site, so a password
+/// typed in its place is refused, never shown back.
+pub(crate) fn plausible_site(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    let rest = s.split_once("://").map_or(s, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if authority.is_empty() || !authority.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c)) {
+        return None;
+    }
+    let host = host_of(authority)?.trim_end_matches('.').to_ascii_lowercase();
+    let label_ok = |l: &str| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let labels: Vec<&str> = host.split('.').collect();
+    let named = labels.len() >= 2
+        && labels.iter().all(|l| label_ok(l))
+        && labels.last().is_some_and(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()));
+    let ok = host == "localhost" || (host.ends_with(".localhost") && labels.iter().all(|l| label_ok(l))) || host.parse::<IpAddr>().is_ok() || named;
+    ok.then(|| site_origin(s)).flatten()
+}
+
 /// Same site: exact host, and port on loopback and IP hosts.
 pub(crate) fn origins_match(left: &str, right: &str) -> bool {
     match (site_origin(left), site_origin(right)) {
@@ -210,6 +232,23 @@ mod tests {
         assert_eq!(site_origin("::1").as_deref(), Some("::1"));
         assert_eq!(site_origin("localhost").as_deref(), Some("localhost"));
         assert_eq!(site_origin("").as_deref(), None);
+    }
+
+    #[test]
+    fn only_what_looks_like_a_site_is_one_as_typed() {
+        for (raw, site) in [
+            ("shop.example", "shop.example"),
+            ("https://Shop.Example/login?x=1", "shop.example"),
+            ("localhost:3000", "localhost:3000"),
+            ("app.localhost", "app.localhost"),
+            ("127.0.0.1:8443", "127.0.0.1:8443"),
+            ("[::1]:8080", "[::1]:8080"),
+        ] {
+            assert_eq!(plausible_site(raw).as_deref(), Some(site), "{raw}");
+        }
+        for raw in ["hunter2", "fake-secret-marker-41c2", "p@ss.word", "pass.123", "a..b.com", "-x.com", "x.c", "", "pa ss.com", "hunter2!"] {
+            assert_eq!(plausible_site(raw), None, "{raw}");
+        }
     }
 
     #[test]

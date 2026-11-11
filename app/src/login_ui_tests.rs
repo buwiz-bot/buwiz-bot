@@ -3,7 +3,9 @@
 //!
 //! Each test runs in a child of its own (the store and the vault are one per process), with its
 //! own home, data folder and host token, and the vault's test store: `BUWIZ_NO_KEYCHAIN=1` and
-//! `BUWIZ_KEYSTORE=file:…`, so nothing here can reach the Keychain. The password is a fake marker.
+//! `BUWIZ_KEYSTORE=file:…`, so nothing here can reach the Keychain (each test that touches the
+//! vault asserts its store is the test store). The password is a fake marker, and every test's
+//! output is scanned for it.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -104,7 +106,7 @@ impl Network for Broker {
 
 fn threads() -> Value {
     json!({"list": [{"id": "t_nova", "title": "Nova", "bot": {"id": "nova", "name": "Nova", "shape": "blob", "color": "#1884FC"}}],
-        "bots": [{"id": "nova", "name": "Nova", "shape": "blob", "color": "#1884FC"}]})
+        "bots": [{"id": "nova", "name": "Nova", "shape": "blob", "color": "#1884FC"}, {"id": "orbit", "name": "Orbit", "shape": "blob", "color": "#FC8418"}]})
 }
 
 fn submitted(state: &str) -> (u16, Value) {
@@ -161,14 +163,24 @@ fn on<R: Send + 'static>(app: &mut Headless, f: impl FnOnce() -> R + Send + 'sta
 
 /// Nova's chat open, with the broker's login card in it.
 fn with_card(app: &mut Headless) {
-    on(app, || {
+    with_card_as(app, "uf_1");
+}
+
+/// [`with_card`], the card's id `id`.
+fn with_card_as(app: &mut Headless, id: &'static str) {
+    with_card_for(app, id, Some("nova"));
+}
+
+/// [`with_card_as`], the card's Bot id `bot` (none: a card that names only its Bot's name).
+fn with_card_for(app: &mut Headless, id: &'static str, bot: Option<&'static str>) {
+    on(app, move || {
         let st = store();
         st.mcp_loaded.set(true);
         st.set_threads(threads());
         st.active_id.set("t_nova".to_owned());
         st.turns_of.set("t_nova".to_owned());
         st.add_local_wire_turn(&json!({"role": "notice", "text": "Sign in to Shop", "notice": {
-            "kind": "user_form", "id": "uf_1", "bot": "nova", "botName": "Nova", "chat": "t_nova", "title": "Sign in to Shop", "state": "pending",
+            "kind": "user_form", "id": id, "bot": bot, "botName": "Nova", "chat": "t_nova", "title": "Sign in to Shop", "state": "pending",
             "takeoverNote": "You'd use its own browser on its own screen.",
             "form": {"title": "Sign in to Shop", "domain": "shop.example", "samePage": true, "submit": true, "fields": [
                 {"id": "email", "label": "Email", "type": "email", "required": true},
@@ -198,11 +210,34 @@ fn Stage() -> impl IntoElement {
             ("Chip vault".to_owned(), "/vault add shop.example".to_owned()),
             ("Chip network".to_owned(), "/network allow shop.example".to_owned()),
             ("Chip unknown".to_owned(), "  /nosuchcmd now".to_owned()),
+            ("Chip share all".to_owned(), "/vault share all".to_owned()),
+            ("Chip share".to_owned(), "/vault share shop.example with Orbit".to_owned()),
         ]))
         .child(dynamic(|| {
             let turns: Vec<_> = store().turns.get().into_iter().filter(|t| t.user_form.is_some()).collect();
             view().children(turns.into_iter().map(|t| crate::chat::turn_row(t, "t_nova").into_element())).into_element()
         }))
+        // Settings › Logins, while Settings is open on it (`/vault` opens it)
+        .child(dynamic(|| {
+            let st = store();
+            if st.settings_open.get() && st.settings_page.get() == "logins" {
+                view().w(px(860.0)).h(px(560.0)).child(crate::vault::settings_page()).into_element()
+            } else {
+                view().into_element()
+            }
+        }))
+}
+
+/// A login for shop.example as `user`, the fake marker its password, shared with `bots`.
+fn save_shared(user: &str, bots: &[&str]) -> crate::vault::SiteLogin {
+    assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+    let v = crate::vault::vault();
+    let row = v.save("shop.example", user, crate::vault::KIND_PASSWORD, &crate::vault::Secret::new(MARK)).unwrap();
+    for b in bots {
+        v.share(&row.id, b, true).unwrap();
+    }
+    crate::vault::changed();
+    v.get(&row.id).unwrap()
 }
 
 fn typed_login(app: &mut Headless) {
@@ -324,10 +359,10 @@ fn a_saved_login_is_asked_about_before_touch_id_and_refused_on_a_shared_computer
         return;
     }
     let (mut app, seen) = start(submitted("submitted"));
-    on(&mut app, || crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new(MARK)).unwrap());
+    on(&mut app, || save_shared("kid@example.com", &["nova"]));
     *seen.saved.lock().unwrap() = (200, json!({"ok": true, "usable": false, "code": "shared-computer", "message": "This computer is shared with other bots or people, so a saved login is not used on it."}));
     with_card(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 1);
     settle(&mut app);
     assert!(has_text(&app, "This computer is shared"), "{:?}", app.texts());
@@ -338,7 +373,7 @@ fn a_saved_login_is_asked_about_before_touch_id_and_refused_on_a_shared_computer
     settle(&mut app);
     app.press("Use a saved login");
     settle(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 2);
     settle(&mut app);
     app.press("Log in");
@@ -419,9 +454,9 @@ fn an_unproven_broker_gets_no_token_from_any_card_button() {
     }
     let (mut app, seen) = start(submitted("submitted"));
     seen.impostor.store(true, std::sync::atomic::Ordering::SeqCst);
-    on(&mut app, || crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new(MARK)).unwrap());
+    on(&mut app, || save_shared("kid@example.com", &["nova"]));
     with_card(&mut app);
-    app.press("Use");
+    app.press("Use kid@example.com");
     wait_for(&mut app, &seen, "/v1/host/prove", 1);
     settle(&mut app);
     assert!(has_text(&app, "so no saved login was used"), "{:?}", app.texts());
@@ -477,4 +512,661 @@ fn a_dismiss_after_the_login_was_typed_paints_it_typed() {
     wait_for(&mut app, &seen, DISMISS, 1);
     settle(&mut app);
     assert!(has_text(&app, "Submitted") && !has_text(&app, "Dismissed without filling"), "{:?}", app.texts());
+}
+
+fn asks(app: &mut Headless) -> usize {
+    on(app, crate::vault::owner_asks)
+}
+
+/// The person's own Enter on `line`.
+fn typed(app: &mut Headless, line: &str) {
+    let line = line.to_owned();
+    on(app, move || {
+        store().draft.set(line);
+        store().send();
+    });
+    settle(app);
+}
+
+fn no_mark(app: &Headless) {
+    assert!(!app.texts().iter().any(|t| t.contains(MARK)), "a secret is on screen: {:?}", app.texts());
+}
+
+/// A card for Nova lists only the logins shared with Nova; Share all offers every one, and only
+/// for the card's site. A login saved for another site is never listed.
+#[test]
+fn a_card_offers_only_the_logins_shared_with_its_bot_and_share_all_offers_every_one() {
+    if !in_child("a_card_offers_only_the_logins_shared_with_its_bot_and_share_all_offers_every_one") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || {
+        save_shared("kid@example.com", &["nova"]);
+        save_shared("ada@example.com", &["orbit"]);
+        save_shared("bob@example.com", &[]);
+        let v = crate::vault::vault();
+        let other = v.save("bank.example", "eve@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new(MARK)).unwrap();
+        v.share(&other.id, "nova", true).unwrap();
+    });
+    with_card(&mut app);
+    assert!(app.has("Use kid@example.com"), "{:?}", app.texts());
+    for who in ["ada@example.com", "bob@example.com", "eve@example.com"] {
+        assert!(!app.has(&format!("Use {who}")) && !has_text(&app, who), "{who} isn't Nova's: {:?}", app.texts());
+    }
+    on(&mut app, || {
+        crate::vault::vault().set_share_all(true).unwrap();
+        crate::vault::changed();
+    });
+    settle(&mut app);
+    for who in ["kid@example.com", "ada@example.com", "bob@example.com"] {
+        assert!(app.has(&format!("Use {who}")), "share all offers {who}: {:?}", app.texts());
+    }
+    assert!(!has_text(&app, "eve@example.com"), "never another site's: {:?}", app.texts());
+    on(&mut app, || {
+        crate::vault::vault().set_share_all(false).unwrap();
+        crate::vault::changed();
+    });
+    settle(&mut app);
+    assert!(app.has("Use kid@example.com") && !app.has("Use ada@example.com"), "{:?}", app.texts());
+    no_mark(&app);
+}
+
+/// A login that isn't shared with the card's Bot can't be used by its id: refused in the app
+/// before the broker is asked or Touch ID shows, and nothing is sent. A share taken back between
+/// the pick and Log in stops the submit too.
+#[test]
+fn an_unshared_logins_id_is_refused_before_touch_id_and_nothing_is_sent() {
+    if !in_child("an_unshared_logins_id_is_refused_before_touch_id_and_nothing_is_sent") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    let orbits = on(&mut app, || save_shared("kid@example.com", &["orbit"]));
+    with_card(&mut app);
+    assert!(!app.has("Use kid@example.com") && !has_text(&app, "kid@example.com"), "not listed: {:?}", app.texts());
+    let before = asks(&mut app);
+    // the card names the login by id alone
+    let id = orbits.id.clone();
+    on(&mut app, move || {
+        let target = crate::cards::user_form::CardTarget::Login { username_id: "email".into(), password_id: "password".into() };
+        crate::cards::user_form::use_saved("uf_1".into(), &id, target, "shop.example".into(), vec!["shop.example".into()], "nova".into(), "Nova");
+    });
+    settle(&mut app);
+    assert!(has_text(&app, "That saved login isn't shared with Nova, so it wasn't used."), "{:?}", app.texts());
+    assert_eq!(asks(&mut app), before, "no Touch ID");
+    assert!(heard(&seen, SAVED).is_empty() && heard(&seen, SUBMIT).is_empty(), "nothing sent");
+    // a login of the card's Bot, but for another site, by id: refused the same way
+    let other = on(&mut app, || {
+        let v = crate::vault::vault();
+        let r = v.save("bank.example", "eve@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new(MARK)).unwrap();
+        v.share(&r.id, "nova", true).unwrap();
+        r.id
+    });
+    on(&mut app, move || {
+        let target = crate::cards::user_form::CardTarget::Login { username_id: "email".into(), password_id: "password".into() };
+        crate::cards::user_form::use_saved("uf_1".into(), &other, target, "shop.example".into(), vec!["shop.example".into()], "nova".into(), "Nova");
+    });
+    settle(&mut app);
+    assert!(has_text(&app, "is for another site than this card's"), "{:?}", app.texts());
+    assert_eq!(asks(&mut app), before, "no Touch ID");
+
+    // shared with Nova, picked, then the share taken back before Log in: nothing goes
+    let id = orbits.id.clone();
+    on(&mut app, move || {
+        crate::vault::vault().share(&id, "nova", true).unwrap();
+        crate::vault::changed();
+    });
+    settle(&mut app);
+    app.press("Use kid@example.com");
+    wait_for(&mut app, &seen, SAVED, 1);
+    settle(&mut app);
+    assert_eq!(asks(&mut app), before + 1);
+    let id = orbits.id.clone();
+    on(&mut app, move || {
+        crate::vault::vault().share(&id, "nova", false).unwrap();
+    });
+    app.press("Log in");
+    settle(&mut app);
+    assert!(has_text(&app, "isn't shared with Nova"), "{:?}", app.texts());
+    assert!(heard(&seen, SUBMIT).is_empty(), "nothing sent");
+    assert!(!seen.log.lock().unwrap().iter().any(|(_, b, _)| b.to_string().contains(MARK)), "the password stayed in the app");
+    no_mark(&app);
+}
+
+/// Touch ID (the test owner) is asked on every use of a saved login: two picks on one card, and
+/// one on the next card, are three asks. Nothing read is kept between them.
+#[test]
+fn touch_id_is_asked_on_every_use_of_a_saved_login() {
+    if !in_child("touch_id_is_asked_on_every_use_of_a_saved_login") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &["nova"]));
+    with_card(&mut app);
+    let before = asks(&mut app);
+    app.press("Use kid@example.com");
+    wait_for(&mut app, &seen, SAVED, 1);
+    settle(&mut app);
+    assert_eq!(asks(&mut app), before + 1);
+    app.press("Type it by hand");
+    settle(&mut app);
+    app.press("Use a saved login");
+    settle(&mut app);
+    app.press("Use kid@example.com");
+    wait_for(&mut app, &seen, SAVED, 2);
+    settle(&mut app);
+    assert_eq!(asks(&mut app), before + 2, "asked again, not remembered");
+    app.press("Log in");
+    let sent = wait_for(&mut app, &seen, SUBMIT, 1);
+    assert_eq!(sent[0].0["savedLoginId"].as_str().map(|s| s.starts_with("sl_")), Some(true));
+    settle(&mut app);
+    with_card_as(&mut app, "uf_2");
+    app.press("Use kid@example.com");
+    wait_for(&mut app, &seen, SAVED, 3);
+    settle(&mut app);
+    assert_eq!(asks(&mut app), before + 3, "a new use, a new ask");
+    no_mark(&app);
+}
+
+/// Settings › Logins: Add (from `/vault add`), Edit with its secret fields empty, the share
+/// switches and Share all, and Delete. No secret is ever on screen or in a field shown back.
+#[test]
+fn the_logins_page_adds_edits_shares_and_deletes_and_never_shows_a_secret() {
+    if !in_child("the_logins_page_adds_edits_shares_and_deletes_and_never_shows_a_secret") {
+        return;
+    }
+    assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    typed(&mut app, "/vault add shop.example");
+    app.wait_for("Login site");
+    assert_eq!(app.value("Login site"), "shop.example", "the site from the line");
+    assert_eq!(app.value("Login password"), "");
+    app.type_text("Login user name", "kid@example.com");
+    app.type_text("Login password", MARK);
+    app.type_text("Login authenticator secret", "JBSWY3DPEHPK3PXP");
+    no_mark(&app);
+    app.press("Save login");
+    settle(&mut app);
+    assert!(!app.has("Login password"), "the form closed: {:?}", app.texts());
+    assert!(has_text(&app, "kid@example.com") && has_text(&app, "shop.example"), "{:?}", app.texts());
+    let row = on(&mut app, || crate::vault::vault().list().pop().unwrap());
+    assert!(row.shared_with.is_empty(), "added by hand: shared with no Bot");
+    assert!(on(&mut app, move || crate::vault::vault().has_code(&row)), "the authenticator secret is kept");
+    assert!(!app.has("Use kid@example.com"), "not offered to Nova yet");
+    no_mark(&app);
+
+    // a password typed into the Website field is refused, never saved or shown
+    app.press("Add a login");
+    app.wait_for("Login site");
+    app.type_text("Login site", MARK);
+    app.type_text("Login user name", "bob@example.com");
+    app.type_text("Login password", "fake-other-pw");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(has_text(&app, "Couldn't save the login: the website doesn't look like a site (like shop.example)."), "{:?}", app.texts());
+    assert_eq!(on(&mut app, || crate::vault::vault().list().len()), 1, "nothing saved");
+    app.press("Cancel");
+    settle(&mut app);
+    no_mark(&app);
+
+    // Edit: the secret fields are write-only
+    app.press("Edit");
+    app.wait_for("Login password");
+    assert_eq!(app.value("Login user name"), "kid@example.com");
+    assert_eq!(app.value("Login password"), "", "never shown back");
+    assert_eq!(app.value("Login authenticator secret"), "", "never shown back");
+    app.change("Login user name", "kid2@example.com");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(has_text(&app, "kid2@example.com"), "{:?}", app.texts());
+    let kept = on(&mut app, || {
+        let v = crate::vault::vault();
+        let r = v.list().pop().unwrap();
+        v.unlock(&r, "test") == crate::vault::Unlock::Secret(crate::vault::Secret::new(MARK))
+    });
+    assert!(kept, "an empty password field keeps the saved one");
+    no_mark(&app);
+
+    // Share: Nova's switch, then the card offers it; Share all
+    assert!(app.has("Share with Nova, off") && app.has("Share with Orbit, off"), "{:?}", app.texts());
+    app.press("Share with Nova, off");
+    settle(&mut app);
+    assert!(app.has("Share with Nova, on") && app.has("Share with Orbit, off"));
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.contains("nova")));
+    assert!(has_text(&app, crate::vault::SHARE_ALL_MEANS));
+    app.press("Share all, off");
+    settle(&mut app);
+    assert!(app.has("Share all, on") && on(&mut app, || crate::vault::vault().share_all()));
+    assert!(has_text(&app, "Share all is on, so every Bot is offered this login."));
+    app.press("Share all, on");
+    settle(&mut app);
+    assert!(app.has("Share all, off") && !on(&mut app, || crate::vault::vault().share_all()));
+
+    // a new site stops the shares, and the form says so before Save
+    app.press("Edit");
+    app.wait_for("Login site");
+    assert!(!has_text(&app, crate::vault::SITE_CHANGE_UNSHARES));
+    app.change("Login site", "shop3.example");
+    settle(&mut app);
+    assert!(has_text(&app, crate::vault::SITE_CHANGE_UNSHARES), "{:?}", app.texts());
+    app.press("Save login");
+    settle(&mut app);
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.is_empty()), "moved: shared with no Bot");
+    assert!(app.has("Share with Nova, off"));
+
+    // Delete, pressed twice
+    app.press("Delete");
+    settle(&mut app);
+    app.press("Delete — press again");
+    settle(&mut app);
+    assert!(has_text(&app, "No saved logins yet"), "{:?}", app.texts());
+    assert!(on(&mut app, || crate::vault::vault().list().is_empty()));
+    no_mark(&app);
+}
+
+/// Each `/vault` line, typed: the page, share and unshare with a Bot, asking which of two logins,
+/// share all on and off, and an add line carrying more than a site refused with nothing kept.
+/// Deleting a Bot takes its shares.
+#[test]
+fn each_vault_command_does_what_it_says_and_asks_which_of_two() {
+    if !in_child("each_vault_command_does_what_it_says_and_asks_which_of_two") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    let kid = on(&mut app, || save_shared("kid@example.com", &[]));
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    assert!(on(&mut app, || store().settings_open.get_untracked() && store().settings_page.get_untracked() == "logins"));
+    assert!(has_text(&app, "kid@example.com"), "{:?}", app.texts());
+    on(&mut app, || store().settings_open.set(false));
+
+    typed(&mut app, "/vault share shop.example with Nova");
+    let shared = |app: &mut Headless, bot: &'static str| on(app, move || crate::vault::vault().list().iter().filter(|r| r.shared_with.contains(bot)).map(|r| r.username.clone()).collect::<Vec<_>>());
+    assert_eq!(shared(&mut app, "nova"), ["kid@example.com"]);
+    assert!(has_text(&app, "Shared kid@example.com on shop.example with Nova."), "{:?}", app.texts());
+    assert!(app.has("Use kid@example.com"), "the open card offers it now: {:?}", app.texts());
+
+    // a second login for the site: asked which, nothing changed
+    on(&mut app, || save_shared("ada@example.com", &[]));
+    typed(&mut app, "/vault share shop.example with Orbit");
+    assert!(shared(&mut app, "orbit").is_empty(), "never a guess");
+    let (head, fills) = on(&mut app, || {
+        let st = store();
+        let fills: Vec<String> = st.pop_rows.get_untracked().iter().filter_map(|r| match &r.pick { crate::slash::Pick::Fill(t) => Some(t.clone()), _ => None }).collect();
+        (st.pop_head.get_untracked(), fills)
+    });
+    assert_eq!(head, "2 logins are saved for shop.example: which one?");
+    assert_eq!(fills, ["/vault share shop.example as ada@example.com with Orbit", "/vault share shop.example as kid@example.com with Orbit"]);
+    typed(&mut app, "/vault share shop.example as ada@example.com with Orbit");
+    assert_eq!(shared(&mut app, "orbit"), ["ada@example.com"]);
+
+    typed(&mut app, "/vault unshare shop.example as kid@example.com with Nova");
+    assert!(shared(&mut app, "nova").is_empty());
+    assert!(!app.has("Use kid@example.com"), "gone from Nova's card: {:?}", app.texts());
+
+    typed(&mut app, "/vault share all");
+    assert!(on(&mut app, || crate::vault::vault().share_all()));
+    assert!(app.has("Use kid@example.com") && app.has("Use ada@example.com"), "{:?}", app.texts());
+    typed(&mut app, "/vault share all off");
+    assert!(!on(&mut app, || crate::vault::vault().share_all()));
+
+    // no password from the line, and nothing of it kept or shown
+    typed(&mut app, &format!("/vault add shop2.example {MARK}"));
+    assert!(has_text(&app, "/vault add takes a site only"), "{:?}", app.texts());
+    assert!(!on(&mut app, || store().settings_open.get_untracked()), "no form opened");
+    assert!(on(&mut app, || store().draft.get_untracked().is_empty()));
+    no_mark(&app);
+    // a Bot or user name that matches nothing is never shown back
+    typed(&mut app, &format!("/vault share shop.example with {MARK}"));
+    assert!(has_text(&app, "No Bot has that name. Bots: Nova, Orbit."), "{:?}", app.texts());
+    typed(&mut app, &format!("/vault share shop.example as {MARK} with Nova"));
+    assert!(has_text(&app, "No login for shop.example has that user name."), "{:?}", app.texts());
+    no_mark(&app);
+
+    // a lone word that isn't a site: refused in fixed words, never in the site field or a toast
+    typed(&mut app, &format!("/vault add {MARK}"));
+    typed(&mut app, &format!("/vault share {MARK} with Nova"));
+    assert!(has_text(&app, "That doesn't look like a site"), "{:?}", app.texts());
+    assert!(!on(&mut app, || store().settings_open.get_untracked()), "no form opened");
+    no_mark(&app);
+    assert!(heard(&seen, "/chat").is_empty(), "none of it went to the AI");
+
+    // a deleted Bot's shares go with it
+    on(&mut app, || store().delete_bot("orbit".to_owned()));
+    wait_for(&mut app, &seen, "/bot/delete", 1);
+    settle(&mut app);
+    assert!(shared(&mut app, "orbit").is_empty(), "Orbit's share went with it");
+    let _ = kid;
+}
+
+/// A chip's `/vault share all` (or any `/vault` line) is words for the AI: it runs nothing.
+#[test]
+fn a_chip_carrying_a_vault_command_runs_nothing() {
+    if !in_child("a_chip_carrying_a_vault_command_runs_nothing") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    with_card(&mut app);
+    app.press("Chip share all");
+    let chat = wait_for(&mut app, &seen, "/chat", 1);
+    assert_eq!(chat[0].0["prompt"], "/vault share all");
+    app.press("Chip share");
+    let chat = wait_for(&mut app, &seen, "/chat", 2);
+    assert_eq!(chat[1].0["prompt"], "/vault share shop.example with Orbit");
+    settle(&mut app);
+    assert!(!on(&mut app, || crate::vault::vault().share_all()), "share all stays off");
+    assert!(on(&mut app, || crate::vault::vault().list().iter().all(|r| r.shared_with.is_empty())), "nothing shared");
+    on(&mut app, || {
+        let spec = crate::cards::choice::FormSpec::from_value(&json!({"title": "/vault share all", "fields": [{"id": "q", "label": "Pick", "options": ["Yes", "No"]}]})).expect("a form");
+        crate::cards::choice::choose("k", &spec, 0, 0);
+    });
+    wait_for(&mut app, &seen, "/chat", 3);
+    settle(&mut app);
+    assert!(!on(&mut app, || crate::vault::vault().share_all()), "nor from a choice card");
+}
+
+/// "Save this login?" on Nova's card keeps the login for Nova alone: shared with the Bot whose
+/// card typed it, and no other.
+#[test]
+fn a_login_saved_from_a_bots_card_is_shared_with_that_bot_only() {
+    if !in_child("a_login_saved_from_a_bots_card_is_shared_with_that_bot_only") {
+        return;
+    }
+    assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    with_card(&mut app);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, it's offered to Nova only. Share it with other Bots in Settings › Logins."), "{:?}", app.texts());
+    app.press("Save");
+    settle(&mut app);
+    assert!(has_text(&app, "Saved kid@example.com for shop.example"), "{:?}", app.texts());
+    let shares = on(&mut app, || crate::vault::vault().list().into_iter().map(|r| r.shared_with.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>());
+    assert_eq!(shares, [["nova".to_owned()]]);
+    no_mark(&app);
+}
+
+/// What was typed into the Logins form's password never outlives the form: closing Settings, or
+/// `/vault` with the form open, clears it, and a Save after keeps the saved password, not the
+/// one typed before.
+#[test]
+fn a_password_typed_into_the_logins_form_goes_when_settings_closes_or_vault_reopens_it() {
+    if !in_child("a_password_typed_into_the_logins_form_goes_when_settings_closes_or_vault_reopens_it") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    let saved = |app: &mut Headless| on(app, || {
+        let v = crate::vault::vault();
+        let r = v.list().pop().unwrap();
+        v.unlock(&r, "test") == crate::vault::Unlock::Secret(crate::vault::Secret::new("fake-old-pw"))
+    });
+    on(&mut app, || {
+        assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+        crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new("fake-old-pw")).unwrap();
+    });
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Edit");
+    app.wait_for("Login password");
+    app.type_text("Login password", MARK);
+    // Settings closes, and opens again
+    on(&mut app, || store().settings_open.set(false));
+    settle(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Edit");
+    app.wait_for("Login password");
+    assert_eq!(app.value("Login password"), "", "nothing held under an empty field");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(saved(&mut app), "the password typed before Settings closed wasn't saved");
+
+    // `/vault` with the form still open
+    app.press("Edit");
+    app.wait_for("Login password");
+    app.type_text("Login password", MARK);
+    typed(&mut app, "/vault");
+    assert_eq!(app.value("Login password"), "", "the field and what it holds are one");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(saved(&mut app), "the password typed before /vault wasn't saved");
+    no_mark(&app);
+}
+
+/// The offer's words are true for a login saved already with another Bot: Nova is added, and
+/// Orbit keeps it.
+#[test]
+fn the_save_offer_says_who_else_keeps_a_login_saved_already() {
+    if !in_child("the_save_offer_says_who_else_keeps_a_login_saved_already") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    on(&mut app, || save_shared("kid@example.com", &["orbit"]));
+    with_card(&mut app);
+    assert!(!app.has("Use kid@example.com"), "Orbit's, not Nova's");
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, it's offered to Nova, and still to Orbit."), "{:?}", app.texts());
+    app.press("Save");
+    settle(&mut app);
+    let shares = on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.into_iter().collect::<Vec<_>>());
+    assert_eq!(shares, ["nova", "orbit"]);
+    no_mark(&app);
+}
+
+/// A card that names its Bot only by name records no share, and says so.
+#[test]
+fn a_card_with_no_bot_id_saves_a_login_shared_with_no_bot_and_says_so() {
+    if !in_child("a_card_with_no_bot_id_saves_a_login_shared_with_no_bot_and_says_so") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    with_card_for(&mut app, "uf_1", None);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins."), "{:?}", app.texts());
+    assert!(!has_text(&app, "offered to Nova"), "{:?}", app.texts());
+    app.press("Save");
+    settle(&mut app);
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.is_empty()), "no share without an id");
+    no_mark(&app);
+}
+
+/// A vault change redraws only the card's saved-login part: the field being typed into is the
+/// same input, with what was typed in it.
+#[test]
+fn a_vault_change_leaves_the_cards_fields_and_typing_alone() {
+    if !in_child("a_vault_change_leaves_the_cards_fields_and_typing_alone") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    app.type_text("Email", "kid@exa");
+    let (email, password) = (app.view("Email"), app.view("Password"));
+    on(&mut app, || save_shared("kid@example.com", &["nova"]));
+    settle(&mut app);
+    assert!(app.has("Use kid@example.com"), "the strip shows the new login: {:?}", app.texts());
+    assert_eq!((app.view("Email"), app.view("Password")), (email, password), "the fields weren't rebuilt");
+    assert_eq!(app.value("Email"), "kid@exa", "what was typed stays");
+}
+
+/// Each of the card's controls is its own accessible button, named, and Log in says it's disabled
+/// until the form can be sent; the trust note is its own text. The picker's Use, and the save
+/// offer's Save and Not now, too.
+#[test]
+fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
+    if !in_child("the_cards_controls_are_accessible_buttons_each_with_its_label") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    on(&mut app, || save_shared("ada@example.com", &["nova"]));
+    with_card(&mut app);
+    let button = |app: &Headless, label: &str| app.access(label).0 == AccessibilityRole::Button;
+    for label in ["Log in", "Open the screen", "Dismiss", "Use ada@example.com", "Type it by hand"] {
+        assert!(button(&app, label), "{label} is a button: {:?}", app.access(label));
+    }
+    assert!(app.access("Log in").1, "Log in says it's disabled with nothing typed");
+    assert!(!app.access("Open the screen").1);
+    assert!(app.texts().contains(&"Open the screen: You'd use its own browser on its own screen."), "the note is its own text: {:?}", app.texts());
+    assert!(!app.texts().iter().any(|t| t.contains("Log in") && t.contains("Open the screen")), "{:?}", app.texts());
+    app.press("Type it by hand");
+    settle(&mut app);
+    typed_login(&mut app);
+    assert!(!app.access("Log in").1, "enabled once filled");
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    for label in ["Save", "Not now"] {
+        assert!(button(&app, label), "{label} is a button");
+    }
+    no_mark(&app);
+}
+
+/// A password being typed into the open form stays through Share all and Refresh, both in the
+/// field and in what Save keeps.
+#[test]
+fn a_password_being_typed_stays_through_share_all_and_refresh() {
+    if !in_child("a_password_being_typed_stays_through_share_all_and_refresh") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || {
+        assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+        crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new("fake-old-pw")).unwrap();
+    });
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Edit");
+    app.wait_for("Login password");
+    app.type_text("Login password", MARK);
+    app.press("Share all, off");
+    settle(&mut app);
+    app.press("Refresh");
+    settle(&mut app);
+    assert!(app.value("Login password") == MARK, "the field still holds what was typed");
+    app.press("Save login");
+    settle(&mut app);
+    let kept = on(&mut app, || {
+        let v = crate::vault::vault();
+        let r = v.list().pop().unwrap();
+        v.unlock(&r, "test") == crate::vault::Unlock::Secret(crate::vault::Secret::new(MARK))
+    });
+    assert!(kept, "Save kept what the field showed");
+    no_mark(&app);
+}
+
+/// Opening Settings › Logins, or building it again, reads the vault and says nothing changed: an
+/// open card's logins aren't read again for it. A write does.
+#[test]
+fn opening_the_logins_page_changes_no_revision_and_a_write_does() {
+    if !in_child("opening_the_logins_page_changes_no_revision_and_a_write_does") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    with_card(&mut app);
+    let rev = |app: &mut Headless| on(app, || crate::vault::revision().get_untracked());
+    let before = rev(&mut app);
+    typed(&mut app, "/vault");
+    on(&mut app, || store().settings_open.set(false));
+    settle(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Refresh");
+    settle(&mut app);
+    assert_eq!(rev(&mut app), before, "reads change nothing");
+    app.press("Share all, off");
+    settle(&mut app);
+    assert!(rev(&mut app) > before, "a write does");
+}
+
+/// With Share all on, the offer says every Bot is offered it, and who has it when Share all is off.
+#[test]
+fn the_save_offer_under_share_all_says_every_bot_is_offered_it() {
+    if !in_child("the_save_offer_under_share_all_says_every_bot_is_offered_it") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    on(&mut app, || crate::vault::vault().set_share_all(true).unwrap());
+    with_card(&mut app);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, every Bot is offered it while Share all is on; with Share all off, it's offered to Nova only."), "{:?}", app.texts());
+    assert!(!has_text(&app, "Share all is on, so every Bot"), "one sentence, not two: {:?}", app.texts());
+    no_mark(&app);
+}
+
+/// A `credential.offer_save` frame's offer says, and does, what the held login's card decided:
+/// shared with that card's Bot, or with none when it named no Bot id.
+#[test]
+fn a_wire_offer_agrees_with_the_held_login_on_who_gets_it() {
+    if !in_child("a_wire_offer_agrees_with_the_held_login_on_who_gets_it") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    let (words, shared) = on(&mut app, || {
+        let v = crate::vault::vault();
+        v.stash_pending("e_wire", crate::vault::PendingSave { origin: "shop.example".into(), username: "kid@example.com".into(), password: crate::vault::Secret::new(MARK), bot: "nova".into() });
+        let frame = json!({"name": "credential.offer_save", "value": {"origin": "shop.example", "username": "kid@example.com", "formEntryId": "e_wire"}});
+        let spec = crate::cards::save_login::SaveLoginSpec::from_wire(&frame).unwrap();
+        (crate::cards::save_login::saved_note(&spec), spec)
+    });
+    assert!(words.contains("Saved, it's offered to Nova only."), "{words}");
+    on(&mut app, move || crate::cards::save_login::save(&shared, "save-login-e_wire"));
+    settle(&mut app);
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.contains("nova")), "and the save shares it with Nova");
+    // a held login with no Bot id: none, said plainly
+    let words = on(&mut app, || {
+        crate::vault::vault().stash_pending("e_none", crate::vault::PendingSave { origin: "bank.example".into(), username: "kid@example.com".into(), password: crate::vault::Secret::new(MARK), bot: String::new() });
+        let frame = json!({"name": "credential.offer_save", "value": {"origin": "bank.example", "username": "kid@example.com", "formEntryId": "e_none"}});
+        crate::cards::save_login::saved_note(&crate::cards::save_login::SaveLoginSpec::from_wire(&frame).unwrap())
+    });
+    assert!(words.contains("Saved, it isn't shared with any Bot yet."), "{words}");
+    no_mark(&app);
+}
+
+/// Settings › Logins's controls are buttons and switches a screen reader can press, each with its
+/// own label, and a share switch says whether it's on.
+#[test]
+fn the_logins_pages_controls_are_buttons_and_switches_with_labels_and_state() {
+    if !in_child("the_logins_pages_controls_are_buttons_and_switches_with_labels_and_state") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    for label in ["Add a login", "Refresh", "Edit", "Delete", "Show", "kid@example.com on shop.example"] {
+        assert_eq!(app.access(label).0, AccessibilityRole::Button, "{label}");
+    }
+    for (label, on) in [("Share all, off", false), ("Share with Nova, off", false)] {
+        let (role, _, checked) = app.access(label);
+        assert_eq!((role, checked), (AccessibilityRole::Switch, Some(if on { nsh_core::Checked::True } else { nsh_core::Checked::False })), "{label}");
+    }
+    app.press("Share with Nova, off");
+    settle(&mut app);
+    assert_eq!(app.access("Share with Nova, on"), (AccessibilityRole::Switch, false, Some(nsh_core::Checked::True)));
+    app.press("Edit");
+    app.wait_for("Save login");
+    for label in ["Save login", "Cancel"] {
+        assert_eq!(app.access(label).0, AccessibilityRole::Button, "{label}");
+    }
 }

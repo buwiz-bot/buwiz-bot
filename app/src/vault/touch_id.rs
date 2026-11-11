@@ -34,8 +34,20 @@ pub(crate) trait OwnerGate: Send + Sync {
 /// Mac can't ask, so nothing saved is used.
 pub(crate) struct TestOwner;
 
+/// How many times a test build's owner was asked, so a test can see a gate on every use.
+#[cfg(test)]
+static ASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many times [`TestOwner`] was asked in this process.
+#[cfg(test)]
+pub(crate) fn owner_asks() -> usize {
+    ASKS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 impl OwnerGate for TestOwner {
     fn confirm(&self, _reason: &str) -> AuthOutcome {
+        #[cfg(test)]
+        ASKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         #[cfg(test)]
         match buwiz_protocol::env::var("BUWIZ_TEST_OWNER").as_deref() {
             Some("verified") => return AuthOutcome::Verified,
