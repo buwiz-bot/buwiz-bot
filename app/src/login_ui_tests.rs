@@ -1312,6 +1312,15 @@ fn the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outsi
     app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
     app.pump(Duration::from_millis(50));
     assert!(!app.has(PANEL));
+    // Escape with no focus coming back (it stayed where it was): a later Tab onto the ⓘ opens it
+    app.send(info, nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
+    app.press(INFO);
+    app.cancel("About this card, open");
+    app.pump(Duration::from_millis(300));
+    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
+    assert!(app.has(PANEL), "the next real focus isn't swallowed");
+    app.cancel("About this card, open");
     // a press outside closes it
     app.press(INFO);
     assert!(app.has(PANEL));

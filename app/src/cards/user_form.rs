@@ -1411,6 +1411,8 @@ const INFO_W: f32 = 320.0;
 /// the pointer to come back (on its way from the icon into the popover).
 const PEEK_MS: u64 = 300;
 const GRACE_MS: u64 = 250;
+/// How long after Escape the focus coming back to the ⓘ is taken for its refocus.
+const QUIET_MS: u64 = 150;
 /// The ⓘ's label.
 pub(crate) const INFO_LABEL: &str = "About this card";
 /// The popover's label.
@@ -1751,11 +1753,11 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
                         .child(text("i").text_size(px(9.5)).line_height(px(11.0)).font_weight(FontWeight::BOLD).text_color(theme::MUTED)),
                 ),
         )
-        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, open, over, quiet, close_later).into_element()))
+        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, open, over, quiet, owner, close_later).into_element()))
 }
 
 /// The ⓘ's popover: each heading and its short lines.
-fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal<Option<bool>>, over: Signal<bool>, quiet: Signal<bool>, close_later: impl Fn() + 'static) -> impl IntoElement {
+fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal<Option<bool>>, over: Signal<bool>, quiet: Signal<bool>, owner: Owner, close_later: impl Fn() + 'static) -> impl IntoElement {
     let focus = *anchor;
     let mut body = view()
         .label(INFO_PANEL)
@@ -1802,6 +1804,10 @@ fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal
             // back where the keyboard was, without that focus opening it again
             quiet.set(true);
             focus.focus();
+            // the refocus comes at once, if it comes: a later, real focus isn't swallowed
+            owner.run(|| {
+                set_timeout(std::time::Duration::from_millis(QUIET_MS), move || quiet.set(false));
+            });
         })
         .child(body)
 }
