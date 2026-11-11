@@ -866,6 +866,12 @@ pub trait Provider: Send + Sync {
         unsupported("take browsing rules")
     }
 
+    /// Whether a computer made now would get the browser's proxy (the image says it has one).
+    /// `None` when this provider can't tell, or never makes one.
+    async fn image_has_proxy(&self) -> Option<bool> {
+        None
+    }
+
     /// Where this Mac reaches the tunnel's WebSocket (`ws://127.0.0.1:port`), for an awake computer
     /// made with the tunnel: read for this request, like every port.
     async fn tunnel_url(&self, _machine: &Machine) -> Result<Option<String>> {

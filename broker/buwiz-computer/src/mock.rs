@@ -528,6 +528,10 @@ impl Provider for MockProvider {
         Ok(serde_json::json!({"applied": true}))
     }
 
+    async fn image_has_proxy(&self) -> Option<bool> {
+        Some(!self.no_proxy_image.load(Ordering::SeqCst))
+    }
+
     async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
         if !machine.egress.as_ref().is_some_and(|e| e.tunnel) || self.awake().is_err() {
             return Ok(None);

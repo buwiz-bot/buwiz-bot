@@ -1149,15 +1149,17 @@ impl Provider for DockerProvider {
         };
         // as it was made, by what Docker says its containers were made with, never by what's wanted;
         // with only its files left, as a new computer would be on this image, which the wake makes
-        // it again on: with the proxy only if the image has it. Not knowing is without: its rules
-        // are refused then, never claimed
+        // it again on: with the proxy only if the image has it. Docker not answering is no answer:
+        // the recovery fails, the record stays lost, and the next look asks again. A guess saved
+        // here would be its record for good
         let egress = match self.inspect(&name).await {
             Ok(found) => match found.egress {
                 Some(tunnel) => egress_for(if tunnel { Network::Tunnel } else { Network::Proxy })?,
                 None => None,
             },
             Err(Problem::Gone) if self.has_proxy().await => egress_for(spec.network)?,
-            Err(_) => None,
+            Err(Problem::Gone) => None,
+            Err(e) => return Err(e),
         };
         Ok(Some(Machine {
             provider: ProviderKind::Docker,
@@ -1263,6 +1265,10 @@ impl Provider for DockerProvider {
 
     async fn set_egress_rules(&self, machine: &Machine, rules: &serde_json::Value) -> Result<serde_json::Value> {
         self.guest(machine).await?.put_egress_rules(rules).await
+    }
+
+    async fn image_has_proxy(&self) -> Option<bool> {
+        Some(self.has_proxy().await)
     }
 
     async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
@@ -1561,6 +1567,15 @@ mod tests {
         std::fs::write(dir.join("state"), made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, r#""8790/tcp":[]"#)).unwrap();
         let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Plain }, None).await.unwrap().unwrap();
         assert!(m.egress.is_some_and(|e| e.tunnel && e.bearer.is_some()), "made with the tunnel, it keeps it, with a new bearer");
+    }
+
+    #[tokio::test]
+    async fn a_docker_that_doesnt_answer_fails_the_recovery_and_guesses_nothing() {
+        let dir = tmp("recover-down");
+        let body = "case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1;; image) echo 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        let got = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, None).await;
+        assert_eq!(got, Err(Problem::ProviderDown("Docker".into())), "no record is made from a guess");
     }
 
     #[tokio::test]
@@ -1935,7 +1950,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     #[tokio::test]
     async fn a_lost_record_is_found_by_its_label_and_nothing_is_removed() {
         let dir = tmp("recover");
-        let body = "case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) echo '[]'; exit 1;; esac";
+        let body = "case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) echo '[]'; echo 'Error response from daemon: No such container: c2-x' >&2; exit 1;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
         let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }, None).await.unwrap().unwrap();
         assert_eq!(m.reach, Reach::Container { name: "c2-x".into() });
@@ -2015,7 +2030,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     #[tokio::test]
     async fn files_with_no_container_left_are_found_by_name() {
         let dir = tmp("volumes");
-        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in inspect) echo '[]'; exit 1;; esac"));
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in inspect) echo '[]'; echo 'Error response from daemon: No such container: c2-x' >&2; exit 1;; esac"));
         let spec = Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() };
         let m = p.recover(&spec, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap().expect("its volume is there");
         assert_eq!(m.reach, Reach::Container { name: "c2-x".into() });
@@ -2029,7 +2044,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     #[tokio::test]
     async fn a_surviving_home_volume_counts_as_files() {
         let dir = tmp("home-only");
-        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error response from daemon: get c2-x-workspace: no such volume' >&2; exit 1;; esac;; esac";
+        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error response from daemon: get c2-x-workspace: no such volume' >&2; exit 1;; esac;; inspect*) echo '[]'; echo 'Error response from daemon: No such container: c2-x' >&2; exit 1;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
         let found = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap();
         assert!(found.is_some(), "its home would be swept as nothing left");
