@@ -326,14 +326,17 @@ pub fn should_press_return(form: &Form, typed: usize) -> bool {
 }
 
 /// What becomes of Return, as far as the card can say before anything is typed: `always` (by
-/// [`should_press_return`] whichever fields are filled, once any is), `never`, or `maybe` (it
-/// depends on which are). The card's words before the press come from this, not from a copy of
-/// the rule.
+/// [`should_press_return`] for every count of typed fields a submit can bring), `never`, or
+/// `maybe` (it depends on which are filled). A submit must fill the required fields the fill
+/// types, and may leave the rest empty, down to none at all when none is required (then nothing
+/// is typed and nothing pressed): so a card of optional fields is never `always`. The card's words
+/// before the press come from this, not from a copy of the rule.
 pub fn return_press(form: &Form) -> &'static str {
     let most = if form.types_only_first_field() { 1 } else { form.fields.len() };
-    let presses: Vec<bool> = (1..=most).map(|typed| should_press_return(form, typed)).collect();
+    let least = form.fields.iter().take(most).filter(|f| f.required).count();
+    let presses: Vec<bool> = (least..=most).map(|typed| should_press_return(form, typed)).collect();
     match (presses.iter().all(|p| *p), presses.iter().any(|p| *p)) {
-        _ if presses.is_empty() => "never",
+        _ if most == 0 => "never",
         (true, _) => "always",
         (false, false) => "never",
         (false, true) => "maybe",

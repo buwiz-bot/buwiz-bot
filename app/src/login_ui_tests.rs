@@ -1200,6 +1200,28 @@ fn a_card_whose_return_depends_on_what_is_filled_promises_nothing_before_the_pre
     assert!(app.texts().contains(&"Typed. Return is left to you, or to the AI once it has looked."), "and the broker's note beside it, whole: {:?}", app.texts());
 }
 
+/// A one-field card whose field is optional: the broker says Return may be pressed (a blank send
+/// types nothing), the card promises nothing, and it can't be sent blank: "Enter code".
+#[test]
+fn an_optional_one_field_card_cant_be_sent_blank_and_promises_no_return() {
+    if !in_child("an_optional_one_field_card_cant_be_sent_blank_and_promises_no_return") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    with_form(&mut app, json!({"title": "Code", "domain": "shop.example", "fields": [{"id": "otp", "label": "Code", "type": "otp"}]}), "maybe");
+    assert!(app.has("Fill in") && app.access("Fill in").1, "disabled while blank: {:?}", app.access("Fill in"));
+    assert_eq!(app.access_hint("Fill in"), "Enter code");
+    assert!(!has_text(&app, "then Return is pressed"), "{:?}", app.texts());
+    app.press("Fill in");
+    app.submit("Code");
+    settle(&mut app);
+    assert!(heard(&seen, SUBMIT).is_empty(), "nothing sent blank");
+    app.type_text("Code", "fake-code");
+    assert!(!app.access("Fill in").1);
+    app.press("Fill in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+}
+
 /// The ⓘ's popover holds the guidance: the pointer resting on the ⓘ peeks it and leaving closes
 /// it; the keyboard focus opens it and leaving closes it; a press pins it, and Escape or a press
 /// outside closes it.
