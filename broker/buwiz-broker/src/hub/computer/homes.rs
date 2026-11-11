@@ -879,7 +879,7 @@ impl Computers {
         if let Some(why) = provider.cant_keep_lost() {
             return Err(refusal("cant_keep", format!("{why} Nothing was deleted.")));
         }
-        let spec = buwiz_computer::Spec { id: id.to_owned(), dir: Self::dir(ctx, id) };
+        let spec = buwiz_computer::Spec { id: id.to_owned(), dir: Self::dir(ctx, id), network: super::network_for(kind) };
         let last = Self::reach_of(ctx, id)?;
         let found = match provider.recover(&spec, last.as_ref()).await {
             Ok(found) => found,

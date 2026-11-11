@@ -94,6 +94,7 @@ impl Provider for FakeCloud {
             viewer_password: Secret::new("pw-fake"),
             dir: spec.dir.clone(),
             link: None,
+            egress: None,
             seen: None,
         })
     }
@@ -246,7 +247,7 @@ async fn a_blank_secret_keeps_the_saved_one_and_a_new_one_reaches_the_live_provi
 async fn the_model_never_reads_a_saved_key() {
     let (b, _) = homes_bed("scrub");
     save_e2b(&b, GOOD).await.unwrap();
-    let machine = b.computers.homes.provider(&b.ctx, ProviderKind::E2b).create(&Spec { id: "cmp_00".into(), dir: b.ctx.data.join("x") }).await.unwrap();
+    let machine = b.computers.homes.provider(&b.ctx, ProviderKind::E2b).create(&Spec { id: "cmp_00".into(), dir: b.ctx.data.join("x"), network: Default::default() }).await.unwrap();
     assert_eq!(machine.scrub(&format!("key {GOOD} here")), "key [hidden] here");
 }
 
