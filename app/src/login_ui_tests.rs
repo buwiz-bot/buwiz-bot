@@ -1228,6 +1228,20 @@ fn the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outsi
     assert!(app.has(PANEL), "pinned");
     app.cancel("About this card, open");
     assert!(!app.has(PANEL), "Escape closes it");
+    // Escape gives the focus back to the icon: that focus doesn't open it again
+    let info = app.view(INFO);
+    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(400));
+    assert!(!app.has(PANEL), "still closed after the focus came back");
+    // and the next time the focus comes, it opens as before
+    app.send(info, nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
+    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
+    assert!(app.has(PANEL), "a later focus opens it");
+    app.cancel("About this card, open");
+    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
+    assert!(!app.has(PANEL));
     // a press outside closes it
     app.press(INFO);
     assert!(app.has(PANEL));

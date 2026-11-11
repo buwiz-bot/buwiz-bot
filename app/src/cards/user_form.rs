@@ -1585,6 +1585,8 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
     let open: Signal<Option<bool>> = signal(None);
     let over = signal(false);
     let hov = signal(false);
+    // the focus is coming back to the icon from the popover's Escape: it doesn't open it again
+    let quiet = signal(false);
     let anchor = element_ref();
     let owner = Owner::current();
     let close_later = move || {
@@ -1628,11 +1630,15 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
                     close_later();
                 })
                 .on_focus(move || {
+                    if quiet.get_untracked() {
+                        return quiet.set(false);
+                    }
                     if open.get_untracked().is_none() {
                         open.set(Some(false));
                     }
                 })
                 .on_blur(move || {
+                    quiet.set(false);
                     if open.get_untracked() == Some(false) {
                         open.set(None);
                     }
@@ -1650,11 +1656,11 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
                         .child(text("i").text_size(px(9.5)).line_height(px(11.0)).font_weight(FontWeight::BOLD).text_color(theme::MUTED)),
                 ),
         )
-        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, open, over, close_later).into_element()))
+        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, open, over, quiet, close_later).into_element()))
 }
 
 /// The ⓘ's popover: each heading and its short lines.
-fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal<Option<bool>>, over: Signal<bool>, close_later: impl Fn() + 'static) -> impl IntoElement {
+fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal<Option<bool>>, over: Signal<bool>, quiet: Signal<bool>, close_later: impl Fn() + 'static) -> impl IntoElement {
     let focus = *anchor;
     let mut body = view()
         .label(INFO_PANEL)
@@ -1695,7 +1701,8 @@ fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal
         .on_press_outside(move |_: &Point<Points>| open.set(None))
         .on_cancel(move || {
             open.set(None);
-            // back where the keyboard was
+            // back where the keyboard was, without that focus opening it again
+            quiet.set(true);
             focus.focus();
         })
         .child(body)
