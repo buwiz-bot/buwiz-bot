@@ -817,7 +817,7 @@ pub(crate) fn pane() -> impl IntoElement {
         if pane_signal().with_untracked(|p| p.bot != b.id) {
             pane_signal().set(Pane { bot: b.id.clone(), ..Pane::default() });
             NET_ASKED.with(|t| t.set(None));
-            crate::network::show(&b.id, crate::network::Net::default());
+            crate::network::target(&b.id);
             // what was typed and agreed to was for the Bot this tab was on
             form().clear();
             SETUP.with(|s| s.set(false));

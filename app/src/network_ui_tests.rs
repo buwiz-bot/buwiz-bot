@@ -10,7 +10,7 @@ use nsh_core::prelude::*;
 use nsh_engine::{App, EngineConfig};
 use serde_json::json;
 
-use crate::network::{show, Net};
+use crate::network::{show, target, Net};
 
 const CHILD: &str = "BUWIZ_NETWORK_UI_TEST";
 
@@ -30,15 +30,20 @@ fn in_child(name: &str) -> bool {
 }
 
 fn local(tunnel: bool, client: &str) -> Net {
+    let mut notes = vec!["These are this computer's rules: every Bot on it (Ann, Bea) gets them.", "These rules cover the browser on this computer's screens. Commands the agent runs aren't covered: the network wall still applies to them."];
+    if tunnel && client != "attached" {
+        notes.insert(0, "The tunnel is on and this Mac's side isn't attached yet, so the browser on this computer can't reach any site until it is.");
+    }
     Net::parse(&json!({"ok": true, "state": "computer", "supported": true, "tunnelMade": true, "tunnel": tunnel, "mode": "all", "allow": [], "block": ["facebook.com"], "awake": true,
-        "client": {"state": client}, "counts": {"direct": 4, "blocked": 2},
-        "notes": ["These are this computer's rules: every Bot on it (Ann, Bea) gets them.", "These rules cover the browser on this computer's screens. Commands the agent runs aren't covered: the network wall still applies to them."]}))
+        "client": {"state": client}, "counts": {"direct": 4, "blocked": 2}, "notes": notes}))
 }
 
 #[component]
 fn Section() -> impl IntoElement {
     view()
         .size_full()
+        .child(view().label("pane on b1").w(px(40.0)).h(px(20.0)).on_press(|| target("b1")))
+        .child(view().label("pane on b2").w(px(40.0)).h(px(20.0)).on_press(|| target("b2")))
         .child(view().label("say local").w(px(40.0)).h(px(20.0)).on_press(|| show("b1", local(false, "off"))))
         .child(view().label("say tunnel down").w(px(40.0)).h(px(20.0)).on_press(|| show("b1", local(true, "attaching"))))
         .child(view().label("say cloud").w(px(40.0)).h(px(20.0)).on_press(|| {
@@ -65,6 +70,7 @@ fn the_section_says_whose_rules_they_are_what_they_cover_and_has_real_controls()
         return;
     }
     let mut app = start();
+    app.press("pane on b1");
     app.press("say local");
     assert!(shows(&mut app, "Tunnel off: the computer dials sites itself."), "{:?}", app.texts());
     assert!(shows(&mut app, "every Bot on it (Ann, Bea) gets them"), "{:?}", app.texts());
@@ -78,8 +84,15 @@ fn the_section_says_whose_rules_they_are_what_they_cover_and_has_real_controls()
         assert_eq!(app.access(button).0, AccessibilityRole::Button, "{button}");
     }
     app.press("say tunnel down");
-    assert!(shows(&mut app, "can't reach any site until it is"), "{:?}", app.texts());
+    app.pump(Duration::from_millis(60));
+    let said: Vec<String> = app.texts().into_iter().filter(|t| t.contains("can't reach any site")).map(str::to_owned).collect();
+    assert_eq!(said.len(), 1, "said once: {said:?}");
     assert_eq!(app.access("Tunnel through this Mac, on").2, Some(nsh_core::Checked::True));
+    // an answer for b1 that lands after the pane moved to b2 is dropped, not shown on b2's pane
+    app.press("pane on b2");
+    app.press("say local");
+    assert!(!shows(&mut app, "facebook.com"), "{:?}", app.texts());
+    app.press("pane on b1");
     app.press("say cloud");
     assert!(shows(&mut app, "browses from its provider's network"), "{:?}", app.texts());
     assert!(!app.has("Tunnel through this Mac, off") && !app.has("Tunnel through this Mac, on"), "no dead switch on a cloud computer");

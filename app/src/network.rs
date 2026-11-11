@@ -123,11 +123,10 @@ impl Net {
         if !self.tunnel {
             return "Tunnel off: the computer dials sites itself.".to_owned();
         }
+        // not attached, the broker's note says why and what it means, once
         match self.client.as_str() {
             "attached" => "Tunnel on: the browser goes out through this Mac.".to_owned(),
-            "refused" => "Tunnel on, and the computer refused this Mac's side, so its browser reaches no site. Turn the tunnel off and on again; if it stays refused, make the computer again.".to_owned(),
-            _ if !self.awake => "Tunnel on: it attaches when the computer wakes.".to_owned(),
-            _ => "Tunnel on, and this Mac's side isn't attached yet, so the browser on this computer can't reach any site until it is.".to_owned(),
+            _ => "Tunnel on.".to_owned(),
         }
     }
 
@@ -201,18 +200,7 @@ pub(crate) fn run(rest: &str) {
                 None => say("Buwiz Bot's broker isn't answering.".to_owned()),
             }
         }),
-        Line::Change { op, value, all } => spawn_detached(async move {
-            let said = match client::post_status(&path(&bot.id), json!({"op": op, "value": value, "all": all})).await {
-                Some((_, v)) => {
-                    if let Some(n) = v.get("network") {
-                        show(&bot.id, Net::parse(n));
-                    }
-                    reply_words(&v)
-                }
-                None => NO_BROKER.to_owned(),
-            };
-            say(said);
-        }),
+        Line::Change { op, value, all } => spawn_detached(async move { say(post_change(&bot.id, op, value, all).await) }),
     }
 }
 
@@ -242,12 +230,40 @@ thread_local! {
     static SECTION: (Signal<String>, Signal<Net>, Signal<String>) = Owner::detached().run(|| (signal(String::new()), signal(Net::default()), signal(String::new())));
 }
 
-/// What the section shows for `bot`.
+/// The Bot the Computer tab's pane shows, set by the pane alone: the section's Bot, whose computer
+/// a press there changes. What it showed for the last one goes.
+pub(crate) fn target(bot: &str) {
+    SECTION.with(|(who, n, t)| {
+        if who.get_untracked() != bot {
+            who.set(bot.to_owned());
+            n.set(Net::default());
+            t.set(String::new());
+        }
+    });
+}
+
+/// What the broker said of `bot`'s computer, shown only while the pane still shows `bot`: an
+/// answer that comes back after the person moved to another Bot is dropped.
 pub(crate) fn show(bot: &str, net: Net) {
     SECTION.with(|(who, n, _)| {
-        who.set(bot.to_owned());
-        n.set(net);
+        if who.get_untracked() == bot {
+            n.set(net);
+        }
     });
+}
+
+/// One change to `bot`'s computer (with `all`, every computer): the reply in words, and the
+/// section updated if it still shows `bot`.
+async fn post_change(bot: &str, op: &'static str, value: String, all: bool) -> String {
+    match client::post_status(&path(bot), json!({"op": op, "value": value, "all": all})).await {
+        Some((_, v)) => {
+            if let Some(n) = v.get("network") {
+                show(bot, Net::parse(n));
+            }
+            reply_words(&v)
+        }
+        None => NO_BROKER.to_owned(),
+    }
 }
 
 /// Asks the broker again for `bot`'s computer, for the section.
@@ -259,20 +275,10 @@ pub(crate) fn refresh(bot: String) {
     });
 }
 
+/// A press in the section: to the Bot the pane shows at this moment.
 fn change(op: &'static str, value: String) {
     let Some(bot) = SECTION.with(|(who, _, _)| Some(who.get_untracked()).filter(|b| !b.is_empty())) else { return };
-    spawn_detached(async move {
-        let said = match client::post_status(&path(&bot), json!({"op": op, "value": value, "all": false})).await {
-            Some((_, v)) => {
-                if let Some(n) = v.get("network") {
-                    show(&bot, Net::parse(n));
-                }
-                reply_words(&v)
-            }
-            None => NO_BROKER.to_owned(),
-        };
-        crate::toast::show(said);
-    });
+    spawn_detached(async move { crate::toast::show(post_change(&bot, op, value, false).await) });
 }
 
 fn button(label: String, words: &str, press: impl Fn() + 'static) -> impl IntoElement {
@@ -401,11 +407,11 @@ mod tests {
     fn a_status_says_where_it_stands_and_what_it_doesnt_cover() {
         let v = json!({"ok": true, "state": "computer", "supported": true, "tunnelMade": true, "tunnel": true, "mode": "listed", "allow": ["shop.example"], "block": [], "awake": true,
             "client": {"state": "retrying", "lastError": "couldn't attach: connection refused"}, "counts": {"direct": 2, "tunneled": 3, "blocked": 1, "not_listed": 4},
-            "notes": ["These are this computer's rules: every Bot on it (Ann, Bea) gets them.", "These rules cover the browser on this computer's screens. Commands the agent runs aren't covered: the network wall still applies to them."]});
+            "notes": ["The tunnel is on and this Mac's side isn't attached yet, so the browser on this computer can't reach any site until it is.", "These are this computer's rules: every Bot on it (Ann, Bea) gets them.", "These rules cover the browser on this computer's screens. Commands the agent runs aren't covered: the network wall still applies to them."]});
         let n = Net::parse(&v);
         assert_eq!(n.counts, Some((5, 5)));
         let said = n.summary();
-        assert!(said.contains("can't reach any site until it is"), "{said}");
+        assert_eq!(said.matches("can't reach any site").count(), 1, "the warning is said once: {said}");
         assert!(said.contains("Only allowed sites load") && said.contains("Allowed: shop.example. Blocked: none."), "{said}");
         assert!(said.contains("every Bot on it (Ann, Bea)") && said.contains("Commands the agent runs aren't covered"), "{said}");
         let cloud = Net::parse(&json!({"state": "computer", "supported": false, "why": "This computer browses from its provider's network: browsing rules and the tunnel apply to computers on this Mac."}));
