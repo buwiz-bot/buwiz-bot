@@ -103,9 +103,11 @@ fn watch_settings(u: Ui) {
 }
 
 /// Reads the table again.
+/// Reads the table again. An open form keeps what was typed into it: a reload comes from an
+/// action on this page (Share all, Refresh, a save); the form forgets only when it closes, when
+/// Settings closes, or when `/vault` opens the page again.
 fn reload() {
     let u = ui();
-    forget_typed();
     let rows = vault().list();
     if !rows.iter().any(|r| r.id == u.sel.get_untracked()) {
         u.sel.set(rows.first().map(|r| r.id.clone()).unwrap_or_default());

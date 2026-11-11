@@ -1028,3 +1028,36 @@ fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
     }
     no_mark(&app);
 }
+
+/// A password being typed into the open form stays through Share all and Refresh, both in the
+/// field and in what Save keeps.
+#[test]
+fn a_password_being_typed_stays_through_share_all_and_refresh() {
+    if !in_child("a_password_being_typed_stays_through_share_all_and_refresh") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || {
+        assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+        crate::vault::vault().save("shop.example", "kid@example.com", crate::vault::KIND_PASSWORD, &crate::vault::Secret::new("fake-old-pw")).unwrap();
+    });
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Edit");
+    app.wait_for("Login password");
+    app.type_text("Login password", MARK);
+    app.press("Share all, off");
+    settle(&mut app);
+    app.press("Refresh");
+    settle(&mut app);
+    assert!(app.value("Login password") == MARK, "the field still holds what was typed");
+    app.press("Save login");
+    settle(&mut app);
+    let kept = on(&mut app, || {
+        let v = crate::vault::vault();
+        let r = v.list().pop().unwrap();
+        v.unlock(&r, "test") == crate::vault::Unlock::Secret(crate::vault::Secret::new(MARK))
+    });
+    assert!(kept, "Save kept what the field showed");
+    no_mark(&app);
+}
