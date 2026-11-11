@@ -394,6 +394,7 @@ fn list_row(r: SiteLogin) -> AnyElement {
         .gap(px(1.0))
         .bg(move || if u.sel.get() == id { theme::ACTIVE } else { AdaptiveColor::TRANSPARENT })
         .on_press(move || pick(id2.clone()))
+        .role(AccessibilityRole::Button)
         .label(r.label.clone())
         .child(
             text(r.username.clone())
@@ -412,18 +413,19 @@ fn list_row(r: SiteLogin) -> AnyElement {
 }
 
 /// A switch: its words and its accessible name say where it stands ("Share all, on").
+/// A screen reader gets it as a switch, checked when on, under the same name.
 fn switch(name: String, on: bool, press: impl Fn() + 'static) -> impl IntoElement {
     let word = if on { "on" } else { "off" };
-    text(if on { "On" } else { "Off" })
-        .text_size(px(12.0))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(if on { theme::ON_FILL } else { theme::MUTED })
+    view()
+        .role(AccessibilityRole::Switch)
+        .label(crate::tools::switch_name(&name, word))
+        .accessibility_state(AccessibilityState { checked: Some(if on { nsh_core::Checked::True } else { nsh_core::Checked::False }), ..Default::default() })
         .px_2()
         .py_1()
         .rounded(px(999.0))
         .bg(if on { theme::ACCENT } else { theme::HOVER })
         .on_press(press)
-        .label(crate::tools::switch_name(&name, word))
+        .child(text(if on { "On" } else { "Off" }).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(if on { theme::ON_FILL } else { theme::MUTED }))
 }
 
 /// What Share all does, in a sentence, beside its switch.
@@ -681,15 +683,12 @@ fn kv(k: &'static str, v: String) -> impl IntoElement {
         )
 }
 
+/// A screen reader gets it as a button, under its words.
 fn small_btn(label: &'static str, danger: bool, on: impl Fn() + 'static) -> impl IntoElement {
     let hov = signal(false);
-    text(label)
-        .text_size(px(12.0))
-        .text_color(move || match (hov.get(), danger) {
-            (true, true) => theme::DOWN,
-            (true, false) => theme::TEXT,
-            _ => theme::MUTED,
-        })
+    view()
+        .role(AccessibilityRole::Button)
+        .label(label)
         .px_2()
         .py_1()
         .rounded(px(6.0))
@@ -697,5 +696,9 @@ fn small_btn(label: &'static str, danger: bool, on: impl Fn() + 'static) -> impl
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(on)
-        .label(label)
+        .child(text(label).text_size(px(12.0)).text_color(move || match (hov.get(), danger) {
+            (true, true) => theme::DOWN,
+            (true, false) => theme::TEXT,
+            _ => theme::MUTED,
+        }))
 }

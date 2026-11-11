@@ -1135,3 +1135,31 @@ fn a_wire_offer_agrees_with_the_held_login_on_who_gets_it() {
     assert!(words.contains("Saved, it isn't shared with any Bot yet."), "{words}");
     no_mark(&app);
 }
+
+/// Settings › Logins's controls are buttons and switches a screen reader can press, each with its
+/// own label, and a share switch says whether it's on.
+#[test]
+fn the_logins_pages_controls_are_buttons_and_switches_with_labels_and_state() {
+    if !in_child("the_logins_pages_controls_are_buttons_and_switches_with_labels_and_state") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    with_card(&mut app);
+    typed(&mut app, "/vault");
+    for label in ["Add a login", "Refresh", "Edit", "Delete", "Show", "kid@example.com on shop.example"] {
+        assert_eq!(app.access(label).0, AccessibilityRole::Button, "{label}");
+    }
+    for (label, on) in [("Share all, off", false), ("Share with Nova, off", false)] {
+        let (role, _, checked) = app.access(label);
+        assert_eq!((role, checked), (AccessibilityRole::Switch, Some(if on { nsh_core::Checked::True } else { nsh_core::Checked::False })), "{label}");
+    }
+    app.press("Share with Nova, off");
+    settle(&mut app);
+    assert_eq!(app.access("Share with Nova, on"), (AccessibilityRole::Switch, false, Some(nsh_core::Checked::True)));
+    app.press("Edit");
+    app.wait_for("Save login");
+    for label in ["Save login", "Cancel"] {
+        assert_eq!(app.access(label).0, AccessibilityRole::Button, "{label}");
+    }
+}

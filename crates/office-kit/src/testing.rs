@@ -49,7 +49,7 @@ pub struct Headless {
     pub styles: HashMap<NodeId, nsh_core::ViewStyle>,
     pub parents: HashMap<NodeId, NodeId>,
     /// Each view's accessibility role and whether it says it's disabled, as last sent.
-    access: HashMap<NodeId, (AccessibilityRole, bool)>,
+    access: HashMap<NodeId, (AccessibilityRole, bool, Option<nsh_core::Checked>)>,
     /// The file requests (open dialogs) not answered yet.
     files: Vec<u32>,
 }
@@ -104,7 +104,7 @@ impl Headless {
                     if let Some(l) = props.accessibility.label.as_deref() {
                         self.labels.push((*id, l.to_owned()));
                     }
-                    self.access.insert(*id, (props.accessibility.role, props.accessibility.state.disabled));
+                    self.access.insert(*id, (props.accessibility.role, props.accessibility.state.disabled, props.accessibility.state.checked));
                 }
                 MountItem::Text { id, text, .. } => {
                     self.texts.insert(*id, text.text.clone());
@@ -347,9 +347,9 @@ impl Headless {
         }
     }
 
-    /// The accessibility role and disabled state of the view labelled `label`, as a screen
-    /// reader gets them.
-    pub fn access(&self, label: &str) -> (AccessibilityRole, bool) {
+    /// The accessibility role, disabled state and checked state of the view labelled `label`, as
+    /// a screen reader gets them.
+    pub fn access(&self, label: &str) -> (AccessibilityRole, bool, Option<nsh_core::Checked>) {
         let id = self.view(label);
         self.access.get(&id).copied().unwrap_or_default()
     }
