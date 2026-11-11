@@ -1249,10 +1249,22 @@ fn the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outsi
     app.send(overlay, nsh_core::EventKind::PressOutside, nsh_core::EventPayload::None);
     app.pump(Duration::from_millis(50));
     assert!(!app.has(PANEL), "a press outside closes it");
-    // and the press on the icon again closes a pinned one
+    // a press on the icon, as the platform gives it: the finger goes down on the ⓘ (the core
+    // sends press-outside for a touch whose path doesn't hold the anchor), then its press. Down
+    // on the ⓘ is no press outside, so the press alone closes a pinned popover
     app.press(INFO);
+    assert!(app.has(PANEL));
+    app.touch(INFO, nsh_core::TouchPhase::Start, 2.0, 2.0);
+    assert!(app.has(PANEL), "a finger down on the ⓘ isn't outside");
     app.press(INFO);
-    assert!(!app.has(PANEL));
+    assert!(!app.has(PANEL), "the press on the ⓘ closes it");
+    app.pump(Duration::from_millis(400));
+    assert!(!app.has(PANEL), "and nothing opens it again");
+    // a finger down elsewhere is outside: the core's press-outside closes it
+    app.press(INFO);
+    app.touch("job", nsh_core::TouchPhase::Start, 2.0, 2.0);
+    assert!(!app.has(PANEL), "a press elsewhere closes it");
+    app.touch("job", nsh_core::TouchPhase::End, 2.0, 2.0);
     assert!(seen.log.lock().unwrap().iter().all(|(p, _, _)| !p.starts_with("/v1/host/computer/login/")), "the ⓘ answers nothing");
 }
 

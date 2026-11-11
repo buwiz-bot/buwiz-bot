@@ -1698,6 +1698,9 @@ fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal
         .align(nsh_core::overlay::Align::End)
         .offset(px(6.0))
         .label("About this card, open")
+        // the core doesn't count a press on the anchor (or in it) as outside (`overlay_touches`
+        // looks for the anchor on the touch's path), so a press on the ⓘ is the ⓘ's alone: it
+        // closes a pinned popover rather than closing and pinning it again
         .on_press_outside(move |_: &Point<Points>| open.set(None))
         .on_cancel(move || {
             open.set(None);
