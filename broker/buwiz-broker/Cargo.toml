@@ -1,6 +1,6 @@
 [package]
 name = "buwiz-broker"
-version = "0.1.3"
+version = "0.1.4"
 license = "Apache-2.0"
 edition = "2021"
 description = "The Buwiz Bot broker: the front door on the broker's port, with the Node broker behind it until each route moves to Rust"
