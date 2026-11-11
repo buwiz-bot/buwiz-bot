@@ -32,10 +32,12 @@ enum Line<'a> {
     Say(&'static str),
 }
 
-/// `text` split at the last ` <word> ` (any case): what's before and after.
+/// `text` split at the first ` <word> ` (any case): what's before and after. A site has no
+/// spaces, so the first ` with ` past it (and past `as <user>`) starts the Bot's name, which may
+/// hold ` with ` itself.
 fn split_word<'a>(text: &'a str, word: &str) -> Option<(&'a str, &'a str)> {
     let lower = text.to_ascii_lowercase();
-    let at = lower.rfind(&format!(" {word} "))?;
+    let at = lower.find(&format!(" {word} "))?;
     Some((text[..at].trim(), text[at + word.len() + 2..].trim()))
 }
 
@@ -305,6 +307,11 @@ mod tests {
             }
         }
         assert!(matches!(outcome(parse(" share shop.example as nobody with Nova"), &rows, &bots, false), Outcome::Say(ref s) if s == "No login for shop.example has that user name."));
+        // a Bot whose name holds " with "
+        let ears = [bot("nova", "Nova"), bot("ears", "Bot with Ears")];
+        assert_eq!(parse(" share shop.example with Bot with Ears"), Line::Share { on: true, site: "shop.example", user: None, bot: "Bot with Ears" });
+        assert_eq!(parse(" share shop.example as kid with Bot with Ears"), Line::Share { on: true, site: "shop.example", user: Some("kid"), bot: "Bot with Ears" });
+        assert!(matches!(outcome(parse(" share shop.example with Bot with Ears"), &rows, &ears, false), Outcome::Share { ref bot, .. } if bot == "ears"));
         let twins = [bot("a", "Nova"), bot("b", "nova")];
         assert!(matches!(outcome(parse(" share shop.example with Nova"), &rows, &twins, false), Outcome::Say(ref s) if s.starts_with("More than one Bot")));
         // unsharing under share-all says the Bot is still offered it
