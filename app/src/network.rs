@@ -86,7 +86,6 @@ pub(crate) struct Net {
     pub client_error: String,
     pub awake: bool,
     pub in_force: Option<bool>,
-    pub can_browse: Option<bool>,
     /// what the computer's proxy did, as counts: (loaded, blocked)
     pub counts: Option<(u64, u64)>,
     pub notes: Vec<String>,
@@ -112,7 +111,6 @@ impl Net {
             client_error: v.pointer("/client/lastError").and_then(Value::as_str).unwrap_or_default().to_owned(),
             awake: b("awake"),
             in_force: v.get("inForce").and_then(Value::as_bool),
-            can_browse: v.get("canBrowse").and_then(Value::as_bool),
             counts: v.get("counts").filter(|c| c.is_object()).map(|_| (n("direct") + n("tunneled"), n("blocked") + n("not_listed"))),
             notes: list("notes"),
         }
@@ -130,17 +128,35 @@ impl Net {
         }
     }
 
+    /// Whether the saved settings are what the computer uses, in words; `None` when there's
+    /// nothing to say (no computer, or one that can't take them).
+    pub(crate) fn force_words(&self) -> Option<&'static str> {
+        if !self.has_computer || !self.supported {
+            return None;
+        }
+        Some(match (self.awake, self.in_force) {
+            (false, _) => "Saved; it takes effect when the computer wakes.",
+            (true, Some(true)) => "In force on this computer.",
+            (true, _) => "Saved, not yet in force on this computer.",
+        })
+    }
+
+    /// Why there's nothing else to show, in the broker's words: never an empty line.
+    pub(crate) fn why_words(&self) -> String {
+        [&self.why, &self.message].into_iter().find(|w| !w.is_empty()).cloned().unwrap_or_else(|| "This Bot's computer couldn't say how its browser reaches the web just now. Try again in a moment.".to_owned())
+    }
+
     /// The whole state, as `/network` says it.
     pub(crate) fn summary(&self) -> String {
         if !self.has_computer {
             return if self.message.is_empty() { "This Bot has no computer yet.".to_owned() } else { self.message.clone() };
         }
         if !self.supported {
-            return self.why.clone();
+            return self.why_words();
         }
         let mode = if self.listed { "Only allowed sites load" } else { "Every site loads but the blocked ones" };
         let list = |l: &[String]| if l.is_empty() { "none".to_owned() } else { l.join(", ") };
-        let mut out = format!("{} {mode}. Allowed: {}. Blocked: {}.", self.tunnel_words(), list(&self.allow), list(&self.block));
+        let mut out = format!("{} {mode}. Allowed: {}. Blocked: {}. {}", self.tunnel_words(), list(&self.allow), list(&self.block), self.force_words().unwrap_or_default());
         for n in &self.notes {
             out.push(' ');
             out.push_str(n);
@@ -167,21 +183,24 @@ fn reply_words(v: &Value) -> String {
                 format!("{who}: {}", r["message"].as_str().unwrap_or_default())
             })
             .collect();
-        return format!("{} {LIMIT}", lines.join(" "));
+        return format!("{} {}", lines.join(" "), limit(v)).trim_end().to_owned();
     }
     let said = v.get("message").and_then(Value::as_str).unwrap_or_default();
     let shared = v.pointer("/network/bots").and_then(Value::as_array).map(|b| b.iter().filter_map(|b| b.get("name").and_then(Value::as_str)).collect::<Vec<_>>()).unwrap_or_default();
-    if v.get("ok") == Some(&json!(true)) && shared.len() > 1 {
-        format!("{said} This is the computer's setting: every Bot on it ({}) gets it. {LIMIT}", shared.join(", "))
+    let out = if v.get("ok") == Some(&json!(true)) && shared.len() > 1 {
+        format!("{said} This is the computer's setting: every Bot on it ({}) gets it. {}", shared.join(", "), limit(v))
     } else if v.get("ok") == Some(&json!(true)) {
-        format!("{said} {LIMIT}")
+        format!("{said} {}", limit(v))
     } else {
         said.to_owned()
-    }
+    };
+    out.trim_end().to_owned()
 }
 
-/// What every reply that changes something ends with.
-pub(crate) const LIMIT: &str = "The rules cover the browser only: commands the agent runs aren't covered.";
+/// What the rules don't cover, in the broker's one wording (`limit` on every change's answer).
+fn limit(v: &Value) -> &str {
+    v.get("limit").and_then(Value::as_str).unwrap_or_default()
+}
 
 /// [`crate::slash`]'s `run`: `rest` is what follows `/network`. Nothing reaches the model.
 pub(crate) fn run(rest: &str) {
@@ -320,7 +339,7 @@ pub(crate) fn section() -> impl IntoElement {
             return out.into_element();
         }
         if !net.supported {
-            return out.child(view().test_id("network-why").child(homes::line(net.why.clone()).pt(px(6.0)))).into_element();
+            return out.child(view().test_id("network-why").child(homes::line(net.why_words()).pt(px(6.0)))).into_element();
         }
         let tunnel_on = net.tunnel;
         let mut tunnel_row = view().flex_row().items_center().gap_2().pt(px(8.0)).child(text("Tunnel through this Mac").text_size(px(12.0)).text_color(theme::TEXT));
@@ -328,6 +347,9 @@ pub(crate) fn section() -> impl IntoElement {
             tunnel_row = tunnel_row.child(switch("Tunnel through this Mac", tunnel_on, move || change("tunnel", if tunnel_on { "off" } else { "on" }.to_owned())));
         }
         out = out.child(tunnel_row).child(view().test_id("network-tunnel-words").child(homes::line(net.tunnel_words()).pt(px(4.0))));
+        if let Some(words) = net.force_words() {
+            out = out.child(view().test_id("network-in-force").child(homes::line(words.to_owned()).pt(px(4.0))));
+        }
         if !net.client_error.is_empty() && net.tunnel && net.client != "attached" {
             out = out.child(homes::line(format!("Last trouble: {}", net.client_error)).pt(px(4.0)));
         }
@@ -416,14 +438,29 @@ mod tests {
         assert!(said.contains("every Bot on it (Ann, Bea)") && said.contains("Commands the agent runs aren't covered"), "{said}");
         let cloud = Net::parse(&json!({"state": "computer", "supported": false, "why": "This computer browses from its provider's network: browsing rules and the tunnel apply to computers on this Mac."}));
         assert!(cloud.summary().starts_with("This computer browses from its provider's network"));
+        // the broker couldn't read it: its own sentence, never an empty line
+        let unread = Net::parse(&json!({"ok": false, "state": "computer", "message": "This computer's browsing rules couldn't be read, so none were sent."}));
+        assert_eq!(unread.summary(), "This computer's browsing rules couldn't be read, so none were sent.");
+        assert!(!Net::parse(&json!({"ok": false, "state": "computer"})).summary().is_empty());
+    }
+
+    #[test]
+    fn whether_the_settings_are_in_force_is_said_in_three_states() {
+        let base = |awake: bool, force: Option<bool>| Net::parse(&json!({"ok": true, "state": "computer", "supported": true, "awake": awake, "inForce": force, "mode": "all", "allow": [], "block": []}));
+        assert_eq!(base(true, Some(true)).force_words(), Some("In force on this computer."));
+        assert_eq!(base(false, None).force_words(), Some("Saved; it takes effect when the computer wakes."));
+        assert_eq!(base(true, Some(false)).force_words(), Some("Saved, not yet in force on this computer."));
+        assert!(base(true, Some(true)).summary().contains("In force on this computer."));
+        assert_eq!(Net::parse(&json!({"state": "computer", "supported": false, "why": "x"})).force_words(), None);
     }
 
     #[test]
     fn a_reply_names_who_shares_the_setting_and_every_computer_with_all() {
-        let one = json!({"ok": true, "message": "facebook.com and every name under it are on the block list. It's in force now.", "network": {"bots": [{"name": "Ann"}, {"name": "Bea"}]}});
+        const LIMIT: &str = "These rules cover the browser on this computer's screens. Commands the agent runs aren't covered: the network wall still applies to them.";
+        let one = json!({"ok": true, "limit": LIMIT, "message": "facebook.com and every name under it are on the block list. It's in force now.", "network": {"bots": [{"name": "Ann"}, {"name": "Bea"}]}});
         let said = reply_words(&one);
         assert!(said.contains("every Bot on it (Ann, Bea) gets it") && said.ends_with(LIMIT), "{said}");
-        let all = json!({"ok": false, "results": [{"computer": "cmp_1", "bots": ["Ann"], "ok": true, "message": "Done."}, {"computer": "cmp_2", "bots": ["Cy"], "ok": false, "message": "This computer browses from its provider's network."}]});
+        let all = json!({"ok": false, "limit": LIMIT, "results": [{"computer": "cmp_1", "bots": ["Ann"], "ok": true, "message": "Done."}, {"computer": "cmp_2", "bots": ["Cy"], "ok": false, "message": "This computer browses from its provider's network."}]});
         let said = reply_words(&all);
         assert!(said.starts_with("Ann's computer: Done. Cy's computer: This computer browses"), "{said}");
         let refused = json!({"ok": false, "message": "The network rule (allow, ask or never) isn't built yet, so nothing was changed."});
