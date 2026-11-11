@@ -79,7 +79,7 @@ use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use super::transport::{self, UserFormReply};
-use super::{CardState, answerable, close_x, error_line, note, save_login, set_state, shell, state_of, title};
+use super::{CardState, answerable, close_x, error_line, note, save_login, set_state, state_of, title};
 use crate::live::store;
 use crate::theme;
 use crate::vault::{self, PendingSave, Secret, SiteLogin, SiteMatch, Unlock, off_main, site_match, site_origin, vault};
@@ -228,34 +228,6 @@ impl FormResolution {
             Self::Unsure => "unsure",
         }
     }
-
-    pub(crate) fn pill(self) -> &'static str {
-        match self {
-            Self::Sending => "Submitting",
-            Self::Submitted => "Submitted",
-            Self::FillFailed => "Not filled",
-            Self::Escalated => "On the computer",
-            Self::Dismissed => "Dismissed",
-            Self::Skipped => "Skipped",
-            Self::TimedOut => "Timed out",
-            Self::Superseded => "Superseded",
-            Self::Unsure => "Check the screen",
-        }
-    }
-
-    pub(crate) fn body(self) -> &'static str {
-        match self {
-            Self::Sending => "Submitting…",
-            Self::Submitted => "Typed into the page on the Bot's screen. Secret values were never shown to your agent.",
-            Self::FillFailed => "Nothing was filled — the page may have moved or changed. Secret values were never shown to your agent.",
-            Self::Escalated => "The Bot's screen is yours to finish there. Hand it back when you're done.",
-            Self::Dismissed => "Dismissed without filling anything.",
-            Self::Skipped => "Skipped without filling anything.",
-            Self::TimedOut => "Nobody answered in time, so nothing was filled.",
-            Self::Superseded => "Moved on to your next message.",
-            Self::Unsure => "Buwiz Bot didn't hear how this went: it may still be typing, or it was answered already. Look at the Bot's screen before doing anything else.",
-        }
-    }
 }
 
 /// A user-form card as the wire describes it. No typed value is ever on it.
@@ -289,6 +261,8 @@ pub(crate) struct UserFormSpec {
     pub note: Option<String>,
     /// What Open the screen hands over, as the broker words it.
     pub takeover_note: Option<String>,
+    /// The broker's card settled as not filled, but a value may have gone in (its `uncertain`).
+    pub uncertain: bool,
 }
 
 impl UserFormSpec {
@@ -314,6 +288,7 @@ impl UserFormSpec {
         };
         spec.note = Some(s("note")).filter(|t| !t.is_empty());
         spec.takeover_note = Some(s("takeoverNote")).filter(|t| !t.is_empty());
+        spec.uncertain = n.get("uncertain").and_then(Value::as_bool).unwrap_or(false);
         // a card's fields never carry a value from the broker: a login card has none
         for f in &mut spec.fields {
             f.prefill = None;
@@ -965,6 +940,21 @@ struct Local {
     chat: Signal<String>,
     /// Try again on a card the wire settled as not filled.
     retry: Signal<bool>,
+    /// The broker said a value may have gone in before the fill stopped.
+    unsure: Signal<bool>,
+    /// What is on its way while the card is sending: a fill, the screen or a dismiss.
+    going: Signal<Going>,
+    /// Do it myself was pressed: the card asks once more before the screen is handed over.
+    confirm: Signal<bool>,
+}
+
+/// What a sending card is waiting on, for its busy line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Going {
+    #[default]
+    Fill,
+    Screen,
+    Dismiss,
 }
 
 /// A saved login held for the submit. The secret is never painted and
@@ -1003,6 +993,9 @@ fn local(key: &str) -> Local {
         said: signal(String::new()),
         chat: signal(String::new()),
         retry: signal(false),
+        unsure: signal(false),
+        going: signal(Going::Fill),
+        confirm: signal(false),
     });
     reg.borrow_mut().insert(key.to_owned(), l);
     l
@@ -1070,6 +1063,7 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
     // what was typed into secret fields leaves the view state now
     forget_secrets(&spec, loc);
     loc.pick.set(Pick::None);
+    loc.going.set(Going::Fill);
     set_state(&key, CardState::Sending);
     Owner::detached().run(|| {
         spawn(async move {
@@ -1106,6 +1100,7 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
                     if let Some(said) = body.pointer("/notice/note").and_then(Value::as_str) {
                         loc.said.set(said.to_owned());
                     }
+                    loc.unsure.set(body.pointer("/notice/uncertain").and_then(Value::as_bool).unwrap_or(false));
                     // the typed login is held past here only for the broker's offer to save it
                     let offered = r == FormResolution::Submitted && login_id.is_none() && body.get("offerSave").is_some_and(Value::is_object);
                     if offered && vault().has_pending(entry) {
@@ -1149,13 +1144,10 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
     });
 }
 
-/// Where the broker's card types: its site, the Bot's screen, and Return when it presses it.
-pub(crate) fn where_words(spec: &UserFormSpec, site: &str) -> String {
-    let screen = if spec.bot_name.is_empty() { "the Bot's screen".to_owned() } else { format!("{}'s screen", spec.bot_name) };
-    // the broker's rule (`should_press_return`) when every field is filled
-    let presses = spec.submit || spec.fields.len() == 1 || (spec.same_page && spec.fields.iter().any(Field::masked));
-    let enter = if presses { ", then Return is pressed to send it" } else { "" };
-    format!("Typed into {site} on {screen}{enter}. Nothing is typed until you press {}.", spec.continue_label())
+/// Whether the broker presses Return after typing: its rule (`should_press_return`) when every
+/// field is filled.
+pub(crate) fn presses_return(spec: &UserFormSpec) -> bool {
+    spec.submit || spec.fields.len() == 1 || (spec.same_page && spec.fields.iter().any(Field::masked))
 }
 
 /// A missing route or no broker: nothing was typed, and the card says so.
@@ -1186,6 +1178,7 @@ fn answer_card(spec: Rc<UserFormSpec>, key: String, mode: &'static str) {
     if !answerable(&key) {
         return;
     }
+    loc.going.set(if mode == "escalated" { Going::Screen } else { Going::Dismiss });
     set_state(&key, CardState::Sending);
     let body = transport::dismiss_body(&spec.chat, &spec.entry_id, mode);
     Owner::detached().run(|| {
@@ -1315,6 +1308,32 @@ fn by_hand(key: &str) {
 // ---------------------------------------------------------------------------
 // The card
 // ---------------------------------------------------------------------------
+//
+// The broker's card reads as a sign-in sheet. Its header is Buwiz's own: a lock and the site the
+// values are typed into (the broker's `domain`, the one fact a person must be able to check),
+// never the AI's title. What the AI wrote shows under it as the Bot's words. The fields, then
+// the answer: the primary fills (and says whether Return is pressed), the quiet "Do it myself"
+// asks once more before the screen is handed over. How it works is behind the ⓘ, beside the ×.
+// A settled card is one line: what happened, with a glyph.
+
+/// The login card's widest: it hugs its content, as a message does.
+pub(crate) const CARD_MAX_W: f32 = 420.0;
+/// The ⓘ's popover's width.
+const INFO_W: f32 = 320.0;
+/// How long the pointer rests on the ⓘ before its popover peeks, and how long a peek waits for
+/// the pointer to come back (on its way from the icon into the popover).
+const PEEK_MS: u64 = 300;
+const GRACE_MS: u64 = 250;
+/// The ⓘ's label.
+pub(crate) const INFO_LABEL: &str = "About this card";
+/// The popover's label.
+pub(crate) const INFO_PANEL: &str = "How this card works";
+/// The quiet answer that hands the screen over, after one more press.
+pub(crate) const DO_IT_MYSELF: &str = "Do it myself";
+pub(crate) const OPEN_THE_SCREEN: &str = "Open the screen";
+/// The broker's take-over note (`hub::tools::computer::TAKEOVER_NOTE`), which the popover and
+/// the confirm step put in short lines. Any other note is shown in the broker's own words.
+pub(crate) const TAKEOVER_NOTE: &str = "You'd use its own browser on its own screen. The AI isn't shown your screen and can't act through its tools until you hand back. Commands it ran can keep running, but they can't see this screen or what you type. The browser and desktop here are a different matter: pages it opened, and anything it set going by clicking on this screen, could. What we can find on the desktop is ended first, not always all of it. Don't type a real password unless you trust this Bot's work so far. Afterwards it can use whatever you signed in to.";
 
 /// The card for `spec`, its view state under `key` (the card key).
 pub(crate) fn card(spec: impl Borrow<UserFormSpec>, key: impl AsRef<str>) -> impl IntoElement {
@@ -1329,7 +1348,7 @@ pub(crate) fn card(spec: impl Borrow<UserFormSpec>, key: impl AsRef<str>) -> imp
         match (wire, ph.get()) {
             (Some(r), _) => settled(spec.clone(), key.clone(), r).into_element(),
             (None, Phase::Settled(r)) => settled(spec.clone(), key.clone(), r).into_element(),
-            (None, Phase::Sending) => collapsed(&spec, &key, FormResolution::Sending).into_element(),
+            (None, Phase::Sending) => busy(&spec, &key).into_element(),
             (None, Phase::Idle) => idle(spec.clone(), key.clone()).into_element(),
         }
     })
@@ -1339,33 +1358,377 @@ fn title_of(spec: &UserFormSpec) -> String {
     if spec.title.is_empty() { "Form".to_owned() } else { spec.title.clone() }
 }
 
-fn collapsed(spec: &UserFormSpec, key: &str, r: FormResolution) -> View {
-    let (fill, ink) = match r {
-        FormResolution::Submitted => (theme::UP_TINT, theme::UP),
-        FormResolution::FillFailed => (theme::DOWN_TINT, theme::DOWN),
-        _ => (theme::HOVER, theme::DIM),
+/// The broker's card: one it can answer, in a chat.
+fn brokers(spec: &UserFormSpec) -> bool {
+    spec.has_entry_id() && !spec.chat.is_empty()
+}
+
+/// The site the broker's card types into, as the broker states it (`domain`); `None` for a
+/// card that isn't the broker's, whose site no one here checked.
+pub(crate) fn site_of(spec: &UserFormSpec) -> Option<String> {
+    spec.domain.as_deref().map(str::trim).filter(|d| brokers(spec) && !d.is_empty()).map(str::to_owned)
+}
+
+/// "Nova's screen", or "the Bot's screen" with no name.
+fn screen_of(spec: &UserFormSpec) -> String {
+    if spec.bot_name.is_empty() { "the Bot's screen".to_owned() } else { format!("{}'s screen", spec.bot_name) }
+}
+
+/// The header's words: Buwiz's, with the site, on the broker's card; the AI's title on another.
+pub(crate) fn headline(spec: &UserFormSpec) -> String {
+    match site_of(spec) {
+        Some(site) => format!("Sign in on {site}"),
+        None => title_of(spec),
+    }
+}
+
+/// The primary answer's words. The broker's card fills the page, and says whether Return goes
+/// with it: it never promises a sign-in. Another card keeps its own ("Log in", "Continue").
+pub(crate) fn primary_label(spec: &UserFormSpec) -> &'static str {
+    match () {
+        _ if !brokers(spec) => spec.continue_label(),
+        _ if presses_return(spec) => "Fill and send",
+        _ => "Fill in",
+    }
+}
+
+/// The line under the broker's card's answers: where it's typed, whether Return is pressed, and
+/// that nothing goes before the press.
+pub(crate) fn caption(spec: &UserFormSpec) -> String {
+    let label = primary_label(spec);
+    let screen = screen_of(spec);
+    if presses_return(spec) {
+        format!("Typed on {screen}, then Return is pressed. Nothing is typed until you press {label}.")
+    } else {
+        format!("Typed on {screen}; sending is left to you. Nothing is typed until you press {label}.")
+    }
+}
+
+/// What the AI wrote on the card (its title and instruction), as its Bot's words: "Nova: …".
+/// `None` when it says nothing the header doesn't (empty, or only "Sign in to <site>").
+pub(crate) fn ai_line(spec: &UserFormSpec, site: &str) -> Option<String> {
+    const FILLER: &[&str] = &["sign", "signin", "in", "to", "on", "into", "at", "log", "login", "the", "for", "please"];
+    let site = site.to_ascii_lowercase();
+    let says = |s: &str| {
+        let s = s.to_lowercase().replace(&site, " ");
+        s.split(|c: char| !c.is_alphanumeric()).any(|w| !w.is_empty() && !FILLER.contains(&w))
     };
-    let pill = if r == FormResolution::Submitted { format!("✓ {}", r.pill()) } else { r.pill().to_owned() };
-    shell(&format!("user-form-{key}"))
-        .label(format!("{} — {}", title_of(spec), r.pill()))
+    let (title, said) = (spec.title.trim(), spec.instruction.as_deref().unwrap_or("").trim());
+    let stem = |s: &str| s.trim_end_matches(['.', '!', ':']).to_lowercase();
+    let mut parts = Vec::new();
+    if says(title) && !(says(said) && stem(said).starts_with(&stem(title))) {
+        parts.push(title);
+    }
+    if says(said) {
+        parts.push(said);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let words: Vec<String> = parts
+        .into_iter()
+        .map(|p| if p.ends_with(['.', '!', '?']) { p.to_owned() } else { format!("{p}.") })
+        .collect();
+    let bot = if spec.bot_name.is_empty() { "The Bot" } else { spec.bot_name.as_str() };
+    Some(format!("{bot}: {}", words.join(" ")))
+}
+
+/// What the ⓘ's popover says, under its headings: what the primary does and who types, then what
+/// handing the screen over means. Nothing of the take-over note is left out; a note this build
+/// doesn't know is shown in the broker's own words, a sentence a line.
+pub(crate) fn guidance(spec: &UserFormSpec) -> Vec<(String, Vec<String>)> {
+    let site = site_of(spec).unwrap_or_else(|| "the page".to_owned());
+    let screen = screen_of(spec);
+    let label = primary_label(spec);
+    let mut out = vec![(
+        label.to_owned(),
+        vec![
+            format!("Buwiz types it into {site} on {screen}, not the AI."),
+            if presses_return(spec) { "Then it presses Return to send it.".to_owned() } else { "It doesn't press Return: sending is left to you.".to_owned() },
+            "The AI never sees a password or code. It's told the form was filled, and what went into fields that aren't secret, like an email.".to_owned(),
+            format!("Nothing is typed until you press {label}."),
+        ],
+    )];
+    let Some(note) = spec.takeover_note.as_deref().filter(|_| brokers(spec)) else { return out };
+    let bot = if spec.bot_name.is_empty() { "the Bot".to_owned() } else { spec.bot_name.clone() };
+    let lines = if note == TAKEOVER_NOTE {
+        vec![
+            format!("You use {bot}'s own browser on its own screen yourself."),
+            "The AI isn't shown the screen and can't act through its tools until you hand back.".to_owned(),
+            "Commands it ran can keep running, but they can't see the screen or what you type.".to_owned(),
+            "Pages it opened, and anything it set going by clicking on this screen, could.".to_owned(),
+            "What Buwiz can find on the desktop is ended first, not always all of it.".to_owned(),
+            "Don't type a real password unless you trust this Bot's work so far.".to_owned(),
+            "Afterwards it can use whatever you signed in to.".to_owned(),
+        ]
+    } else {
+        sentences(note)
+    };
+    out.push((DO_IT_MYSELF.to_owned(), lines));
+    out
+}
+
+/// The confirm step's words, before the screen is handed over: the short form of the take-over
+/// note, or the broker's own note when it isn't the one this build knows.
+pub(crate) fn confirm_words(spec: &UserFormSpec) -> String {
+    match spec.takeover_note.as_deref() {
+        Some(note) if note != TAKEOVER_NOTE => note.to_owned(),
+        _ => {
+            let bot = if spec.bot_name.is_empty() { "the Bot".to_owned() } else { spec.bot_name.clone() };
+            format!("You'll use {bot}'s browser yourself. The AI can't see the screen or act until you hand back; then it can use whatever you signed in to. Pages it already opened can still see what you type: only use a real password if you trust this Bot's work so far.")
+        }
+    }
+}
+
+/// `s` a sentence a line.
+fn sentences(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, c) in s.char_indices() {
+        cur.push(c);
+        let next = s[i + c.len_utf8()..].chars().next();
+        if matches!(c, '.' | '!' | '?') && next.is_none_or(char::is_whitespace) {
+            out.push(cur.trim().to_owned());
+            cur.clear();
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_owned());
+    }
+    out
+}
+
+/// The login cards' box: as wide as it needs up to [`CARD_MAX_W`], at the column's left.
+pub(crate) fn login_shell(id: &str) -> View {
+    let v = view()
+        .w_full()
+        .max_w(px(CARD_MAX_W))
+        .gap(px(12.0))
+        .p(px(16.0))
+        .bg(theme::CARD)
+        .rounded(px(16.0))
+        .border(px(0.5))
+        .border_color(theme::BORDER_S);
+    if id.is_empty() { v } else { v.test_id(id) }
+}
+
+/// The header: a lock and the site on the broker's card (the AI's words below it, as its Bot's),
+/// the title on another. The corner's buttons sit over its right end ([`corner`]).
+fn header(spec: &UserFormSpec, corner_w: f32) -> View {
+    let site = site_of(spec);
+    let mut row = view().flex_row().items_center().gap(px(6.0));
+    if site.is_some() {
+        row = row.child(crate::icons::icon_ink("lock", 14.0, || theme::DIM));
+    }
+    row = row.child(title(headline(spec)).flex_1().min_w(px(0.0)).number_of_lines(1));
+    let mut col = view().gap(px(4.0)).pr(px(corner_w)).child(row);
+    let words = match &site {
+        Some(site) => ai_line(spec, site),
+        None => spec.instruction.clone().filter(|i| !i.is_empty()),
+    };
+    if let Some(w) = words {
+        col = col.child(note(w).number_of_lines(2));
+    }
+    col
+}
+
+/// The header's buttons, last in the card so Tab reaches them after its answers, laid over the
+/// header's right end: the ⓘ (on the broker's card) and the ×.
+fn corner(spec: Rc<UserFormSpec>, key: String) -> View {
+    let mut row = view().absolute().top(px(15.0)).right(px(12.0)).flex_row().items_center().gap(px(2.0));
+    if brokers(&spec) {
+        row = row.child(info_button(Rc::new(guidance(&spec))));
+    }
+    row.child(close_x("Dismiss", move || dismiss(spec.clone(), key.clone())))
+}
+
+/// The ⓘ: the pointer resting on it peeks its popover, the keyboard focus on it opens it, and a
+/// press pins it open until another press, a press outside or Escape. The popover is an overlay
+/// against the icon, so it takes no room in the card; a screen reader gets its words as the
+/// button's hint, and as text while it's open.
+fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
+    // None: closed; Some(pinned)
+    let open: Signal<Option<bool>> = signal(None);
+    let over = signal(false);
+    let hov = signal(false);
+    let anchor = element_ref();
+    let owner = Owner::current();
+    let close_later = move || {
+        owner.run(|| {
+            set_timeout(std::time::Duration::from_millis(GRACE_MS), move || {
+                if !over.get_untracked() && open.get_untracked() == Some(false) {
+                    open.set(None);
+                }
+            })
+        });
+    };
+    let plain = lines.iter().map(|(h, ls)| format!("{h}: {}", ls.join(" "))).collect::<Vec<_>>().join(" ");
+    let panel = lines.clone();
+    view()
         .child(
             view()
-                .flex_row()
+                .role(AccessibilityRole::Button)
+                .label(INFO_LABEL)
+                .hint(SharedString::from(plain))
+                .accessibility_state(move || AccessibilityState { expanded: Some(open.get().is_some()), has_popup: true, ..Default::default() })
+                .size(px(22.0))
+                .rounded(px(6.0))
                 .items_center()
-                .gap_2()
-                .child(title(title_of(spec)).flex_1().min_w(px(0.0)).number_of_lines(1))
+                .justify_center()
+                .bg(move || if hov.get() || open.get().is_some() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+                .element_ref(&anchor)
+                .on_mouse_enter(move |_: &MouseEvent| {
+                    hov.set(true);
+                    over.set(true);
+                    owner.run(|| {
+                        set_timeout(std::time::Duration::from_millis(PEEK_MS), move || {
+                            if over.get_untracked() && open.get_untracked().is_none() {
+                                open.set(Some(false));
+                            }
+                        })
+                    });
+                })
+                .on_mouse_leave(move |_: &MouseEvent| {
+                    hov.set(false);
+                    over.set(false);
+                    close_later();
+                })
+                .on_focus(move || {
+                    if open.get_untracked().is_none() {
+                        open.set(Some(false));
+                    }
+                })
+                .on_blur(move || {
+                    if open.get_untracked() == Some(false) {
+                        open.set(None);
+                    }
+                })
+                .on_press(move || open.set(if open.get_untracked() == Some(true) { None } else { Some(true) }))
+                // an i in a ring
                 .child(
-                    text(pill)
-                        .text_size(px(11.0))
-                        .line_height(px(15.0))
-                        .text_color(ink)
-                        .px(px(8.0))
-                        .py(px(2.0))
-                        .rounded(px(999.0))
-                        .bg(fill),
+                    view()
+                        .size(px(14.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(theme::MUTED)
+                        .items_center()
+                        .justify_center()
+                        .child(text("i").text_size(px(9.5)).line_height(px(11.0)).font_weight(FontWeight::BOLD).text_color(theme::MUTED)),
                 ),
         )
-        .child(note(r.body().to_owned()))
+        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, open, over, close_later).into_element()))
+}
+
+/// The ⓘ's popover: each heading and its short lines.
+fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal<Option<bool>>, over: Signal<bool>, close_later: impl Fn() + 'static) -> impl IntoElement {
+    let focus = *anchor;
+    let mut body = view()
+        .label(INFO_PANEL)
+        .w(px(INFO_W))
+        .gap(px(12.0))
+        .p(px(14.0))
+        .rounded(px(12.0))
+        .bg(theme::POPOVER)
+        .border_1()
+        .border_color(theme::BORDER_S)
+        .shadow_lg()
+        .on_mouse_enter(move |_: &MouseEvent| over.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| {
+            over.set(false);
+            close_later();
+        });
+    for (heading, ls) in lines {
+        let mut section = view().gap(px(4.0)).child(
+            text(heading.clone()).text_size(px(12.0)).line_height(px(16.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT),
+        );
+        for l in ls {
+            section = section.child(
+                view()
+                    .flex_row()
+                    .gap(px(6.0))
+                    .child(text("•").text_size(px(12.0)).line_height(px(17.0)).text_color(theme::FAINT))
+                    .child(text(l.clone()).flex_1().min_w(px(0.0)).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::DIM)),
+            );
+        }
+        body = body.child(section);
+    }
+    nsh_core::element::overlay()
+        .anchor(anchor)
+        .placement(nsh_core::overlay::Placement::Bottom)
+        .align(nsh_core::overlay::Align::End)
+        .offset(px(6.0))
+        .label("About this card, open")
+        .on_press_outside(move |_: &Point<Points>| open.set(None))
+        .on_cancel(move || {
+            open.set(None);
+            // back where the keyboard was
+            focus.focus();
+        })
+        .child(body)
+}
+
+/// A sending card: its header and what it's waiting on.
+fn busy(spec: &UserFormSpec, key: &str) -> View {
+    let loc = local(key);
+    let on_site = site_of(spec).map(|s| format!(" on {s}")).unwrap_or_default();
+    let words = match loc.going.get_untracked() {
+        Going::Fill => format!("Filling in{on_site}…"),
+        Going::Screen => format!("Handing over {}…", screen_of(spec)),
+        Going::Dismiss => "Dismissing…".to_owned(),
+    };
+    login_shell(&format!("user-form-{key}")).label(headline(spec)).child(header(spec, 0.0)).child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .accessibility_state(AccessibilityState { busy: true, ..Default::default() })
+            .child(glyph("…", theme::DIM, theme::HOVER))
+            .child(text(words).flex_1().min_w(px(0.0)).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::DIM)),
+    )
+}
+
+/// A status glyph in a small round tint.
+fn glyph(g: &'static str, ink: AdaptiveColor, tint: AdaptiveColor) -> impl IntoElement {
+    view()
+        .size(px(18.0))
+        .flex_shrink(0.0)
+        .rounded(px(9.0))
+        .bg(tint)
+        .items_center()
+        .justify_center()
+        .child(text(g).text_size(px(11.0)).line_height(px(13.0)).font_weight(FontWeight::BOLD).text_color(ink))
+}
+
+/// What a settled card says, in one line, and its glyph: each ending kept apart (a fill that may
+/// have typed is never "nothing was filled", a check-the-screen never "dismissed").
+pub(crate) fn receipt(spec: &UserFormSpec, r: FormResolution, unsure: bool, said: bool) -> (&'static str, AdaptiveColor, AdaptiveColor, String) {
+    let on_site = site_of(spec).map(|s| format!(" on {s}")).unwrap_or_default();
+    const SECRETS: &str = "Secret values were never shown to the AI.";
+    match r {
+        FormResolution::Sending => ("…", theme::DIM, theme::HOVER, "Sending…".to_owned()),
+        FormResolution::Submitted => ("✓", theme::UP, theme::UP_TINT, format!("Filled in{on_site}. {SECRETS}")),
+        FormResolution::FillFailed if unsure => ("!", theme::WARN, theme::WARN_TINT, format!("May have been typed{on_site}: check the screen. {SECRETS}")),
+        FormResolution::FillFailed if said => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}. {SECRETS}")),
+        FormResolution::FillFailed => ("✕", theme::DOWN, theme::DOWN_TINT, format!("Nothing was filled{on_site}: the page may have moved or changed. {SECRETS}")),
+        FormResolution::Escalated => ("↗", theme::ACCENT, theme::ACCENT_TINT, format!("Handed over: {} is yours. Hand it back when you're done.", screen_of(spec))),
+        FormResolution::Dismissed => ("–", theme::MUTED, theme::HOVER, "Dismissed. Nothing was filled.".to_owned()),
+        FormResolution::Skipped => ("–", theme::MUTED, theme::HOVER, "Skipped. Nothing was filled.".to_owned()),
+        FormResolution::TimedOut => ("–", theme::MUTED, theme::HOVER, "Expired: nobody answered in time, so nothing was filled.".to_owned()),
+        FormResolution::Superseded => ("–", theme::MUTED, theme::HOVER, "Moved on to your next message.".to_owned()),
+        FormResolution::Unsure => ("!", theme::WARN, theme::WARN_TINT, "Check the screen: Buwiz Bot didn't hear how this went.".to_owned()),
+    }
+}
+
+/// The fill's receipt (`line`: "Filled in on <site>. Secret values …") with the broker's note of
+/// it put after the site, its leading "Typed" dropped as the receipt says it already.
+pub(crate) fn filled_line(line: &str, note: &str) -> String {
+    let rest = ["Typed, and ", "Typed, but ", "Typed. "].iter().find_map(|p| note.strip_prefix(p)).unwrap_or(note);
+    let mut c = rest.chars();
+    let rest = c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default();
+    match line.split_once(". ") {
+        Some((head, tail)) => format!("{head}. {rest} {tail}"),
+        None => format!("{line} {rest}"),
+    }
 }
 
 fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
@@ -1373,24 +1736,44 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
     // an ending (a supersede included) takes any held or typed secret with it
     drop_held(&key);
     forget_secrets(&spec, loc);
-    let mut v = collapsed(&spec, &key, r);
+    let said = spec.note.clone().unwrap_or_else(|| loc.said.get_untracked());
+    let said = Some(said).filter(|s| !s.is_empty() && matches!(r, FormResolution::Submitted | FormResolution::FillFailed));
+    let unsure = spec.uncertain || loc.unsure.get_untracked();
+    let (g, ink, tint, mut line) = receipt(&spec, r, unsure, said.is_some());
+    // a fill's receipt is one line: where, what became of Return, and that secrets stayed hidden
+    let said = match said {
+        Some(note) if r == FormResolution::Submitted => {
+            line = filled_line(&line, &note);
+            None
+        }
+        other => other,
+    };
+    let mut words = view().flex_1().min_w(px(0.0)).gap(px(2.0)).child(text(line.clone()).number_of_lines(3).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT));
+    if r == FormResolution::Unsure {
+        words = words.child(note(format!("It may still be typing, or it was answered already. Look at {} before doing anything else.", screen_of(&spec))).number_of_lines(3));
+    }
+    // what the broker said of the fill, step by step (Return pressed, left to you, a reason)
+    if let Some(said) = said {
+        words = words.child(note(said).number_of_lines(4));
+    }
+    let mut receipt = login_shell(&format!("user-form-{key}"))
+        .label(line)
+        .gap(px(8.0))
+        .p(px(12.0))
+        .child(view().flex_row().items_start().gap(px(8.0)).child(glyph(g, ink, tint)).child(words));
     // the broker's card is done once it settles: the run has gone on, and a fill that may have
     // typed something isn't retried blind. Its note says what to do; the AI may raise a new card
     if r == FormResolution::FillFailed && spec.has_entry_id() && spec.chat.is_empty() {
         let (s1, k1, s2, k2) = (spec.clone(), key.clone(), spec.clone(), key.clone());
-        v = v.child(
+        receipt = receipt.child(
             view()
-                .flex_row()
-                .justify_end()
+                .flex_row_reverse()
                 .gap_2()
                 .child(button("Try again", Kind::Primary, || true, move || retry(&s1, &k1)))
                 .child(button("Stop for now", Kind::Ghost, || true, move || dismiss(s2.clone(), k2.clone()))),
         );
     }
-    let said = spec.note.clone().unwrap_or_else(|| loc.said.get_untracked());
-    if !said.is_empty() && matches!(r, FormResolution::Submitted | FormResolution::FillFailed) {
-        v = v.child(note(said));
-    }
+    let mut v = view().w_full().gap_2().items_start().child(receipt);
     // the broker offered to save the login it typed: the card asks
     if r == FormResolution::Submitted && loc.offer.get_untracked() {
         let entry = spec.entry_id.clone();
@@ -1400,6 +1783,11 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
         }
     }
     v
+}
+
+/// The open card's width for the corner's buttons, so the header's words stop short of them.
+fn corner_w(spec: &UserFormSpec) -> f32 {
+    if brokers(spec) { 52.0 } else { 28.0 }
 }
 
 fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
@@ -1419,45 +1807,79 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
     if !missing.is_empty() {
         loc.values.update(|v| v.0.extend(missing));
     }
-    let (s_dis, k_dis) = (spec.clone(), key.clone());
-    let mut v = shell(&format!("user-form-{key}")).label(title_of(&spec)).child(
-        view()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(title(title_of(&spec)).flex_1().min_w(px(0.0)).number_of_lines(2))
-            .child(close_x("Dismiss", move || dismiss(s_dis.clone(), k_dis.clone()))),
-    );
-    if let Some(i) = spec.instruction.as_ref().filter(|i| !i.is_empty()) {
-        v = v.child(note(i.clone()));
-    }
-    // the broker's card says plainly where it types, and whether it presses Return after
-    if let Some(site) = spec.domain.as_ref().filter(|_| !spec.chat.is_empty()) {
-        v = v.child(text(where_words(&spec, site)).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT));
-    }
-    v = v.child(saved_part(spec.clone(), key.clone(), target.clone()));
-    for f in &spec.fields {
-        v = v.child(field_view(key.clone(), f.clone(), target.clone()));
-    }
+    let v = login_shell(&format!("user-form-{key}")).label(headline(&spec)).relative().child(header(&spec, corner_w(&spec)));
+    let (s_form, k_form, t_form) = (spec.clone(), key.clone(), target.clone());
+    let (s_confirm, k_confirm) = (spec.clone(), key.clone());
+    v.child(when(move || !loc.confirm.get(), move || form_body(s_form.clone(), k_form.clone(), t_form.clone()).into_element()).otherwise(move || confirm_step(s_confirm.clone(), k_confirm.clone(), loc).into_element()))
+        .child(corner(spec, key))
+}
+
+/// The card's fields and answers. With saved logins offered and nothing typed, the logins come
+/// first, as a password manager's: the fields wait behind "Use a different login".
+fn form_body(spec: Rc<UserFormSpec>, key: String, target: Option<CardTarget>) -> View {
+    let loc = local(&key);
+    let (s_rows, t_rows) = (spec.clone(), target.clone());
+    let offered = computed(move || {
+        let _ = vault::revision().get();
+        let Some(t) = &t_rows else { return false };
+        let sites = [offered_site(&s_rows), asked_site(&s_rows)];
+        vault().offered_on(&sites, &s_rows.agent_id, t.kind() == vault::KIND_CODE).iter().any(|rows| !rows.is_empty())
+    });
+    let s_typed = spec.clone();
+    // the saved logins are the choice: none typed by hand, none picked yet
+    let choosing = computed(move || {
+        offered.get()
+            && !loc.by_hand.get()
+            && !matches!(loc.pick.get(), Pick::Ready { .. })
+            && loc.values.with(|v| !s_typed.fields.iter().any(|f| v.filled(f)))
+    });
+    let mut v = view().gap(px(12.0)).child(saved_part(spec.clone(), key.clone(), target.clone()));
+    // the last field that takes text: Return there sends, when the form can be sent
+    let last = spec
+        .fields
+        .iter()
+        .rposition(|f| !matches!(f.kind, FieldKind::Checkbox) && !(f.kind == FieldKind::Select && !f.options.is_empty()));
+    let can_post = spec.has_entry_id();
+    let (s_en, t_en) = (spec.clone(), target.clone());
+    let enabled = Rc::new(move || {
+        let held: Vec<&str> = match (loc.pick.get(), &t_en) {
+            (Pick::Ready { .. }, Some(t)) => t.secret_field().into_iter().collect(),
+            _ => Vec::new(),
+        };
+        can_post && s_en.required_filled(&loc.values.get(), &held)
+    });
+    let (s_go, k_go, e_go) = (spec.clone(), key.clone(), enabled.clone());
+    let go: Rc<dyn Fn()> = Rc::new(move || {
+        if e_go() {
+            submit(s_go.clone(), k_go.clone())
+        }
+    });
+    let (s_f, k_f, t_f, g_f) = (spec.clone(), key.clone(), target.clone(), go.clone());
+    v = v.child(when(move || !choosing.get(), move || {
+        let mut fields = view().gap(px(10.0));
+        for (i, f) in s_f.fields.iter().enumerate() {
+            fields = fields.child(field_view(k_f.clone(), f.clone(), t_f.clone(), (Some(i) == last).then(|| g_f.clone())));
+        }
+        fields.into_element()
+    }));
     let k_note = key.clone();
     v = v.child(dynamic(move || {
         let why = phase(&k_note).1;
         if why.is_empty() {
             return view().into_element();
         }
-        error_line(why).number_of_lines(4).into_element()
+        error_line(why).number_of_lines(5).into_element()
     }));
-    let can_post = spec.has_entry_id();
-    let (s_go, k_go, s_en) = (spec.clone(), key.clone(), spec.clone());
-    let t_en = target.clone();
-    let enabled = move || {
-        let held: Vec<&str> = match (loc.pick.get(), &t_en) {
-            (Pick::Ready { .. }, Some(t)) => t.secret_field().into_iter().collect(),
-            _ => Vec::new(),
-        };
-        can_post && s_en.required_filled(&loc.values.get(), &held)
-    };
-    let mut actions = view().flex_row().items_center().justify_end().gap_2();
+    // Tab goes to the primary first: the row is laid out from the right
+    let mut actions = view().flex_row_reverse().items_center().gap_2();
+    let label = primary_label(&spec);
+    let hint_words = if brokers(&spec) { caption(&spec) } else { String::new() };
+    let (s_why, e_p, g_p) = (spec.clone(), enabled.clone(), go.clone());
+    actions = actions.child(when(move || !choosing.get(), move || {
+        let (e1, e2, g, s, h) = (e_p.clone(), e_p.clone(), g_p.clone(), s_why.clone(), hint_words.clone());
+        primary(label, move || e1(), move || g(), move || if e2() { h.clone() } else { missing_words(&s, loc) }).into_element()
+    }));
+    actions = actions.child(view().flex_1());
     if !can_post {
         actions = actions.child(
             text("This form has no server entry yet, so it can't be sent.")
@@ -1466,17 +1888,60 @@ fn idle(spec: Rc<UserFormSpec>, key: String) -> View {
                 .text_color(theme::MUTED),
         );
     }
-    // the broker's card: the person may finish on the Bot's screen instead
-    let screen = spec.has_entry_id() && !spec.chat.is_empty();
-    if screen {
-        let (s_open, k_open) = (spec.clone(), key.clone());
-        actions = actions.child(button("Open the screen", Kind::Ghost, || true, move || open_screen(s_open.clone(), k_open.clone())));
+    // the broker's card: the person may finish on the Bot's screen instead, after one more press
+    if brokers(&spec) {
+        actions = actions.child(button(DO_IT_MYSELF, Kind::Ghost, || true, move || loc.confirm.set(true)));
     }
-    v = v.child(actions.child(button(spec.continue_label(), Kind::Primary, enabled, move || submit(s_go.clone(), k_go.clone()))));
-    if let Some(t) = spec.takeover_note.as_ref().filter(|_| screen) {
-        v = v.child(text(format!("Open the screen: {t}")).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::MUTED));
+    v = v.child(actions);
+    if brokers(&spec) {
+        v = v.child(text(caption(&spec)).text_size(px(11.5)).line_height(px(16.0)).text_color(theme::MUTED));
     }
     v
+}
+
+/// Why the primary can't be pressed yet: the required fields still empty.
+fn missing_words(spec: &UserFormSpec, loc: Local) -> String {
+    let values = loc.values.get();
+    let held = matches!(loc.pick.get(), Pick::Ready { .. });
+    let target = card_target(spec);
+    let empty: Vec<String> = spec
+        .fields
+        .iter()
+        .filter(|f| f.required && !values.filled(f))
+        .filter(|f| !(held && target.as_ref().and_then(CardTarget::secret_field) == Some(f.id.as_str())))
+        .map(|f| f.label.to_lowercase())
+        .collect();
+    match empty.as_slice() {
+        [] if !spec.has_entry_id() => "This form has no server entry yet, so it can't be sent.".to_owned(),
+        [] => String::new(),
+        [one] => format!("Enter {one}"),
+        [rest @ .., last] => format!("Enter {} and {last}", rest.join(", ")),
+    }
+}
+
+/// The confirm step: what handing the screen over means, then Back or Open the screen.
+fn confirm_step(spec: Rc<UserFormSpec>, key: String, loc: Local) -> View {
+    let s_open = spec.clone();
+    view()
+        .gap(px(12.0))
+        .child(
+            view()
+                .gap(px(4.0))
+                .child(text(format!("Do it yourself on {}?", screen_of(&spec))).text_size(px(13.0)).line_height(px(18.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .child(note(confirm_words(&spec))),
+        )
+        .child(
+            view()
+                .flex_row_reverse()
+                .items_center()
+                .gap_2()
+                .child(button(OPEN_THE_SCREEN, Kind::Primary, || true, move || {
+                    loc.confirm.set(false);
+                    open_screen(s_open.clone(), key.clone());
+                }))
+                .child(view().flex_1())
+                .child(button("Back", Kind::Ghost, || true, move || loc.confirm.set(false))),
+        )
 }
 
 /// The card's saved-login part, alone drawn again when a login or a share
@@ -1498,7 +1963,9 @@ fn saved_part(spec: Rc<UserFormSpec>, key: String, target: Option<CardTarget>) -
         if let (Some(t), Some(site)) = (target.clone().filter(|_| !rows.is_empty() || !asked.is_empty()), sites[0].clone()) {
             let asked = sites[1].clone().map(|named| (named, asked));
             let who = (spec.agent_id.clone(), spec.bot_name.clone(), card_sites(&spec));
-            return saved_strip(key.clone(), rows, t, site, asked, who).into_element();
+            // the header names the site on the broker's card
+            let say_site = site_of(&spec).is_none();
+            return saved_strip(key.clone(), rows, t, site, asked, who, say_site).into_element();
         }
         // no login is offered here, but a refused pick still says why
         dynamic(move || match loc.pick.get() {
@@ -1509,12 +1976,12 @@ fn saved_part(spec: Rc<UserFormSpec>, key: String, target: Option<CardTarget>) -
     })
 }
 
-/// The saved logins for the card's site: Use (Touch ID), or Type it by hand.
-/// The site the card asks for shows above them, and each row's own site
-/// under its name, marked when it is not the same site. `site` is the
-/// card's page's; when its `domain` names another (`asked`: that site and
-/// its rows), the mismatch shows first and that site's logins are listed
-/// only once the person asks for them.
+/// The saved logins for the card's site, each a row to press: Touch ID, then its name in the
+/// field and its secret held. "Use a different login" types one by hand. The site the card asks
+/// for shows above them where the header doesn't name it, and each row's own site under its name,
+/// marked when it is not the same site. `site` is the card's page's; when its `domain` names
+/// another (`asked`: that site and its rows), the mismatch shows first and that site's logins are
+/// listed only once the person asks for them.
 fn saved_strip(
     key: String,
     rows: Vec<SiteLogin>,
@@ -1522,6 +1989,7 @@ fn saved_strip(
     site: String,
     asked: Option<(String, Vec<SiteLogin>)>,
     (bot, bot_name, sites): (String, String, Vec<String>),
+    say_site: bool,
 ) -> impl IntoElement {
     let loc = local(&key);
     dynamic(move || {
@@ -1549,24 +2017,22 @@ fn saved_strip(
                 .into_element();
         }
         let hint = match target {
-            CardTarget::Code { .. } => "From your saved logins. Touch ID fills in its code.",
-            CardTarget::Username { .. } => "From your saved logins. Touch ID fills in its name.",
-            _ => "From your saved logins. Touch ID fills it in; the password is never shown.",
+            CardTarget::Code { .. } => "Touch ID fills in its code.",
+            CardTarget::Username { .. } => "Touch ID fills in its name.",
+            _ => "Touch ID fills it in; the password is never shown.",
         };
-        v = v.child(text(hint).text_size(px(12.0)).text_color(theme::MUTED));
-        let asks = match &asked {
-            Some((named, _)) => format!(
-                "This form names {named}, but its page is on {site}. Only logins for {site} are offered; check the page before you use another site's."
-            ),
-            None => format!("This form asks for {site}"),
-        };
-        v = v.child(
-            text(asks)
-                .number_of_lines(3)
-                .text_size(px(12.0))
-                .font_weight(if asked.is_some() { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                .text_color(if asked.is_some() { theme::DOWN } else { theme::MUTED }),
-        );
+        v = v.child(text("Saved logins").text_size(px(12.0)).line_height(px(16.0)).font_weight(FontWeight::MEDIUM).text_color(theme::MUTED));
+        if let Some((named, _)) = &asked {
+            v = v.child(
+                text(format!("This form names {named}, but its page is on {site}. Only logins for {site} are offered; check the page before you use another site's."))
+                    .number_of_lines(3)
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::DOWN),
+            );
+        } else if say_site {
+            v = v.child(text(format!("This form asks for {site}")).text_size(px(12.0)).text_color(theme::MUTED));
+        }
         let other: &[SiteLogin] = asked.as_ref().map(|(_, r)| r.as_slice()).unwrap_or_default();
         if rows.is_empty() && !shown {
             v = v.child(text(format!("No login is saved for {site}.")).text_size(px(12.0)).text_color(theme::MUTED));
@@ -1578,54 +2044,65 @@ fn saved_strip(
                 SiteMatch::Exact => (format!("Saved for {}", row.origin), theme::MUTED),
                 _ => (format!("Saved for {}, not {site}: check before you use it", row.origin), theme::DOWN),
             };
-            v = v.child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(8.0))
-                    .bg(theme::SUBTLE)
-                    .child(
-                        view()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .child(
-                                text(row.username.clone())
-                                    .number_of_lines(1)
-                                    .text_size(px(13.0))
-                                    .text_color(theme::TEXT),
-                            )
-                            .child(text(saved_for.0).number_of_lines(2).text_size(px(11.0)).text_color(saved_for.1)),
-                    )
-                    // its own button, named for the login it uses
-                    .child(button_as(format!("Use {}", row.username), "Use", Kind::Secondary, || true, move || {
-                        use_saved(k.clone(), &id, t.clone(), s.clone(), ss.clone(), b.clone(), &bn)
-                    })),
-            );
+            v = v.child(saved_row(format!("Use {}", row.username), row.username.clone(), saved_for, hint, move || {
+                use_saved(k.clone(), &id, t.clone(), s.clone(), ss.clone(), b.clone(), &bn)
+            }));
         }
-        let mut links = view().flex_row().gap_2();
+        v = v.child(text(hint).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::MUTED));
+        let mut links = view().flex_row().gap(px(12.0));
         if let Some((named, _)) = asked.as_ref().filter(|(_, r)| !shown && r.iter().any(|a| !rows.iter().any(|b| b.id == a.id))) {
             let k = key.clone();
             links = links.child(link_btn(format!("Show logins saved for {named}"), move || local(&k).show_asked.set(true)));
         }
         let k = key.clone();
-        v.child(links.child(link_btn("Type it by hand", move || by_hand(&k)))).into_element()
+        v.child(links.child(link_btn(USE_ANOTHER, move || by_hand(&k)))).into_element()
     })
 }
 
-fn field_view(key: String, f: Field, target: Option<CardTarget>) -> AnyElement {
+/// The saved-logins strip's way to type a login by hand.
+pub(crate) const USE_ANOTHER: &str = "Use a different login";
+
+/// One saved login, a button: its name, where it's saved for, and Touch ID at its end.
+fn saved_row(label: String, username: String, (saved_for, ink): (String, AdaptiveColor), hint: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .role(AccessibilityRole::Button)
+        .label(label)
+        .hint(hint)
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(10.0))
+        .border(px(0.5))
+        .border_color(theme::BORDER_S)
+        .bg(move || if hov.get() { theme::HOVER } else { theme::SUBTLE })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(on)
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(1.0))
+                .child(text(username).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT))
+                .child(text(saved_for).number_of_lines(2).text_size(px(11.0)).line_height(px(15.0)).text_color(ink)),
+        )
+        .child(text("Touch ID").text_size(px(11.0)).line_height(px(15.0)).text_color(theme::ACCENT))
+}
+
+fn field_view(key: String, f: Field, target: Option<CardTarget>, go: Option<Rc<dyn Fn()>>) -> AnyElement {
     let loc = local(&key);
     let mut label = view().flex_row().child(
         text(f.label.clone())
-            .text_size(px(13.0))
-            .line_height(px(18.0))
+            .text_size(px(12.0))
+            .line_height(px(16.0))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(theme::TEXT),
+            .text_color(theme::DIM),
     );
     if !f.required && f.kind != FieldKind::Checkbox {
-        label = label.child(text(" (optional)").text_size(px(13.0)).line_height(px(18.0)).text_color(theme::MUTED));
+        label = label.child(text(" (optional)").text_size(px(12.0)).line_height(px(16.0)).text_color(theme::MUTED));
     }
     let is_held = target.as_ref().and_then(CardTarget::secret_field) == Some(f.id.as_str());
     let control = match f.kind {
@@ -1635,16 +2112,16 @@ fn field_view(key: String, f: Field, target: Option<CardTarget>) -> AnyElement {
             let (k, f2) = (key.clone(), f.clone());
             dynamic(move || match loc.pick.get() {
                 Pick::Ready { username } => locked(&k, &username, target.as_ref()).into_element(),
-                _ => text_input(k.clone(), f2.clone()).into_element(),
+                _ => text_input(k.clone(), f2.clone(), go.clone()).into_element(),
             })
             .into_element()
         }
-        _ => text_input(key, f.clone()).into_element(),
+        _ => text_input(key, f.clone(), go).into_element(),
     };
     view().gap(px(4.0)).child(label).child(control).into_element()
 }
 
-fn text_input(key: String, f: Field) -> impl IntoElement {
+fn text_input(key: String, f: Field, go: Option<Rc<dyn Fn()>>) -> impl IntoElement {
     let loc = local(&key);
     let (id1, id2) = (f.id.clone(), f.id.clone());
     let multiline = f.kind == FieldKind::Textarea;
@@ -1654,31 +2131,36 @@ fn text_input(key: String, f: Field) -> impl IntoElement {
         _ => String::new(),
     });
     let h = if multiline { px(72.0) } else { px(32.0) };
+    let mut field = input()
+        .label(f.label.clone())
+        .value(move || loc.values.with(|v| v.get(&id1).to_owned()))
+        .placeholder(placeholder)
+        .placeholder_color(|| color(theme::GHOST))
+        .masked(f.masked())
+        .multiline(multiline)
+        .auto_correct(!f.masked() && multiline)
+        .text_size(px(13.0))
+        .text_color(theme::TEXT)
+        .h(h)
+        .on_change(move |t: &str| {
+            let (id, t) = (id2.clone(), t.to_owned());
+            loc.values.update(|v| {
+                v.0.insert(id, t);
+            });
+        });
+    // Return in the last field sends, as the primary would
+    if let Some(go) = go.filter(|_| !multiline) {
+        field = field.on_submit(move |_: &str| go());
+    }
     view()
         .h(h)
         .rounded(px(8.0))
         .bg(theme::HOVER)
+        .border(px(0.5))
+        .border_color(theme::BORDER_F)
         .px(px(10.0))
         .justify_center()
-        .child(
-            input()
-                .label(f.label.clone())
-                .value(move || loc.values.with(|v| v.get(&id1).to_owned()))
-                .placeholder(placeholder)
-                .placeholder_color(|| color(theme::GHOST))
-                .masked(f.masked())
-                .multiline(multiline)
-                .auto_correct(!f.masked() && multiline)
-                .text_size(px(13.0))
-                .text_color(theme::TEXT)
-                .h(h)
-                .on_change(move |t: &str| {
-                    let (id, t) = (id2.clone(), t.to_owned());
-                    loc.values.update(|v| {
-                        v.0.insert(id, t);
-                    });
-                }),
-        )
+        .child(field)
 }
 
 /// The held secret's place: dots and where it came from, never the value.
@@ -1762,20 +2244,50 @@ fn checkbox(key: String, f: Field) -> impl IntoElement {
     row
 }
 
+/// A login card's button's look.
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
+    /// Filled in the accent: the card's answer.
     Primary,
-    Secondary,
+    /// Words only, a wash on hover: the quiet answer.
     Ghost,
 }
 
-fn button(label: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static) -> impl IntoElement {
+pub(crate) fn button(label: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static) -> impl IntoElement {
     button_as(label.to_owned(), label, kind, enabled, on)
+}
+
+/// The primary answer: disabled (and dim) until the form can be sent, its tooltip and hint
+/// saying why (`why`, the fields still empty) or what it does.
+fn primary(label: &'static str, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static, why: impl Fn() -> String + 'static) -> impl IntoElement {
+    let why = Rc::new(why);
+    let (w1, w2) = (why.clone(), why);
+    button_as(label.to_owned(), label, Kind::Primary, enabled, on).hint(move || SharedString::from(w1())).tooltip(
+        dynamic(move || {
+            let w = w2();
+            if w.is_empty() {
+                return view().into_element();
+            }
+            text(w)
+                .max_w(px(260.0))
+                .text_size(px(11.5))
+                .line_height(px(15.0))
+                .text_color(theme::TEXT)
+                .bg(theme::POPOVER)
+                .border_1()
+                .border_color(theme::BORDER_S)
+                .rounded(px(6.0))
+                .px(px(8.0))
+                .py(px(4.0))
+                .into_element()
+        })
+        .into_element(),
+    )
 }
 
 /// A button a screen reader gets as one: role button, its own `label`, and
 /// disabled while it can't be pressed; `words` are what it shows.
-fn button_as(label: String, words: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static) -> impl IntoElement {
+fn button_as(label: String, words: &'static str, kind: Kind, enabled: impl Fn() -> bool + 'static, on: impl Fn() + 'static) -> View {
     let hov = signal(false);
     let enabled = Rc::new(enabled);
     let (e1, e2, e3, e4) = (enabled.clone(), enabled.clone(), enabled.clone(), enabled);
@@ -1783,24 +2295,25 @@ fn button_as(label: String, words: &'static str, kind: Kind, enabled: impl Fn() 
         .role(AccessibilityRole::Button)
         .label(label)
         .disabled(move || !e4())
-        .px(px(12.0))
-        .py(px(6.0))
-        .rounded(px(14.0))
+        .h(px(30.0))
+        .px(px(if kind == Kind::Ghost { 10.0 } else { 14.0 }))
+        .rounded(px(15.0))
         .items_center()
         .justify_center()
         .child(
             text(words)
-                .text_size(px(12.0))
+                .number_of_lines(1)
+                .text_size(px(12.5))
+                .line_height(px(16.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(move || match kind {
                     Kind::Primary => theme::ON_FILL,
-                    _ => theme::TEXT,
+                    Kind::Ghost => theme::DIM,
                 }),
         )
         .bg(move || match (kind, hov.get()) {
             (Kind::Primary, _) => theme::ACCENT,
-            (Kind::Secondary, false) => theme::HOVER,
-            (Kind::Secondary, true) | (Kind::Ghost, true) => theme::ACTIVE,
+            (Kind::Ghost, true) => theme::ACTIVE,
             (Kind::Ghost, false) => AdaptiveColor::TRANSPARENT,
         })
         .opacity(move || if e1() { 1.0f32 } else { 0.4 })
@@ -2082,5 +2595,128 @@ mod tests {
         assert_eq!(ids(listed(&page, &named, false)), ["m"], "the other site's login is not listed by itself");
         assert_eq!(ids(listed(&[], &named[..1], false)), Vec::<String>::new());
         assert_eq!(ids(listed(&page, &named, true)), ["m", "a"], "listed once asked for, each row once");
+    }
+
+    fn brokers_card(title: &str, instruction: &str) -> UserFormSpec {
+        UserFormSpec {
+            entry_id: "uf_1".into(),
+            chat: "t_1".into(),
+            bot_name: "Nova".into(),
+            title: title.into(),
+            instruction: Some(instruction.into()).filter(|i: &String| !i.is_empty()),
+            domain: Some("shop.example".into()),
+            takeover_note: Some(TAKEOVER_NOTE.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_known_takeover_note_is_the_brokers() {
+        let broker = include_str!("../../../broker/buwiz-broker/src/hub/tools/computer.rs");
+        assert!(broker.contains(&format!("pub const TAKEOVER_NOTE: &str = \"{TAKEOVER_NOTE}\";")), "the broker's note changed: put its new words in short lines here");
+    }
+
+    #[test]
+    fn the_popover_keeps_every_fact_of_the_takeover_note() {
+        let spec = brokers_card("Sign in", "");
+        let g = guidance(&spec);
+        assert_eq!(g.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(), ["Fill in", DO_IT_MYSELF]);
+        let all = g.iter().flat_map(|(_, l)| l.iter()).cloned().collect::<Vec<_>>().join(" ");
+        // each sentence of the note, by what it says
+        for fact in ["browser on its own screen", "isn't shown the screen and can't act through its tools until you hand back", "Commands it ran can keep running, but they can't see the screen or what you type", "Pages it opened, and anything it set going by clicking on this screen, could", "ended first, not always all of it", "Don't type a real password unless you trust this Bot's work so far", "Afterwards it can use whatever you signed in to", "shop.example", "not the AI", "never sees a password or code"] {
+            assert!(all.contains(fact), "{fact:?} missing from {all}");
+        }
+        // a note this build doesn't know: the broker's words, a sentence a line
+        let mut other = spec.clone();
+        other.takeover_note = Some("It's yours. Hand it back after.".into());
+        assert_eq!(guidance(&other)[1].1, ["It's yours.", "Hand it back after."]);
+        assert_eq!(confirm_words(&other), "It's yours. Hand it back after.");
+        assert!(confirm_words(&spec).contains("only use a real password if you trust this Bot's work so far"));
+        // a card that isn't the broker's has no Do it myself
+        let mut wire = spec.clone();
+        wire.chat.clear();
+        assert_eq!(guidance(&wire).len(), 1);
+    }
+
+    #[test]
+    fn the_ais_words_are_its_bots_and_a_repeat_of_the_site_is_dropped() {
+        let line = |t: &str, i: &str| ai_line(&brokers_card(t, i), "shop.example");
+        assert_eq!(line("Sign in to the fixture shop", "Sign in to the fixture shop with the fake login."), Some("Nova: Sign in to the fixture shop with the fake login.".into()));
+        assert_eq!(line("Sign in to shop.example", ""), None);
+        assert_eq!(line("Log in", "Please sign in on shop.example"), None);
+        assert_eq!(line("", ""), None);
+        assert_eq!(line("Sign in to Shop", ""), Some("Nova: Sign in to Shop.".into()));
+        // another domain in the AI's words stays visible, attributed, under the verified header
+        assert_eq!(line("Sign in to bank.example", ""), Some("Nova: Sign in to bank.example.".into()));
+        assert_eq!(line("Shop", "Use the test login"), Some("Nova: Shop. Use the test login.".into()));
+        assert_eq!(headline(&brokers_card("Sign in to bank.example", "")), "Sign in on shop.example");
+        let mut wire = brokers_card("Sign in to bank.example", "");
+        wire.chat.clear();
+        assert_eq!(headline(&wire), "Sign in to bank.example", "a card that isn't the broker's has no verified site");
+    }
+
+    #[test]
+    fn the_caption_and_the_primary_say_whether_return_is_pressed() {
+        let mut spec = brokers_card("Sign in", "");
+        spec.fields = parse_fields(&json!([{"id": "e", "label": "Email", "type": "email"}, {"id": "p", "label": "Password", "type": "password"}]));
+        spec.same_page = true;
+        assert!(presses_return(&spec));
+        assert_eq!(primary_label(&spec), "Fill and send");
+        assert_eq!(caption(&spec), "Typed on Nova's screen, then Return is pressed. Nothing is typed until you press Fill and send.");
+        spec.same_page = false;
+        assert!(!presses_return(&spec));
+        assert_eq!(primary_label(&spec), "Fill in");
+        assert_eq!(caption(&spec), "Typed on Nova's screen; sending is left to you. Nothing is typed until you press Fill in.");
+        spec.submit = true;
+        assert_eq!(primary_label(&spec), "Fill and send");
+        // a card that isn't the broker's keeps its own words
+        spec.chat.clear();
+        assert_eq!(primary_label(&spec), "Log in");
+    }
+
+    #[test]
+    fn every_ending_keeps_its_own_words() {
+        let spec = brokers_card("Sign in", "");
+        let line = |r, unsure, said| receipt(&spec, r, unsure, said).3;
+        let want = [
+            (FormResolution::Submitted, false, "Filled in on shop.example. Secret values were never shown to the AI."),
+            (FormResolution::FillFailed, true, "May have been typed on shop.example: check the screen. Secret values were never shown to the AI."),
+            (FormResolution::FillFailed, false, "Nothing was filled on shop.example: the page may have moved or changed. Secret values were never shown to the AI."),
+            (FormResolution::Escalated, false, "Handed over: Nova's screen is yours. Hand it back when you're done."),
+            (FormResolution::Dismissed, false, "Dismissed. Nothing was filled."),
+            (FormResolution::Skipped, false, "Skipped. Nothing was filled."),
+            (FormResolution::TimedOut, false, "Expired: nobody answered in time, so nothing was filled."),
+            (FormResolution::Superseded, false, "Moved on to your next message."),
+            (FormResolution::Unsure, false, "Check the screen: Buwiz Bot didn't hear how this went."),
+        ];
+        for (r, unsure, words) in want {
+            assert_eq!(line(r, unsure, false), words, "{r:?}");
+        }
+        let lines: std::collections::BTreeSet<String> = want.iter().map(|(r, u, _)| line(*r, *u, false)).collect();
+        assert_eq!(lines.len(), want.len(), "no two endings read alike");
+        // with the broker's reason under it, a failure doesn't guess at one
+        assert_eq!(line(FormResolution::FillFailed, false, true), "Nothing was filled on shop.example. Secret values were never shown to the AI.");
+        // a may-have-typed ending is never "nothing was filled"
+        assert!(!line(FormResolution::FillFailed, true, true).contains("Nothing was filled"));
+        assert!(!line(FormResolution::Unsure, false, false).contains("Nothing"));
+    }
+
+    #[test]
+    fn a_fills_receipt_is_one_line_with_what_became_of_return() {
+        let line = receipt(&brokers_card("Sign in", ""), FormResolution::Submitted, false, true).3;
+        assert_eq!(filled_line(&line, "Typed, and Return was pressed."), "Filled in on shop.example. Return was pressed. Secret values were never shown to the AI.");
+        assert_eq!(filled_line(&line, "Typed. Return is left to you, or to the AI once it has looked."), "Filled in on shop.example. Return is left to you, or to the AI once it has looked. Secret values were never shown to the AI.");
+        assert_eq!(filled_line(&line, "Typed, but Return wasn't pressed: the tab went away."), "Filled in on shop.example. Return wasn't pressed: the tab went away. Secret values were never shown to the AI.");
+        assert_eq!(filled_line(&line, "Typed the first step (Email); the rest is for the page that comes next."), "Filled in on shop.example. Typed the first step (Email); the rest is for the page that comes next. Secret values were never shown to the AI.");
+    }
+
+    #[test]
+    fn a_notice_says_when_a_value_may_have_gone_in() {
+        let n = json!({"kind": "user_form", "id": "uf_1", "chat": "t_1", "state": "fill_failed", "uncertain": true, "note": "x"});
+        assert!(UserFormSpec::from_notice(&n).unwrap().uncertain);
+        let n = json!({"kind": "user_form", "id": "uf_1", "chat": "t_1", "state": "fill_failed"});
+        assert!(!UserFormSpec::from_notice(&n).unwrap().uncertain);
+        assert_eq!(sentences("A. B! c? d"), ["A.", "B!", "c?", "d"]);
+        assert_eq!(sentences("Go to shop.example now."), ["Go to shop.example now."]);
     }
 }

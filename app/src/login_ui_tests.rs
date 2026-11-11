@@ -27,6 +27,12 @@ const MARK: &str = "fake-secret-marker-41c2";
 const SUBMIT: &str = "/v1/host/computer/login/submit";
 const DISMISS: &str = "/v1/host/computer/login/dismiss";
 const SAVED: &str = "/v1/host/computer/login/saved";
+/// The card's answers, as it shows and labels them.
+const FILL: &str = "Fill and send";
+const DO_IT: &str = crate::cards::user_form::DO_IT_MYSELF;
+const USE_ANOTHER: &str = crate::cards::user_form::USE_ANOTHER;
+const INFO: &str = crate::cards::user_form::INFO_LABEL;
+const PANEL: &str = crate::cards::user_form::INFO_PANEL;
 
 fn in_child(name: &str) -> bool {
     if std::env::var_os(CHILD).is_some() {
@@ -181,7 +187,7 @@ fn with_card_for(app: &mut Headless, id: &'static str, bot: Option<&'static str>
         st.turns_of.set("t_nova".to_owned());
         st.add_local_wire_turn(&json!({"role": "notice", "text": "Sign in to Shop", "notice": {
             "kind": "user_form", "id": id, "bot": bot, "botName": "Nova", "chat": "t_nova", "title": "Sign in to Shop", "state": "pending",
-            "takeoverNote": "You'd use its own browser on its own screen.",
+            "takeoverNote": crate::cards::user_form::TAKEOVER_NOTE,
             "form": {"title": "Sign in to Shop", "domain": "shop.example", "samePage": true, "submit": true, "fields": [
                 {"id": "email", "label": "Email", "type": "email", "required": true},
                 {"id": "password", "label": "Password", "type": "password", "required": true, "secret": true}]}}}));
@@ -265,10 +271,10 @@ fn a_typed_login_goes_to_the_brokers_route_and_the_save_offer_follows() {
     reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
     let (mut app, seen) = start(reply);
     with_card(&mut app);
-    assert!(has_text(&app, "Sign in to Shop") && app.has("Open the screen"), "{:?}", app.texts());
-    assert!(has_text(&app, "Typed into shop.example on Nova's screen, then Return is pressed to send it. Nothing is typed until you press Log in."), "the site and Return, plainly: {:?}", app.texts());
+    assert!(has_text(&app, "Sign in on shop.example") && app.has(DO_IT), "{:?}", app.texts());
+    assert!(has_text(&app, "Typed on Nova's screen, then Return is pressed. Nothing is typed until you press Fill and send."), "the screen and Return, plainly: {:?}", app.texts());
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     let sent = wait_for(&mut app, &seen, SUBMIT, 1);
     let (body, token) = &sent[0];
     assert!(token, "with the host token");
@@ -276,8 +282,8 @@ fn a_typed_login_goes_to_the_brokers_route_and_the_save_offer_follows() {
     let order: Vec<String> = seen.log.lock().unwrap().iter().map(|(p, _, _)| p.clone()).filter(|p| p.starts_with("/v1/host/prove") || p == SUBMIT).collect();
     assert_eq!(order, ["/v1/host/prove", SUBMIT], "the broker proves itself first");
     settle(&mut app);
-    assert!(has_text(&app, "Typed into the page"), "{:?}", app.texts());
-    assert!(has_text(&app, "Save login for shop.example as kid@example.com?"), "{:?}", app.texts());
+    assert!(has_text(&app, "Filled in on shop.example."), "{:?}", app.texts());
+    assert!(has_text(&app, "Save this login for shop.example?") && app.texts().contains(&"kid@example.com"), "{:?}", app.texts());
     assert!(pending(&mut app), "held for the offer");
     app.press("Not now");
     settle(&mut app);
@@ -294,12 +300,12 @@ fn a_typed_login_is_not_kept_when_no_offer_comes() {
     let (mut app, seen) = start(submitted("submitted"));
     with_card(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
-    assert!(has_text(&app, "Submitted"), "{:?}", app.texts());
+    assert!(has_text(&app, "Filled in on shop.example."), "{:?}", app.texts());
     assert!(!pending(&mut app), "nothing held past a card that settled with no offer");
-    assert!(!has_text(&app, "Save login for"));
+    assert!(!has_text(&app, "Save this login for"));
 }
 
 /// A refusal and a missing route show as failures: the card stays open, never "Submitted", and
@@ -313,21 +319,21 @@ fn a_refused_or_missing_route_is_a_failure_and_not_submitted() {
     let (mut app, seen) = start((403, json!({"ok": false, "code": "wrong-page", "message": wrong})));
     with_card(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
     assert!(has_text(&app, wrong), "{:?}", app.texts());
-    assert!(!has_text(&app, "Submitted") && app.has("Log in"), "still open: {:?}", app.texts());
+    assert!(!has_text(&app, "Filled in") && app.has(FILL), "still open: {:?}", app.texts());
     assert!(!pending(&mut app));
 
     // an older broker: its /v1/host/ has no such route
     *seen.submit.lock().unwrap() = (404, json!({"ok": false, "code": "not_found", "message": "no route /v1/host/computer/login/submit"}));
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 2);
     settle(&mut app);
     assert!(has_text(&app, "nothing was typed"), "{:?}", app.texts());
-    assert!(!has_text(&app, "Submitted") && app.has("Log in"), "{:?}", app.texts());
+    assert!(!has_text(&app, "Filled in") && app.has(FILL), "{:?}", app.texts());
     assert!(!pending(&mut app));
 }
 
@@ -340,12 +346,20 @@ fn dismiss_and_open_the_screen_go_to_the_brokers_route() {
     let (mut app, seen) = start(submitted("submitted"));
     with_card(&mut app);
     app.type_text("Password", MARK);
+    // Do it myself asks once more, and Back sends nothing
+    app.press(DO_IT);
+    assert!(has_text(&app, "Do it yourself on Nova's screen?") && has_text(&app, "only use a real password if you trust this Bot's work so far"), "{:?}", app.texts());
+    assert!(!app.has(FILL) && !app.has("Password"), "the card asks, in place of its form: {:?}", app.texts());
+    app.press("Back");
+    settle(&mut app);
+    assert!(app.has(FILL) && heard(&seen, DISMISS).is_empty(), "nothing sent before Open the screen");
+    app.press(DO_IT);
     app.press("Open the screen");
     let sent = wait_for(&mut app, &seen, DISMISS, 1);
     assert_eq!(sent[0].0, json!({"chat": "t_nova", "id": "uf_1", "mode": "escalated"}));
     assert!(sent[0].1, "with the host token");
     settle(&mut app);
-    assert!(has_text(&app, "On the computer"), "{:?}", app.texts());
+    assert!(has_text(&app, "Handed over: Nova's screen is yours. Hand it back when you're done."), "{:?}", app.texts());
     assert!(heard(&seen, SUBMIT).is_empty());
     assert!(!seen.log.lock().unwrap().iter().any(|(_, b, _)| b.to_string().contains(MARK)), "nothing typed left the app");
 }
@@ -369,20 +383,20 @@ fn a_saved_login_is_asked_about_before_touch_id_and_refused_on_a_shared_computer
     assert!(heard(&seen, SUBMIT).is_empty());
 
     *seen.saved.lock().unwrap() = (200, json!({"ok": true, "usable": true}));
-    app.press("Type it by hand");
+    app.press(USE_ANOTHER);
     settle(&mut app);
     app.press("Use a saved login");
     settle(&mut app);
     app.press("Use kid@example.com");
     wait_for(&mut app, &seen, SAVED, 2);
     settle(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     let sent = wait_for(&mut app, &seen, SUBMIT, 1);
     assert_eq!(sent[0].0["values"], json!({"email": "kid@example.com", "password": MARK}));
     assert_eq!(sent[0].0["savedLogin"], true);
     settle(&mut app);
     assert!(!app.texts().iter().any(|t| t.contains(MARK)), "never painted");
-    assert!(!has_text(&app, "Save login for"), "a saved login isn't offered again");
+    assert!(!has_text(&app, "Save this login for"), "a saved login isn't offered again");
 }
 
 /// A chip's or a card's words that start with a built-in (or a name kept for one) run nothing:
@@ -438,11 +452,12 @@ fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {
     let (mut app, seen) = start((200, json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "fill_failed", "uncertain": true, "note": note}})));
     with_card(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
-    assert!(has_text(&app, "Not filled") && has_text(&app, "may have been typed"), "{:?}", app.texts());
-    assert!(!app.has("Try again") && !app.has("Log in"), "no blind retry: {:?}", app.texts());
+    assert!(has_text(&app, "May have been typed on shop.example: check the screen.") && has_text(&app, note), "{:?}", app.texts());
+    assert!(!has_text(&app, "Nothing was filled"), "never nothing-filled beside a maybe: {:?}", app.texts());
+    assert!(!app.has("Try again") && !app.has(FILL), "no blind retry: {:?}", app.texts());
 }
 
 /// A stranger on the broker's port that can't prove it holds the host token gets no token and
@@ -460,8 +475,9 @@ fn an_unproven_broker_gets_no_token_from_any_card_button() {
     wait_for(&mut app, &seen, "/v1/host/prove", 1);
     settle(&mut app);
     assert!(has_text(&app, "so no saved login was used"), "{:?}", app.texts());
-    app.press("Type it by hand");
+    app.press(USE_ANOTHER);
     settle(&mut app);
+    app.press(DO_IT);
     app.press("Open the screen");
     wait_for(&mut app, &seen, "/v1/host/prove", 2);
     settle(&mut app);
@@ -470,7 +486,7 @@ fn an_unproven_broker_gets_no_token_from_any_card_button() {
     wait_for(&mut app, &seen, "/v1/host/prove", 3);
     settle(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, "/v1/host/prove", 4);
     settle(&mut app);
     let log = seen.log.lock().unwrap();
@@ -492,11 +508,12 @@ fn a_late_or_unsure_answer_paints_what_really_happened() {
     let (mut app, seen) = start((504, json!({"ok": false, "code": "timeout", "message": "It's still being typed.", "notice": {"kind": "user_form", "id": "uf_1", "state": "pending"}})));
     with_card(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
-    assert!(has_text(&app, "Check the screen") && !app.has("Log in"), "no second answer: {:?}", app.texts());
+    assert!(has_text(&app, "Check the screen") && !app.has(FILL), "no second answer: {:?}", app.texts());
     assert!(!has_text(&app, "Nothing was filled") && !has_text(&app, "Dismissed"), "{:?}", app.texts());
+    assert!(has_text(&app, "Look at Nova's screen before doing anything else."), "{:?}", app.texts());
 }
 
 /// A dismiss that came after the broker typed the login paints what was typed.
@@ -511,7 +528,7 @@ fn a_dismiss_after_the_login_was_typed_paints_it_typed() {
     app.press("Dismiss");
     wait_for(&mut app, &seen, DISMISS, 1);
     settle(&mut app);
-    assert!(has_text(&app, "Submitted") && !has_text(&app, "Dismissed without filling"), "{:?}", app.texts());
+    assert!(has_text(&app, "Filled in on shop.example.") && !has_text(&app, "Dismissed. Nothing was filled."), "{:?}", app.texts());
 }
 
 fn asks(app: &mut Headless) -> usize {
@@ -624,7 +641,7 @@ fn an_unshared_logins_id_is_refused_before_touch_id_and_nothing_is_sent() {
     on(&mut app, move || {
         crate::vault::vault().share(&id, "nova", false).unwrap();
     });
-    app.press("Log in");
+    app.press(FILL);
     settle(&mut app);
     assert!(has_text(&app, "isn't shared with Nova"), "{:?}", app.texts());
     assert!(heard(&seen, SUBMIT).is_empty(), "nothing sent");
@@ -655,7 +672,7 @@ fn touch_id_is_asked_on_every_use_of_a_saved_login() {
     wait_for(&mut app, &seen, SAVED, 2);
     settle(&mut app);
     assert_eq!(asks(&mut app), before + 2, "asked again, not remembered");
-    app.press("Log in");
+    app.press(FILL);
     let sent = wait_for(&mut app, &seen, SUBMIT, 1);
     assert_eq!(sent[0].0["savedLoginId"].as_str().map(|s| s.starts_with("sl_")), Some(true));
     settle(&mut app);
@@ -879,7 +896,7 @@ fn a_login_saved_from_a_bots_card_is_shared_with_that_bot_only() {
     let (mut app, seen) = start(reply);
     with_card(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
     assert!(has_text(&app, "Saved, it's offered to Nova only. Share it with other Bots in Settings › Logins."), "{:?}", app.texts());
@@ -951,7 +968,7 @@ fn the_save_offer_says_who_else_keeps_a_login_saved_already() {
     with_card(&mut app);
     assert!(!app.has("Use kid@example.com"), "Orbit's, not Nova's");
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
     assert!(has_text(&app, "Saved, it's offered to Nova, and still to Orbit."), "{:?}", app.texts());
@@ -973,7 +990,7 @@ fn a_card_with_no_bot_id_saves_a_login_shared_with_no_bot_and_says_so() {
     let (mut app, seen) = start(reply);
     with_card_for(&mut app, "uf_1", None);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
     assert!(has_text(&app, "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins."), "{:?}", app.texts());
@@ -1002,9 +1019,10 @@ fn a_vault_change_leaves_the_cards_fields_and_typing_alone() {
     assert_eq!(app.value("Email"), "kid@exa", "what was typed stays");
 }
 
-/// Each of the card's controls is its own accessible button, named, and Log in says it's disabled
-/// until the form can be sent; the trust note is its own text. The picker's Use, and the save
-/// offer's Save and Not now, too.
+/// Each of the card's controls is its own accessible button, named, and the primary says it's
+/// disabled until the form can be sent, and why; the ⓘ is a button whose hint carries the
+/// guidance. No text holds two controls' words. The saved login's row, and the save offer's Save
+/// and Not now, too.
 #[test]
 fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
     if !in_child("the_cards_controls_are_accessible_buttons_each_with_its_label") {
@@ -1016,24 +1034,202 @@ fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
     on(&mut app, || save_shared("ada@example.com", &["nova"]));
     with_card(&mut app);
     let button = |app: &Headless, label: &str| app.access(label).0 == AccessibilityRole::Button;
-    for label in ["Log in", "Open the screen", "Dismiss", "Use ada@example.com", "Type it by hand"] {
+    // a saved login is offered: it comes first, and the fields wait behind Use a different login
+    for label in [DO_IT, "Dismiss", INFO, "Use ada@example.com", USE_ANOTHER] {
         assert!(button(&app, label), "{label} is a button: {:?}", app.access(label));
     }
-    assert!(app.access("Log in").1, "Log in says it's disabled with nothing typed");
-    assert!(!app.access("Open the screen").1);
-    assert!(app.texts().contains(&"Open the screen: You'd use its own browser on its own screen."), "the note is its own text: {:?}", app.texts());
-    assert!(!app.texts().iter().any(|t| t.contains("Log in") && t.contains("Open the screen")), "{:?}", app.texts());
-    app.press("Type it by hand");
+    assert!(!app.has("Email") && !app.has(FILL), "the saved login is the choice: {:?}", app.texts());
+    assert!(app.access_hint("Use ada@example.com").contains("Touch ID"), "{}", app.access_hint("Use ada@example.com"));
+    assert!(!app.access(DO_IT).1);
+    let hint = app.access_hint(INFO);
+    for words in ["Buwiz types it into shop.example on Nova's screen, not the AI.", "Commands it ran can keep running", "Afterwards it can use whatever you signed in to."] {
+        assert!(hint.contains(words), "the guidance is the button's hint: {hint}");
+    }
+    let labels = [FILL, DO_IT, "Dismiss", INFO, "Use ada@example.com", USE_ANOTHER];
+    let two = |app: &Headless| app.texts().iter().any(|t| labels.iter().filter(|l| t.contains(*l)).count() > 1);
+    assert!(!two(&app), "{:?}", app.texts());
+    app.press(USE_ANOTHER);
     settle(&mut app);
-    typed_login(&mut app);
-    assert!(!app.access("Log in").1, "enabled once filled");
-    app.press("Log in");
+    assert!(button(&app, FILL) && app.access(FILL).1, "the primary says it's disabled with nothing typed");
+    assert_eq!(app.access_hint(FILL), "Enter email and password", "and why");
+    app.type_text("Email", "kid@example.com");
+    assert_eq!(app.access_hint(FILL), "Enter password");
+    app.type_text("Password", MARK);
+    assert!(!app.access(FILL).1, "enabled once filled");
+    assert!(app.access_hint(FILL).starts_with("Typed on Nova's screen"), "{}", app.access_hint(FILL));
+    assert!(!two(&app), "{:?}", app.texts());
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
     for label in ["Save", "Not now"] {
         assert!(button(&app, label), "{label} is a button");
     }
     no_mark(&app);
+}
+
+/// Nova's chat open, with the broker's login card for `form` (the notice's `form`) in it.
+fn with_form(app: &mut Headless, form: Value) {
+    on(app, move || {
+        let st = store();
+        st.mcp_loaded.set(true);
+        st.set_threads(threads());
+        st.active_id.set("t_nova".to_owned());
+        st.turns_of.set("t_nova".to_owned());
+        st.add_local_wire_turn(&json!({"role": "notice", "text": "Sign in", "notice": {
+            "kind": "user_form", "id": "uf_1", "bot": "nova", "botName": "Nova", "chat": "t_nova", "title": form["title"], "state": "pending",
+            "takeoverNote": crate::cards::user_form::TAKEOVER_NOTE, "form": form}}));
+    });
+    settle(app);
+}
+
+/// The header is Buwiz's: a lock and the site the values are typed into, never the AI's title,
+/// which shows under it as Nova's words. The take-over's long guidance isn't in the card's body;
+/// the line under the answers says whether Return is pressed; the card is no wider than a
+/// message, at the column's left.
+#[test]
+fn the_card_heads_with_its_site_and_shows_the_ais_words_as_its_bots() {
+    if !in_child("the_card_heads_with_its_site_and_shows_the_ais_words_as_its_bots") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_form(&mut app, json!({"title": "Sign in to your bank", "instruction": "Sign in to your bank with the fake login.", "domain": "shop.example", "samePage": true, "submit": true, "fields": [
+        {"id": "email", "label": "Email", "type": "email", "required": true},
+        {"id": "password", "label": "Password", "type": "password", "required": true, "secret": true}]}));
+    let card = "Sign in on shop.example";
+    assert!(app.texts().contains(&card), "the site heads the card: {:?}", app.texts());
+    assert!(app.texts().contains(&"Nova: Sign in to your bank with the fake login."), "the AI's words, as Nova's: {:?}", app.texts());
+    assert!(!app.texts().contains(&"Sign in to your bank"), "never the AI's title in the header: {:?}", app.texts());
+    assert!(app.texts().contains(&"Typed on Nova's screen, then Return is pressed. Nothing is typed until you press Fill and send."));
+    for long in ["Commands it ran", "ended first", "a different matter", "trust this Bot's work"] {
+        assert!(!has_text(&app, long), "{long:?} is in the card's body: {:?}", app.texts());
+    }
+    // its width: capped, inside a wider column, from its left
+    let frame = app.frame(card);
+    assert!(frame.size.width.0 <= crate::cards::user_form::CARD_MAX_W + 0.5 && frame.size.width.0 > 300.0, "{frame:?}");
+    assert!(app.parent_frame(card).size.width.0 > frame.size.width.0 + 100.0 && frame.origin.x.0 < 1.0, "{frame:?} in {:?}", app.parent_frame(card));
+    // the ⓘ is left of the ×, and Tab reaches the answers first
+    let order = app.labels_by_x(card);
+    let at = |l: &str| order.iter().position(|x| x == l).unwrap_or_else(|| panic!("{l} in {order:?}"));
+    assert!(at(DO_IT) < at(FILL) && at(INFO) < at("Dismiss"), "{order:?}");
+    let tree = app.labels_in_order(card);
+    let at = |l: &str| tree.iter().position(|x| x == l).unwrap_or_else(|| panic!("{l} in {tree:?}"));
+    assert!(at("Email") < at("Password") && at("Password") < at(FILL) && at(FILL) < at(DO_IT) && at(DO_IT) < at(INFO) && at(INFO) < at("Dismiss"), "Tab order: {tree:?}");
+}
+
+/// A card whose AI didn't ask for Return says sending is left to the person, and its primary only
+/// fills; a title that only repeats the site isn't shown again.
+#[test]
+fn a_card_that_leaves_return_to_the_person_says_so() {
+    if !in_child("a_card_that_leaves_return_to_the_person_says_so") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    with_form(&mut app, json!({"title": "Sign in to shop.example", "domain": "shop.example", "samePage": true, "fields": [
+        {"id": "email", "label": "Email", "type": "email", "required": true},
+        {"id": "code", "label": "Code", "type": "text", "required": true}]}));
+    assert!(app.has("Fill in") && !app.has(FILL), "{:?}", app.texts());
+    assert!(app.texts().contains(&"Typed on Nova's screen; sending is left to you. Nothing is typed until you press Fill in."), "{:?}", app.texts());
+    assert!(!has_text(&app, "Nova:"), "a title that only names the site isn't repeated: {:?}", app.texts());
+    app.press(INFO);
+    assert!(app.texts().contains(&"It doesn't press Return: sending is left to you."), "{:?}", app.texts());
+    app.cancel("About this card, open");
+    // Return in the last field sends, once the form can be sent
+    app.type_text("Email", "kid@example.com");
+    app.submit("Code");
+    settle(&mut app);
+    assert!(heard(&seen, SUBMIT).is_empty(), "nothing goes while a field is empty");
+    app.type_text("Code", "fake-code");
+    app.submit("Code");
+    let sent = wait_for(&mut app, &seen, SUBMIT, 1);
+    assert_eq!(sent[0].0["values"], json!({"email": "kid@example.com", "code": "fake-code"}));
+}
+
+/// The ⓘ's popover holds the guidance: the pointer resting on the ⓘ peeks it and leaving closes
+/// it; the keyboard focus opens it and leaving closes it; a press pins it, and Escape or a press
+/// outside closes it.
+#[test]
+fn the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outside() {
+    if !in_child("the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outside") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    assert!(!app.has(PANEL));
+    let lines = [
+        "Buwiz types it into shop.example on Nova's screen, not the AI.",
+        "Then it presses Return to send it.",
+        "The AI never sees a password or code. It's told the form was filled, and what went into fields that aren't secret, like an email.",
+        "Nothing is typed until you press Fill and send.",
+        "You use Nova's own browser on its own screen yourself.",
+        "The AI isn't shown the screen and can't act through its tools until you hand back.",
+        "Commands it ran can keep running, but they can't see the screen or what you type.",
+        "Pages it opened, and anything it set going by clicking on this screen, could.",
+        "What Buwiz can find on the desktop is ended first, not always all of it.",
+        "Don't type a real password unless you trust this Bot's work so far.",
+        "Afterwards it can use whatever you signed in to.",
+    ];
+    // hover: a peek after the pointer rests, gone after it leaves
+    app.hover(INFO, true);
+    assert!(!app.has(PANEL), "not before the pointer rested");
+    app.pump(Duration::from_millis(450));
+    assert!(app.has(PANEL), "{:?}", app.texts());
+    for l in lines {
+        assert!(app.texts().contains(&l), "{l:?} in the popover: {:?}", app.texts());
+    }
+    for h in [FILL, DO_IT] {
+        assert!(app.texts().contains(&h), "the heading {h}");
+    }
+    app.hover(INFO, false);
+    app.pump(Duration::from_millis(400));
+    assert!(!app.has(PANEL), "a peek closes when the pointer leaves");
+    // the keyboard focus
+    let info = app.view(INFO);
+    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
+    assert!(app.has(PANEL), "focus opens it");
+    app.send(info, nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
+    assert!(!app.has(PANEL), "and leaving closes it");
+    // a press pins it: the pointer leaving doesn't close it, Escape does
+    app.press(INFO);
+    assert!(app.has(PANEL));
+    app.hover(INFO, true);
+    app.hover(INFO, false);
+    app.pump(Duration::from_millis(400));
+    assert!(app.has(PANEL), "pinned");
+    app.cancel("About this card, open");
+    assert!(!app.has(PANEL), "Escape closes it");
+    // a press outside closes it
+    app.press(INFO);
+    assert!(app.has(PANEL));
+    let overlay = app.view("About this card, open");
+    app.send(overlay, nsh_core::EventKind::PressOutside, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
+    assert!(!app.has(PANEL), "a press outside closes it");
+    // and the press on the icon again closes a pinned one
+    app.press(INFO);
+    app.press(INFO);
+    assert!(!app.has(PANEL));
+    assert!(seen.log.lock().unwrap().iter().all(|(p, _, _)| !p.starts_with("/v1/host/computer/login/")), "the ⓘ answers nothing");
+}
+
+/// A refused hand-over keeps the card open and says, in the broker's words, that the screen
+/// wasn't handed over; nothing typed goes with it.
+#[test]
+fn a_refused_hand_over_says_the_screen_was_not_handed_over() {
+    if !in_child("a_refused_hand_over_says_the_screen_was_not_handed_over") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    let why = "The screen wasn't handed over: Buwiz couldn't end what was running on the desktop (fake-program).";
+    *seen.dismiss.lock().unwrap() = Some((409, json!({"ok": false, "code": "handover_failed", "message": why})));
+    with_card(&mut app);
+    app.press(DO_IT);
+    app.press("Open the screen");
+    wait_for(&mut app, &seen, DISMISS, 1);
+    settle(&mut app);
+    assert!(has_text(&app, why) && app.has(FILL), "{:?}", app.texts());
+    assert!(!has_text(&app, "Handed over"), "{:?}", app.texts());
 }
 
 /// A password being typed into the open form stays through Share all and Refresh, both in the
@@ -1105,7 +1301,7 @@ fn the_save_offer_under_share_all_says_every_bot_is_offered_it() {
     on(&mut app, || crate::vault::vault().set_share_all(true).unwrap());
     with_card(&mut app);
     typed_login(&mut app);
-    app.press("Log in");
+    app.press(FILL);
     wait_for(&mut app, &seen, SUBMIT, 1);
     settle(&mut app);
     assert!(has_text(&app, "Saved, every Bot is offered it while Share all is on; with Share all off, it's offered to Nova only."), "{:?}", app.texts());

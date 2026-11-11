@@ -21,7 +21,9 @@ use std::borrow::Borrow;
 use nsh_core::prelude::*;
 use serde_json::Value;
 
-use super::{Btn, CardState, btn, error_line, note, set_state, shell, state_of, title};
+use super::user_form::{Kind, button, login_shell};
+use super::{CardState, error_line, note, set_state, state_of, title};
+use crate::theme;
 use crate::vault::{self, off_main, vault};
 
 /// The CUSTOM name of the offer.
@@ -142,7 +144,9 @@ fn skip(spec: &SaveLoginSpec, key: &str) {
     set_state(key, CardState::Dismissed);
 }
 
-/// The offer card, its state under `key`.
+/// The offer card, its state under `key`, in the login card's look: a lock and the site, the
+/// name, who it will be offered to, then Not now (quiet, at the left) and Save. Once answered,
+/// one line.
 pub(crate) fn card(spec: impl Borrow<SaveLoginSpec>, key: impl AsRef<str>) -> impl IntoElement {
     let spec = spec.borrow().clone();
     let key = key.as_ref().to_owned();
@@ -150,28 +154,42 @@ pub(crate) fn card(spec: impl Borrow<SaveLoginSpec>, key: impl AsRef<str>) -> im
         let id = format!("save-login-{}", spec.form_entry_id);
         let who = format!("{} for {}", spec.username, spec.origin);
         let held = vault().has_pending(&spec.form_entry_id);
+        let line = |s: String| login_shell(&id).p(px(12.0)).child(text(s).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::DIM));
         let why = match state_of(&key) {
-            Some(CardState::Answered(_)) => {
-                return shell(&id).child(note(format!("✓ Saved {who} to your logins."))).into_element();
-            }
-            Some(CardState::Sending) => return shell(&id).child(note("Saving…".into())).into_element(),
+            Some(CardState::Answered(_)) => return line(format!("✓ Saved {who} to your logins.")).into_element(),
+            Some(CardState::Sending) => return line("Saving…".into()).into_element(),
             Some(CardState::Dismissed | CardState::Superseded) => return view().into_element(),
-            Some(CardState::Error(why)) if !held => return shell(&id).child(error_line(why)).into_element(),
+            Some(CardState::Error(why)) if !held => return login_shell(&id).p(px(12.0)).child(error_line(why)).into_element(),
             Some(CardState::Error(why)) => Some(why),
             None if !held => return view().into_element(),
             None => None,
         };
         let (s1, k1, s2, k2) = (spec.clone(), key.clone(), spec.clone(), key.clone());
-        shell(&id)
+        login_shell(&id)
             .label(format!("Save login for {}", spec.origin))
-            .child(title(format!("Save login for {} as {}?", spec.origin, spec.username)))
-            .child(note(saved_note(&spec)))
             .child(
                 view()
-                    .flex_row()
+                    .gap(px(4.0))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(crate::icons::icon_ink("lock", 14.0, || theme::DIM))
+                            .child(title(format!("Save this login for {}?", spec.origin)).flex_1().min_w(px(0.0)).number_of_lines(1)),
+                    )
+                    .child(text(spec.username.clone()).number_of_lines(1).text_size(px(13.0)).line_height(px(18.0)).font_weight(FontWeight::MEDIUM).text_color(theme::TEXT)),
+            )
+            .child(note(saved_note(&spec)))
+            .child(
+                // Tab reaches Save first: the row is laid out from the right
+                view()
+                    .flex_row_reverse()
+                    .items_center()
                     .gap_2()
-                    .child(btn(Btn::Primary, "Save", move || save(&s1, &k1)))
-                    .child(btn(Btn::Secondary, "Not now", move || skip(&s2, &k2))),
+                    .child(button("Save", Kind::Primary, || true, move || save(&s1, &k1)))
+                    .child(view().flex_1())
+                    .child(button("Not now", Kind::Ghost, || true, move || skip(&s2, &k2))),
             )
             .when(why.is_some(), |v| v.child(error_line(why.unwrap_or_default())))
             .into_element()
