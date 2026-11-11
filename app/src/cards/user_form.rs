@@ -1870,7 +1870,7 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
         .child(view().flex_row().items_start().gap(px(8.0)).child(glyph(g, ink, tint)).child(words));
     // the broker's card is done once it settles: the run has gone on, and a fill that may have
     // typed something isn't retried blind. Its note says what to do; the AI may raise a new card
-    if r == FormResolution::FillFailed && spec.has_entry_id() && spec.chat.is_empty() {
+    if r == FormResolution::FillFailed && spec.has_entry_id() && spec.chat.is_empty() && retry_offered(&facts) {
         let (s1, k1, s2, k2) = (spec.clone(), key.clone(), spec.clone(), key.clone());
         receipt = receipt.child(
             view()
@@ -1890,6 +1890,12 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
         }
     }
     v
+}
+
+/// Whether a settled not-filled card (one that isn't the broker's) offers Try again: never when a
+/// value may have gone in, which a blind retry could type twice.
+pub(crate) fn retry_offered(facts: &Facts) -> bool {
+    facts.unsure() == Unsure::No
 }
 
 /// The open card's width for the corner's buttons, so the header's words stop short of them.
@@ -2850,6 +2856,13 @@ mod tests {
         let a = facts(json!({"pressed": true, "outcomes": both, "note": "Typed, and Return was pressed."}));
         let b = facts(json!({"pressed": true, "outcomes": both, "note": "Something else entirely."}));
         assert_eq!(line(FormResolution::Submitted, &a), line(FormResolution::Submitted, &b));
+    }
+
+    #[test]
+    fn no_try_again_when_a_value_may_have_gone_in() {
+        assert!(retry_offered(&Facts::default()));
+        assert!(!retry_offered(&Facts { uncertain: true, ..Facts::default() }));
+        assert!(!retry_offered(&Facts { uncertain: true, secret_maybe: true, ..Facts::default() }));
     }
 
     #[test]
