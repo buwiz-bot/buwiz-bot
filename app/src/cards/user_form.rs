@@ -1457,6 +1457,11 @@ pub(crate) fn ai_line(spec: &UserFormSpec, site: &str) -> Option<String> {
     Some(format!("{bot}: {}", words.join(" ")))
 }
 
+/// The caption while the card's saved logins are the choice (no primary shown yet).
+pub(crate) fn choosing_caption(spec: &UserFormSpec) -> String {
+    format!("Touch ID fills in the card. Nothing is typed on {} until you then press {}.", screen_of(spec), primary_label(spec))
+}
+
 /// What the ⓘ's popover says, under its headings: what the primary does and who types, then what
 /// handing the screen over means. Nothing of the take-over note is left out; a note this build
 /// doesn't know is shown in the broker's own words, a sentence a line.
@@ -1938,7 +1943,10 @@ fn form_body(spec: Rc<UserFormSpec>, key: String, target: Option<CardTarget>) ->
     }
     v = v.child(actions);
     if brokers(&spec) {
-        v = v.child(text(caption(&spec)).text_size(px(11.5)).line_height(px(16.0)).text_color(theme::MUTED));
+        // while the saved logins are the choice there's no primary to press yet: the line says
+        // what a pick does
+        let (now, picking) = (caption(&spec), choosing_caption(&spec));
+        v = v.child(text(move || if choosing.get() { picking.clone() } else { now.clone() }).text_size(px(11.5)).line_height(px(16.0)).text_color(theme::MUTED));
     }
     v
 }

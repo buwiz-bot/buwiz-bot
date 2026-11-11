@@ -1040,6 +1040,9 @@ fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
         assert!(button(&app, label), "{label} is a button: {:?}", app.access(label));
     }
     assert!(!app.has("Email") && !app.has(FILL), "the saved login is the choice: {:?}", app.texts());
+    // no primary yet: the caption says what a pick does, not "until you press Fill and send" alone
+    assert!(app.texts().contains(&"Touch ID fills in the card. Nothing is typed on Nova's screen until you then press Fill and send."), "{:?}", app.texts());
+    assert!(!app.texts().iter().any(|t| t.starts_with("Typed on Nova's screen")), "{:?}", app.texts());
     assert!(app.access_hint("Use ada@example.com").contains("Touch ID"), "{}", app.access_hint("Use ada@example.com"));
     assert!(!app.access(DO_IT).1);
     let hint = app.access_hint(INFO);
@@ -1052,6 +1055,7 @@ fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
     app.press(USE_ANOTHER);
     settle(&mut app);
     assert!(button(&app, FILL) && app.access(FILL).1, "the primary says it's disabled with nothing typed");
+    assert!(app.texts().contains(&"Typed on Nova's screen, then Return is pressed. Nothing is typed until you press Fill and send."), "the caption follows the primary: {:?}", app.texts());
     assert_eq!(app.access_hint(FILL), "Enter email and password", "and why");
     app.type_text("Email", "kid@example.com");
     assert_eq!(app.access_hint(FILL), "Enter password");
