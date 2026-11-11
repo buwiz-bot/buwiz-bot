@@ -48,8 +48,16 @@ pub struct Headless {
     pub frames: HashMap<NodeId, Bounds<Points>>,
     pub styles: HashMap<NodeId, nsh_core::ViewStyle>,
     pub parents: HashMap<NodeId, NodeId>,
+    /// Each view's children, in the order they are mounted (the keyboard focus's order).
+    children: HashMap<NodeId, Vec<NodeId>>,
     /// Each view's accessibility role and whether it says it's disabled, as last sent.
     access: HashMap<NodeId, (AccessibilityRole, bool, Option<nsh_core::Checked>)>,
+    /// Each view's accessibility hint (what a screen reader adds after its label), as last sent.
+    hints: HashMap<NodeId, String>,
+    /// Each view's accessibility value's text, as last sent.
+    values: HashMap<NodeId, String>,
+    /// The inputs made secure (masked) entry, as last configured.
+    secure: HashMap<NodeId, bool>,
     /// The file requests (open dialogs) not answered yet.
     files: Vec<u32>,
 }
@@ -80,7 +88,11 @@ pub fn run(config: EngineConfig) -> Headless {
         frames: HashMap::new(),
         styles: HashMap::new(),
         parents: HashMap::new(),
+        children: HashMap::new(),
         access: HashMap::new(),
+        hints: HashMap::new(),
+        values: HashMap::new(),
+        secure: HashMap::new(),
         files: Vec::new(),
     };
     until(&mut app, "the first render", |_| true);
@@ -95,6 +107,7 @@ impl Headless {
                     self.live.insert(*id);
                 }
                 MountItem::Delete { id } => {
+                    self.detach(*id);
                     self.live.remove(id);
                     self.texts.remove(id);
                     self.attributed.remove(id);
@@ -105,13 +118,22 @@ impl Headless {
                         self.labels.push((*id, l.to_owned()));
                     }
                     self.access.insert(*id, (props.accessibility.role, props.accessibility.state.disabled, props.accessibility.state.checked));
+                    match props.accessibility.hint.as_deref() {
+                        Some(h) => self.hints.insert(*id, h.to_owned()),
+                        None => self.hints.remove(id),
+                    };
+                    match props.accessibility.value.as_ref().and_then(|v| v.text.as_deref()) {
+                        Some(v) => self.values.insert(*id, v.to_owned()),
+                        None => self.values.remove(id),
+                    };
                 }
                 MountItem::Text { id, text, .. } => {
                     self.texts.insert(*id, text.text.clone());
                     self.attributed.insert(*id, text.clone());
                 }
-                MountItem::Input { id, .. } => {
+                MountItem::Input { id, config } => {
                     self.inputs.entry(*id).or_default();
+                    self.secure.insert(*id, config.secure);
                 }
                 MountItem::InputValue { id, text, .. } => {
                     self.inputs.entry(*id).or_default().0 = text.clone();
@@ -123,13 +145,45 @@ impl Headless {
                 MountItem::ViewStyle { id, style } => {
                     self.styles.insert(*id, (**style).clone());
                 }
-                MountItem::Insert { parent, child, .. } => {
+                MountItem::Insert { parent, child, before } => {
+                    self.detach(*child);
                     self.parents.insert(*child, *parent);
+                    let kids = self.children.entry(*parent).or_default();
+                    match before.and_then(|b| kids.iter().position(|k| *k == b)) {
+                        Some(i) => kids.insert(i, *child),
+                        None => kids.push(*child),
+                    }
                 }
+                MountItem::Remove { id } => self.detach(*id),
                 MountItem::Command { command: nsh_core::Command::FileRequest { id, .. }, .. } => self.files.push(*id),
                 _ => {}
             }
         }
+    }
+
+    /// Takes `id` out of its parent's children.
+    fn detach(&mut self, id: NodeId) {
+        if let Some(kids) = self.parents.get(&id).and_then(|p| self.children.get_mut(p)) {
+            kids.retain(|k| *k != id);
+        }
+    }
+
+    /// The labels of the live views inside the one labelled `root`, in tree order (the order
+    /// Tab moves through them): a view before what it holds, siblings as they're mounted.
+    pub fn labels_in_order(&self, root: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self.children.get(&self.view(root)).map(|k| k.iter().rev().copied().collect()).unwrap_or_default();
+        while let Some(id) = stack.pop() {
+            if self.live.contains(&id)
+                && let Some((_, l)) = self.labels.iter().rev().find(|(i, _)| *i == id)
+            {
+                out.push(l.clone());
+            }
+            if let Some(kids) = self.children.get(&id) {
+                stack.extend(kids.iter().rev().copied());
+            }
+        }
+        out
     }
 
     /// Applies what comes for `time`.
@@ -352,6 +406,26 @@ impl Headless {
     pub fn access(&self, label: &str) -> (AccessibilityRole, bool, Option<nsh_core::Checked>) {
         let id = self.view(label);
         self.access.get(&id).copied().unwrap_or_default()
+    }
+
+    /// The accessibility hint of the view labelled `label` ("" with none).
+    pub fn access_hint(&self, label: &str) -> String {
+        let id = self.view(label);
+        self.hints.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// The accessibility value's text of the view labelled `label` ("" with none): what a screen
+    /// reader, or any app reading the accessibility tree, is given beside its label.
+    pub fn access_value(&self, label: &str) -> String {
+        let id = self.view(label);
+        self.values.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// Whether the input labelled `label` is secure entry: masked, which the platform makes its
+    /// secure text field.
+    pub fn secure(&self, label: &str) -> bool {
+        let id = self.view(label);
+        self.secure.get(&id).copied().unwrap_or(false)
     }
 
     pub fn has(&self, label: &str) -> bool {
