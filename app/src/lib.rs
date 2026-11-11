@@ -45,6 +45,7 @@ mod mark;
 mod md;
 mod mermaid;
 mod messages;
+mod network;
 mod office;
 pub mod mini;
 pub mod mini_v1;
@@ -246,6 +247,8 @@ mod connect_updates_ui_tests;
 mod run_ui_tests;
 #[cfg(test)]
 mod messages_ui_tests;
+#[cfg(test)]
+mod network_ui_tests;
 #[cfg(test)]
 mod login_ui_tests;
 #[cfg(test)]

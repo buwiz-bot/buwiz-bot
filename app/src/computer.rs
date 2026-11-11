@@ -559,6 +559,11 @@ pub(crate) fn bot_of_key(key: &str) -> Option<String> {
 
 async fn refresh(bot: String) {
     let Some(v) = client::get_any(&route(&bot, "")).await else { return };
+    // the computer's network, under the tab: asked less often than the screen changes
+    if NET_ASKED.with(|t| t.get().is_none_or(|at: std::time::Instant| at.elapsed() >= NET_EVERY)) {
+        NET_ASKED.with(|t| t.set(Some(std::time::Instant::now())));
+        crate::network::refresh(bot.clone());
+    }
     let status = Status::parse(&v);
     let want_list = status.state == "absent";
     let awake = status.state == "awake";
@@ -811,6 +816,8 @@ pub(crate) fn pane() -> impl IntoElement {
         let Some(b) = store().active_bot() else { return };
         if pane_signal().with_untracked(|p| p.bot != b.id) {
             pane_signal().set(Pane { bot: b.id.clone(), ..Pane::default() });
+            NET_ASKED.with(|t| t.set(None));
+            crate::network::show(&b.id, crate::network::Net::default());
             // what was typed and agreed to was for the Bot this tab was on
             form().clear();
             SETUP.with(|s| s.set(false));
@@ -831,6 +838,8 @@ pub(crate) fn pane() -> impl IntoElement {
         }))
         // outside the part a poll redraws, so a field keeps its focus
         .child(when(|| pane_signal().with(|p| p.status.state == "absent"), || remote_form().into_element()))
+        // its own part: what a person types there keeps its focus through a poll
+        .child(crate::network::section())
 }
 
 /// A field of the form.
@@ -1102,6 +1111,12 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     out
 }
+
+thread_local! {
+    /// When the tab last asked for the computer's network.
+    static NET_ASKED: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+const NET_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn sleeping_avatar(shape: &str) -> impl IntoElement {
     crate::avatar::sleeping_blob(shape, 33.0, "#f5f5f58a")

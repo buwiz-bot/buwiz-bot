@@ -177,6 +177,14 @@ const BUILTINS: &[Builtin] = &[
         // Settings › Logins and the vault on this Mac (no model call); never a secret from the line
         run: crate::vault::command::run,
     },
+    Builtin {
+        name: "network",
+        args: "tunnel on|off | allow <site> | unallow <site> | block <site> | unblock <site> | mode all|listed | rule ask|allow|never [--all]",
+        description: "The open Bot's computer's browser network: the tunnel through this Mac and which sites it may reach",
+        menu: Some(crate::network::menu),
+        // the computer's rules, on the broker (no model call); every Bot on that computer gets them
+        run: crate::network::run,
+    },
 ];
 
 /// The built-in `text` starts with: `/name` alone, or followed by `:` or a space. Every built-in is
@@ -254,10 +262,10 @@ pub(crate) fn boot() {
 /// chip's or a card's text (`send_text`) never runs a command, whoever
 /// wrote it and whatever its name, and goes on as plain words.
 pub(crate) fn dispatch(text: &str, typed: bool) -> bool {
-    let st = store();
     if text.is_empty() || (!typed && reads_as_command(text)) {
         return false;
     }
+    let st = store();
     if let Some(cmd) = text.strip_prefix('/') {
         let end = cmd.find(|c: char| c == ':' || c.is_whitespace()).unwrap_or(cmd.len());
         let (name, rest) = cmd.split_at(end);
@@ -1074,10 +1082,10 @@ mod tests {
 
     #[test]
     fn every_builtin_and_every_name_kept_for_one_is_a_persons_command() {
-        for (t, name) in [("/computer", "computer"), ("/computer takeover", "computer"), ("/computer session save x", "computer"), ("/status:demo", "status"), ("/tools", "tools"), ("/avatars list", "avatars"), ("/messages none", "messages"), ("  /messages", "messages"), ("/vault", "vault"), ("/vault share all", "vault"), ("/vault add x", "vault")] {
+        for (t, name) in [("/computer", "computer"), ("/computer takeover", "computer"), ("/computer session save x", "computer"), ("/status:demo", "status"), ("/tools", "tools"), ("/avatars list", "avatars"), ("/messages none", "messages"), ("  /messages", "messages"), ("/vault", "vault"), ("/vault share all", "vault"), ("/vault add x", "vault"), ("/network", "network"), ("/network allow x", "network"), ("/network tunnel on --all", "network")] {
             assert_eq!(super::names_a_builtin(t), Some(name), "{t}");
         }
-        for t in ["/computers", "/vaults", "/network", "computer takeover", "see /computer takeover", "see /vault share all", "/short:computer", ""] {
+        for t in ["/computers", "/vaults", "/networks", "computer takeover", "see /computer takeover", "see /vault share all", "/short:computer", ""] {
             assert_eq!(super::names_a_builtin(t), None, "{t}");
         }
         // what an untyped line may never run: anything that reads as a command
@@ -1086,6 +1094,10 @@ mod tests {
         }
         for t in ["see /computer", "computer", ""] {
             assert!(!super::reads_as_command(t), "{t}");
+        }
+        // a chip's or a card's `/network …` runs nothing: it goes to the AI as words
+        for t in ["/network tunnel on", " /network allow shop.example --all", "/network block x"] {
+            assert!(!super::dispatch(t, false), "{t}");
         }
     }
     use crate::mini_v1::load::PluginEntry;
