@@ -872,6 +872,12 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Makes this computer again on the provider's current image, keeping what its volumes keep.
+    /// `network` is what a new computer of its kind would get. What runs on it ends.
+    async fn remake(&self, _machine: &Machine, _network: Network) -> Result<Machine> {
+        unsupported("make it again on the current image")
+    }
+
     /// Where this Mac reaches the tunnel's WebSocket (`ws://127.0.0.1:port`), for an awake computer
     /// made with the tunnel: read for this request, like every port.
     async fn tunnel_url(&self, _machine: &Machine) -> Result<Option<String>> {

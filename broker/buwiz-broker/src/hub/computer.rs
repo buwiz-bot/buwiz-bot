@@ -640,6 +640,61 @@ impl Computers {
         Ok(())
     }
 
+    /// A person makes `bot`'s computer again on its provider's current image: the same record and
+    /// the same files, everything running on it ended. It comes back awake, with its Bots' screens.
+    /// Like a click, it comes back at once; the status says how it goes.
+    pub async fn update(self: &Arc<Self>, ctx: &Arc<HubCtx>, bot: &str) -> Result<(), Problem> {
+        let seat = Self::seat(ctx, bot)?.ok_or(Problem::Gone)?;
+        let id = seat.computer.clone();
+        {
+            let now = self.now();
+            if now.waking.contains(&id) || now.sleeping.contains(&id) {
+                return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+            }
+            let busy = now.holds.values().any(|(_, c)| *c == id)
+                || now.handovers.values().any(|h| h.computer == id)
+                || now.jobs.values().any(|j| j.computer == id && !j.frozen && !j.past && !j.unread)
+                || now.recordings.values().any(|r| r.computer == id);
+            if busy {
+                return Err(Problem::Failed("Something is using this computer right now: a run, a hand-over, a job or a recording. Try again when it's idle.".to_owned()));
+            }
+        }
+        let machine = self.machine(ctx, &id)?;
+        let provider = self.provider_of(ctx, &machine);
+        let wanted = network_for(machine.provider);
+        if wanted != buwiz_computer::Network::Plain && provider.image_has_proxy().await == Some(false) {
+            return Err(Problem::Refused { code: "image", message: network::NO_PROXY_IMAGE.to_owned() });
+        }
+        if !self.now().waking.insert(id.clone()) {
+            return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+        }
+        let (me, ctx) = (self.clone(), ctx.clone());
+        tokio::spawn(async move {
+            let made = async {
+                let machine = me.machine(&ctx, &id)?;
+                let provider = me.provider_of(&ctx, &machine);
+                let updated = provider.remake(&machine, wanted).await?;
+                Self::save_machine(&ctx, &id, &updated)?;
+                me.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), updated);
+                Ok::<(), Problem>(())
+            }
+            .await;
+            match made {
+                Ok(()) => {
+                    if me.finish_wake(&ctx, &id).await.is_ok() {
+                        me.clear_empty_screens(&ctx, &id).await;
+                    }
+                }
+                Err(e) => {
+                    let mut now = me.now();
+                    now.waking.remove(&id);
+                    now.problems.insert(id.clone(), e.clone());
+                }
+            }
+        });
+        Ok(())
+    }
+
     /// The computer to wake. One recovered with new secrets has a stop owed first.
     ///
     /// A make or a recovery (minutes, on a cloud) holds no lock but [`Computers::making`]'s: this
@@ -1873,6 +1928,16 @@ async fn wake(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     types::json(StatusCode::OK, &computers.status(&ctx, &bot).await)
 }
 
+/// `POST /v1/host/computer/bot/{bot}/update`: a person makes this Bot's computer again on the
+/// provider's current image. Its files stay; what runs on it ends.
+async fn update(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    match computers.update(&ctx, &bot).await {
+        Ok(()) => types::json(StatusCode::OK, &computers.status(&ctx, &bot).await),
+        Err(p) => refused(&p),
+    }
+}
+
 async fn sleep(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let (computers, bot) = bot_route!(ctx, req);
     let seat = match Computers::seat(&ctx, &bot) {
@@ -2238,6 +2303,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/remote/remove"), remove_remote);
     routes.route(Verb::Get, S("/v1/host/computer/bot/*"), status);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/wake"), wake);
+    routes.route(Verb::Post, S("/v1/host/computer/bot/*/update"), update);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/sleep"), sleep);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/open"), open);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/handback"), hand_back);

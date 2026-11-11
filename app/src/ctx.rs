@@ -62,6 +62,7 @@ fn run(it: &CtxItem) {
         }
         "computer-sleep" => crate::computer::sleep(arg.to_owned()),
         "computer-wake" => crate::computer::wake(arg.to_owned()),
+        "computer-update" => crate::computer::ask_update(arg.to_owned()),
         // Groups' verbs carry their fields joined by U+001F (a file path
         // may hold anything else): `<group>␟<kind>␟<id>␟<origin chat>`.
         "group-item" => {

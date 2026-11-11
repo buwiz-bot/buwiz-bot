@@ -40,6 +40,7 @@ const COUNT: std::time::Duration = std::time::Duration::from_millis(250);
 /// How long "Woke in" stays once it shows.
 const WOKE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 const LEFT_THE_GATE: &str = "This computer's page tried to take this view somewhere else, so it was closed. Click to open it again.";
+const UPDATE_WORDS: &str = "This makes the computer again on the current image. Its files stay; the programs running on it and its open browser are lost.";
 
 /// What the broker says about this Bot's computer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -294,6 +295,8 @@ thread_local! {
     static RECORDING: Signal<Recordings> = Owner::detached().run(|| keep("computer.recording", Recordings::default));
     /// A Bot delete waiting for a person's answer.
     static DELETE_ASK: Signal<Option<DeleteAsk>> = Owner::detached().run(|| keep("computer.delete-ask", || None));
+    /// The Bot whose computer a person is asked to make again.
+    static UPDATE_ASK: Signal<Option<String>> = Owner::detached().run(|| keep("computer.update-ask", || None));
     /// The Bots whose screen a person pressed Take control on.
     static DRIVING: Signal<std::collections::HashSet<String>> = Owner::detached().run(|| keep("computer.driving", Default::default));
     /// What the viewer open full screen last heard, with whose it is.
@@ -620,6 +623,32 @@ pub(crate) fn sleep(bot: String) {
     spawn_detached(async move {
         let _ = form_post(&route(&bot, "/sleep"), json!({})).await;
         refresh(bot).await;
+    });
+}
+
+/// The first press on Update: the tab asks before anything is made again.
+pub(crate) fn ask_update(bot: String) {
+    UPDATE_ASK.with(|s| s.set(Some(bot)));
+}
+
+/// The second press: the computer is made again on the provider's current image.
+fn update_computer(bot: String) {
+    UPDATE_ASK.with(|s| s.set(None));
+    update(&bot, |p| {
+        p.note.clear();
+        p.status.state = "waking".to_owned();
+    });
+    spawn_detached(async move {
+        let reply = form_post(&route(&bot, "/update"), json!({})).await;
+        let ok = matches!(reply.as_ref(), Some(v) if v.get("ok").and_then(Value::as_bool) != Some(false));
+        match reply {
+            Some(v) if ok => update(&bot, |p| p.status = Status::parse(&v)),
+            Some(v) => update(&bot, |p| p.note = v.get("message").and_then(Value::as_str).unwrap_or("The computer said no.").to_owned()),
+            None => update(&bot, |p| p.note = "The broker didn't answer.".to_owned()),
+        }
+        if !ok {
+            refresh(bot).await;
+        }
     });
 }
 
@@ -1007,13 +1036,16 @@ pub(crate) fn body_of(status: Status) -> impl IntoElement {
 /// The computer's right-click menu, as `status` allows: nothing while it comes up or before the
 /// broker has said.
 pub(crate) fn menu_items(bot: &str, name: &str, status: &Status) -> Vec<CtxItem> {
+    let wake = CtxItem::row("Wake computer", "sun", "computer-wake", bot.to_owned());
+    let update = (status.remote.is_none() && status.state != "absent").then(|| CtxItem::row("Update computer", "retry", "computer-update", bot.to_owned()));
     match status.state.as_str() {
         "awake" => {
             let open = status.has_screen().then(|| CtxItem::row("Open", "external", "computer-open", format!("{bot}\u{1f}{name}")));
             let sleep = CtxItem::row(sleep_words(status), if status.remote.is_some() { "powerOff" } else { "moon" }, "computer-sleep", bot.to_owned());
-            open.into_iter().chain([sleep]).collect()
+            open.into_iter().chain(update).chain([sleep]).collect()
         }
-        "asleep" | "absent" | "error" => vec![CtxItem::row("Wake computer", "sun", "computer-wake", bot.to_owned())],
+        "asleep" | "error" => [wake].into_iter().chain(update).collect(),
+        "absent" => vec![wake],
         _ => Vec::new(),
     }
 }
@@ -1055,6 +1087,19 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     }
     if !p.status.sleep_note.is_empty() {
         out = out.child(view().test_id("computer-sleep-note").child(note(p.status.sleep_note.clone())));
+    }
+    if UPDATE_ASK.with(|s| s.with(|a| a.as_deref() == Some(bot))) {
+        let update = bot.to_owned();
+        out = out
+            .child(view().test_id("computer-update-ask").child(note(UPDATE_WORDS.to_owned())))
+            .child(
+                view()
+                    .flex_row()
+                    .gap_2()
+                    .pt(px(10.0))
+                    .child(small_button("computer-update-cancel", "Cancel", || UPDATE_ASK.with(|s| s.set(None))))
+                    .child(small_button("computer-update-yes", "Update", move || update_computer(update.clone()))),
+            );
     }
     let shared = p.status.shared_with(bot);
     if !shared.is_empty() {
@@ -1461,6 +1506,16 @@ mod tests {
         assert_eq!(sleep_words(&remote), "Disconnect", "nothing there stops");
         let v = json!({"state": "awake", "jobs": [{"name": "x", "bot": "Ann", "frozen": false, "secondsLeft": 60}]});
         assert_eq!(Status::parse(&v).jobs, [job(false)]);
+    }
+
+    #[test]
+    fn update_is_offered_for_a_computer_that_exists_and_not_for_a_remote_one() {
+        let acts = |status: Status| menu_items("b1", "Ann", &status).into_iter().map(|i| i.act).collect::<Vec<_>>();
+        assert!(acts(seen("awake", "", None)).contains(&"computer-update".to_owned()));
+        assert!(acts(seen("asleep", "", None)).contains(&"computer-update".to_owned()));
+        assert!(!acts(seen("absent", "", None)).contains(&"computer-update".to_owned()));
+        let remote = Status { remote: Some(Remote::default()), ..seen("awake", "", None) };
+        assert!(!acts(remote).contains(&"computer-update".to_owned()));
     }
 
     #[test]
