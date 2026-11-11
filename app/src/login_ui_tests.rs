@@ -1061,3 +1061,27 @@ fn a_password_being_typed_stays_through_share_all_and_refresh() {
     assert!(kept, "Save kept what the field showed");
     no_mark(&app);
 }
+
+/// Opening Settings › Logins, or building it again, reads the vault and says nothing changed: an
+/// open card's logins aren't read again for it. A write does.
+#[test]
+fn opening_the_logins_page_changes_no_revision_and_a_write_does() {
+    if !in_child("opening_the_logins_page_changes_no_revision_and_a_write_does") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    with_card(&mut app);
+    let rev = |app: &mut Headless| on(app, || crate::vault::revision().get_untracked());
+    let before = rev(&mut app);
+    typed(&mut app, "/vault");
+    on(&mut app, || store().settings_open.set(false));
+    settle(&mut app);
+    typed(&mut app, "/vault");
+    app.press("Refresh");
+    settle(&mut app);
+    assert_eq!(rev(&mut app), before, "reads change nothing");
+    app.press("Share all, off");
+    settle(&mut app);
+    assert!(rev(&mut app) > before, "a write does");
+}

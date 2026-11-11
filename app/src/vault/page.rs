@@ -103,7 +103,8 @@ fn watch_settings(u: Ui) {
 }
 
 /// Reads the table again.
-/// Reads the table again. An open form keeps what was typed into it: a reload comes from an
+/// Reads the table again: a read, so it says nothing changed (the writes below do,
+/// `super::changed`). An open form keeps what was typed into it: a reload comes from an
 /// action on this page (Share all, Refresh, a save); the form forgets only when it closes, when
 /// Settings closes, or when `/vault` opens the page again.
 fn reload() {
@@ -115,7 +116,6 @@ fn reload() {
     }
     u.rows.set(rows);
     u.share_all.set(vault().share_all());
-    super::changed();
 }
 
 /// What was typed into the form's secret fields, gone. The fields show the
@@ -192,6 +192,7 @@ fn save_form() {
             u.busy.set(false);
             match done {
                 Some(Ok(row)) => {
+                    super::changed();
                     close_form();
                     u.sel.set(row.id.clone());
                     u.note.set(String::new());
@@ -206,15 +207,17 @@ fn save_form() {
 
 /// Shares the row with Bot `bot`, or stops.
 fn set_share(id: &str, bot: &str, on: bool) {
-    if let Err(e) = vault().share(id, bot, on) {
-        ui().note.set(format!("Couldn't change who it's shared with: {e}"));
+    match vault().share(id, bot, on) {
+        Ok(_) => super::changed(),
+        Err(e) => ui().note.set(format!("Couldn't change who it's shared with: {e}")),
     }
     reload();
 }
 
 fn set_share_all(on: bool) {
-    if let Err(e) = vault().set_share_all(on) {
-        ui().note.set(format!("Couldn't change Share all: {e}"));
+    match vault().set_share_all(on) {
+        Ok(()) => super::changed(),
+        Err(e) => ui().note.set(format!("Couldn't change Share all: {e}")),
     }
     reload();
 }
@@ -275,7 +278,7 @@ fn delete(id: String) {
     Owner::detached().run(|| {
         spawn(async move {
             match off_main(move || vault().delete(&id)).await {
-                Some(Ok(())) => {}
+                Some(Ok(())) => super::changed(),
                 Some(Err(e)) => u.note.set(format!("Couldn't delete the login: {e}")),
                 None => u.note.set("Couldn't delete the login".into()),
             }
