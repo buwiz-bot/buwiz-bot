@@ -29,8 +29,9 @@
 //! **The network rule** (allow / ask / never, OpenGrok's `egress_policy`) is not built in this
 //! slice: `/network rule` is refused in a sentence that says so, and nothing is stored for it.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use buwiz_computer::box_egress::client::{ClientError, ClientState, TunnelClientConfig};
 use buwiz_computer::box_egress::destination::DestinationPolicy;
@@ -262,7 +263,9 @@ struct Running {
     url: String,
     rules: RulesCell,
     state: ClientState,
-    task: tokio::task::JoinHandle<Result<(), ClientError>>,
+    /// how the client ended, once it has: its own typed outcome, never read from its words
+    outcome: Arc<Mutex<Option<Result<(), ClientError>>>>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for Running {
@@ -271,18 +274,52 @@ impl Drop for Running {
     }
 }
 
-/// The tunnels' clients, by computer.
+/// How often the sweep looks again at a computer whose client runs: a wake, a sleep, a switch and
+/// a retire set it right as they happen, so this only catches what changed under them.
+const LOOK_AGAIN: Duration = Duration::from_secs(300);
+
+/// The tunnels' clients, and the turns changes to a computer's network take, by computer.
 #[derive(Default)]
-pub struct Tunnels(Mutex<HashMap<String, Running>>);
+pub struct Tunnels {
+    running: Mutex<HashMap<String, Running>>,
+    /// one change to a computer's network at a time: load, save and push are one step
+    turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// computers whose box didn't take their saved rules: tried again on the sweep while awake
+    behind: Mutex<HashSet<String>>,
+    /// when the sweep last looked at each running client
+    looked: Mutex<HashMap<String, Instant>>,
+}
+
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What a client is doing, in a word, from its state and its typed outcome.
+fn client_word(finished: bool, outcome: Option<&Result<(), ClientError>>, attached: bool, erred: bool) -> &'static str {
+    match (finished, outcome) {
+        (true, Some(Err(ClientError::Unauthorized))) => "refused",
+        (true, _) => "stopped",
+        _ if attached => "attached",
+        _ if erred => "retrying",
+        _ => "attaching",
+    }
+}
 
 impl Tunnels {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Running>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        locked(&self.running)
+    }
+
+    /// Computer `id`'s turn for a change to its network, waited for.
+    async fn turn(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let turn = locked(&self.turns).entry(id.to_owned()).or_default().clone();
+        turn.lock_owned().await
     }
 
     /// Stops computer `id`'s client, if one runs.
     pub fn stop(&self, id: &str) {
         self.lock().remove(id);
+        locked(&self.looked).remove(id);
     }
 
     /// What the client is doing, in a word and a sentence, naming no site.
@@ -290,24 +327,19 @@ impl Tunnels {
         let map = self.lock();
         let Some(r) = map.get(id) else { return json!({"state": "off"}) };
         let snap = r.state.snapshot();
-        let state = if r.task.is_finished() {
-            if snap.last_error.as_deref().is_some_and(|e| e.contains("401")) {
-                "refused"
-            } else {
-                "stopped"
-            }
-        } else if snap.attached {
-            "attached"
-        } else if snap.last_error.is_some() {
-            "retrying"
-        } else {
-            "attaching"
-        };
+        let outcome = locked(&r.outcome).clone();
+        let state = client_word(r.task.is_finished(), outcome.as_ref(), snap.attached, snap.last_error.is_some());
         json!({"state": state, "lastError": snap.last_error, "attaches": snap.attaches, "relayed": snap.opened, "refused": snap.refused})
     }
 
     fn running_at(&self, id: &str, url: &str) -> bool {
         self.lock().get(id).is_some_and(|r| r.url == url)
+    }
+
+    /// A client is running for `id` and the sweep looked at it lately: nothing to do on a tick.
+    fn settled(&self, id: &str) -> bool {
+        let live = self.lock().get(id).is_some_and(|r| !r.task.is_finished());
+        live && locked(&self.looked).get(id).is_some_and(|at| at.elapsed() < LOOK_AGAIN)
     }
 
     fn update(&self, id: &str, rules: Rules) {
@@ -320,8 +352,14 @@ impl Tunnels {
         let (cell, state) = (RulesCell::new(Some(rules)), ClientState::default());
         // the shipped address policy: web ports, public addresses, never this Mac's network
         let cfg = TunnelClientConfig { url: url.clone(), bearer, allowlist: Allowlist::any(), destination: DestinationPolicy::default(), rules: cell.clone(), reconnect: true, state: state.clone() };
-        let task = tokio::spawn(buwiz_computer::box_egress::client::run(cfg));
-        self.lock().insert(id.to_owned(), Running { url, rules: cell, state, task });
+        let outcome = Arc::new(Mutex::new(None));
+        let ended = outcome.clone();
+        let task = tokio::spawn(async move {
+            let got = buwiz_computer::box_egress::client::run(cfg).await;
+            *locked(&ended) = Some(got);
+        });
+        self.lock().insert(id.to_owned(), Running { url, rules: cell, state, outcome, task });
+        locked(&self.looked).insert(id.to_owned(), Instant::now());
     }
 }
 
@@ -351,10 +389,46 @@ impl Computers {
         if !proxy_made(&machine) {
             return;
         }
-        let provider = self.provider_of(ctx, &machine);
-        let doc = Settings::load(ctx, id).and_then(|s| s.doc(&machine)).unwrap_or_else(|_| json!({"v": 1, "exit": "direct", "mode": "listed", "allow": [], "block": []}));
-        let _ = provider.set_egress_rules(&machine, &doc).await;
+        {
+            let _turn = self.tunnels.turn(id).await;
+            let doc = Settings::load(ctx, id).and_then(|s| s.doc(&machine)).unwrap_or_else(|_| json!({"v": 1, "exit": "direct", "mode": "listed", "allow": [], "block": []}));
+            let _ = self.push_rules(ctx, id, &machine, &doc).await;
+        }
         self.reconcile_tunnel(ctx, id, false).await;
+    }
+
+    /// Puts `doc` in force on the awake computer `id`. One the box didn't take is logged, naming no
+    /// site, and tried again on the sweep while the computer is awake ([`Computers::catch_up`]).
+    async fn push_rules(&self, ctx: &HubCtx, id: &str, machine: &Machine, doc: &Value) -> Result<(), Problem> {
+        let provider = self.provider_of(ctx, machine);
+        match provider.set_egress_rules(machine, doc).await {
+            Ok(_) => {
+                locked(&self.tunnels.behind).remove(id);
+                Ok(())
+            }
+            Err(p) => {
+                eprintln!("buwiz-broker: computer {id} didn't take its browsing rules ({}): tried again while it's awake", p.code());
+                locked(&self.tunnels.behind).insert(id.to_owned());
+                Err(p)
+            }
+        }
+    }
+
+    /// The sweep: each awake computer whose box didn't take its saved rules gets them again.
+    pub(super) async fn catch_up(&self, ctx: &HubCtx) {
+        let behind: Vec<String> = locked(&self.tunnels.behind).iter().cloned().collect();
+        for id in behind {
+            let Ok(machine) = self.machine(ctx, &id) else {
+                locked(&self.tunnels.behind).remove(&id);
+                continue;
+            };
+            if self.now().sleeping.contains(&id) || !matches!(self.provider_of(ctx, &machine).power(&machine).await, Ok(Power::Awake)) {
+                continue;
+            }
+            let _turn = self.tunnels.turn(&id).await;
+            let doc = Settings::load(ctx, &id).and_then(|s| s.doc(&machine)).unwrap_or_else(|_| json!({"v": 1, "exit": "direct", "mode": "listed", "allow": [], "block": []}));
+            let _ = self.push_rules(ctx, &id, &machine, &doc).await;
+        }
     }
 
     /// Starts, keeps, updates or stops computer `id`'s tunnel client, by its switch and whether it's
@@ -378,6 +452,7 @@ impl Computers {
         };
         if !fresh && self.tunnels.running_at(id, &url) {
             self.tunnels.update(id, rules);
+            locked(&self.tunnels.looked).insert(id.to_owned(), Instant::now());
             return;
         }
         self.tunnels.stop(id);
@@ -396,7 +471,10 @@ impl Computers {
             .unwrap_or_default();
         let running: Vec<String> = self.tunnels.lock().keys().cloned().collect();
         for id in on.iter().chain(running.iter().filter(|r| !on.contains(r))) {
-            self.reconcile_tunnel(ctx, id, false).await;
+            // a wake, a sleep, a switch and a retire set it right as they happen
+            if !self.tunnels.settled(id) {
+                self.reconcile_tunnel(ctx, id, false).await;
+            }
         }
     }
 
@@ -465,7 +543,7 @@ impl Computers {
                     out["canBrowse"] = egress.get("can_browse").cloned().unwrap_or(Value::Null);
                     out["counts"] = egress.get("counts").cloned().unwrap_or(Value::Null);
                     if !force {
-                        notes.push("The computer isn't using these rules yet: it didn't take them when they were saved. They're put in force again at its next wake.".to_owned());
+                        notes.push("The computer isn't using these rules yet: it didn't take them when they were saved. They're tried again while it's awake.".to_owned());
                     }
                 }
                 Err(p) => {
@@ -476,13 +554,13 @@ impl Computers {
         } else {
             notes.push("The computer is asleep: these rules are in force from the moment it wakes.".to_owned());
         }
+        // the one sentence for a tunnel that isn't carrying the browser: the app shows it as it is
         if settings.tunnel && client["state"] != "attached" {
-            let why = match client["state"].as_str() {
-                Some("refused") => "the computer refused this Mac's key for it",
-                _ if !awake => "the computer is asleep",
-                _ => "it isn't attached yet",
-            };
-            notes.push(format!("The tunnel is on and this Mac's side isn't attached ({why}), so the browser on this computer can't reach any site until it is."));
+            notes.push(match client["state"].as_str() {
+                Some("refused") => "The tunnel is on and the computer refused this Mac's key for it, so the browser on this computer can't reach any site. Turn the tunnel off and on again; if it stays refused, make the computer again.".to_owned(),
+                _ if !awake => "The tunnel is on: this Mac's side attaches when the computer wakes, and until then its browser can't reach any site.".to_owned(),
+                _ => "The tunnel is on and this Mac's side isn't attached yet, so the browser on this computer can't reach any site until it is.".to_owned(),
+            });
         }
         if settings.mode == ListMode::Listed && settings.allow.is_empty() {
             notes.push("Only allowed sites load, and none is allowed: the browser reaches no site.".to_owned());
@@ -520,6 +598,8 @@ impl Computers {
     }
 
     async fn change_one(&self, ctx: &HubCtx, id: &str, change: &Change) -> (bool, String) {
+        // load, save and push as one step: a second change waits, and builds on this one
+        let turn = self.tunnels.turn(id).await;
         let machine = match self.machine(ctx, id) {
             Ok(m) => m,
             Err(p) => return (false, p.sentence()),
@@ -542,14 +622,15 @@ impl Computers {
         let provider = self.provider_of(ctx, &machine);
         let applied = match provider.power(&machine).await {
             Ok(Power::Awake) => match settings.doc(&machine) {
-                Ok(doc) => match provider.set_egress_rules(&machine, &doc).await {
-                    Ok(_) => "It's in force now.".to_owned(),
-                    Err(p) => format!("It's saved, but the computer didn't take it ({}), so it isn't in force yet: it's put in force again at the computer's next wake.", p.sentence()),
+                Ok(doc) => match self.push_rules(ctx, id, &machine, &doc).await {
+                    Ok(()) => "It's in force now.".to_owned(),
+                    Err(p) => format!("It's saved, but the computer didn't take it ({}), so it isn't in force yet: it's tried again while the computer is awake.", p.sentence()),
                 },
                 Err(p) => p.sentence(),
             },
             _ => "The computer is asleep: it's in force from the moment it wakes.".to_owned(),
         };
+        drop(turn);
         self.reconcile_tunnel(ctx, id, matches!(change, Change::Tunnel(true))).await;
         (true, format!("{said} {applied}"))
     }
@@ -569,6 +650,16 @@ mod tests {
             // a lone `*` is named by the box's own fixed sentence; nothing longer is ever repeated
             assert!(bad.trim().len() <= 1 || !err.contains(bad.trim()), "a refusal doesn't echo what was typed: {err}");
         }
+    }
+
+    #[test]
+    fn a_clients_state_comes_from_its_typed_outcome_never_its_words() {
+        assert_eq!(client_word(true, Some(&Err(ClientError::Unauthorized)), false, true), "refused");
+        // words that say 401 in another error are not a refusal
+        assert_eq!(client_word(true, Some(&Err(ClientError::Connect("HTTP 401-ish".into()))), false, true), "stopped");
+        assert_eq!(client_word(false, None, true, false), "attached");
+        assert_eq!(client_word(false, None, false, true), "retrying");
+        assert_eq!(client_word(false, None, false, false), "attaching");
     }
 
     #[test]

@@ -1001,6 +1001,8 @@ impl Computers {
         }
         // a tunnel's client follows its computer: up while it's awake with the switch on
         self.reconcile_tunnels(ctx).await;
+        // and a box that didn't take its rules gets them again
+        self.catch_up(ctx).await;
     }
 
     async fn watched(&self, ctx: &HubCtx, id: &str) -> bool {

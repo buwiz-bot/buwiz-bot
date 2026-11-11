@@ -253,3 +253,65 @@ async fn the_tunnel_on_with_no_client_attached_says_the_browser_reaches_no_site(
     assert_ne!(s["client"]["state"], "attached");
     assert!(s["notes"].to_string().contains("can't reach any site until it is"), "{s}");
 }
+
+#[tokio::test]
+async fn two_changes_at_once_both_survive_and_the_box_ends_on_the_saved_set() {
+    let b = bed("net-race");
+    let id = awake(&b, &b.ann.0).await;
+    let (one, two) = (Change::Block("a.example".into()), Change::Allow("b.example".into()));
+    let (x, y) = tokio::join!(b.computers.network_change(&b.ctx, &b.ann.0, &one, false), b.computers.network_change(&b.ctx, &b.ann.0, &two, true));
+    assert_eq!((x["ok"].clone(), y["ok"].clone()), (json!(true), json!(true)), "{x} {y}");
+    let saved = super::super::network::Settings::load(&b.ctx, &id).unwrap();
+    assert_eq!((saved.block.clone(), saved.allow.clone()), (vec!["a.example".to_owned()], vec!["b.example".to_owned()]));
+    let r = rules_in_box(&b);
+    assert_eq!((r["block"].clone(), r["allow"].clone()), (json!(["a.example"]), json!(["b.example"])));
+    assert_eq!(r["version"], json!(saved.version), "the set pushed last is the set saved");
+}
+
+#[tokio::test]
+async fn a_box_that_doesnt_take_its_rules_after_a_wake_gets_them_on_the_sweep() {
+    let b = bed("net-behind");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.network_change(&b.ctx, &b.ann.0, &Change::Block("a.example".into()), false).await;
+    b.computers.sleep(&b.ctx, &id, Sleep::Light).await.unwrap();
+    *b.mock.egress_rules.lock().unwrap() = None;
+    *b.mock.egress_problem.lock().unwrap() = Some(Problem::Guest { status: 503, message: "not answering".into() });
+    awake(&b, &b.ann.0).await;
+    assert!(rules_in_box(&b).is_null());
+    assert!(b.computers.network_status(&b.ctx, &b.ann.0).await["notes"].to_string().contains("isn't using these rules yet"));
+    // still refusing: the sweep tries, and it's still behind
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert!(rules_in_box(&b).is_null());
+    *b.mock.egress_problem.lock().unwrap() = None;
+    b.computers.sleep_the_idle(&b.ctx).await;
+    assert_eq!(rules_in_box(&b)["block"], json!(["a.example"]));
+    assert_eq!(b.computers.network_status(&b.ctx, &b.ann.0).await["inForce"], true);
+}
+
+#[tokio::test]
+async fn a_box_that_refuses_the_bearer_is_told_by_the_clients_own_outcome() {
+    let b = bed("net-401");
+    awake(&b, &b.ann.0).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    *b.mock.tunnel_at.lock().unwrap() = Some(format!("ws://{}", listener.local_addr().unwrap()));
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = listener.accept().await {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf).await;
+            // a body that never says 401: only the status does
+            let _ = s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\n\r\nno").await;
+        }
+    });
+    b.computers.network_change(&b.ctx, &b.ann.0, &Change::Tunnel(true), false).await;
+    let mut state = Value::Null;
+    for _ in 0..300 {
+        state = b.computers.network_status(&b.ctx, &b.ann.0).await["client"]["state"].clone();
+        if state == "refused" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(state, "refused");
+    assert!(b.computers.network_status(&b.ctx, &b.ann.0).await["notes"].to_string().contains("refused this Mac's key"));
+}
