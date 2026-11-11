@@ -1419,3 +1419,80 @@ async fn old_computer(p: &DockerProvider, m: &buwiz_computer::Machine) {
     p.screen_up(m, "c2o_a").await.unwrap();
     assert!(p.read_file(m, "/workspace/agents/c2o_a/notes/keep.txt").await.unwrap().ends_with(b"more\n"));
 }
+
+/// A computer made with the proxy and the tunnel: it starts, walled, on the rules staged for it; this
+/// Mac's client attaches through the published loopback port, whose replies the wall lets through
+/// to the gateway alone; a command can't send from the tunnel's port, nor from a neighbour of it;
+/// and the rules hold at the proxy. Nothing goes to the internet: every name asked for is refused
+/// by the rules or doesn't resolve.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the computer image"]
+async fn a_computer_made_with_the_tunnel_starts_walled_and_its_port_is_the_proxys_alone() {
+    let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned());
+    let dir: PathBuf = std::env::temp_dir().join(format!("c2e-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = DockerProvider::new(image, "c2e");
+    p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
+    let m = p.create(&Spec { id: "cmp_c2etest".into(), dir: dir.clone(), network: buwiz_computer::Network::Tunnel }).await.unwrap();
+    let outcome = tokio::spawn({
+        let (m, dir) = (m.clone(), dir.clone());
+        async move { tunnel(&m, &dir).await }
+    })
+    .await;
+    p.destroy(&m).await.unwrap();
+    let _ = std::process::Command::new("docker").args(["network", "rm", "c2e-net"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome.unwrap();
+}
+
+async fn tunnel(m: &Machine, dir: &std::path::Path) {
+    use buwiz_computer::box_egress::{client, rules, Allowlist, ClientState, RulesCell, TunnelClientConfig};
+    let p = DockerProvider::new(std::env::var(IMAGE_ENV).unwrap_or_else(|_| "buwiz-computer:local".to_owned()), "c2e");
+    let egress = m.egress.clone().expect("this image has the proxy: build it from the computer repo");
+    assert!(egress.tunnel);
+    buwiz_computer::docker::stage_rules(dir, br#"{"v":1,"version":5,"exit":"direct","mode":"listed","allow":["allowed.test"],"block":["blocked.test"]}"#).unwrap();
+    p.wake(m).await.unwrap();
+    let (_, m) = p.look(m).await.unwrap();
+    let st = p.egress(&m).await.unwrap();
+    assert_eq!(st["proxy_up"], true, "{st}");
+    assert_eq!(st["rules"]["version"], 5, "it started with the staged rules: {st}");
+    let screen = p.screen_up(&m, "c2e_a").await.unwrap();
+
+    // a command can't send from the tunnel's port (the proxy holds it), nor from the next one up
+    let gateway = docker(&["inspect", &format!("{}-wall", name_of(&m)), "--format", "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}"]);
+    assert!(!gateway.is_empty());
+    for from in [8790, 8789] {
+        let out = p.run(&m, &screen, &reach(&gateway, 47000, from), 10_000).await.unwrap();
+        println!("from {from}: {} {}", out.stdout.trim(), out.stderr.trim());
+        assert!(!out.stdout.contains("REACHED"), "from {from}: {} {}", out.stdout, out.stderr);
+    }
+
+    // this Mac's side attaches through the published port: the wall passes the tunnel's replies
+    let url = p.tunnel_url(&m).await.unwrap().expect("8790 is published on loopback");
+    assert!(url.starts_with("ws://127.0.0.1:"), "{url}");
+    let state = ClientState::default();
+    let rules = rules::Rules::parse(br#"{"v":1,"version":6,"exit":"tunnel","mode":"listed","allow":["localhost"],"block":["blocked.test"]}"#).unwrap();
+    let cfg = TunnelClientConfig { url, bearer: egress.bearer.unwrap().expose().to_owned(), allowlist: Allowlist::any(), destination: Default::default(), rules: RulesCell::new(Some(rules)), reconnect: true, state: state.clone() };
+    let client = tokio::spawn(client::run(cfg));
+    let mut attached = false;
+    for _ in 0..100 {
+        if p.egress(&m).await.unwrap()["client_attached"] == true {
+            attached = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(attached, "{:?}", state.snapshot());
+    let put = p.set_egress_rules(&m, &serde_json::json!({"v": 1, "version": 6, "exit": "tunnel", "mode": "listed", "allow": ["localhost"], "block": ["blocked.test"]})).await.unwrap();
+    assert_eq!(put["applied"], true);
+    // the rules at the box's proxy, as a command reaches it: blocked and not listed refused there,
+    // before any lookup; an allowed name that is this Mac's loopback refused by the client's address
+    // policy. Not a byte, nor a lookup, goes to the internet
+    let via = |host: &str| format!("curl -s -o /dev/null -w '%{{http_connect}}' --noproxy '' -p -x http://127.0.0.1:8791 https://{host}/ || true");
+    for (host, want) in [("blocked.test", "403"), ("elsewhere.test", "403"), ("localhost", "502")] {
+        let out = p.run(&m, &screen, &via(host), 20_000).await.unwrap();
+        assert_eq!(out.stdout.trim(), want, "{host}: {} {}", out.stdout, out.stderr);
+    }
+    client.abort();
+    let _ = p.screen_down(&m, "c2e_a").await;
+}
