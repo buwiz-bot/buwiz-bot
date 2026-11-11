@@ -242,6 +242,7 @@ async fn a_page_that_moves_mid_fill_stops_it_before_the_next_value() {
     let said = words(&call.await.unwrap());
     assert!(said.contains("could not be filled") && said.contains("evil.test"), "{said}");
     assert_eq!(b.mock.typed(), [("Email".to_owned(), "kid@example.com".to_owned())]);
+    assert!(!said.contains("Secret field values were typed"), "no secret went in: {said}");
     assert_eq!(login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap()["outcomes"], json!([{"id": "email", "filled": true}, {"id": "password", "filled": false}]));
 }
 
@@ -300,6 +301,9 @@ async fn the_boxs_refusals_are_plain_sentences_with_nothing_of_the_box_in_them()
         assert_eq!(said.contains(login::MAYBE_TYPED), maybe, "{code}: {said}");
         assert_eq!(settled["uncertain"], maybe, "{code}: {settled}");
         assert_eq!(settled["note"].as_str().unwrap().contains("may have been typed"), maybe, "{code}");
+        // the refused type was the email's: no secret is in the page, maybe or otherwise
+        assert_eq!(settled["secretMaybe"], false, "{code}: {settled}");
+        assert!(!said.contains(login::MAYBE_SECRET_NOTE) && !said.contains("Secret field values were typed"), "{code}: {said}");
     }
 
     // no browser on a pipe
@@ -442,6 +446,62 @@ fn a_log_line_takes_a_length_and_never_a_value() {
     assert!(login::field_log_line(&form.fields[0], true, 3, "typed").contains("secret=true"));
     let fill = Fill::Filled { outcomes: vec![], pressed: Pressed::Yes };
     assert!(!login::result_text(&form, &fill, &Default::default()).contains("password="));
+}
+
+#[test]
+fn a_failed_fill_says_whether_a_secret_was_typed_may_have_been_or_was_not() {
+    let form = login::sanitize(&card_input()).unwrap();
+    let outcome = |id: &str, filled: bool| login::Outcome { id: id.to_owned(), filled, sensitive: false };
+    let typed = "Secret field values were typed into the page and never shown to you.";
+    let maybe = login::MAYBE_SECRET_NOTE;
+    let failed = |outcomes, uncertain, maybe_secret| Fill::Failed { outcomes, reason: "The browser didn't answer in time.".to_owned(), uncertain, maybe_secret };
+    let said = |fill: &Fill| login::result_text(&form, fill, &Default::default());
+    // nothing reached the page: no note
+    let none = said(&failed(vec![], false, false));
+    assert!(!none.contains(typed) && !none.contains(maybe) && none.contains("Do not type secrets with computer_type."), "{none}");
+    let name_only = said(&failed(vec![outcome("email", true), outcome("password", false)], false, false));
+    assert!(!name_only.contains(typed) && !name_only.contains(maybe), "{name_only}");
+    // the name went in and the password's type may have landed: said so
+    let unsure = failed(vec![outcome("email", true), outcome("password", false)], true, true);
+    let text = said(&unsure);
+    assert!(text.contains(maybe) && !text.contains(typed) && text.contains(login::MAYBE_TYPED), "{text}");
+    assert_eq!(login::secret_typed(&form, &[outcome("email", true)], true), login::SecretTyped::Maybe);
+    // a maybe on a plain field is no secret's
+    let plain = said(&failed(vec![outcome("email", false)], true, false));
+    assert!(!plain.contains(maybe) && !plain.contains(typed), "{plain}");
+    // the password went in
+    let both = said(&failed(vec![outcome("email", true), outcome("password", true)], false, false));
+    assert!(both.contains(typed) && !both.contains(maybe), "{both}");
+}
+
+#[test]
+fn the_card_is_told_what_becomes_of_return_only_as_far_as_it_is_known() {
+    let form = |v: Value| login::sanitize(&v).unwrap();
+    let two = |extra: Value, required: bool| {
+        let mut v = json!({"title": "t", "domain": SITE, "fields": [
+            {"id": "email", "label": "Email", "type": "email", "required": required},
+            {"id": "password", "label": "Password", "type": "password", "required": required}]});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        form(v)
+    };
+    // asked for, both required: pressed whatever goes in
+    assert_eq!(login::return_press(&two(json!({"samePage": true, "submit": true}), true)), "always");
+    // asked for, but both optional: a submit may type nothing, and then nothing is pressed
+    assert_eq!(login::return_press(&two(json!({"samePage": true, "submit": true}), false)), "maybe");
+    // one page, not asked for: pressed only when both go in (an optional password left empty isn't)
+    let same = two(json!({"samePage": true}), false);
+    assert_eq!(login::return_press(&same), "maybe");
+    assert!(!login::should_press_return(&same, 1) && login::should_press_return(&same, 2));
+    // ... and with both required, both always go in
+    assert_eq!(login::return_press(&two(json!({"samePage": true}), true)), "always");
+    // a stepped card types its first field and presses nothing
+    assert_eq!(login::return_press(&two(json!({}), true)), "never");
+    // one field: pressed when it's required; an optional one may be sent empty
+    let one = |required: bool| form(json!({"title": "t", "domain": SITE, "fields": [{"id": "otp", "label": "Code", "type": "otp", "required": required}]}));
+    assert_eq!(login::return_press(&one(true)), "always");
+    assert_eq!(login::return_press(&one(false)), "maybe");
+    // no secret on one page: never
+    assert_eq!(login::return_press(&form(json!({"title": "t", "domain": SITE, "samePage": true, "fields": [{"id": "a", "label": "Name", "type": "text"}, {"id": "b", "label": "City", "type": "text"}]}))), "never");
 }
 
 #[test]
@@ -706,6 +766,7 @@ async fn a_run_stopped_mid_fill_leaves_the_card_saying_a_value_may_have_been_typ
     let _ = call.await;
     let settled = login::find(&b.ctx, &b.ann.1, card["id"].as_str().unwrap()).unwrap();
     assert_eq!((settled["state"].as_str(), settled["uncertain"].as_bool()), (Some("fill_failed"), Some(true)), "{settled}");
+    assert_eq!(settled["secretMaybe"], true, "the card has a password, and which value was in flight isn't known: {settled}");
     assert!(settled["note"].as_str().unwrap().contains("may have been typed"));
     b.mock.hold_browser.store(false, Ordering::SeqCst);
     let _ = sending.await;
