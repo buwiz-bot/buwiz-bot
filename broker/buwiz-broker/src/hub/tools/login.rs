@@ -325,6 +325,21 @@ pub fn should_press_return(form: &Form, typed: usize) -> bool {
     typed == 1 && matches!(form.challenge_kind.as_deref(), Some("otp" | "password"))
 }
 
+/// What becomes of Return, as far as the card can say before anything is typed: `always` (by
+/// [`should_press_return`] whichever fields are filled, once any is), `never`, or `maybe` (it
+/// depends on which are). The card's words before the press come from this, not from a copy of
+/// the rule.
+pub fn return_press(form: &Form) -> &'static str {
+    let most = if form.types_only_first_field() { 1 } else { form.fields.len() };
+    let presses: Vec<bool> = (1..=most).map(|typed| should_press_return(form, typed)).collect();
+    match (presses.iter().all(|p| *p), presses.iter().any(|p| *p)) {
+        _ if presses.is_empty() => "never",
+        (true, _) => "always",
+        (false, false) => "never",
+        (false, true) => "maybe",
+    }
+}
+
 // ---- the fill ----
 
 /// What became of Return.
@@ -821,7 +836,7 @@ pub async fn request(run: &Run, computers: &Arc<Computers>, live: Live, input: &
     let id = format!("uf_{}", crate::hub::store::uuidv7());
     let n = json!({
         "kind": KIND, "id": id, "bot": live.bot, "botName": crate::hub::computer::bot_name(ctx, &live.bot), "chat": chat,
-        "title": form.title, "form": form.to_json(), "takeoverNote": TAKEOVER_NOTE, "state": "pending", "at": crate::hub::policy::now(ctx),
+        "title": form.title, "form": form.to_json(), "takeoverNote": TAKEOVER_NOTE, "returnPress": return_press(&form), "state": "pending", "at": crate::hub::policy::now(ctx),
     });
     let (tx, mut rx) = mpsc::channel::<Ask>(4);
     waiting().insert(id.clone(), tx);

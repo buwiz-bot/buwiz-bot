@@ -265,6 +265,8 @@ pub(crate) struct UserFormSpec {
     pub uncertain: bool,
     /// The value that may have gone in was a secret's (its `secretMaybe`).
     pub secret_maybe: bool,
+    /// What the broker will do with Return (`always`, `never`, `maybe`; its `returnPress`).
+    pub return_press: Option<String>,
 }
 
 impl UserFormSpec {
@@ -292,6 +294,7 @@ impl UserFormSpec {
         spec.takeover_note = Some(s("takeoverNote")).filter(|t| !t.is_empty());
         spec.uncertain = n.get("uncertain").and_then(Value::as_bool).unwrap_or(false);
         spec.secret_maybe = n.get("secretMaybe").and_then(Value::as_bool).unwrap_or(false);
+        spec.return_press = Some(s("returnPress")).filter(|t| !t.is_empty());
         // a card's fields never carry a value from the broker: a login card has none
         for f in &mut spec.fields {
             f.prefill = None;
@@ -1151,10 +1154,24 @@ fn submit(spec: Rc<UserFormSpec>, key: String) {
     });
 }
 
-/// Whether the broker presses Return after typing: its rule (`should_press_return`) when every
-/// field is filled.
-pub(crate) fn presses_return(spec: &UserFormSpec) -> bool {
-    spec.submit || spec.fields.len() == 1 || (spec.same_page && spec.fields.iter().any(Field::masked))
+/// What becomes of Return, as the broker's card says before anything is typed (its
+/// `returnPress`): the broker decides it, and the card's words before the press follow it. With
+/// no word (an older broker) the card promises nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReturnPress {
+    /// Pressed, whichever fields are filled.
+    Always,
+    Never,
+    /// It depends on which fields end up filled: the receipt says what happened.
+    Maybe,
+}
+
+pub(crate) fn return_press(spec: &UserFormSpec) -> ReturnPress {
+    match spec.return_press.as_deref() {
+        Some("always") => ReturnPress::Always,
+        Some("never") => ReturnPress::Never,
+        _ => ReturnPress::Maybe,
+    }
 }
 
 /// A missing route or no broker: nothing was typed, and the card says so.
@@ -1394,7 +1411,7 @@ pub(crate) fn headline(spec: &UserFormSpec) -> String {
 pub(crate) fn primary_label(spec: &UserFormSpec) -> &'static str {
     match () {
         _ if !brokers(spec) => spec.continue_label(),
-        _ if presses_return(spec) => "Fill and send",
+        _ if return_press(spec) == ReturnPress::Always => "Fill and send",
         _ => "Fill in",
     }
 }
@@ -1404,10 +1421,10 @@ pub(crate) fn primary_label(spec: &UserFormSpec) -> &'static str {
 pub(crate) fn caption(spec: &UserFormSpec) -> String {
     let label = primary_label(spec);
     let screen = screen_of(spec);
-    if presses_return(spec) {
-        format!("Typed on {screen}, then Return is pressed. Nothing is typed until you press {label}.")
-    } else {
-        format!("Typed on {screen}; sending is left to you. Nothing is typed until you press {label}.")
+    match return_press(spec) {
+        ReturnPress::Always => format!("Typed on {screen}, then Return is pressed. Nothing is typed until you press {label}."),
+        ReturnPress::Never => format!("Typed on {screen}; sending is left to you. Nothing is typed until you press {label}."),
+        ReturnPress::Maybe => format!("Typed on {screen}. If the form is complete, Return may be pressed to send it. Nothing is typed until you press {label}."),
     }
 }
 
@@ -1451,7 +1468,12 @@ pub(crate) fn guidance(spec: &UserFormSpec) -> Vec<(String, Vec<String>)> {
         label.to_owned(),
         vec![
             format!("Buwiz types it into {site} on {screen}, not the AI."),
-            if presses_return(spec) { "Then it presses Return to send it.".to_owned() } else { "It doesn't press Return: sending is left to you.".to_owned() },
+            match return_press(spec) {
+                ReturnPress::Always => "Then it presses Return to send it.",
+                ReturnPress::Never => "It doesn't press Return: sending is left to you.",
+                ReturnPress::Maybe => "Whether it presses Return depends on which fields are filled; the card says afterwards.",
+            }
+            .to_owned(),
             "The AI never sees a password or code. It's told the form was filled, and what went into fields that aren't secret, like an email.".to_owned(),
             format!("Nothing is typed until you press {label}."),
         ],
@@ -2678,21 +2700,28 @@ mod tests {
     }
 
     #[test]
-    fn the_caption_and_the_primary_say_whether_return_is_pressed() {
+    fn the_caption_and_the_primary_say_what_the_broker_will_do_with_return() {
         let mut spec = brokers_card("Sign in", "");
-        spec.fields = parse_fields(&json!([{"id": "e", "label": "Email", "type": "email"}, {"id": "p", "label": "Password", "type": "password"}]));
-        spec.same_page = true;
-        assert!(presses_return(&spec));
+        spec.return_press = Some("always".into());
         assert_eq!(primary_label(&spec), "Fill and send");
         assert_eq!(caption(&spec), "Typed on Nova's screen, then Return is pressed. Nothing is typed until you press Fill and send.");
-        spec.same_page = false;
-        assert!(!presses_return(&spec));
+        spec.return_press = Some("never".into());
         assert_eq!(primary_label(&spec), "Fill in");
         assert_eq!(caption(&spec), "Typed on Nova's screen; sending is left to you. Nothing is typed until you press Fill in.");
-        spec.submit = true;
-        assert_eq!(primary_label(&spec), "Fill and send");
+        // it depends on what's filled (a one-page card whose password may be left empty), or the
+        // broker didn't say: nothing promised before the press
+        for press in [Some("maybe"), None] {
+            spec.return_press = press.map(str::to_owned);
+            assert_eq!(primary_label(&spec), "Fill in");
+            assert_eq!(caption(&spec), "Typed on Nova's screen. If the form is complete, Return may be pressed to send it. Nothing is typed until you press Fill in.");
+            assert_eq!(guidance(&spec)[0].1[1], "Whether it presses Return depends on which fields are filled; the card says afterwards.");
+        }
+        let n = json!({"kind": "user_form", "id": "uf_1", "chat": "t_1", "state": "pending", "returnPress": "always"});
+        assert_eq!(return_press(&UserFormSpec::from_notice(&n).unwrap()), ReturnPress::Always);
         // a card that isn't the broker's keeps its own words
         spec.chat.clear();
+        spec.fields = parse_fields(&json!([{"id": "e", "label": "Email", "type": "email"}, {"id": "p", "label": "Password", "type": "password"}]));
+        spec.same_page = true;
         assert_eq!(primary_label(&spec), "Log in");
     }
 

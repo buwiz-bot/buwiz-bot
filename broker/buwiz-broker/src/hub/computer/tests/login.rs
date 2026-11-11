@@ -475,6 +475,30 @@ fn a_failed_fill_says_whether_a_secret_was_typed_may_have_been_or_was_not() {
 }
 
 #[test]
+fn the_card_is_told_what_becomes_of_return_only_as_far_as_it_is_known() {
+    let form = |v: Value| login::sanitize(&v).unwrap();
+    let two = |extra: Value| {
+        let mut v = json!({"title": "t", "domain": SITE, "fields": [
+            {"id": "email", "label": "Email", "type": "email"},
+            {"id": "password", "label": "Password", "type": "password"}]});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        form(v)
+    };
+    // asked for: pressed whatever is filled
+    assert_eq!(login::return_press(&two(json!({"samePage": true, "submit": true}))), "always");
+    // one page, not asked for: pressed only when both go in (an optional password left empty isn't)
+    let same = two(json!({"samePage": true}));
+    assert_eq!(login::return_press(&same), "maybe");
+    assert!(!login::should_press_return(&same, 1) && login::should_press_return(&same, 2));
+    // a stepped card types its first field and presses nothing
+    assert_eq!(login::return_press(&two(json!({}))), "never");
+    // one field: pressed
+    assert_eq!(login::return_press(&form(json!({"title": "t", "domain": SITE, "fields": [{"id": "otp", "label": "Code", "type": "otp"}]}))), "always");
+    // no secret on one page: never
+    assert_eq!(login::return_press(&form(json!({"title": "t", "domain": SITE, "samePage": true, "fields": [{"id": "a", "label": "Name", "type": "text"}, {"id": "b", "label": "City", "type": "text"}]}))), "never");
+}
+
+#[test]
 fn secrecy_is_not_the_models_to_turn_off() {
     let form = login::sanitize(&json!({"title": "t", "domain": SITE, "samePage": true, "fields": [
         {"id": "f1", "label": "Password", "type": "text", "secret": false},

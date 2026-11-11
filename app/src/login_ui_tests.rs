@@ -187,7 +187,7 @@ fn with_card_for(app: &mut Headless, id: &'static str, bot: Option<&'static str>
         st.turns_of.set("t_nova".to_owned());
         st.add_local_wire_turn(&json!({"role": "notice", "text": "Sign in to Shop", "notice": {
             "kind": "user_form", "id": id, "bot": bot, "botName": "Nova", "chat": "t_nova", "title": "Sign in to Shop", "state": "pending",
-            "takeoverNote": crate::cards::user_form::TAKEOVER_NOTE,
+            "takeoverNote": crate::cards::user_form::TAKEOVER_NOTE, "returnPress": "always",
             "form": {"title": "Sign in to Shop", "domain": "shop.example", "samePage": true, "submit": true, "fields": [
                 {"id": "email", "label": "Email", "type": "email", "required": true},
                 {"id": "password", "label": "Password", "type": "password", "required": true, "secret": true}]}}}));
@@ -1068,8 +1068,9 @@ fn the_cards_controls_are_accessible_buttons_each_with_its_label() {
     no_mark(&app);
 }
 
-/// Nova's chat open, with the broker's login card for `form` (the notice's `form`) in it.
-fn with_form(app: &mut Headless, form: Value) {
+/// Nova's chat open, with the broker's login card for `form` (the notice's `form`) in it, and
+/// what the broker says it will do with Return (`press`).
+fn with_form(app: &mut Headless, form: Value, press: &'static str) {
     on(app, move || {
         let st = store();
         st.mcp_loaded.set(true);
@@ -1078,7 +1079,7 @@ fn with_form(app: &mut Headless, form: Value) {
         st.turns_of.set("t_nova".to_owned());
         st.add_local_wire_turn(&json!({"role": "notice", "text": "Sign in", "notice": {
             "kind": "user_form", "id": "uf_1", "bot": "nova", "botName": "Nova", "chat": "t_nova", "title": form["title"], "state": "pending",
-            "takeoverNote": crate::cards::user_form::TAKEOVER_NOTE, "form": form}}));
+            "takeoverNote": crate::cards::user_form::TAKEOVER_NOTE, "returnPress": press, "form": form}}));
     });
     settle(app);
 }
@@ -1095,7 +1096,7 @@ fn the_card_heads_with_its_site_and_shows_the_ais_words_as_its_bots() {
     let (mut app, _seen) = start(submitted("submitted"));
     with_form(&mut app, json!({"title": "Sign in to your bank", "instruction": "Sign in to your bank with the fake login.", "domain": "shop.example", "samePage": true, "submit": true, "fields": [
         {"id": "email", "label": "Email", "type": "email", "required": true},
-        {"id": "password", "label": "Password", "type": "password", "required": true, "secret": true}]}));
+        {"id": "password", "label": "Password", "type": "password", "required": true, "secret": true}]}), "always");
     let card = "Sign in on shop.example";
     assert!(app.texts().contains(&card), "the site heads the card: {:?}", app.texts());
     assert!(app.texts().contains(&"Nova: Sign in to your bank with the fake login."), "the AI's words, as Nova's: {:?}", app.texts());
@@ -1127,7 +1128,7 @@ fn a_card_that_leaves_return_to_the_person_says_so() {
     let (mut app, seen) = start(submitted("submitted"));
     with_form(&mut app, json!({"title": "Sign in to shop.example", "domain": "shop.example", "samePage": true, "fields": [
         {"id": "email", "label": "Email", "type": "email", "required": true},
-        {"id": "code", "label": "Code", "type": "text", "required": true}]}));
+        {"id": "code", "label": "Code", "type": "text", "required": true}]}), "never");
     assert!(app.has("Fill in") && !app.has(FILL), "{:?}", app.texts());
     assert!(app.texts().contains(&"Typed on Nova's screen; sending is left to you. Nothing is typed until you press Fill in."), "{:?}", app.texts());
     assert!(!has_text(&app, "Nova:"), "a title that only names the site isn't repeated: {:?}", app.texts());
@@ -1143,6 +1144,29 @@ fn a_card_that_leaves_return_to_the_person_says_so() {
     app.submit("Code");
     let sent = wait_for(&mut app, &seen, SUBMIT, 1);
     assert_eq!(sent[0].0["values"], json!({"email": "kid@example.com", "code": "fake-code"}));
+}
+
+/// A one-page card whose password may be left empty: the broker presses Return only if both go
+/// in, so the card promises nothing before the press, and the receipt says what happened.
+#[test]
+fn a_card_whose_return_depends_on_what_is_filled_promises_nothing_before_the_press() {
+    if !in_child("a_card_whose_return_depends_on_what_is_filled_promises_nothing_before_the_press") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["notice"]["note"] = json!("Typed. Return is left to you, or to the AI once it has looked.");
+    let (mut app, seen) = start(reply);
+    with_form(&mut app, json!({"title": "Sign in", "domain": "shop.example", "samePage": true, "fields": [
+        {"id": "email", "label": "Email", "type": "email", "required": true},
+        {"id": "password", "label": "Password", "type": "password"}]}), "maybe");
+    assert!(app.has("Fill in") && !app.has(FILL), "{:?}", app.texts());
+    assert!(app.texts().contains(&"Typed on Nova's screen. If the form is complete, Return may be pressed to send it. Nothing is typed until you press Fill in."), "{:?}", app.texts());
+    assert!(!has_text(&app, "then Return is pressed"), "{:?}", app.texts());
+    app.type_text("Email", "kid@example.com");
+    app.press("Fill in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(app.texts().contains(&"Filled in on shop.example. Return is left to you, or to the AI once it has looked. Secret values were never shown to the AI."), "the receipt says what happened: {:?}", app.texts());
 }
 
 /// The ⓘ's popover holds the guidance: the pointer resting on the ⓘ peeks it and leaving closes
@@ -1226,7 +1250,7 @@ fn every_secret_field_is_secure_and_reads_back_nothing() {
         {"id": "email", "label": "Email", "type": "email", "required": true},
         {"id": "password", "label": "Password", "type": "password", "required": true},
         {"id": "code", "label": "One-time code", "type": "otp"},
-        {"id": "pin", "label": "PIN", "type": "text", "secret": true}]}));
+        {"id": "pin", "label": "PIN", "type": "text", "secret": true}]}), "maybe");
     app.type_text("Email", "kid@example.com");
     for label in ["Password", "One-time code", "PIN"] {
         app.type_text(label, MARK);
