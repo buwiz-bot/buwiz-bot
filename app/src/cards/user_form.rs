@@ -302,8 +302,8 @@ pub(crate) struct UserFormSpec {
     /// The chat the broker's card is in (its `chat`); "" for a wire frame.
     pub chat: String,
     pub bot_name: String,
-    /// What the broker's card says of how its fill went ([`Facts`]).
-    pub facts: Facts,
+    /// What the broker's card says of how its fill went ([`Facts`]); boxed, so a card stays small.
+    pub facts: Box<Facts>,
     /// What Open the screen hands over, as the broker words it.
     pub takeover_note: Option<String>,
     /// What the broker will do with Return (`always`, `never`, `maybe`; its `returnPress`).
@@ -331,7 +331,7 @@ impl UserFormSpec {
             "expired" => Some(FormResolution::TimedOut),
             other => Some(FormResolution::parse(other)),
         };
-        spec.facts = Facts::of(n);
+        spec.facts = Box::new(Facts::of(n));
         spec.takeover_note = Some(s("takeoverNote")).filter(|t| !t.is_empty());
         spec.return_press = Some(s("returnPress")).filter(|t| !t.is_empty());
         // a card's fields never carry a value from the broker: a login card has none
@@ -1917,7 +1917,7 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
     drop_held(&key);
     forget_secrets(&spec, loc);
     // the card's own notice once it has settled, else what the broker's answer said
-    let facts = if spec.facts.is_empty() { loc.said.get_untracked() } else { spec.facts.clone() };
+    let facts = if spec.facts.is_empty() { loc.said.get_untracked() } else { (*spec.facts).clone() };
     let (g, ink, tint, line) = receipt(&spec, r, &facts);
     let said = facts.note.clone().filter(|_| matches!(r, FormResolution::Submitted | FormResolution::FillFailed));
     // nothing here is cut: a safety sentence is never ellipsised
