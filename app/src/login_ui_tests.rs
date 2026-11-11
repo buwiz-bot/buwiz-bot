@@ -1129,6 +1129,7 @@ fn the_card_heads_with_its_site_and_shows_the_ais_words_as_its_bots() {
     assert!(app.texts().contains(&card), "the site heads the card: {:?}", app.texts());
     assert!(app.texts().contains(&"Nova: Sign in to your bank with the fake login."), "the AI's words, as Nova's: {:?}", app.texts());
     assert!(!app.texts().contains(&"Sign in to your bank"), "never the AI's title in the header: {:?}", app.texts());
+    assert!(!app.has("Show more of Nova's words"), "short words have nothing more to show");
     assert!(app.texts().contains(&"Typed on Nova's screen, then Return is pressed. Nothing is typed until you press Fill and send."));
     for long in ["Commands it ran", "ended first", "a different matter", "trust this Bot's work"] {
         assert!(!has_text(&app, long), "{long:?} is in the card's body: {:?}", app.texts());
@@ -1144,6 +1145,26 @@ fn the_card_heads_with_its_site_and_shows_the_ais_words_as_its_bots() {
     let tree = app.labels_in_order(card);
     let at = |l: &str| tree.iter().position(|x| x == l).unwrap_or_else(|| panic!("{l} in {tree:?}"));
     assert!(at("Email") < at("Password") && at("Password") < at(FILL) && at(FILL) < at(DO_IT) && at(DO_IT) < at(INFO) && at(INFO) < at("Dismiss"), "Tab order: {tree:?}");
+}
+
+/// The AI's long instruction shows two lines at first, attributed, and "Show more" shows it all:
+/// a button with its own label, and "Show less" folds it again.
+#[test]
+fn the_ais_long_words_can_be_read_in_full() {
+    if !in_child("the_ais_long_words_can_be_read_in_full") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    let said = "Sign in with the fake login from the fixture's readme, then wait on the page that follows until it says you're in; if it asks for a code, stop and ask.";
+    with_form(&mut app, json!({"title": "Sign in", "instruction": said, "domain": "shop.example", "samePage": true, "submit": true, "fields": [
+        {"id": "email", "label": "Email", "type": "email", "required": true}]}), "always");
+    let words = format!("Nova: {said}");
+    assert_eq!(app.text_view(&words).1.max_lines, 2, "two lines at first, attributed");
+    assert_eq!(app.access("Show more of Nova's words").0, AccessibilityRole::Button);
+    app.press("Show more of Nova's words");
+    assert_eq!(app.text_view(&words).1.max_lines, 0, "all of it");
+    app.press("Show less of Nova's words");
+    assert_eq!(app.text_view(&words).1.max_lines, 2);
 }
 
 /// A card whose AI didn't ask for Return says sending is left to the person, and its primary only

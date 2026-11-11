@@ -1628,10 +1628,38 @@ fn header(spec: &UserFormSpec, corner_w: f32) -> View {
         None => spec.instruction.clone().filter(|i| !i.is_empty()),
     };
     if let Some(w) = words {
-        col = col.child(note(w).number_of_lines(2));
+        col = col.child(asked_words(w, if spec.bot_name.is_empty() { "the Bot" } else { &spec.bot_name }));
     }
     col
 }
+
+/// The AI's words on the card, two lines at first: a request a person agrees to must be readable
+/// in full, so a long one has "Show more" (and "Show less"), a button a screen reader gets too.
+fn asked_words(words: String, bot: &str) -> impl IntoElement {
+    let more = signal(false);
+    let long = words.chars().count() > LONG_WORDS;
+    let (w1, w2) = (words.clone(), words);
+    let (show, hide) = (format!("Show more of {bot}'s words"), format!("Show less of {bot}'s words"));
+    let mut v = view().gap(px(2.0)).child(when(move || more.get(), move || note(w1.clone())).otherwise(move || note(w2.clone()).number_of_lines(2)));
+    if long {
+        v = v.child(view().flex_row().child(dynamic(move || {
+            let (label, words) = if more.get() { (hide.clone(), "Show less") } else { (show.clone(), "Show more") };
+            let hov = signal(false);
+            view()
+                .role(AccessibilityRole::Button)
+                .label(label)
+                .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+                .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+                .on_press(move || more.update(|m| *m = !*m))
+                .child(text(words).text_size(px(11.5)).line_height(px(15.0)).text_color(move || if hov.get() { theme::TEXT } else { theme::ACCENT }))
+                .into_element()
+        })));
+    }
+    v
+}
+
+/// Past this many characters the AI's words may not fit their two lines: they get "Show more".
+const LONG_WORDS: usize = 100;
 
 /// The header's buttons, last in the card so Tab reaches them after its answers, laid over the
 /// header's right end: the ⓘ (on the broker's card) and the ×.
