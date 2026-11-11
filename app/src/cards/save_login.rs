@@ -58,15 +58,16 @@ impl SaveLoginSpec {
             origin: at(&["origin"])?,
             username: at(&["username"])?,
             form_entry_id: at(&["formEntryId", "form_entry_id", "entryId"]).unwrap_or_default(),
-            bot: String::new(),
-            bot_name: String::new(),
+            // the frame's Bot, for its name; who a Save shares it with is the held login's
+            bot: at(&["bot", "agentId", "coworkerId"]).unwrap_or_default(),
+            bot_name: at(&["botName"]).unwrap_or_default(),
         })
     }
 }
 
 /// Save: the held password to the Keychain, the row to the table. The
 /// held login's own site and name are used; the frame's are display.
-fn save(spec: &SaveLoginSpec, key: &str) {
+pub(crate) fn save(spec: &SaveLoginSpec, key: &str) {
     let Some(pending) = vault().take_pending(&spec.form_entry_id) else {
         return set_state(key, CardState::Error("The password is no longer held, so it can't be saved.".into()));
     };
@@ -98,30 +99,41 @@ fn save(spec: &SaveLoginSpec, key: &str) {
 }
 
 /// What Save means: where the password goes, and which Bots it's offered to
-/// after: the card's Bot (by its id), the Bots the saved login has already,
-/// and every Bot under Share all.
-fn saved_note(spec: &SaveLoginSpec) -> String {
-    let keep = "The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID.";
+/// after. Who it's shared with is read from the login held for the save (its
+/// card's Bot id, which Save shares it with) and the row saved already, so the
+/// words and the save agree on both paths, the broker's card and a
+/// `credential.offer_save` frame.
+pub(crate) fn saved_note(spec: &SaveLoginSpec) -> String {
     let bots = crate::live::store().bots.get_untracked();
     let name = |id: &str| crate::agents::name_of(id, &bots);
+    let me = vault().pending_bot(&spec.form_entry_id).filter(|b| !b.is_empty());
     let others: Vec<String> = vault()
         .find(&spec.origin, &spec.username)
-        .map(|r| r.shared_with.into_iter().filter(|b| *b != spec.bot).map(|b| name(&b)).collect())
+        .map(|r| r.shared_with.into_iter().filter(|b| Some(b) != me.as_ref()).map(|b| name(&b)).collect())
         .unwrap_or_default();
-    let all = if vault().share_all() { " Share all is on, so every Bot is offered it." } else { "" };
-    let who = match (spec.bot.is_empty(), others.is_empty()) {
-        (true, true) => "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins.".to_owned(),
-        (true, false) => format!("Saved, it stays shared with {} only.", others.join(", ")),
-        (false, _) => {
-            let me = if spec.bot_name.is_empty() { name(&spec.bot) } else { spec.bot_name.clone() };
-            if others.is_empty() {
-                format!("Saved, it's offered to {me} only. Share it with other Bots in Settings › Logins.")
-            } else {
-                format!("Saved, it's offered to {me}, and still to {}.", others.join(", "))
-            }
-        }
-    };
-    format!("{keep} {who}{all}")
+    let me = me.map(|id| if !spec.bot_name.is_empty() && (spec.bot.is_empty() || spec.bot == id) { spec.bot_name.clone() } else { name(&id) });
+    format!("The password stays in the macOS Keychain. Buwiz Bot never shows it again without Touch ID. {}", offer_words(me.as_deref(), &others, vault().share_all()))
+}
+
+/// One true sentence for who a saved login is offered to: the card's Bot
+/// (`me`, its name), the Bots that keep it already, and Share all.
+fn offer_words(me: Option<&str>, others: &[String], share_all: bool) -> String {
+    let rest = others.join(", ");
+    if share_all {
+        let own = match (me, others.is_empty()) {
+            (None, true) => return "Saved, every Bot is offered it while Share all is on; with Share all off, no Bot is.".to_owned(),
+            (None, false) => format!("{rest} only"),
+            (Some(m), true) => format!("{m} only"),
+            (Some(m), false) => format!("{m} and {rest}"),
+        };
+        return format!("Saved, every Bot is offered it while Share all is on; with Share all off, it's offered to {own}.");
+    }
+    match (me, others.is_empty()) {
+        (None, true) => "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins.".to_owned(),
+        (None, false) => format!("Saved, it stays shared with {rest} only."),
+        (Some(m), true) => format!("Saved, it's offered to {m} only. Share it with other Bots in Settings › Logins."),
+        (Some(m), false) => format!("Saved, it's offered to {m}, and still to {rest}."),
+    }
 }
 
 /// Not now: the held password is dropped.
@@ -181,6 +193,22 @@ mod tests {
         assert_eq!(spec.origin, "accounts.google.com");
         assert_eq!(spec.username, "ada@example.com");
         assert_eq!(spec.form_entry_id, "e_0199bb4e-0000-7000-8000-000000000002");
+    }
+
+    #[test]
+    fn the_offer_says_one_true_sentence_for_each_case() {
+        let o = |n: &[&str]| n.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(offer_words(Some("Nova"), &[], false), "Saved, it's offered to Nova only. Share it with other Bots in Settings › Logins.");
+        assert_eq!(offer_words(Some("Nova"), &o(&["Orbit"]), false), "Saved, it's offered to Nova, and still to Orbit.");
+        assert_eq!(offer_words(None, &[], false), "Saved, it isn't shared with any Bot yet. Share it in Settings › Logins.");
+        // Share all on: every Bot, and its own shares for when it's off
+        assert_eq!(offer_words(Some("Nova"), &[], true), "Saved, every Bot is offered it while Share all is on; with Share all off, it's offered to Nova only.");
+        assert_eq!(offer_words(Some("Nova"), &o(&["Orbit"]), true), "Saved, every Bot is offered it while Share all is on; with Share all off, it's offered to Nova and Orbit.");
+        assert_eq!(offer_words(None, &[], true), "Saved, every Bot is offered it while Share all is on; with Share all off, no Bot is.");
+        for (me, others) in [(Some("Nova"), o(&[])), (None, o(&[]))] {
+            let w = offer_words(me, &others, true);
+            assert!(!w.contains(" only.") || w.contains("with Share all off"), "{w}");
+        }
     }
 
     #[test]

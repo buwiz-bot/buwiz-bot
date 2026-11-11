@@ -1085,3 +1085,53 @@ fn opening_the_logins_page_changes_no_revision_and_a_write_does() {
     settle(&mut app);
     assert!(rev(&mut app) > before, "a write does");
 }
+
+/// With Share all on, the offer says every Bot is offered it, and who has it when Share all is off.
+#[test]
+fn the_save_offer_under_share_all_says_every_bot_is_offered_it() {
+    if !in_child("the_save_offer_under_share_all_says_every_bot_is_offered_it") {
+        return;
+    }
+    let mut reply = submitted("submitted");
+    reply.1["offerSave"] = json!({"origin": "shop.example", "username": "kid@example.com"});
+    let (mut app, seen) = start(reply);
+    on(&mut app, || crate::vault::vault().set_share_all(true).unwrap());
+    with_card(&mut app);
+    typed_login(&mut app);
+    app.press("Log in");
+    wait_for(&mut app, &seen, SUBMIT, 1);
+    settle(&mut app);
+    assert!(has_text(&app, "Saved, every Bot is offered it while Share all is on; with Share all off, it's offered to Nova only."), "{:?}", app.texts());
+    assert!(!has_text(&app, "Share all is on, so every Bot"), "one sentence, not two: {:?}", app.texts());
+    no_mark(&app);
+}
+
+/// A `credential.offer_save` frame's offer says, and does, what the held login's card decided:
+/// shared with that card's Bot, or with none when it named no Bot id.
+#[test]
+fn a_wire_offer_agrees_with_the_held_login_on_who_gets_it() {
+    if !in_child("a_wire_offer_agrees_with_the_held_login_on_who_gets_it") {
+        return;
+    }
+    let (mut app, _seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    let (words, shared) = on(&mut app, || {
+        let v = crate::vault::vault();
+        v.stash_pending("e_wire", crate::vault::PendingSave { origin: "shop.example".into(), username: "kid@example.com".into(), password: crate::vault::Secret::new(MARK), bot: "nova".into() });
+        let frame = json!({"name": "credential.offer_save", "value": {"origin": "shop.example", "username": "kid@example.com", "formEntryId": "e_wire"}});
+        let spec = crate::cards::save_login::SaveLoginSpec::from_wire(&frame).unwrap();
+        (crate::cards::save_login::saved_note(&spec), spec)
+    });
+    assert!(words.contains("Saved, it's offered to Nova only."), "{words}");
+    on(&mut app, move || crate::cards::save_login::save(&shared, "save-login-e_wire"));
+    settle(&mut app);
+    assert!(on(&mut app, || crate::vault::vault().list().pop().unwrap().shared_with.contains("nova")), "and the save shares it with Nova");
+    // a held login with no Bot id: none, said plainly
+    let words = on(&mut app, || {
+        crate::vault::vault().stash_pending("e_none", crate::vault::PendingSave { origin: "bank.example".into(), username: "kid@example.com".into(), password: crate::vault::Secret::new(MARK), bot: String::new() });
+        let frame = json!({"name": "credential.offer_save", "value": {"origin": "bank.example", "username": "kid@example.com", "formEntryId": "e_none"}});
+        crate::cards::save_login::saved_note(&crate::cards::save_login::SaveLoginSpec::from_wire(&frame).unwrap())
+    });
+    assert!(words.contains("Saved, it isn't shared with any Bot yet."), "{words}");
+    no_mark(&app);
+}

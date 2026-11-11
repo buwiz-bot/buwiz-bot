@@ -624,6 +624,11 @@ impl Vault {
         self.pending.lock().map(|m| m.contains_key(entry_id)).unwrap_or(false)
     }
 
+    /// The Bot (id) whose card typed the held login: the one a Save shares it with.
+    pub(crate) fn pending_bot(&self, entry_id: &str) -> Option<String> {
+        self.pending.lock().ok()?.get(entry_id).map(|p| p.bot.clone())
+    }
+
     /// The site and username of the held login, without its password.
     pub(crate) fn pending_who(&self, entry_id: &str) -> Option<(String, String)> {
         let m = self.pending.lock().ok()?;
