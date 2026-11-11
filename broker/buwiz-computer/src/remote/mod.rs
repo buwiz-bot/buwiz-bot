@@ -116,6 +116,7 @@ impl Asked {
             viewer_password: password.unwrap_or_else(|| Secret::new("")),
             dir: dir.to_owned(),
             link: Some(Link { boxed, pin, key }),
+            egress: None,
             seen: None,
         })
     }

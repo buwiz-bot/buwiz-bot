@@ -74,6 +74,7 @@ use super::Registry;
 mod awake;
 pub mod homes;
 pub mod jobs;
+pub mod network;
 
 /// The own screens a box runs (`box-screen`'s `BOX_MAX_OWN_SCREENS`).
 pub const MAX_SEATS: i64 = 4;
@@ -334,6 +335,8 @@ pub struct Computers {
     sight: Mutex<Option<(Instant, HashMap<String, bool>)>>,
     /// held while a job runs
     keep_awake: awake::KeepAwake,
+    /// this Mac's side of each computer's tunnel ([`network`])
+    tunnels: network::Tunnels,
 }
 
 /// What a tool acts with: the computer, and the screen of the Bot it was found for.
@@ -355,7 +358,7 @@ fn db_problem(e: String) -> Problem {
 
 impl Computers {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), making: Mutex::default(), being_made: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new() }
+        Self { homes: homes::Homes::new(provider), remote: Arc::new(RemoteProvider::new()), tested: Mutex::default(), tested_salt: buwiz_computer::random_hex(16).ok(), gate: tokio::sync::OnceCell::new(), now: Mutex::default(), machines: Mutex::default(), seating: tokio::sync::Mutex::new(()), making: Mutex::default(), being_made: Mutex::default(), idle: secs(IDLE_ENV, IDLE), deep: secs(DEEP_ENV, DEEP), quiet: secs(QUIET_ENV, QUIET), patience: PATIENCE, sight: Mutex::default(), keep_awake: awake::KeepAwake::new(), tunnels: network::Tunnels::default() }
     }
 
     /// Makes the homes' providers with `factory` (tests).
@@ -533,7 +536,7 @@ impl Computers {
         let _being_made = BeingMade { computers: self, id: id.clone() };
         let dir = Self::dir(ctx, &id);
         std::fs::create_dir_all(&dir).map_err(|e| Problem::Failed(e.to_string()))?;
-        let spec = Spec { id: id.clone(), dir: dir.clone() };
+        let mut spec = Spec { id: id.clone(), dir: dir.clone(), network: Default::default() };
         // the Bot's own choice, else the Mac's default: only a person sets either. Held until its
         // record is written: a removal of these keys waits, and then sees it. Read again once held:
         // a removal just before put the choice back to the default, and a computer is never made
@@ -554,6 +557,7 @@ impl Computers {
             return Err(Problem::Refused { code: "in_use", message: "Where this Bot's computers are made kept changing while it was made. Try again.".to_owned() });
         };
         let provider = self.provider_of_kind(ctx, kind);
+        spec.network = network_for(kind);
         let made = provider.create(&spec).await;
         let machine = match made {
             Ok(m) => m,
@@ -708,10 +712,13 @@ impl Computers {
     /// found its Bots move to a new computer, and it's kept as lost for a person to decide on:
     /// not finding it isn't knowing it's gone. `None` when `bot`'s seat changed meanwhile.
     async fn found_again(&self, ctx: &HubCtx, bot: &str, old: &str) -> Result<Option<String>, Problem> {
-        let spec = Spec { id: old.to_owned(), dir: Self::dir(ctx, old) };
+        let mut spec = Spec { id: old.to_owned(), dir: Self::dir(ctx, old), network: Default::default() };
         // by the kind it was: its files are only where it was made
         let recovered = match Self::kind_of(ctx, old)? {
-            Some(kind) => self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, old)?.as_ref()).await?,
+            Some(kind) => {
+                spec.network = network_for(kind);
+                self.provider_of_kind(ctx, kind).recover(&spec, Self::reach_of(ctx, old)?.as_ref()).await?
+            }
             // a kind nothing here knows: there's nowhere to look
             None => None,
         };
@@ -796,6 +803,10 @@ impl Computers {
     async fn finish_wake(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
         let began = Instant::now();
         let woke = self.wake_all(ctx, id).await;
+        // its rules in force before anyone can use it: it's still waking
+        if woke.is_ok() {
+            self.network_after_wake(ctx, id).await;
+        }
         {
             let mut now = self.now();
             now.waking.remove(id);
@@ -863,6 +874,8 @@ impl Computers {
                 Err(p) => return Err(p),
             }
         }
+        // the rules it starts with, read before anything of it runs
+        self.stage_network(ctx, id, &machine);
         let woke = provider.wake(&machine).await?;
         // resumed, the screens it had are as they were: only a Bot that joined meanwhile needs one
         let seats = Self::seats(ctx, id)?;
@@ -934,6 +947,7 @@ impl Computers {
             }
         }
         provider.sleep(&machine, depth).await?;
+        self.tunnels.stop(id);
         if depth == Sleep::Deep {
             self.deep_sleep_ended(ctx, id);
         }
@@ -985,6 +999,10 @@ impl Computers {
                 _ => {}
             }
         }
+        // a tunnel's client follows its computer: up while it's awake with the switch on
+        self.reconcile_tunnels(ctx).await;
+        // and a box that didn't take its rules gets them again
+        self.catch_up(ctx).await;
     }
 
     async fn watched(&self, ctx: &HubCtx, id: &str) -> bool {
@@ -1127,6 +1145,7 @@ impl Computers {
     /// Deletes computer `id`, on its way out, and then all that's kept of it here. `Err` says why
     /// it's still there: the next look tries again.
     async fn finish_retire(&self, ctx: &HubCtx, id: &str) -> Result<(), Problem> {
+        self.tunnels.stop(id);
         // lost, it waits on a person: their Delete clears the mark before it comes here
         if Self::is_lost(ctx, id)? {
             return Err(Problem::Refused { code: "lost", message: format!("Computer {id} was found with its record lost: only a person deletes it, from Settings › Computers.") });
@@ -1792,6 +1811,17 @@ fn unavailable() -> HubResponse {
     types::json(StatusCode::SERVICE_UNAVAILABLE, &json!({"ok": false, "code": "no_computers", "message": "This broker has no computers."}))
 }
 
+/// How a new computer of `kind` is made for its browser's network: a computer on this Mac with the
+/// proxy and the tunnel's port (the switch off until a person turns it on), so its rules work at
+/// once and the tunnel needs no remake; the others as before.
+fn network_for(kind: ProviderKind) -> buwiz_computer::Network {
+    if kind == ProviderKind::Docker {
+        buwiz_computer::Network::Tunnel
+    } else {
+        buwiz_computer::Network::Plain
+    }
+}
+
 /// The Bot of a route, if a person's app is asking and the Bot exists.
 fn gate_route(ctx: &HubCtx, req: &HubRequest) -> Result<(Arc<Computers>, String), Box<HubResponse>> {
     if !host::authorized(&req.headers) {
@@ -1812,6 +1842,23 @@ macro_rules! bot_route {
             Err(r) => return *r,
         }
     };
+}
+
+/// `GET /v1/host/computer/bot/{bot}/network`: the browser's network of the Bot's computer.
+async fn network_status(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    types::json(StatusCode::OK, &computers.network_status(&ctx, &bot).await)
+}
+
+/// `POST /v1/host/computer/bot/{bot}/network {op, value, all?}`: a person's change to it.
+async fn network_change(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let (computers, bot) = bot_route!(ctx, req);
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let all = body.get("all").and_then(Value::as_bool).unwrap_or(false);
+    match network::Change::from_body(&body) {
+        Ok(change) => types::json(StatusCode::OK, &computers.network_change(&ctx, &bot, &change, all).await),
+        Err(why) => types::json(StatusCode::OK, &json!({"ok": false, "message": why})),
+    }
 }
 
 async fn status(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
@@ -2199,6 +2246,8 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/attach"), attach);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/detach"), detach);
     routes.route(Verb::Post, S("/v1/host/computer/bot/*/session"), session);
+    routes.route(Verb::Get, S("/v1/host/computer/bot/*/network"), network_status);
+    routes.route(Verb::Post, S("/v1/host/computer/bot/*/network"), network_change);
     routes.route(Verb::Post, X("/v1/host/computer/login/submit"), login_submit);
     routes.route(Verb::Post, X("/v1/host/computer/login/dismiss"), login_dismiss);
     routes.route(Verb::Post, X("/v1/host/computer/login/saved"), login_saved);
@@ -2206,6 +2255,10 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
         buwiz_computer::remote::ssh::clear_staged(&ctx.data.join("computers"));
         let Some(computers) = Computers::of(&ctx) else { return };
         computers.load_jobs(&ctx);
+        {
+            let (computers, ctx) = (computers.clone(), ctx.clone());
+            tokio::spawn(async move { computers.reconcile_tunnels(&ctx).await });
+        }
         let tick = (computers.idle / 2).clamp(Duration::from_secs(1), Duration::from_secs(30));
         tokio::spawn(async move {
             loop {

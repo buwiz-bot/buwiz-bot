@@ -165,6 +165,9 @@ const TRIED: &[&str] = &[
     // what its last sleep did that a person should know (a hibernation that became a stop), until
     // a wake works
     "ALTER TABLE computers ADD COLUMN sleep_note TEXT",
+    // a computer's browser network (`hub/computer/network.rs`): the tunnel switch, the mode, the
+    // allow and block lists (JSON arrays of site names) and the set's number. No row: the defaults
+    "CREATE TABLE IF NOT EXISTS computer_network(computer_id TEXT PRIMARY KEY, tunnel INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'all', allow TEXT NOT NULL DEFAULT '[]', block TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 0, at INTEGER)",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

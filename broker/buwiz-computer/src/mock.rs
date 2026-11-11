@@ -11,6 +11,8 @@ use crate::{ActiveTab, BrowserOp, BrowserReply, CommandOutput, Input, Machine, P
 /// Its computer's token and viewer password, for tests that look for them where they mustn't be.
 pub const TOKEN: &str = "mock-token-0123456789abcdef";
 pub const PASSWORD: &str = "mock-viewer-password-456";
+/// Its tunnel's bearer, for a computer made with the tunnel.
+pub const BEARER: &str = "mock-egress-bearer-0123456789abcdef0123456789abcdef";
 
 pub struct MockProvider {
     pub power: Mutex<Power>,
@@ -93,6 +95,16 @@ pub struct MockProvider {
     /// what was typed into which field, by its label: kept apart from `calls`, which never hold
     /// a typed text
     pub typed: Mutex<Vec<(String, String)>>,
+    /// the rules the box has in force, as last put; `None`: none
+    pub egress_rules: Mutex<Option<serde_json::Value>>,
+    /// `set_egress_rules` fails with this
+    pub egress_problem: Mutex<Option<Problem>>,
+    /// the box's image has no proxy, as one from before it
+    pub no_proxy_image: AtomicBool,
+    /// where `tunnel_url` says the tunnel's WebSocket is
+    pub tunnel_at: Mutex<Option<String>>,
+    /// a client is attached, as the box would say
+    pub tunnel_attached: AtomicBool,
 }
 
 /// A page for the mock's browser: an address, its controls as a snap gives them, the number of its
@@ -148,7 +160,7 @@ fn refusal(status: u16, code: &str) -> BrowserReply {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default(), hold_browser: AtomicBool::new(false) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default(), hold_browser: AtomicBool::new(false), egress_rules: Mutex::new(None), egress_problem: Mutex::new(None), no_proxy_image: AtomicBool::new(false), tunnel_at: Mutex::new(None), tunnel_attached: AtomicBool::new(false) }
     }
 }
 
@@ -227,6 +239,11 @@ impl Provider for MockProvider {
             viewer_password: Secret::new(PASSWORD),
             dir: spec.dir.clone(),
             link: None,
+            egress: match spec.network {
+                crate::Network::Plain => None,
+                crate::Network::Proxy => Some(crate::Egress { tunnel: false, bearer: None }),
+                crate::Network::Tunnel => Some(crate::Egress { tunnel: true, bearer: Some(Secret::new(BEARER)) }),
+            },
             seen: None,
         })
     }
@@ -330,6 +347,7 @@ impl Provider for MockProvider {
             viewer_password: Secret::new(PASSWORD),
             dir: spec.dir.clone(),
             link: None,
+            egress: None,
             seen: None,
         }))
     }
@@ -481,6 +499,44 @@ impl Provider for MockProvider {
         }
         let url = self.page.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|p| p.url.clone());
         Ok(ActiveTab { url, focus: Some("none".to_owned()), seq: Some(1) })
+    }
+
+    async fn egress(&self, machine: &Machine) -> Result<serde_json::Value> {
+        self.awake()?;
+        self.note("egress".to_owned());
+        let proxy = machine.egress.is_some() && !self.no_proxy_image.load(Ordering::SeqCst);
+        let attached = self.tunnel_attached.load(Ordering::SeqCst);
+        let rules = self.egress_rules.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|_| proxy);
+        let summary = rules.as_ref().map(|r| {
+            let count = |k: &str| r.get(k).and_then(serde_json::Value::as_array).map_or(0, Vec::len);
+            serde_json::json!({"version": r["version"], "exit": r["exit"], "mode": r["mode"], "allow": count("allow"), "block": count("block")})
+        });
+        let can_browse = rules.as_ref().is_some_and(|r| r["exit"] == "direct" || attached);
+        Ok(serde_json::json!({"enabled": machine.egress.as_ref().is_some_and(|e| e.tunnel) && proxy, "ready": attached, "client_attached": attached, "protocol": "box-egress-v1", "proxy_enabled": proxy, "proxy_up": proxy, "rules": summary, "can_browse": can_browse, "counts": {"direct": 3, "tunneled": 0, "blocked": 1}}))
+    }
+
+    async fn set_egress_rules(&self, machine: &Machine, rules: &serde_json::Value) -> Result<serde_json::Value> {
+        self.awake()?;
+        self.note("set egress rules".to_owned());
+        if machine.egress.is_none() || self.no_proxy_image.load(Ordering::SeqCst) {
+            return Err(Problem::Guest { status: 409, message: "this box was made without the browser's network proxy".to_owned() });
+        }
+        if let Some(p) = self.egress_problem.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(p);
+        }
+        *self.egress_rules.lock().unwrap_or_else(|e| e.into_inner()) = Some(rules.clone());
+        Ok(serde_json::json!({"applied": true}))
+    }
+
+    async fn image_has_proxy(&self) -> Option<bool> {
+        Some(!self.no_proxy_image.load(Ordering::SeqCst))
+    }
+
+    async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
+        if !machine.egress.as_ref().is_some_and(|e| e.tunnel) || self.awake().is_err() {
+            return Ok(None);
+        }
+        Ok(self.tunnel_at.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     async fn capabilities(&self, _: &Machine) -> Result<serde_json::Value> {

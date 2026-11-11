@@ -44,7 +44,7 @@ use tokio::process::Command;
 
 use crate::guest::BoxGuest;
 use crate::{
-    random_hex, CommandOutput, Input, Leftover, Machine, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Seen, Settled, Sleep, Spec, Viewer, WaitFor, Woke, DOCKER_PORT_LAST, PORT_FIRST,
+    random_hex, CommandOutput, Egress, Input, Leftover, Machine, Network, Power, Problem, Provider, ProviderKind, Reach, Result, Screen, Screenshot, Secret, Seen, Settled, Sleep, Spec, Viewer, WaitFor, Woke, DOCKER_PORT_LAST, EGRESS_PORT, PORT_FIRST,
 };
 
 /// The image's tag on this Mac (the computer repo's compose file builds it).
@@ -64,6 +64,13 @@ pub const ID_LABEL: &str = "app.buwiz.computer.id";
 const SECRET_MOUNT: &str = "/run/buwiz-computer";
 const TOKEN_FILE: &str = "token";
 const VIEWER_FILE: &str = "viewer";
+/// The tunnel's bearer, for a computer made with the tunnel: staged and taken away with the others.
+const EGRESS_FILE: &str = "egress";
+/// The browsing rules the box starts with. Not a secret: the hub keeps it there, the latest set,
+/// so every start reads the rules before anything of the box runs ([`stage_rules`]).
+const RULES_FILE: &str = "rules.json";
+/// How many random bytes the tunnel's bearer is.
+const BEARER_BYTES: usize = 32;
 /// How long `docker` itself gets; a hung daemon counts as down.
 const DOCKER_PATIENCE: Duration = Duration::from_secs(60);
 /// How long a start gets to answer.
@@ -72,6 +79,9 @@ const WAKE_PATIENCE: Duration = Duration::from_secs(120);
 /// own. A new value is for an image whose containers need making again.
 pub(crate) const USERS_LABEL: &str = "app.buwiz.box.users";
 pub(crate) const USERS_VERSION: &str = "1";
+/// On an image whose browser can go through its own proxy, under the computer's rules. A computer is
+/// made with the proxy only on such an image: on an older one it's made as before, and says so.
+pub(crate) const EGRESS_LABEL: &str = "app.buwiz.box.egress";
 /// What the box's root needs, and nothing else. A box doesn't start with fewer.
 pub(crate) const BOX_CAPS: [&str; 8] = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETGID", "SETUID"];
 /// Below this a port takes a capability, in the network the holder owns, so no command can listen
@@ -104,6 +114,9 @@ const DOCKER_DIRS: [&str; 4] = ["/usr/local/bin", "/opt/homebrew/bin", "/Applica
 ///   to the gateway alone from those ports, then drop the rest, peers on the network included. A
 ///   default route keeps working: its next hop is resolved on the link and never looked up as a
 ///   destination.
+/// - A computer made with the tunnel (`--tunnel` first among the arguments) lets through, the same
+///   way, what its WebSocket (8790) sends to the gateway alone. 8790 is above the box's port floor:
+///   the box's proxy holds it from before any command can run, and the box stops if that ends.
 /// - IPv6 is off (`create_args`); a box where it is on doesn't pass.
 const WALL: &str = r#"
 import socket, struct, sys
@@ -128,7 +141,8 @@ def rule(priority, action, dst=None, plen=0, ports=None):
         raise OSError(-err, 'rule')
 for dst, plen in [('0.0.0.0', 8), ('10.0.0.0', 8), ('100.64.0.0', 10), ('169.254.0.0', 16), ('172.16.0.0', 12), ('192.0.0.0', 24), ('192.168.0.0', 16), ('198.18.0.0', 15), ('240.0.0.0', 4)]:
     blackhole(dst, plen)
-for address in sys.argv[1:]:
+tunnel = sys.argv[1:2] == ['--tunnel']
+for address in sys.argv[2 if tunnel else 1:]:
     blackhole(address, 32)
 ip = lambda h: socket.inet_ntoa(struct.pack('<I', int(h, 16)))
 routes = [line.split()[:8] for line in open('/proc/net/route').read().splitlines()[1:]]
@@ -138,6 +152,8 @@ if len(bridge) != 1:
 rule(100, 1, dst=bridge[0], plen=32, ports=(1337, 1337))
 rule(101, 1, dst=bridge[0], plen=32, ports=(1340, 1340))
 rule(102, 1, dst=bridge[0], plen=32, ports=(6901, 6905))
+if tunnel:
+    rule(103, 1, dst=bridge[0], plen=32, ports=(8790, 8790))
 priority = 200
 for iface, dst, gateway, flags, _, _, _, mask in routes:
     plen = bin(int(mask, 16)).count('1')
@@ -591,7 +607,7 @@ impl DockerProvider {
 
     /// Its network up and walled, for the Mac's addresses as they are, before anything of the box
     /// runs in it. `fresh` reads them now. Whatever is running there stops if that fails.
-    async fn net_up(&self, name: &str, found: &Inspected, fresh: bool) -> Result<()> {
+    async fn net_up(&self, name: &str, found: &Inspected, fresh: bool, tunnel: bool) -> Result<()> {
         let up = async {
             let macs = self.addresses(fresh).await?;
             let same = self.walled.lock().unwrap_or_else(|e| e.into_inner()).get(name).is_some_and(|(started, walled)| *started == found.started && *walled == macs);
@@ -601,7 +617,7 @@ impl DockerProvider {
             if !found.net_running {
                 self.start_holder(name).await?;
             }
-            self.wall(name, &macs).await.map(|started| Some((started, macs)))
+            self.wall(name, &macs, tunnel).await.map(|started| Some((started, macs)))
         };
         match up.await {
             Ok(None) => Ok(()),
@@ -662,7 +678,8 @@ impl DockerProvider {
         let start = secret_dir(&machine.dir);
         private_dir(&start)?;
         let id = machine.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.make_containers(&self.image, name, &id, &start).await
+        // as it was made: a rebuild never adds or takes away the browser's proxy or the tunnel
+        self.make_containers(&self.image, name, &id, &start, machine.egress.as_ref()).await
     }
 
     /// Whether either of `name`'s volumes is there: each holds files.
@@ -692,18 +709,22 @@ impl DockerProvider {
         Ok(())
     }
 
-    async fn make_containers(&self, image: &str, name: &str, id: &str, start: &Path) -> Result<()> {
+    async fn make_containers(&self, image: &str, name: &str, id: &str, start: &Path, egress: Option<&Egress>) -> Result<()> {
         self.make_volumes(name, id).await?;
-        let net = holder_args(image, name, &self.network(), id);
+        let tunnel = egress.is_some_and(|e| e.tunnel);
+        let net = holder_args(image, name, &self.network(), id, tunnel);
         self.docker(&net.iter().map(String::as_str).collect::<Vec<_>>(), None).await?;
-        let args = create_args(image, name, id, start);
+        let args = create_args(image, name, id, start, egress);
         self.docker(&args.iter().map(String::as_str).collect::<Vec<_>>(), None).await.map(|_| ())
     }
 
     /// Puts the wall up in `name`'s network: the start of that network it's up on.
-    async fn wall(&self, name: &str, macs: &[String]) -> Result<String> {
+    async fn wall(&self, name: &str, macs: &[String], tunnel: bool) -> Result<String> {
         let net = holder(name);
         let mut args = vec!["exec", "--user", "0", "--privileged", &net, "python3", "-c", WALL];
+        if tunnel {
+            args.push("--tunnel");
+        }
         args.extend(macs.iter().map(String::as_str));
         match self.docker(&args, None).await {
             Ok(_) => Ok(self.inspect(name).await?.started),
@@ -759,8 +780,8 @@ fn connect(found: &Inspected, machine: &Machine) -> Result<BoxGuest> {
 }
 
 /// The `docker create` arguments of the container that owns a computer's network: `sleep`, the
-/// published ports, and IPv6 off.
-pub(crate) fn holder_args(image: &str, name: &str, network: &str, id: &str) -> Vec<String> {
+/// published ports, and IPv6 off. With the tunnel, its WebSocket's port too, on loopback.
+pub(crate) fn holder_args(image: &str, name: &str, network: &str, id: &str, tunnel: bool) -> Vec<String> {
     let net = holder(name);
     let mut args: Vec<String> = ["create", "--name", &net, "--network", network, "--label"].map(str::to_owned).to_vec();
     args.push(format!("{LABEL}=1"));
@@ -772,7 +793,7 @@ pub(crate) fn holder_args(image: &str, name: &str, network: &str, id: &str) -> V
     }
     args.push("--sysctl".to_owned());
     args.push(format!("net.ipv4.ip_unprivileged_port_start={FIRST_OPEN_PORT}"));
-    for port in [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS) {
+    for port in [EXEC_PORT, HOST_PORT].into_iter().chain(VIEWER_PORTS).chain(tunnel.then_some(EGRESS_PORT)) {
         args.push("-p".to_owned());
         args.push(format!("127.0.0.1:{PORT_FIRST}-{DOCKER_PORT_LAST}:{port}"));
     }
@@ -783,8 +804,9 @@ pub(crate) fn holder_args(image: &str, name: &str, network: &str, id: &str) -> V
 }
 
 /// The `docker create` arguments of a new computer: no secret among them, and no network of its
-/// own.
-pub(crate) fn create_args(image: &str, name: &str, id: &str, secrets: &Path) -> Vec<String> {
+/// own. With `egress`, every screen's browser goes through the box's proxy under the rules staged
+/// beside the secrets, and with the tunnel its bearer is a file there too.
+pub(crate) fn create_args(image: &str, name: &str, id: &str, secrets: &Path, egress: Option<&Egress>) -> Vec<String> {
     let mut args: Vec<String> = ["create", "--name", name, "--network"].map(str::to_owned).to_vec();
     args.push(format!("container:{}", holder(name)));
     args.push("--label".to_owned());
@@ -815,8 +837,32 @@ pub(crate) fn create_args(image: &str, name: &str, id: &str, secrets: &Path) -> 
         args.push("-e".to_owned());
         args.push(env);
     }
+    if let Some(egress) = egress {
+        let mut env = vec!["BOX_EGRESS_PROXY=1".to_owned(), format!("BOX_EGRESS_RULES_FILE={SECRET_MOUNT}/{RULES_FILE}")];
+        if egress.tunnel {
+            env.push("BOX_EGRESS_TUNNEL=1".to_owned());
+            env.push(format!("BOX_EGRESS_TUNNEL_BEARER_FILE={SECRET_MOUNT}/{EGRESS_FILE}"));
+        }
+        for e in env {
+            args.push("-e".to_owned());
+            args.push(e);
+        }
+    }
     args.push(image.to_owned());
     args
+}
+
+/// What a computer made for `network` is made with: the tunnel's bearer is new for each computer.
+fn egress_for(network: Network) -> Result<Option<Egress>> {
+    Ok(match network {
+        Network::Plain => None,
+        Network::Proxy => Some(Egress { tunnel: false, bearer: None }),
+        Network::Tunnel => Some(Egress { tunnel: true, bearer: Some(Secret::fresh(BEARER_BYTES)?) }),
+    })
+}
+
+fn tunnel_of(machine: &Machine) -> bool {
+    machine.egress.as_ref().is_some_and(|e| e.tunnel)
 }
 
 fn container(machine: &Machine) -> Result<&str> {
@@ -863,7 +909,8 @@ fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     private_dir(dir)?;
-    for (file, secret) in [(TOKEN_FILE, &machine.token), (VIEWER_FILE, &machine.viewer_password)] {
+    let bearer = machine.egress.as_ref().filter(|e| e.tunnel).and_then(|e| e.bearer.as_ref()).map(|b| (EGRESS_FILE, b));
+    for (file, secret) in [(TOKEN_FILE, &machine.token), (VIEWER_FILE, &machine.viewer_password)].into_iter().chain(bearer) {
         let path = dir.join(file);
         // whatever is there goes, link or not, and this is a new file: a link is never followed
         match std::fs::remove_file(&path) {
@@ -877,12 +924,39 @@ fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
 }
 
 fn clear_secrets(dir: &Path) {
-    for file in [TOKEN_FILE, VIEWER_FILE] {
+    for file in [TOKEN_FILE, VIEWER_FILE, EGRESS_FILE] {
         let _ = std::fs::remove_file(dir.join(file));
     }
 }
 
+/// Puts `rules` (a rules document) where a computer made with the proxy reads them at each start,
+/// in place of what was there, whole or not at all. No file there is no rules: the box's browser
+/// reaches no site until a set is put in force.
+pub fn stage_rules(machine_dir: &Path, rules: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = secret_dir(machine_dir);
+    private_dir(&dir)?;
+    let (path, next) = (dir.join(RULES_FILE), dir.join(format!("{RULES_FILE}.new")));
+    let _ = std::fs::remove_file(&next);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&next).map_err(io_problem)?;
+    f.write_all(rules).map_err(io_problem)?;
+    f.sync_all().map_err(io_problem)?;
+    std::fs::rename(&next, &path).map_err(io_problem)
+}
+
+/// Takes the staged rules away: the box's browser then reaches no site after its next start.
+pub fn unstage_rules(machine_dir: &Path) {
+    let _ = std::fs::remove_file(secret_dir(machine_dir).join(RULES_FILE));
+}
+
 impl DockerProvider {
+    /// Whether this provider's image says its browser can go through its own proxy. Not knowing is no.
+    async fn has_proxy(&self) -> bool {
+        let label = format!("{{{{index .Config.Labels \"{EGRESS_LABEL}\"}}}}");
+        self.docker(&["image", "inspect", "--format", &label, &self.image], None).await.is_ok_and(|v| v.trim() == "1")
+    }
+
     /// Whether `owner` is a box name [`Provider::create`] makes: the prefix and four random bytes.
     fn named_here(&self, owner: &str) -> bool {
         owner.strip_prefix(&self.prefix).and_then(|r| r.strip_prefix('-')).is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -934,7 +1008,9 @@ impl Provider for DockerProvider {
         let name = format!("{}-{}", self.prefix, random_hex(4)?);
         let start = secret_dir(&spec.dir);
         private_dir(&start)?;
-        if let Err(e) = self.make_containers(&self.image, &name, &spec.id, &start).await {
+        let network = if spec.network != Network::Plain && !self.has_proxy().await { Network::Plain } else { spec.network };
+        let egress = egress_for(network)?;
+        if let Err(e) = self.make_containers(&self.image, &name, &spec.id, &start, egress.as_ref()).await {
             // nothing is on it yet; if this fails too, the hub sweeps by label
             let _ = self.remove(&name).await;
             return Err(e);
@@ -947,6 +1023,7 @@ impl Provider for DockerProvider {
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
             link: None,
+            egress,
             seen: None,
         })
     }
@@ -989,7 +1066,7 @@ impl Provider for DockerProvider {
             self.halt(name, &found, STOP_SECONDS).await;
         }
         // first the wall, then anything of the box
-        self.net_up(name, &found, true).await?;
+        self.net_up(name, &found, true, tunnel_of(machine)).await?;
         match found.status.as_str() {
             "paused" if !stale => {
                 self.docker(&["unpause", name], None).await?;
@@ -1070,6 +1147,20 @@ impl Provider for DockerProvider {
             }
             (None, _) => return Ok(None),
         };
+        // as it was made, by what Docker says its containers were made with, never by what's wanted;
+        // with only its files left, as a new computer would be on this image, which the wake makes
+        // it again on: with the proxy only if the image has it. Docker not answering is no answer:
+        // the recovery fails, the record stays lost, and the next look asks again. A guess saved
+        // here would be its record for good
+        let egress = match self.inspect(&name).await {
+            Ok(found) => match found.egress {
+                Some(tunnel) => egress_for(if tunnel { Network::Tunnel } else { Network::Proxy })?,
+                None => None,
+            },
+            Err(Problem::Gone) if self.has_proxy().await => egress_for(spec.network)?,
+            Err(Problem::Gone) => None,
+            Err(e) => return Err(e),
+        };
         Ok(Some(Machine {
             provider: ProviderKind::Docker,
             reach: Reach::Container { name },
@@ -1078,6 +1169,7 @@ impl Provider for DockerProvider {
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
             link: None,
+            egress,
             seen: None,
         }))
     }
@@ -1094,7 +1186,7 @@ impl Provider for DockerProvider {
             self.halt(name, &found, STOP_SECONDS).await;
             return Err(Problem::Asleep);
         }
-        self.net_up(name, &found, false).await
+        self.net_up(name, &found, false, tunnel_of(machine)).await
     }
 
     async fn clear_strays(&self, machine: &Machine, screen: &Screen) -> Result<Vec<String>> {
@@ -1167,6 +1259,29 @@ impl Provider for DockerProvider {
         self.guest(machine).await?.capabilities().await
     }
 
+    async fn egress(&self, machine: &Machine) -> Result<serde_json::Value> {
+        self.guest(machine).await?.egress().await
+    }
+
+    async fn set_egress_rules(&self, machine: &Machine, rules: &serde_json::Value) -> Result<serde_json::Value> {
+        self.guest(machine).await?.put_egress_rules(rules).await
+    }
+
+    async fn image_has_proxy(&self) -> Option<bool> {
+        Some(self.has_proxy().await)
+    }
+
+    async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
+        if !tunnel_of(machine) {
+            return Ok(None);
+        }
+        let found = self.seen(machine).await?;
+        if found.status != "running" {
+            return Ok(None);
+        }
+        Ok(found.published(EGRESS_PORT).map(|addr| format!("ws://{addr}")))
+    }
+
     async fn read_file(&self, machine: &Machine, path: &str) -> Result<Vec<u8>> {
         self.guest(machine).await?.read_file(path).await
     }
@@ -1232,7 +1347,11 @@ impl Inspected {
         }
         let users = |v: &Value| v.pointer("/Config/Labels").and_then(|l| l.get(USERS_LABEL)).and_then(Value::as_str) == Some(USERS_VERSION);
         let users_apart = users(entry) && users(net);
-        Ok(Self { status, started, net_running, net_missing, box_started, users_apart, ports })
+        let env: Vec<&str> = entry.pointer("/Config/Env").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+        // the tunnel by both halves of it: the box's setting, and its holder's published port
+        let binds = |v: &Value| v.pointer("/HostConfig/PortBindings").and_then(Value::as_object).is_some_and(|b| b.contains_key(&format!("{EGRESS_PORT}/tcp")));
+        let egress = env.contains(&"BOX_EGRESS_PROXY=1").then(|| env.contains(&"BOX_EGRESS_TUNNEL=1") && binds(net));
+        Ok(Self { status, started, net_running, net_missing, box_started, users_apart, ports, egress })
     }
 
     pub fn published(&self, guest_port: u16) -> Option<String> {
@@ -1340,13 +1459,14 @@ mod tests {
             viewer_password: Secret::new("the-password"),
             dir: dir.to_path_buf(),
             link: None,
+            egress: None,
             seen: None,
         }
     }
 
     #[test]
     fn the_holder_publishes_on_loopback_in_the_range_and_the_box_only_joins_it() {
-        let net = holder_args("img:1", "c2-x", "c2-net", "cmp_1").join(" ");
+        let net = holder_args("img:1", "c2-x", "c2-net", "cmp_1", false).join(" ");
         assert!(net.contains("--cap-drop ALL") && !net.contains("--cap-add"), "{net}");
         assert!(net.contains("app.buwiz.computer.id=cmp_1"), "a sweep finds it by this: {net}");
         for port in [1337, 1340, 6901, 6902, 6905] {
@@ -1355,7 +1475,7 @@ mod tests {
         assert!(!net.contains("0.0.0.0"), "{net}");
         assert!(net.contains("--name c2-x-wall") && net.contains("--entrypoint sleep img:1 infinity"), "{net}");
         assert!(net.contains("disable_ipv6=1") && !net.contains("BOX_"), "{net}");
-        let args = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start")).join(" ");
+        let args = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start"), None).join(" ");
         assert!(args.contains("--cap-drop ALL"), "{args}");
         for cap in BOX_CAPS {
             assert!(args.contains(&format!("--cap-add {cap}")), "{args}");
@@ -1371,6 +1491,102 @@ mod tests {
         assert!(args.contains("BOX_VIEWER_PASSWORD_FILE=/run/buwiz-computer/viewer"), "{args}");
         assert!(!args.contains("BOX_TOKEN=") && !args.contains("BOX_VIEWER_PASSWORD="), "{args}");
         assert!(args.contains("no-new-privileges") && args.contains("--pids-limit 2048"), "{args}");
+    }
+
+    #[test]
+    fn a_computer_made_without_the_proxy_publishes_and_sets_nothing_of_it() {
+        let net = holder_args("img:1", "c2-x", "c2-net", "cmp_1", false).join(" ");
+        assert!(!net.contains("8790"), "{net}");
+        let args = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start"), None).join(" ");
+        assert!(!args.contains("BOX_EGRESS"), "{args}");
+    }
+
+    #[test]
+    fn the_tunnel_publishes_its_port_on_loopback_and_its_bearer_is_a_file() {
+        let net = holder_args("img:1", "c2-x", "c2-net", "cmp_1", true).join(" ");
+        assert!(net.contains("-p 127.0.0.1:47000-47199:8790"), "{net}");
+        assert!(!net.contains("8791") && !net.contains("8792"), "the proxy and its admin port are never published: {net}");
+        let egress = Egress { tunnel: true, bearer: Some(Secret::new("bearer-in-a-file-only")) };
+        let args = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start"), Some(&egress)).join(" ");
+        for env in ["BOX_EGRESS_PROXY=1", "BOX_EGRESS_RULES_FILE=/run/buwiz-computer/rules.json", "BOX_EGRESS_TUNNEL=1", "BOX_EGRESS_TUNNEL_BEARER_FILE=/run/buwiz-computer/egress"] {
+            assert!(args.contains(&format!("-e {env}")), "{env}: {args}");
+        }
+        assert!(!args.contains("bearer-in-a-file-only") && !args.contains("BOX_EGRESS_TUNNEL_BEARER="), "{args}");
+        let proxy = create_args("img:1", "c2-x", "cmp_1", Path::new("/d/start"), Some(&Egress { tunnel: false, bearer: None })).join(" ");
+        assert!(proxy.contains("-e BOX_EGRESS_PROXY=1") && !proxy.contains("BOX_EGRESS_TUNNEL"), "{proxy}");
+    }
+
+    #[tokio::test]
+    async fn a_computer_is_made_with_the_proxy_only_on_an_image_that_has_it() {
+        let made = |dir: &Path, label: &str| {
+            let body = format!("case \"$1 $4\" in version*) echo 29;; image*app.buwiz.box.egress*) echo '{label}';; image*) echo 1;; esac");
+            DockerProvider::new("img:1", "c2").with_program(fake_docker(dir, &body))
+        };
+        let dir = tmp("label-new");
+        let m = made(&dir, "1").create(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }).await.unwrap();
+        assert!(m.egress.is_some_and(|e| e.tunnel));
+        assert!(calls(&dir).contains("BOX_EGRESS_PROXY=1"), "{}", calls(&dir));
+        let dir = tmp("label-old");
+        let m = made(&dir, "").create(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }).await.unwrap();
+        assert_eq!(m.egress, None, "an image from before the proxy makes a computer as before");
+        assert!(!calls(&dir).contains("BOX_EGRESS") && !calls(&dir).contains(":8790"), "{}", calls(&dir));
+    }
+
+    #[test]
+    fn a_new_computers_bearer_is_32_random_bytes_and_each_its_own() {
+        let a = egress_for(Network::Tunnel).unwrap().unwrap().bearer.unwrap();
+        let b = egress_for(Network::Tunnel).unwrap().unwrap().bearer.unwrap();
+        assert_eq!(a.expose().len(), 64, "32 bytes, as hex");
+        assert_ne!(a, b);
+        assert_eq!(egress_for(Network::Plain).unwrap(), None);
+        assert_eq!(egress_for(Network::Proxy).unwrap(), Some(Egress { tunnel: false, bearer: None }));
+    }
+
+    /// `docker inspect` of a box made with `env`, its holder publishing `ports`.
+    fn made(env: &str, ports: &str) -> String {
+        format!(r#"[{{"Name":"/c2-x","Config":{{"Env":[{env}]}},"State":{{"Status":"exited"}}}},{{"Name":"/c2-x-wall","HostConfig":{{"PortBindings":{{{ports}}}}},"State":{{"Status":"running"}}}}]"#)
+    }
+
+    #[test]
+    fn what_a_container_was_made_with_is_read_from_its_settings_and_its_holders_ports() {
+        let port = r#""8790/tcp":[{"HostIp":"127.0.0.1","HostPort":"47000-47199"}]"#;
+        assert_eq!(Inspected::parse(&made(r#""BOX_TOKEN_FILE=/x""#, port), "c2-x").unwrap().egress, None);
+        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1""#, ""), "c2-x").unwrap().egress, Some(false));
+        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, port), "c2-x").unwrap().egress, Some(true));
+        assert_eq!(Inspected::parse(&made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, ""), "c2-x").unwrap().egress, Some(false), "no published port, no tunnel");
+    }
+
+    #[tokio::test]
+    async fn a_lost_record_is_recovered_as_its_containers_were_made_whatever_is_wanted() {
+        let dir = tmp("recover-made");
+        std::fs::write(dir.join("state"), made(r#""BOX_TOKEN_FILE=/x""#, "")).unwrap();
+        let body = format!("case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) cat \"{}/state\";; image) echo 1;; esac", dir.display());
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, None).await.unwrap().unwrap();
+        assert_eq!(m.egress, None, "made before the proxy, it stays without it");
+        std::fs::write(dir.join("state"), made(r#""BOX_EGRESS_PROXY=1","BOX_EGRESS_TUNNEL=1""#, r#""8790/tcp":[]"#)).unwrap();
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Plain }, None).await.unwrap().unwrap();
+        assert!(m.egress.is_some_and(|e| e.tunnel && e.bearer.is_some()), "made with the tunnel, it keeps it, with a new bearer");
+    }
+
+    #[tokio::test]
+    async fn a_docker_that_doesnt_answer_fails_the_recovery_and_guesses_nothing() {
+        let dir = tmp("recover-down");
+        let body = "case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1;; image) echo 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        let got = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, None).await;
+        assert_eq!(got, Err(Problem::ProviderDown("Docker".into())), "no record is made from a guess");
+    }
+
+    #[tokio::test]
+    async fn files_alone_are_recovered_with_the_proxy_only_on_an_image_that_has_it() {
+        for (label, proxied) in [("1", true), ("", false)] {
+            let dir = tmp("recover-files");
+            let body = format!("case \"$1 $4\" in ps*) ;; volume*) echo c2-x-home;; inspect*) echo '[]'; echo 'Error: No such container: c2-x' >&2; exit 1;; image*app.buwiz.box.egress*) echo '{label}';; image*) echo 1;; esac");
+            let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
+            let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap().unwrap();
+            assert_eq!(m.egress.is_some(), proxied, "label {label:?}");
+        }
     }
 
     #[test]
@@ -1734,21 +1950,21 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     #[tokio::test]
     async fn a_lost_record_is_found_by_its_label_and_nothing_is_removed() {
         let dir = tmp("recover");
-        let body = "case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) echo '[]'; exit 1;; esac";
+        let body = "case \"$1\" in ps) echo c2-x-wall; echo c2-x;; inspect) echo '[]'; echo 'Error response from daemon: No such container: c2-x' >&2; exit 1;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
-        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, None).await.unwrap().unwrap();
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }, None).await.unwrap().unwrap();
         assert_eq!(m.reach, Reach::Container { name: "c2-x".into() });
         assert!(!calls(&dir).contains("rm "), "{}", calls(&dir));
         let none = tmp("recover-none");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&none, "true"));
-        assert_eq!(p.recover(&Spec { id: "cmp_1".into(), dir: none.clone() }, None).await.unwrap(), None);
+        assert_eq!(p.recover(&Spec { id: "cmp_1".into(), dir: none.clone(), network: Default::default() }, None).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn a_new_computers_volumes_carry_its_label_and_old_ones_are_used_as_they_are() {
         let dir = tmp("labelled");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in image) echo 1;; esac"));
-        let m = p.create(&Spec { id: "cmp_1".into(), dir: dir.clone() }).await.unwrap();
+        let m = p.create(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }).await.unwrap();
         let Reach::Container { name } = &m.reach else { panic!("{:?}", m.reach) };
         let seen = calls(&dir);
         for volume in [format!("{name}-workspace"), format!("{name}-home")] {
@@ -1814,23 +2030,23 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     #[tokio::test]
     async fn files_with_no_container_left_are_found_by_name() {
         let dir = tmp("volumes");
-        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in inspect) echo '[]'; exit 1;; esac"));
-        let spec = Spec { id: "cmp_1".into(), dir: dir.clone() };
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in inspect) echo '[]'; echo 'Error response from daemon: No such container: c2-x' >&2; exit 1;; esac"));
+        let spec = Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() };
         let m = p.recover(&spec, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap().expect("its volume is there");
         assert_eq!(m.reach, Reach::Container { name: "c2-x".into() });
         assert!(calls(&dir).contains("volume inspect --format {{.Name}} c2-x-workspace"), "{}", calls(&dir));
         assert!(!calls(&dir).contains("rm "), "{}", calls(&dir));
         let none = tmp("no-volumes");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&none, "case \"$1\" in volume) echo 'Error response from daemon: get x: no such volume' >&2; exit 1;; esac"));
-        assert_eq!(p.recover(&Spec { id: "cmp_1".into(), dir: none.clone() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap(), None);
+        assert_eq!(p.recover(&Spec { id: "cmp_1".into(), dir: none.clone(), network: Default::default() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn a_surviving_home_volume_counts_as_files() {
         let dir = tmp("home-only");
-        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error response from daemon: get c2-x-workspace: no such volume' >&2; exit 1;; esac;; esac";
+        let body = "case \"$1 $2\" in 'volume inspect') case \"$*\" in *-workspace) echo 'Error response from daemon: get c2-x-workspace: no such volume' >&2; exit 1;; esac;; inspect*) echo '[]'; echo 'Error response from daemon: No such container: c2-x' >&2; exit 1;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
-        let found = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap();
+        let found = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap();
         assert!(found.is_some(), "its home would be swept as nothing left");
     }
 
@@ -1838,7 +2054,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     async fn a_docker_that_cant_say_doesnt_read_as_no_files() {
         let dir = tmp("volumes-down");
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, "case \"$1\" in volume) echo 'Cannot connect to the Docker daemon' >&2; exit 1;; esac"));
-        let spec = Spec { id: "cmp_1".into(), dir: dir.clone() };
+        let spec = Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() };
         assert_eq!(p.recover(&spec, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap_err(), Problem::ProviderDown("Docker".into()));
     }
 
@@ -1945,7 +2161,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         let dir = tmp("recover-stop");
         let body = format!("case \"$1\" in ps) echo c2-x;; inspect) cat <<'J'\n{}\nJ\n;; esac", inspected("running", "running", "T1"));
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, &body));
-        p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone() }, None).await.unwrap();
+        p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }, None).await.unwrap();
         assert!(!calls(&dir).contains("stop"), "the seats' lock is held here: {}", calls(&dir));
     }
 
@@ -2003,6 +2219,58 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         for port_rule in ["rule(100, 1, dst=bridge[0], plen=32, ports=(1337, 1337))", "rule(101, 1, dst=bridge[0], plen=32, ports=(1340, 1340))", "rule(102, 1, dst=bridge[0], plen=32, ports=(6901, 6905))"] {
             assert!(WALL.contains(port_rule), "{port_rule}");
         }
+        // the tunnel's, for a computer made with it alone: the gateway, and that one source port
+        assert!(WALL.contains("if tunnel:\n    rule(103, 1, dst=bridge[0], plen=32, ports=(8790, 8790))\n"));
+        assert_eq!(WALL.matches("rule(10").count(), 4, "no other exemption");
+        assert!(WALL.contains("tunnel = sys.argv[1:2] == ['--tunnel']"));
+    }
+
+    #[tokio::test]
+    async fn the_wall_lets_the_tunnel_through_only_for_a_computer_made_with_it() {
+        let dir = tmp("wall-tunnel");
+        let box_wont_start = "case \"$2\" in *-wall) ;; *) exit 1;; esac";
+        let p = faked(&dir, &inspected("exited", "exited", "T1"), "true", box_wont_start);
+        let _ = p.wake(&machine(&dir)).await;
+        assert!(calls(&dir).contains(WALL_CALL) && !calls(&dir).contains("    pass\n --tunnel"), "{}", calls(&dir));
+        let dir = tmp("wall-tunnel-on");
+        let p = faked(&dir, &inspected("exited", "exited", "T1"), "true", box_wont_start);
+        let m = Machine { egress: Some(Egress { tunnel: true, bearer: Some(Secret::new("b-0123")) }), ..machine(&dir) };
+        let _ = p.wake(&m).await;
+        assert!(calls(&dir).contains("    pass\n --tunnel"), "the flag goes first after the script, before the Mac's addresses: {}", calls(&dir));
+        assert!(!calls(&dir).contains("b-0123"), "the bearer is on no argument list: {}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn the_bearer_is_staged_for_a_start_and_taken_away_after() {
+        let dir = tmp("stage-bearer");
+        let start = dir.join("start");
+        let m = Machine { egress: Some(Egress { tunnel: true, bearer: Some(Secret::new("b-4567")) }), ..machine(&dir) };
+        {
+            let _staged = Staged::new(start.clone(), &m).unwrap();
+            assert_eq!(std::fs::read_to_string(start.join("egress")).unwrap(), "b-4567");
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(start.join("egress")).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert!(!start.join("egress").exists() && !start.join("token").exists());
+        // a computer made without the tunnel gets no bearer file
+        let _staged = Staged::new(start.clone(), &machine(&dir)).unwrap();
+        assert!(!start.join("egress").exists());
+    }
+
+    #[test]
+    fn the_rules_stay_staged_and_are_replaced_whole() {
+        let dir = tmp("stage-rules");
+        stage_rules(&dir, br#"{"v":1}"#).unwrap();
+        assert_eq!(std::fs::read(dir.join("start/rules.json")).unwrap(), br#"{"v":1}"#);
+        {
+            let _staged = Staged::new(dir.join("start"), &machine(&dir)).unwrap();
+        }
+        assert!(dir.join("start/rules.json").exists(), "a start's end takes the secrets, not the rules");
+        stage_rules(&dir, br#"{"v":2}"#).unwrap();
+        assert_eq!(std::fs::read(dir.join("start/rules.json")).unwrap(), br#"{"v":2}"#);
+        assert!(!dir.join("start/rules.json.new").exists());
+        unstage_rules(&dir);
+        assert!(!dir.join("start/rules.json").exists());
     }
 
     #[tokio::test]
@@ -2144,7 +2412,7 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
         let dir = tmp("create");
         let body = "case \"$1 $2 $3\" in version*|network*) ;; image*) echo 1;; 'create --name c2-'*-wall) ;; create*) echo nope >&2; exit 1;; esac";
         let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
-        assert!(p.create(&Spec { id: "cmp_1".into(), dir: dir.clone() }).await.is_err());
+        assert!(p.create(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Default::default() }).await.is_err());
         assert!(calls(&dir).contains("-wall") && calls(&dir).lines().any(|l| l.starts_with("rm -f -v") && l.ends_with("-wall")), "{}", calls(&dir));
     }
 

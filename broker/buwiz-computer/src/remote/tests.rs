@@ -203,8 +203,8 @@ async fn sleeping_and_retiring_never_call_the_far_end() {
 async fn the_trait_makes_nothing_and_finds_nothing_lost() {
     let d = dir("make");
     let provider = RemoteProvider::new();
-    assert!(provider.create(&Spec { id: "cmp_1".into(), dir: d.clone() }).await.is_err());
-    assert_eq!(provider.recover(&Spec { id: "cmp_1".into(), dir: d }, None).await.unwrap(), None);
+    assert!(provider.create(&Spec { id: "cmp_1".into(), dir: d.clone(), network: Default::default() }).await.is_err());
+    assert_eq!(provider.recover(&Spec { id: "cmp_1".into(), dir: d, network: Default::default() }, None).await.unwrap(), None);
 }
 
 #[tokio::test]

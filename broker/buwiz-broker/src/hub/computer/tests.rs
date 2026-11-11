@@ -1258,5 +1258,6 @@ mod homes;
 mod jobs;
 mod login;
 mod lost;
+mod network;
 mod remote;
 mod together;

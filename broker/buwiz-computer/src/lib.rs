@@ -58,6 +58,9 @@ pub use gate::{Gate, Mode};
 pub use guest::BoxGuest;
 pub use planned::Planned;
 pub use remote::RemoteProvider;
+/// The box's own client, rules and address policy for the browser's network (the computer repo's
+/// `box-egress`): the hub runs a computer's tunnel client with it.
+pub use box_egress;
 
 /// The loopback ports a computer's control and viewer ports are published on, and the ones the
 /// broker's viewer gate binds: all of them, on every broker of this Mac, so the Bot's sandboxed
@@ -265,10 +268,43 @@ pub struct Machine {
     /// set for a remote computer
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
+    /// what it was made with for its browser's network: `None` for a computer made without the
+    /// proxy, which can't take browsing rules or the tunnel until it's made again
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<Egress>,
     /// what [`Provider::look`] found for this request; never saved
     #[serde(skip)]
     pub seen: Option<Seen>,
 }
+
+/// How a new computer's browser reaches the web. Fixed when it's made: Docker can't add a published
+/// port or a setting to a container afterwards.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Network {
+    /// as before: the browser goes straight out, under the network wall alone
+    #[default]
+    Plain,
+    /// every screen's browser goes through the box's proxy, under the computer's rules, and the box
+    /// dials each site itself
+    Proxy,
+    /// the proxy, and the tunnel's WebSocket on a loopback port of this Mac, so a person can turn
+    /// the tunnel on without making it again
+    Tunnel,
+}
+
+/// A computer made with the browser's proxy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Egress {
+    /// made with the tunnel's WebSocket too
+    pub tunnel: bool,
+    /// what the broker's tunnel client presents: 32 random bytes, made with the computer, staged by
+    /// file before each start as the token is, never in an argument or a setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer: Option<Secret>,
+}
+
+/// The box's port for the tunnel's WebSocket, published on loopback with the tunnel only.
+pub const EGRESS_PORT: u16 = 8790;
 
 /// What a provider saw of a computer: one read, good for one request and no longer. Ports can
 /// change with a start, and an old port can be another computer's by then.
@@ -289,6 +325,9 @@ pub struct Seen {
     pub users_apart: bool,
     /// guest port → `127.0.0.1:port`
     pub ports: std::collections::HashMap<u16, String>,
+    /// made with the browser's proxy, by what Docker says the container was made with: `Some(true)`
+    /// with the tunnel too
+    pub egress: Option<bool>,
 }
 
 impl Machine {
@@ -297,7 +336,8 @@ impl Machine {
     pub fn scrub(&self, text: &str) -> String {
         let mut out = text.to_owned();
         let key = self.link.as_ref().and_then(|l| l.key.as_ref());
-        for s in [&self.token, &self.viewer_password].into_iter().chain(key) {
+        let bearer = self.egress.as_ref().and_then(|e| e.bearer.as_ref());
+        for s in [&self.token, &self.viewer_password].into_iter().chain(key).chain(bearer) {
             if !s.expose().is_empty() {
                 out = out.replace(s.expose(), "[hidden]");
             }
@@ -363,6 +403,8 @@ pub struct Spec {
     pub id: String,
     /// the folder the broker keeps for it
     pub dir: PathBuf,
+    /// its browser's network, for a provider that can make it so; the others make it [`Network::Plain`]
+    pub network: Network,
 }
 
 /// One Bot's place on a computer: its display, its input, its viewer, its folder.
@@ -813,6 +855,29 @@ pub trait Provider: Send + Sync {
         unsupported("say what it can do")
     }
 
+    /// `GET /v1/egress`: the browser's proxy and tunnel, as the box says. Names no site.
+    async fn egress(&self, _machine: &Machine) -> Result<serde_json::Value> {
+        unsupported("take browsing rules")
+    }
+
+    /// `PUT /v1/egress/rules`: puts a rules document in force while the box runs. `Ok` only once
+    /// the box says that set is in force.
+    async fn set_egress_rules(&self, _machine: &Machine, _rules: &serde_json::Value) -> Result<serde_json::Value> {
+        unsupported("take browsing rules")
+    }
+
+    /// Whether a computer made now would get the browser's proxy (the image says it has one).
+    /// `None` when this provider can't tell, or never makes one.
+    async fn image_has_proxy(&self) -> Option<bool> {
+        None
+    }
+
+    /// Where this Mac reaches the tunnel's WebSocket (`ws://127.0.0.1:port`), for an awake computer
+    /// made with the tunnel: read for this request, like every port.
+    async fn tunnel_url(&self, _machine: &Machine) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// A mark to pass [`WaitFor::since`], when the provider numbers screen changes.
     async fn mark(&self, _machine: &Machine, _screen: &Screen) -> Option<u64> {
         None
@@ -864,6 +929,7 @@ mod tests {
             viewer_password: Secret::new("pw-456"),
             dir: PathBuf::from("/tmp/x"),
             link: None,
+            egress: None,
             seen: None,
         }
     }
@@ -915,7 +981,18 @@ mod tests {
     #[test]
     fn a_record_from_before_links_still_reads() {
         let old = r#"{"provider":"docker","reach":{"kind":"container","name":"c"},"image":null,"token":"t","viewer_password":"v","dir":"/x"}"#;
-        assert_eq!(serde_json::from_str::<Machine>(old).unwrap().link, None);
+        let m = serde_json::from_str::<Machine>(old).unwrap();
+        assert_eq!(m.link, None);
+        assert_eq!(m.egress, None, "a computer from before the proxy was made without it");
+    }
+
+    #[test]
+    fn the_tunnels_bearer_is_scrubbed_kept_out_of_debug_and_saved_with_the_record() {
+        let m = Machine { egress: Some(Egress { tunnel: true, bearer: Some(Secret::new("bearer-0a1b2c")) }), ..machine() };
+        assert_eq!(m.scrub("x bearer-0a1b2c y"), "x [hidden] y");
+        assert!(!format!("{m:?}").contains("bearer-0a1b2c"));
+        let saved = serde_json::to_string(&m).unwrap();
+        assert_eq!(serde_json::from_str::<Machine>(&saved).unwrap().egress, m.egress);
     }
 
     #[test]

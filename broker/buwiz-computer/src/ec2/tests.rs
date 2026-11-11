@@ -266,7 +266,7 @@ async fn provider(d: &Path, fake: &Shared, master_up: bool) -> Ec2Provider {
 }
 
 fn machine(d: &Path, id: &str) -> Machine {
-    Machine { provider: ProviderKind::Ec2, reach: Reach::Instance { id: id.into(), region: DEFAULT_REGION.into() }, image: Some(DEFAULT_IMAGE.into()), token: Secret::new(TOKEN), viewer_password: Secret::new(VIEWER), dir: d.join("cmp_ab12"), link: None, seen: None }
+    Machine { provider: ProviderKind::Ec2, reach: Reach::Instance { id: id.into(), region: DEFAULT_REGION.into() }, image: Some(DEFAULT_IMAGE.into()), token: Secret::new(TOKEN), viewer_password: Secret::new(VIEWER), dir: d.join("cmp_ab12"), link: None, egress: None, seen: None }
 }
 
 fn ours(id: &str, computer: &str, state: &str) -> FakeInstance {
@@ -295,7 +295,7 @@ fn ssh_calls(d: &Path) -> String {
 async fn create_launches_from_the_template_tagged_with_only_a_public_key_in_its_user_data() {
     let (d, fake) = (tmp("create"), Shared::default());
     let p = provider(&d, &fake, true).await;
-    let spec = Spec { id: "cmp_ab12".into(), dir: d.join("cmp_ab12") };
+    let spec = Spec { id: "cmp_ab12".into(), dir: d.join("cmp_ab12"), network: Default::default() };
     let m = p.create(&spec).await.unwrap();
     assert_eq!(m.provider, ProviderKind::Ec2);
     let Reach::Instance { id, region } = &m.reach else { panic!("{:?}", m.reach) };
@@ -512,7 +512,7 @@ async fn destroy_terminates_and_sweep_and_recover_go_by_both_tags_alone() {
         f.instances.push(FakeInstance { tags: Vec::new(), ..ours("i-02615fd28737cd067", "x", "running") });
     }
     let p = provider(&d, &fake, true).await;
-    let spec = Spec { id: "cmp_ab12".into(), dir: d.join("cmp_ab12") };
+    let spec = Spec { id: "cmp_ab12".into(), dir: d.join("cmp_ab12"), network: Default::default() };
     assert_eq!(p.recover(&spec, None).await.unwrap(), None, "no key left, no way in");
     keygen(Path::new(KEYGEN), &spec.dir.join(FOLDER), "cmp_ab12").await.unwrap();
     let found = p.recover(&spec, None).await.unwrap().unwrap();

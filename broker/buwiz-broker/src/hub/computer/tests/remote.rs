@@ -568,7 +568,7 @@ async fn a_real_box_through_the_tools_the_tile_and_the_viewer() {
     let docker = DockerProvider::new(image, "c3th");
     docker.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
     let box_dir = far_dir("box-record");
-    let local = docker.create(&Spec { id: "cmp_c3th".into(), dir: box_dir.clone() }).await.unwrap();
+    let local = docker.create(&Spec { id: "cmp_c3th".into(), dir: box_dir.clone(), network: Default::default() }).await.unwrap();
     docker.wake(&local).await.unwrap();
     let (_, seen) = docker.look(&local).await.unwrap();
     let ports = seen.seen.as_ref().unwrap().ports.clone();
