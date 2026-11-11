@@ -42,6 +42,7 @@ fn spec(name: &str) -> Spec {
     Spec {
         id: "c1".to_owned(),
         dir: std::env::temp_dir().join(format!("e2b-test-{name}")),
+        network: Default::default(),
     }
 }
 
@@ -55,6 +56,7 @@ fn machine(id: &str, spec: &Spec) -> Machine {
         viewer_password: Secret::new("pw-e2b"),
         dir: spec.dir.clone(),
         link: None,
+        egress: None,
         seen: None,
     }
 }

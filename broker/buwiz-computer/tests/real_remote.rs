@@ -276,7 +276,7 @@ impl LocalBox {
         let dir = temp(prefix);
         let docker = DockerProvider::new(image, prefix);
         docker.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
-        let machine = docker.create(&Spec { id: format!("cmp_{prefix}"), dir: dir.clone() }).await.unwrap();
+        let machine = docker.create(&Spec { id: format!("cmp_{prefix}"), dir: dir.clone(), network: Default::default() }).await.unwrap();
         docker.wake(&machine).await.unwrap();
         let (_, seen) = docker.look(&machine).await.unwrap();
         let ports = seen.seen.as_ref().unwrap().ports.clone();

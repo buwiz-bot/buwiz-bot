@@ -867,6 +867,7 @@ impl Provider for BoatProvider {
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
             link: None,
+            egress: None,
             seen: None,
         };
         let name = container_name(&sandbox);
@@ -1038,6 +1039,7 @@ impl Provider for BoatProvider {
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
             link: None,
+            egress: None,
             seen: None,
         }))
     }

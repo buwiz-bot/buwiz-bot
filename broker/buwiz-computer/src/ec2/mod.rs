@@ -551,6 +551,7 @@ impl Provider for Ec2Provider {
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
             link: None,
+            egress: None,
             seen: None,
         })
     }
@@ -664,6 +665,7 @@ impl Provider for Ec2Provider {
             viewer_password: Secret::fresh(24)?,
             dir: spec.dir.clone(),
             link: None,
+            egress: None,
             seen: None,
         }))
     }

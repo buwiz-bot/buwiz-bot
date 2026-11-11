@@ -36,7 +36,7 @@ async fn a_real_computer_wakes_walled_off_and_sleeps() {
     let p = DockerProvider::new(image, "c2t");
     p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
 
-    let m = p.create(&Spec { id: "cmp_c2test".into(), dir: dir.clone() }).await.unwrap();
+    let m = p.create(&Spec { id: "cmp_c2test".into(), dir: dir.clone(), network: Default::default() }).await.unwrap();
     let outcome = tokio::spawn({
         let (m, dir) = (m.clone(), dir.clone());
         async move {
@@ -61,7 +61,7 @@ async fn a_job_outlives_its_command_as_the_bots_user() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = DockerProvider::new(image.clone(), "c2j");
     p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
-    let m = p.create(&Spec { id: "cmp_c2job".into(), dir: dir.clone() }).await.unwrap();
+    let m = p.create(&Spec { id: "cmp_c2job".into(), dir: dir.clone(), network: Default::default() }).await.unwrap();
     let outcome = tokio::spawn({
         let m = m.clone();
         async move { jobs(&image, &m).await }
@@ -319,8 +319,8 @@ async fn files_outlive_lost_containers_and_a_peer_cant_be_reached() {
     for d in &dirs {
         std::fs::create_dir_all(d).unwrap();
     }
-    let a = p.create(&Spec { id: "cmp_c2ua".into(), dir: dirs[0].clone() }).await.unwrap();
-    let b = p.create(&Spec { id: "cmp_c2ub".into(), dir: dirs[1].clone() }).await.unwrap();
+    let a = p.create(&Spec { id: "cmp_c2ua".into(), dir: dirs[0].clone(), network: Default::default() }).await.unwrap();
+    let b = p.create(&Spec { id: "cmp_c2ub".into(), dir: dirs[1].clone(), network: Default::default() }).await.unwrap();
     let outcome = tokio::spawn({
         let (a, b) = (a.clone(), b.clone());
         async move {
@@ -374,7 +374,7 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
 
     // a lost record: found by its label, with new secrets
     let dir = a.dir.clone();
-    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone() }, None).await.unwrap().expect("it's still there");
+    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone(), network: Default::default() }, None).await.unwrap().expect("it's still there");
     assert_eq!(found.reach, a.reach);
     assert_ne!(found.token, a.token);
     // as a click does: what's running has the old secrets, so it stops first
@@ -384,8 +384,8 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
 
     // record and containers both lost: the files are found by name
     docker(&["rm", "-f", &na, &format!("{na}-wall")]);
-    assert_eq!(p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone() }, None).await.unwrap(), None, "a label needs a container");
-    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir }, Some(&a.reach)).await.unwrap().expect("its volumes are there");
+    assert_eq!(p.recover(&Spec { id: "cmp_c2ua".into(), dir: dir.clone(), network: Default::default() }, None).await.unwrap(), None, "a label needs a container");
+    let found = p.recover(&Spec { id: "cmp_c2ua".into(), dir, network: Default::default() }, Some(&a.reach)).await.unwrap().expect("its volumes are there");
     p.wake(&found).await.unwrap();
     assert_eq!(p.read_file(&found, "kept.txt").await.unwrap(), b"both", "the files were left behind");
     println!("record and containers lost: files kept");
@@ -394,7 +394,7 @@ async fn lost_and_peers(p: &DockerProvider, a: &buwiz_computer::Machine, b: &buw
     docker(&["rm", "-f", &na, &format!("{na}-wall")]);
     docker(&["volume", "rm", &format!("{na}-workspace")]);
     let dir = a.dir.clone();
-    let home_only = p.recover(&Spec { id: "cmp_c2ua".into(), dir }, Some(&a.reach)).await.unwrap();
+    let home_only = p.recover(&Spec { id: "cmp_c2ua".into(), dir, network: Default::default() }, Some(&a.reach)).await.unwrap();
     assert!(home_only.is_some(), "a surviving home was read as nothing left");
     p.destroy(a).await.expect("a volume already gone stopped the removal");
     assert_eq!(docker(&["volume", "ls", "--quiet", "--filter", &format!("name={na}-home")]), "", "the other volume was left behind");
@@ -457,7 +457,7 @@ async fn a_watcher_cant_touch_a_real_screen_and_a_driver_can() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = DockerProvider::new(image.clone(), "c2w");
     p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
-    let m = p.create(&Spec { id: "cmp_c2wtest".into(), dir: dir.clone() }).await.unwrap();
+    let m = p.create(&Spec { id: "cmp_c2wtest".into(), dir: dir.clone(), network: Default::default() }).await.unwrap();
     let outcome = tokio::spawn({
         let m = m.clone();
         async move { watch_and_drive(&DockerProvider::new(image, "c2w"), &m).await }
@@ -587,7 +587,7 @@ async fn a_box_process_cant_get_the_viewer_password_or_past_the_viewer() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = DockerProvider::new(image.clone(), "c2s");
     p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
-    let m = p.create(&Spec { id: "cmp_c2stest".into(), dir: dir.clone() }).await.unwrap();
+    let m = p.create(&Spec { id: "cmp_c2stest".into(), dir: dir.clone(), network: Default::default() }).await.unwrap();
     let outcome = tokio::spawn({
         let m = m.clone();
         async move { hunt(&DockerProvider::new(image, "c2s"), &m).await }
@@ -831,7 +831,7 @@ where
     std::fs::create_dir_all(&dir).unwrap();
     let p = DockerProvider::new(image.clone(), prefix);
     p.check().await.unwrap_or_else(|e| panic!("this test needs Docker and the image: {e}"));
-    let m = p.create(&Spec { id: format!("cmp_{prefix}test"), dir: dir.clone() }).await.unwrap();
+    let m = p.create(&Spec { id: format!("cmp_{prefix}test"), dir: dir.clone(), network: Default::default() }).await.unwrap();
     let outcome = tokio::spawn({
         let (m, dir) = (m.clone(), dir.clone());
         async move { test(DockerProvider::new(image, prefix), m, dir).await }

@@ -12,6 +12,10 @@ mock = []
 
 [dependencies]
 async-trait = "0.1"
+# box-egress-v1's client, the browsing rules and the address policy, from the computer repo, so the
+# Mac's side of a computer's tunnel speaks the box's own wire and judges by the box's own rules:
+# the crate alone, with none of the box's daemons (tokio-tungstenite, plain ws:// only)
+box-egress = { git = "https://github.com/buwiz-bot/computer", rev = "fceb539a989754445b3117bb76b49a7f369bcf04" }
 base64 = "0.22"
 bytes = "1"
 getrandom = "0.2"

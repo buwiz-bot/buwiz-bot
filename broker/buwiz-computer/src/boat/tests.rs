@@ -19,6 +19,7 @@ fn spec(name: &str) -> Spec {
     Spec {
         id: "comp1".to_owned(),
         dir,
+        network: Default::default(),
     }
 }
 
@@ -33,6 +34,7 @@ fn record(dir: &Path) -> Machine {
         viewer_password: Secret::new("pw-boat"),
         dir: dir.to_owned(),
         link: None,
+        egress: None,
         seen: None,
     }
 }
@@ -885,8 +887,8 @@ fn boats_box_is_set_up_as_dockers_except_where_it_says_why() {
     let script = prep().replace("\\\n", " ");
     let line = script.lines().find(|l| l.trim_start().starts_with("docker create")).unwrap();
     let boat: Vec<String> = line.split_whitespace().map(|w| w.trim_matches('"').to_owned()).collect();
-    let docker = crate::docker::create_args("img:1", "c2-0a1b2c3d", "cmp_1", Path::new("/x/start"));
-    let holder = crate::docker::holder_args("img:1", "c2-0a1b2c3d", "c2-net", "cmp_1");
+    let docker = crate::docker::create_args("img:1", "c2-0a1b2c3d", "cmp_1", Path::new("/x/start"), None);
+    let holder = crate::docker::holder_args("img:1", "c2-0a1b2c3d", "c2-net", "cmp_1", false);
 
     let env = |words: &[String]| values_of(words, "-e").into_iter().map(str::to_owned).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(env(&boat), env(&docker), "the same settings, the secrets' file names included");
