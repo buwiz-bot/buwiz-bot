@@ -1811,13 +1811,14 @@ fn settled(spec: Rc<UserFormSpec>, key: String, r: FormResolution) -> View {
         }
         other => other,
     };
-    let mut words = view().flex_1().min_w(px(0.0)).gap(px(2.0)).child(text(line.clone()).number_of_lines(3).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT));
+    // nothing here is cut: a safety sentence is never ellipsised
+    let mut words = view().flex_1().min_w(px(0.0)).gap(px(4.0)).child(text(line.clone()).text_size(px(13.0)).line_height(px(18.0)).text_color(theme::TEXT));
     if r == FormResolution::Unsure {
-        words = words.child(note(format!("It may still be typing, or it was answered already. Look at {} before doing anything else.", screen_of(&spec))).number_of_lines(3));
+        words = words.child(note(format!("It may still be typing, or it was answered already. Look at {} before doing anything else.", screen_of(&spec))));
     }
-    // what the broker said of the fill, step by step (Return pressed, left to you, a reason)
+    // what the broker said of the fill, in its own block, whole (Return pressed, left to you, a reason)
     if let Some(said) = said {
-        words = words.child(note(said).number_of_lines(4));
+        words = words.child(note(said));
     }
     let mut receipt = login_shell(&format!("user-form-{key}"))
         .label(line)

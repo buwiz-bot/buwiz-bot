@@ -457,6 +457,9 @@ fn a_fill_that_may_have_typed_says_so_and_offers_no_retry() {
     settle(&mut app);
     assert!(has_text(&app, "May have been typed on shop.example: check the screen.") && has_text(&app, note), "{:?}", app.texts());
     assert!(!has_text(&app, "Nothing was filled"), "never nothing-filled beside a maybe: {:?}", app.texts());
+    // the broker's note is its own block, whole: never cut
+    let (_, said) = app.text_view(note);
+    assert_eq!(said.max_lines, 0, "the note isn't clamped");
     assert!(has_text(&app, "A secret value may have been typed into the page; it was never shown to the AI."), "a secret's maybe is said: {:?}", app.texts());
     assert!(!app.has("Try again") && !app.has(FILL), "no blind retry: {:?}", app.texts());
 }
