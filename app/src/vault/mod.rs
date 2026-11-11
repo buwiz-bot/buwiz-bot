@@ -509,12 +509,9 @@ impl Vault {
         if let Some(other) = self.db(|c| db::find(c, &site, username))?.filter(|o| o.id != row.id) {
             return Err(format!("another login is saved for {} as {}", other.origin, other.username));
         }
+        let before = row.clone();
         if !password.is_empty() {
-            self.secrets.set(&row.id, password)?;
             row.kind = KIND_PASSWORD.to_owned();
-        }
-        if !seed.is_empty() {
-            self.secrets.set(&code_account(&row.id), seed)?;
         }
         if row.label == default_label(&row.username, &row.origin) || row.label.trim().is_empty() {
             row.label = default_label(username, &site);
@@ -524,7 +521,28 @@ impl Vault {
         row.username = username.to_owned();
         row.exact = true;
         row.updated_at = now_ms();
+        // the row first, then its secrets: a refused update writes no secret, and a refused first
+        // secret puts the row back, so the row and its secret always belong together
         self.db(|c| db::update(c, &row))?;
+        if !password.is_empty()
+            && let Err(e) = self.secrets.set(&row.id, password)
+        {
+            self.db(|c| db::update(c, &before))?;
+            return Err(e);
+        }
+        if !seed.is_empty()
+            && let Err(e) = self.secrets.set(&code_account(&row.id), seed)
+        {
+            if password.is_empty() {
+                self.db(|c| db::update(c, &before))?;
+                return Err(e);
+            }
+            // the new password is in, under the new row: only the code seed is missing
+            if moved {
+                self.db(|c| db::set_shares(c, &row.id, &BTreeSet::new()))?;
+            }
+            return Err(format!("the password was saved, but the authenticator secret wasn't: {e}"));
+        }
         if moved {
             self.db(|c| db::set_shares(c, &row.id, &BTreeSet::new()))?;
         }
@@ -859,6 +877,56 @@ mod tests {
         }));
         let edited = v.edit(&row.id, "shop.example", "kid", &Secret::new("fake-pw3"), &Secret::new("")).expect("edit");
         assert_eq!(edited.shared_with.iter().map(String::as_str).collect::<Vec<_>>(), ["nova", "orbit"], "the share made meanwhile isn't undone");
+        drop(v);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A store whose writes fail while `fail` is set.
+    struct Flaky {
+        inner: MemorySecrets,
+        fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SecretStore for Flaky {
+        fn set(&self, account: &str, secret: &Secret) -> Result<(), String> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("the store refused the write".into());
+            }
+            self.inner.set(account, secret)
+        }
+        fn get(&self, account: &str) -> Result<Option<Secret>, String> {
+            self.inner.get(account)
+        }
+        fn delete(&self, account: &str) -> Result<(), String> {
+            self.inner.delete(account)
+        }
+        fn contains(&self, account: &str) -> bool {
+            self.inner.contains(account)
+        }
+    }
+
+    #[test]
+    fn a_failed_edit_leaves_the_row_and_its_secret_together() {
+        let path = std::env::temp_dir().join(format!("buwiz-vault-edit-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let c = Connection::open(&path).expect("sqlite");
+        db::migrate(&c).expect("schema");
+        let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let v = Vault::with(Some(c), None, Box::new(Flaky { inner: MemorySecrets::default(), fail: fail.clone() }), Box::new(Answer(AuthOutcome::Verified)));
+        let row = v.save_for("shop.example", "kid", KIND_PASSWORD, &Secret::new("fake-old"), Some("nova")).expect("save");
+        let none = Secret::new("");
+        // a secret write that fails: the row is put back, shares and all
+        fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(v.edit(&row.id, "bank.example", "kid2", &Secret::new("fake-new"), &none).is_err());
+        let back = v.get(&row.id).expect("row");
+        assert_eq!((back.origin.as_str(), back.username.as_str(), back.shared_with.len()), ("shop.example", "kid", 1));
+        assert_eq!(v.unlock(&back, "test"), Unlock::Secret(Secret::new("fake-old")));
+        fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        // an update the table refuses: no secret is written
+        Connection::open(&path).unwrap().execute_batch("CREATE TRIGGER no_edit BEFORE UPDATE OF origin ON site_logins BEGIN SELECT RAISE(ABORT, 'refused'); END;").unwrap();
+        assert!(v.edit(&row.id, "bank.example", "kid", &Secret::new("fake-new"), &none).is_err());
+        assert_eq!(v.get(&row.id).map(|r| r.origin), Some("shop.example".to_owned()));
+        assert_eq!(v.unlock(&back, "test"), Unlock::Secret(Secret::new("fake-old")), "the old secret, under the old row");
         drop(v);
         let _ = std::fs::remove_file(&path);
     }
