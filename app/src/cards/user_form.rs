@@ -1411,8 +1411,9 @@ const INFO_W: f32 = 320.0;
 /// the pointer to come back (on its way from the icon into the popover).
 const PEEK_MS: u64 = 300;
 const GRACE_MS: u64 = 250;
-/// How long after Escape the focus coming back to the ⓘ is taken for its refocus.
-const QUIET_MS: u64 = 150;
+/// How long after Escape a focus coming to the ⓘ is taken for its refocus, if the focus wasn't
+/// on it already: long enough for the refocus on a slow machine.
+const QUIET_MS: u64 = 1000;
 /// The ⓘ's label.
 pub(crate) const INFO_LABEL: &str = "About this card";
 /// The popover's label.
@@ -1684,6 +1685,8 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
     let hov = signal(false);
     // the focus is coming back to the icon from the popover's Escape: it doesn't open it again
     let quiet = signal(false);
+    // the keyboard focus is on the icon: Escape leaves it there, with nothing to swallow
+    let focused = signal(false);
     let anchor = element_ref();
     let owner = Owner::current();
     let close_later = move || {
@@ -1727,6 +1730,7 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
                     close_later();
                 })
                 .on_focus(move || {
+                    focused.set(true);
                     if quiet.get_untracked() {
                         return quiet.set(false);
                     }
@@ -1735,6 +1739,7 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
                     }
                 })
                 .on_blur(move || {
+                    focused.set(false);
                     quiet.set(false);
                     if open.get_untracked() == Some(false) {
                         open.set(None);
@@ -1753,11 +1758,21 @@ fn info_button(lines: Rc<Vec<(String, Vec<String>)>>) -> impl IntoElement {
                         .child(text("i").text_size(px(9.5)).line_height(px(11.0)).font_weight(FontWeight::BOLD).text_color(theme::MUTED)),
                 ),
         )
-        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, open, over, quiet, owner, close_later).into_element()))
+        .child(when(move || open.get().is_some(), move || info_panel(&panel, &anchor, Info { open, over, quiet, focused }, owner, close_later).into_element()))
 }
 
 /// The ⓘ's popover: each heading and its short lines.
-fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal<Option<bool>>, over: Signal<bool>, quiet: Signal<bool>, owner: Owner, close_later: impl Fn() + 'static) -> impl IntoElement {
+/// The ⓘ's state its popover reads and sets: open (`Some(pinned)`), the pointer over icon or
+/// popover, a refocus to let pass, and the keyboard focus on the icon.
+#[derive(Clone, Copy)]
+struct Info {
+    open: Signal<Option<bool>>,
+    over: Signal<bool>,
+    quiet: Signal<bool>,
+    focused: Signal<bool>,
+}
+
+fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, Info { open, over, quiet, focused }: Info, owner: Owner, close_later: impl Fn() + 'static) -> impl IntoElement {
     let focus = *anchor;
     let mut body = view()
         .label(INFO_PANEL)
@@ -1801,10 +1816,14 @@ fn info_panel(lines: &[(String, Vec<String>)], anchor: &ElementRef, open: Signal
         .on_press_outside(move |_: &Point<Points>| open.set(None))
         .on_cancel(move || {
             open.set(None);
+            // the focus on the icon already stays there: nothing comes back to swallow
+            if focused.get_untracked() {
+                return;
+            }
             // back where the keyboard was, without that focus opening it again
             quiet.set(true);
             focus.focus();
-            // the refocus comes at once, if it comes: a later, real focus isn't swallowed
+            // a refocus that never comes doesn't swallow a later, real one
             owner.run(|| {
                 set_timeout(std::time::Duration::from_millis(QUIET_MS), move || quiet.set(false));
             });

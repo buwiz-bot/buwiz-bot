@@ -1309,18 +1309,21 @@ fn the_info_popover_opens_on_hover_focus_and_press_and_closes_on_escape_or_outsi
     app.pump(Duration::from_millis(50));
     assert!(app.has(PANEL), "a later focus opens it");
     app.cancel("About this card, open");
-    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
-    app.pump(Duration::from_millis(50));
-    assert!(!app.has(PANEL));
-    // Escape with no focus coming back (it stayed where it was): a later Tab onto the ⓘ opens it
+    assert!(!app.has(PANEL), "Escape closes it with the focus on the icon too");
+    // Escape with the focus on the ⓘ: it stays there, so nothing is swallowed. Tab away and back
+    // opens it again at once
     app.send(info, nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
+    app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
     app.press(INFO);
+    assert!(app.has(PANEL), "pinned while focused");
     app.cancel("About this card, open");
-    app.pump(Duration::from_millis(300));
+    assert!(!app.has(PANEL));
+    app.send(info, nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
     app.send(info, nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
     app.pump(Duration::from_millis(50));
     assert!(app.has(PANEL), "the next real focus isn't swallowed");
-    app.cancel("About this card, open");
+    app.send(info, nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
+    app.pump(Duration::from_millis(50));
     // a press outside closes it
     app.press(INFO);
     assert!(app.has(PANEL));
