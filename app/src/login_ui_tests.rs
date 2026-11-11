@@ -1245,6 +1245,42 @@ fn every_secret_field_is_secure_and_reads_back_nothing() {
     no_mark(&app);
 }
 
+/// The card's own submit refused (the page in front isn't the card's site, a computer several
+/// Bots share, a person on the screen): the card stays open and shows the refusal's words, beside
+/// its answers. An image too old to type into settles it, saying so.
+#[test]
+fn the_card_paints_each_refusal_of_its_own_submit_and_stays_open() {
+    if !in_child("the_card_paints_each_refusal_of_its_own_submit_and_stays_open") {
+        return;
+    }
+    let (mut app, seen) = start(submitted("submitted"));
+    with_card(&mut app);
+    let refusals = [
+        (403, "wrong-page", "The page in front is evil.test, not shop.example, so nothing was typed."),
+        (403, "shared-computer", "This computer is shared with other bots or people, so a saved login is not used on it."),
+        (409, "person_on", "A person has this Bot's screen right now, so nothing was typed. Try again once they hand it back."),
+    ];
+    for (n, (status, code, words)) in refusals.into_iter().enumerate() {
+        *seen.submit.lock().unwrap() = (status, json!({"ok": false, "code": code, "message": words}));
+        typed_login(&mut app);
+        app.press(FILL);
+        wait_for(&mut app, &seen, SUBMIT, n + 1);
+        settle(&mut app);
+        assert!(app.texts().contains(&words), "{code}: {:?}", app.texts());
+        assert!(app.has(FILL) && app.has("Email") && app.has(DO_IT), "{code}: the card stays open: {:?}", app.texts());
+        assert!(!has_text(&app, "Filled in"), "{code}");
+        no_mark(&app);
+    }
+    let old = "This computer's image is too old to type a login into its browser. Update the computer image and make this computer again from its Computer tab, or use Open the screen to sign in yourself.";
+    *seen.submit.lock().unwrap() = (200, json!({"ok": true, "notice": {"kind": "user_form", "id": "uf_1", "state": "fill_failed", "note": old}}));
+    typed_login(&mut app);
+    app.press(FILL);
+    wait_for(&mut app, &seen, SUBMIT, 4);
+    settle(&mut app);
+    assert!(has_text(&app, "Nothing was filled on shop.example.") && app.texts().contains(&old), "{:?}", app.texts());
+    no_mark(&app);
+}
+
 /// A refused hand-over keeps the card open and says, in the broker's words, that the screen
 /// wasn't handed over; nothing typed goes with it.
 #[test]
