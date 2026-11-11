@@ -92,8 +92,12 @@ fn named<'a>(who: &str, bots: &'a [RoxBot]) -> Result<&'a RoxBot, String> {
     let mut found = bots.iter().filter(|b| b.name.trim().to_lowercase() == who_l);
     match (found.next(), found.next()) {
         (Some(b), None) => Ok(b),
-        (Some(_), Some(_)) => Err(format!("More than one Bot is called {who}: rename one first.")),
-        _ => Err(format!("No Bot is called {who}.")),
+        (Some(_), Some(_)) => Err("More than one Bot has that name: rename one first.".to_owned()),
+        // the words matched no Bot: never shown back, the real names are
+        _ => {
+            let names: Vec<&str> = bots.iter().map(|b| b.name.trim()).filter(|n| !n.is_empty()).collect();
+            Err(if names.is_empty() { "No Bot has that name, and there are no Bots yet.".to_owned() } else { format!("No Bot has that name. Bots: {}.", names.join(", ")) })
+        }
     }
 }
 
@@ -124,10 +128,9 @@ fn outcome(line: Line, rows: &[SiteLogin], bots: &[RoxBot], share_all: bool) -> 
                 .collect();
             let verb = if on { "share" } else { "unshare" };
             let r = match found.as_slice() {
-                [] => {
-                    let who = user.map(|u| format!(" as {u}")).unwrap_or_default();
-                    return Outcome::Say(format!("No login is saved for {site}{who}. /vault add {site} adds one."));
-                }
+                // a user name that matched nothing is never shown back
+                [] if user.is_some() => return Outcome::Say(format!("No login for {site} has that user name.")),
+                [] => return Outcome::Say(format!("No login is saved for {site}. /vault add {site} adds one.")),
                 [r] => *r,
                 many => {
                     let asks = many
@@ -293,7 +296,15 @@ mod tests {
         assert!(matches!(outcome(parse(" share bank.example as bob with Orbit"), &rows, &bots, false), Outcome::Share { ref id, .. } if id == "sl_3"));
         assert!(matches!(outcome(parse(" unshare bank.example as ada with Nova"), &rows, &bots, false), Outcome::Share { ref id, on: false, .. } if id == "sl_2"));
         assert!(matches!(outcome(parse(" share nowhere.example with Nova"), &rows, &bots, false), Outcome::Say(ref s) if s.starts_with("No login is saved for nowhere.example")));
-        assert!(matches!(outcome(parse(" share shop.example with Nobody"), &rows, &bots, false), Outcome::Say(ref s) if s == "No Bot is called Nobody."));
+        assert!(matches!(outcome(parse(" share shop.example with Nobody"), &rows, &bots, false), Outcome::Say(ref s) if s == "No Bot has that name. Bots: Nova, Orbit."));
+        // words that matched nothing are never shown back
+        for line in [" share shop.example with fake-secret-marker", " share shop.example as fake-secret-marker with Nova"] {
+            match outcome(parse(line), &rows, &bots, false) {
+                Outcome::Say(s) => assert!(!s.contains("fake-secret-marker"), "{line}: {s}"),
+                _ => panic!("{line} matched something"),
+            }
+        }
+        assert!(matches!(outcome(parse(" share shop.example as nobody with Nova"), &rows, &bots, false), Outcome::Say(ref s) if s == "No login for shop.example has that user name."));
         let twins = [bot("a", "Nova"), bot("b", "nova")];
         assert!(matches!(outcome(parse(" share shop.example with Nova"), &rows, &twins, false), Outcome::Say(ref s) if s.starts_with("More than one Bot")));
         // unsharing under share-all says the Bot is still offered it
