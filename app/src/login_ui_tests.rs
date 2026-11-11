@@ -695,6 +695,20 @@ fn the_logins_page_adds_edits_shares_and_deletes_and_never_shows_a_secret() {
     assert!(!app.has("Use kid@example.com"), "not offered to Nova yet");
     no_mark(&app);
 
+    // a password typed into the Website field is refused, never saved or shown
+    app.press("Add a login");
+    app.wait_for("Login site");
+    app.type_text("Login site", MARK);
+    app.type_text("Login user name", "bob@example.com");
+    app.type_text("Login password", "fake-other-pw");
+    app.press("Save login");
+    settle(&mut app);
+    assert!(has_text(&app, "Couldn't save the login: the website doesn't look like a site (like shop.example)."), "{:?}", app.texts());
+    assert_eq!(on(&mut app, || crate::vault::vault().list().len()), 1, "nothing saved");
+    app.press("Cancel");
+    settle(&mut app);
+    no_mark(&app);
+
     // Edit: the secret fields are write-only
     app.press("Edit");
     app.wait_for("Login password");

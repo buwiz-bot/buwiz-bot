@@ -71,6 +71,9 @@ pub(crate) const OLD_KEYCHAIN_SERVICE: &str = "dev.goldcoders.rox.site-login";
 #[cfg_attr(any(not(target_os = "macos"), test), allow(dead_code))]
 const KEYCHAIN_MARKER: &str = ".keychain-moved-from-rox";
 
+/// Why a typed website isn't kept: fixed, so a password typed in its place is never shown back.
+pub(crate) const NOT_A_SITE: &str = "the website doesn't look like a site (like shop.example)";
+
 /// The three kinds of row.
 pub(crate) const KIND_PASSWORD: &str = "password";
 pub(crate) const KIND_CODE: &str = "code";
@@ -469,7 +472,7 @@ impl Vault {
     /// already saved is refused: that's an edit. A new login is shared with
     /// no Bot.
     pub(crate) fn add(&self, origin: &str, username: &str, password: &Secret, seed: &Secret) -> Result<SiteLogin, String> {
-        let site = site_origin(origin).ok_or("a login needs a site")?;
+        let site = plausible_site(origin).ok_or(NOT_A_SITE)?;
         let username = username.trim();
         if username.is_empty() {
             return Err("a login needs a username".into());
@@ -497,7 +500,7 @@ impl Vault {
     /// change of username or secret keeps its shares.
     pub(crate) fn edit(&self, id: &str, origin: &str, username: &str, password: &Secret, seed: &Secret) -> Result<SiteLogin, String> {
         let mut row = self.get(id).ok_or("that login isn't saved any more")?;
-        let site = site_origin(origin).ok_or("a login needs a site")?;
+        let site = plausible_site(origin).ok_or(NOT_A_SITE)?;
         let username = username.trim();
         if username.is_empty() {
             return Err("a login needs a username".into());
@@ -904,6 +907,11 @@ mod tests {
         let v = memory_vault(AuthOutcome::Verified);
         let none = Secret::new("");
         assert!(v.add("", "ada", &Secret::new("fake-pw"), &none).is_err());
+        // a password typed into the website: refused in fixed words, nothing kept
+        for typo in ["fake-secret-in-site", "hunter2", "p@ss.word"] {
+            assert_eq!(v.add(typo, "ada", &Secret::new("fake-pw"), &none).unwrap_err(), NOT_A_SITE, "{typo}");
+        }
+        assert!(v.list().is_empty());
         assert!(v.add("shop.example", " ", &Secret::new("fake-pw"), &none).is_err());
         assert!(v.add("shop.example", "ada", &none, &none).is_err(), "nothing to keep");
         let bad = v.add("shop.example", "ada", &Secret::new("fake-pw"), &Secret::new("fake-seed-not-base32!")).unwrap_err();
@@ -929,6 +937,9 @@ mod tests {
         assert_eq!(v.unlock(&moved, "test"), Unlock::Secret(Secret::new("fake-pw")));
         v.edit(&row.id, "shop2.example", "ada2", &Secret::new("fake-pw-new"), &none).expect("edit");
         assert_eq!(v.unlock(&moved, "test"), Unlock::Secret(Secret::new("fake-pw-new")));
+        // an edit's website must look like a site too, and nothing changes when it doesn't
+        assert_eq!(v.edit(&row.id, "fake-secret-in-site", "ada2", &none, &none).unwrap_err(), NOT_A_SITE);
+        assert_eq!(v.get(&row.id).map(|r| r.origin), Some("shop2.example".to_owned()));
         // a clash with another row changes nothing
         let other = v.add("bank.example", "bob", &Secret::new("fake-pw"), &none).expect("add");
         assert!(v.edit(&other.id, "shop2.example", "ada2", &none, &none).is_err());
