@@ -112,13 +112,19 @@ pub struct Leaf {
     data: PathBuf,
     allowed: Vec<String>,
     db: Mutex<Option<Connection>>,
+    /// `/state` long-polls sleep on `cv` (anchored by `wake`); a POST
+    /// notifies after its write so waiters answer in ~a millisecond, not a
+    /// poll interval. `wake` is held from a waiter's read until it sleeps,
+    /// so a write can never slip between the two unseen.
+    wake: Mutex<()>,
+    cv: std::sync::Condvar,
 }
 
 impl Leaf {
     /// `data` is Node's data dir (`BUWIZ_BROKER_DATA_DIR`); `allowed` the origins
     /// the guard lets through.
     pub fn new(data: PathBuf, allowed: Vec<String>) -> Self {
-        Self { data, allowed, db: Mutex::new(None) }
+        Self { data, allowed, db: Mutex::new(None), wake: Mutex::new(()), cv: std::sync::Condvar::new() }
     }
 
     pub async fn serve(&self, route: Route, req: Request<Incoming>) -> Response<Body> {

@@ -32,8 +32,6 @@ fn valid(name: &str) -> bool {
 
 /// The longest a `?wait=` holds a `/state` GET (Node's cap too).
 const MAX_WAIT: Duration = Duration::from_secs(30);
-/// How often a waiting GET re-reads `kv`.
-const WAIT_POLL: Duration = Duration::from_millis(100);
 
 /// `?wait=<ms>`: how long a GET may hold for a change, capped at
 /// [`MAX_WAIT`]; absent or invalid means answer now.
@@ -79,16 +77,27 @@ pub fn get(leaf: &Leaf, url: &str) -> Answer {
     if !hold.is_zero() {
         let baseline = js::search_param(url, "v").unwrap_or_else(|| version(data.as_deref()));
         if baseline == version(data.as_deref()) {
+            // `wake` stays held from the re-read to the sleep, so a POST's
+            // notify can't land between them unseen; a write wakes every
+            // waiter and each re-checks its own name.
+            let mut guard = leaf.wake.lock().unwrap_or_else(|e| e.into_inner());
             let deadline = Instant::now() + hold;
-            while Instant::now() < deadline {
-                std::thread::sleep(WAIT_POLL.min(deadline - Instant::now()));
+            data = match read(leaf, &name) {
+                Ok(d) => d,
+                Err(e) => return Answer::thrown(&e),
+            };
+            while version(data.as_deref()) == baseline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let (g, res) = leaf.cv.wait_timeout(guard, remaining).unwrap_or_else(|e| e.into_inner());
+                guard = g;
+                if res.timed_out() {
+                    break;
+                }
                 match read(leaf, &name) {
-                    Ok(d) => {
-                        data = d;
-                        if version(data.as_deref()) != baseline {
-                            break;
-                        }
-                    }
+                    Ok(d) => data = d,
                     Err(e) => return Answer::thrown(&e),
                 }
             }
@@ -135,7 +144,11 @@ pub fn post(leaf: &Leaf, url: &str, body: &str) -> Answer {
         _ => return bad("Provided value cannot be bound to SQLite parameter 1."),
     };
     match leaf.db(|db| db.execute("INSERT OR REPLACE INTO kv(name,data) VALUES(?,?)", rusqlite::params![key, data])) {
-        Ok(_) => Answer::json(200, "{\"ok\":true}"),
+        Ok(_) => {
+            let _guard = leaf.wake.lock().unwrap_or_else(|e| e.into_inner());
+            leaf.cv.notify_all();
+            Answer::json(200, "{\"ok\":true}")
+        }
         Err(e) => bad(&e),
     }
 }
