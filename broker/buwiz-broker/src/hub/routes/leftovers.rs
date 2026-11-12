@@ -78,12 +78,14 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.local.is_none() {
         ctx.local = Some(Arc::new(MacTools));
     }
-    routes.route(Verb::Get, Pattern::Exact("/data/reminders"), |c, r| exact(c, r, reminders));
-    routes.route(Verb::Post, Pattern::Exact("/data/reminders/add"), |c, r| exact(c, r, reminder_change));
-    routes.route(Verb::Post, Pattern::Exact("/data/reminders/complete"), |c, r| exact(c, r, reminder_change));
-    routes.route(Verb::Get, Pattern::Exact("/data/linear/issues"), |c, r| exact(c, r, linear_issues));
-    routes.route(Verb::Get, Pattern::Exact("/data/linear/states"), |c, r| exact(c, r, linear_states));
-    routes.route(Verb::Post, Pattern::Exact("/data/linear/assign"), |c, r| exact(c, r, linear_assign));
+    // the /data routes match the path without the query, as Node's do now
+    // (a widget's ?t= cache-buster); /file/* still match req.url exactly
+    routes.route(Verb::Get, Pattern::Exact("/data/reminders"), reminders);
+    routes.route(Verb::Post, Pattern::Exact("/data/reminders/add"), reminder_change);
+    routes.route(Verb::Post, Pattern::Exact("/data/reminders/complete"), reminder_change);
+    routes.route(Verb::Get, Pattern::Exact("/data/linear/issues"), linear_issues);
+    routes.route(Verb::Get, Pattern::Exact("/data/linear/states"), linear_states);
+    routes.route(Verb::Post, Pattern::Exact("/data/linear/assign"), linear_assign);
     routes.route(Verb::Post, Pattern::Exact("/file/write"), |c, r| exact(c, r, file_write));
     routes.route(Verb::Post, Pattern::Exact("/file/open"), |c, r| exact(c, r, file_open));
     routes.route(Verb::Post, Pattern::Exact("/file/save"), |c, r| exact(c, r, file_save));
@@ -810,10 +812,13 @@ mod tests {
         *stub.out.lock().unwrap() = printed("", 1);
         let failed = format!(r#"{{"error":"Command failed: osascript -l JavaScript -e ","hint":"{HINT}"}}"#);
         assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, failed.clone()));
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/add", r#"{"name":"x"}"#).await, (200, failed));
+        assert_eq!(call(&hub, Method::POST, "/data/reminders/add", r#"{"name":"x"}"#).await, (200, failed.clone()));
         assert_eq!(stub.calls.lock().unwrap()[2].env, [("REM_NAME".to_owned(), "x".to_owned()), ("REM_LIST".into(), "".into()), ("REM_DUE".into(), "".into())]);
         assert_eq!(call(&hub, Method::POST, "/data/reminders/complete", "nope").await, (200, r#"{"error":"name?"}"#.into()));
-        assert_eq!(call(&hub, Method::GET, "/data/reminders?x", "").await, (404, "not found".into()));
+        // a query string is fine on the /data routes (a widget's ?t= cache-buster)
+        assert_eq!(call(&hub, Method::GET, "/data/reminders?x", "").await, (200, failed.clone()));
+        // /file/* still match req.url exactly, as Node does
+        assert_eq!(call(&hub, Method::POST, "/file/write?x=1", "{}").await, (404, "not found".into()));
         let _ = std::fs::remove_dir_all(data);
     }
 
