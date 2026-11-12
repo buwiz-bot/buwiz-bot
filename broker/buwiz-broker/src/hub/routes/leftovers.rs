@@ -203,7 +203,12 @@ async fn jxa(ctx: &HubCtx, script: &str, env: Vec<(String, String)>) -> Value {
 }
 
 /// `GET /data/reminders`: `{reminders}`, or the script's `{error}` as is.
+/// EventKit where the Mac has it (ms, not the JXA's ~30 s of Apple
+/// Events); the osascript path stays for stubs and other platforms.
 async fn reminders(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
+    if let Some(res) = local(&ctx).reminders_list().await {
+        return ok(&res.unwrap_or_else(|e| json!({ "error": e })));
+    }
     let out = jxa(&ctx, REMINDERS_LIST, Vec::new()).await;
     if truthy(get(Some(&out), "error")) {
         return ok(&out);
@@ -225,7 +230,18 @@ async fn reminder_change(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if env[0].1.is_empty() {
         return ok(&json!({ "error": "name?" }));
     }
-    let script = if req.path() == "/data/reminders/complete" { REMINDERS_COMPLETE } else { REMINDERS_ADD };
+    let completing = req.path() == "/data/reminders/complete";
+    let ek = if completing {
+        local(&ctx).reminders_complete(env[0].1.clone()).await
+    } else {
+        local(&ctx)
+            .reminders_add(env[0].1.clone(), env[1].1.clone(), env[2].1.clone())
+            .await
+    };
+    if let Some(res) = ek {
+        return ok(&res.unwrap_or_else(|e| json!({ "error": e })));
+    }
+    let script = if completing { REMINDERS_COMPLETE } else { REMINDERS_ADD };
     ok(&jxa(&ctx, script, env).await)
 }
 

@@ -51,6 +51,41 @@ impl LocalTools for MacTools {
             Ok(LocalOutput { code: out.status.code(), stdout: out.stdout, stderr: out.stderr })
         })
     }
+
+    /// `/data/reminders` through EventKit (helper/reminders_ek.rs): the
+    /// osascript JXA it replaces took ~30 s per call in Apple Events.
+    #[cfg(target_os = "macos")]
+    fn reminders_list(&self) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
+        Box::pin(async move {
+            Some(
+                tokio::task::spawn_blocking(crate::helper::reminders_ek::list)
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string())),
+            )
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reminders_complete(&self, name: String) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
+        Box::pin(async move {
+            Some(
+                tokio::task::spawn_blocking(move || crate::helper::reminders_ek::complete(&name))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string())),
+            )
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reminders_add(&self, name: String, list: String, due: String) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
+        Box::pin(async move {
+            Some(
+                tokio::task::spawn_blocking(move || crate::helper::reminders_ek::add(&name, &list, &due))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string())),
+            )
+        })
+    }
 }
 
 /// The hub's local tools: the ones a track installed, else this Mac's.
