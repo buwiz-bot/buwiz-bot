@@ -27,11 +27,13 @@ import { db, getLinearKey, jxa } from "../state.mjs";
   const L_FIELDS = `nodes { id identifier title priority url updatedAt state { id name } assignee { displayName } team { key } }`;
 
 export default async function handle(req, res) {
-  if (req.method === "GET" && req.url === "/data/timeclock") {
+  // widgets cache-bust with ?t=…: these routes match the path, query aside
+  const path = req.url.split("?")[0];
+  if (req.method === "GET" && path === "/data/timeclock") {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify(tcJson()));
   }
-  if (req.method === "POST" && req.url === "/data/timeclock/in") {
+  if (req.method === "POST" && path === "/data/timeclock/in") {
     const open = db
       .prepare("SELECT id FROM timeclock WHERE clock_out IS NULL")
       .get();
@@ -42,7 +44,7 @@ export default async function handle(req, res) {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({ ok: true, already: !!open, ...tcJson() }));
   }
-  if (req.method === "POST" && req.url === "/data/timeclock/out") {
+  if (req.method === "POST" && path === "/data/timeclock/out") {
     db.prepare("UPDATE timeclock SET clock_out=? WHERE clock_out IS NULL").run(
       new Date().toISOString(),
     );
@@ -51,7 +53,7 @@ export default async function handle(req, res) {
   }
 
   // reminders — JXA (osascript -l JavaScript); args travel via env vars.
-  if (req.method === "GET" && req.url === "/data/reminders") {
+  if (req.method === "GET" && path === "/data/reminders") {
     const out = jxa(`
       const app = Application("Reminders");
       const out = [];
@@ -73,7 +75,7 @@ export default async function handle(req, res) {
   }
   if (
     req.method === "POST" &&
-    (req.url === "/data/reminders/add" || req.url === "/data/reminders/complete")
+    (path === "/data/reminders/add" || path === "/data/reminders/complete")
   ) {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -90,7 +92,7 @@ export default async function handle(req, res) {
       };
       if (!env.REM_NAME) return res.end(JSON.stringify({ error: "name?" }));
       const script =
-        req.url === "/data/reminders/complete"
+        path === "/data/reminders/complete"
           ? `
             const app = Application("Reminders");
             ObjC.import("Cocoa");
@@ -130,7 +132,7 @@ export default async function handle(req, res) {
       body: JSON.stringify(variables ? { query, variables } : { query }),
     }).then((r) => r.json());
   };
-  if (req.method === "GET" && req.url === "/data/linear/issues") {
+  if (req.method === "GET" && path === "/data/linear/issues") {
     res.setHeader("content-type", "application/json");
     const shape = (nodes, scope) => ({
       scope,
@@ -178,7 +180,7 @@ export default async function handle(req, res) {
   }
 
   // GET /data/linear/states — every team's workflow states (for transitions).
-  if (req.method === "GET" && req.url === "/data/linear/states") {
+  if (req.method === "GET" && path === "/data/linear/states") {
     res.setHeader("content-type", "application/json");
     lgql(
       `{ teams(first: 10) { nodes { key states { nodes { id name type position } } } } }`,
@@ -233,7 +235,7 @@ export default async function handle(req, res) {
 
 
   // assign resolves the viewer id first, then runs the update mutation.
-  if (req.method === "POST" && req.url === "/data/linear/assign") {
+  if (req.method === "POST" && path === "/data/linear/assign") {
     let body = "";
     req.on("data", (c) => (body += c));
     return req.on("end", () => {

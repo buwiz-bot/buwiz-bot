@@ -299,9 +299,13 @@ test("LEFT-08 POST /file/save: the save panel, then a copy where it says", async
   assert.deepEqual(readdirSync(OUTSIDE), []);
 });
 
-test("LEFT-09 these routes match the URL exactly, as Node does: a query string is not found", async () => {
-  for (const [method, url] of [["GET", "/data/reminders?x=1"], ["GET", "/data/linear/issues?x"], ["POST", "/file/write?x=1"], ["POST", "/file/open?"]]) {
-    const r = method === "POST" ? await raw(url, "{}") : await request(method, url);
+test("LEFT-09 /data routes match the path without the query (widgets cache-bust with ?t=); /file/* the URL exactly", async () => {
+  for (const [method, url] of [["GET", "/data/reminders?x=1"], ["GET", "/data/linear/issues?x"]]) {
+    const r = await request(method, url);
+    assert.equal(r.status, 200, `${url}: ${r.text}`);
+  }
+  for (const [method, url] of [["POST", "/file/write?x=1"], ["POST", "/file/open?"]]) {
+    const r = await raw(url, "{}");
     assert.equal(r.status, 404, url);
     assert.equal(r.text, "not found");
   }

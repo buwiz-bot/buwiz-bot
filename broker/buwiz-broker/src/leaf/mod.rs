@@ -45,17 +45,20 @@ pub enum Route {
 }
 
 /// The route a request takes here, matched as Node matches it (`req.url`,
-/// query included); `None` goes to Node. OPTIONS always goes to Node, which
-/// answers it before any route.
+/// query included) — except the `/data/timeclock*` routes, whose Node side
+/// matches the path alone so a widget's `?t=` cache-buster still lands.
+/// `None` goes to Node. OPTIONS always goes to Node, which answers it
+/// before any route.
 pub fn route(method: &Method, url: &str) -> Option<Route> {
     let (get, post) = (method == Method::GET, method == Method::POST);
+    let data_path = url.split('?').next().unwrap_or("");
     match url {
         _ if method == Method::OPTIONS => None,
         "/prefs" => Some(Route::Prefs),
         "/keymap" => Some(Route::Keymap),
-        "/data/timeclock" if get => Some(Route::Timeclock),
-        "/data/timeclock/in" if post => Some(Route::ClockIn),
-        "/data/timeclock/out" if post => Some(Route::ClockOut),
+        _ if get && data_path == "/data/timeclock" => Some(Route::Timeclock),
+        _ if post && data_path == "/data/timeclock/in" => Some(Route::ClockIn),
+        _ if post && data_path == "/data/timeclock/out" => Some(Route::ClockOut),
         "/skills" if get => Some(Route::Skills),
         _ if get && url.starts_with("/file/raw/") => Some(Route::FileRaw),
         _ if get && url.starts_with("/file/preview/") => Some(Route::FilePreview),
@@ -234,8 +237,12 @@ mod tests {
         assert_eq!(route(&get, "/prefs?x=1"), None);
         assert_eq!(route(&post, "/keymap"), Some(Route::Keymap));
         assert_eq!(route(&get, "/data/timeclock"), Some(Route::Timeclock));
+        assert_eq!(route(&get, "/data/timeclock?t=1"), Some(Route::Timeclock));
         assert_eq!(route(&get, "/data/timeclock/in"), None);
+        assert_eq!(route(&get, "/data/timeclock/in?t=1"), None);
         assert_eq!(route(&post, "/data/timeclock/out"), Some(Route::ClockOut));
+        assert_eq!(route(&post, "/data/timeclock/out?t=1"), Some(Route::ClockOut));
+        assert_eq!(route(&post, "/data/timeclock/in?t=1"), Some(Route::ClockIn));
         assert_eq!(route(&get, "/skills"), Some(Route::Skills));
         assert_eq!(route(&post, "/skills"), None);
         assert_eq!(route(&get, "/threads"), None);
