@@ -11,6 +11,8 @@ pub mod mcp_servers;
 pub mod oauth;
 pub mod plugins;
 pub mod release;
+#[cfg(target_os = "macos")]
+pub mod reminders_ek;
 pub mod remote;
 pub mod sessions;
 pub mod updates;

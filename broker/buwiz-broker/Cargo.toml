@@ -54,6 +54,31 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 url = "2"
 webpki-roots = "1"
 
+# /data/reminders through EventKit, not osascript (helper/reminders_ek.rs)
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-event-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "EKCalendar",
+    "EKCalendarItem",
+    "EKEventStore",
+    "EKObject",
+    "EKReminder",
+    "EKTypes",
+    "bitflags",
+    "block2",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSDate",
+    "NSError",
+    "NSISO8601DateFormatter",
+    "NSCalendar",
+    "NSPredicate",
+    "NSString",
+] }
+
 [dev-dependencies]
 buwiz-computer = { path = "../buwiz-computer", features = ["mock"] }
 # a box's tunnel WebSocket on loopback, for the tunnel client's tests (already in the tree, through
