@@ -630,7 +630,8 @@ pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
 /// contract): GET `/state/<name>` restores it, POST saves it. This grants
 /// those two on the server's HTTP origin (`client::backend()`) for the
 /// widget's own name only — the base name, `R28` for `R28@v2` — as an exact
-/// path, so `/state/R280` and `/state/R28/x` stay out; nothing else. Any
+/// path, so `/state/R280` and `/state/R28/x` stay out — and the live data
+/// sources under `/data/` (GET and POST); nothing else. Any
 /// other name, or an origin-configuration error, gets [`deny_all_policy`].
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn widget_policy(module: &str) -> nsh_engine::Policy {
@@ -656,10 +657,15 @@ fn widget_state_policy(module: &str) -> Result<nsh_engine::Policy, String> {
     grant.methods = vec!["GET".into(), "POST".into()];
     grant.schemes = vec!["http".into()];
     grant.port = Some(port);
+    let mut data = grant.clone();
     grant.paths = vec![format!("/state/{name}")];
+    // the live data sources the generator's contract documents (timeclock,
+    // reminders, linear): GET reads, POST acts, all under `/data/`
+    data.path_prefixes = vec!["/data/".into()];
 
     let mut declared = nsh_core::access::Capabilities::default();
     declared.network.http.push(grant);
+    declared.network.http.push(data);
     Ok(nsh_engine::Policy {
         declared: Some(declared),
         ..nsh_engine::Policy::default()
@@ -1793,7 +1799,15 @@ export default function R() {
             assert!(!access.allows_http("GET", "http://127.0.0.1/state/R1"));
             assert!(!access.allows_http("GET", "http://attacker.example:8787/state/R1"));
             // no other route
-            for path in ["/", "/threads", "/data/linear/issues", "/mcp/call", "/file/raw/x", "/popout", "/chat"] {
+            // the live data sources, GET and POST
+            for path in ["/data/timeclock", "/data/timeclock/in", "/data/reminders", "/data/reminders/add", "/data/linear/issues"] {
+                assert!(access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
+                assert!(access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
+            }
+            assert!(!access.allows_http("GET", "http://127.0.0.1:8788/data/timeclock"));
+            assert!(!access.allows_http("GET", "http://attacker.example:8787/data/timeclock"));
+            assert!(!access.allows_http("DELETE", "http://127.0.0.1:8787/data/timeclock"));
+            for path in ["/", "/threads", "/data", "/datafoo", "/mcp/call", "/file/raw/x", "/popout", "/chat"] {
                 assert!(!access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
                 assert!(!access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
             }
