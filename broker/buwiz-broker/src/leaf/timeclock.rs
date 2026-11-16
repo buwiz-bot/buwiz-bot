@@ -1,5 +1,5 @@
-//! `/data/timeclock`: clock-in and clock-out rows in `timeclock`
-//! (server/src/routes/data.mjs). Times are `toISOString()` strings; minutes
+//! The `timeclock` source: clock-in and clock-out rows in `timeclock`
+//! (what `/data/timeclock` was, server/src/routes/data.mjs). Times are `toISOString()` strings; minutes
 //! and "today" are counted as Node counts them, in local time.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,8 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::{Answer, Leaf};
-use crate::js;
 
 type Rows = Vec<(Option<String>, Option<String>)>;
 
@@ -18,8 +16,7 @@ fn rows(db: &Connection) -> rusqlite::Result<Rows> {
     rows.collect()
 }
 
-/// `tcJson()` of the rows now: what `GET /data/timeclock` answered, and what the
-/// widget source `timeclock` answers to `status`.
+/// `tcJson()` of the rows now: what the widget source `timeclock` answers to `status`.
 pub fn status_of(db: &Connection) -> rusqlite::Result<Value> {
     let now = now_ms();
     Ok(Value::Object(summary(&rows(db)?, now, local_midnight_ms(now))))
@@ -38,25 +35,6 @@ pub fn clock_in_on(db: &Connection) -> rusqlite::Result<Value> {
 pub fn clock_out_on(db: &Connection) -> rusqlite::Result<Value> {
     db.execute("UPDATE timeclock SET clock_out=? WHERE clock_out IS NULL", [crate::js::iso(now_ms())])?;
     with_summary(db, json!({ "ok": true }))
-}
-
-fn answered(r: Result<Value, String>) -> Answer {
-    match r {
-        Ok(v) => Answer::json(200, js::stringify(&v)),
-        Err(e) => Answer::thrown(&e),
-    }
-}
-
-pub fn get(leaf: &Leaf) -> Answer {
-    answered(leaf.db(status_of))
-}
-
-pub fn clock_in(leaf: &Leaf) -> Answer {
-    answered(leaf.db(clock_in_on))
-}
-
-pub fn clock_out(leaf: &Leaf) -> Answer {
-    answered(leaf.db(clock_out_on))
 }
 
 /// `{...head, ...tcJson()}`
@@ -158,6 +136,7 @@ fn parse_iso(s: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::js;
 
     #[test]
     fn iso_times_round_trip() {

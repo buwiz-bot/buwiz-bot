@@ -18,7 +18,6 @@ use crate::helper::local::MacTools;
 use crate::hub::ctx::HubCtx;
 use crate::hub::traits::{LocalCommand, LocalTools};
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
-use crate::hub::sources;
 use crate::hub::Registry;
 use crate::js;
 
@@ -28,12 +27,6 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.local.is_none() {
         ctx.local = Some(Arc::new(MacTools));
     }
-    routes.route(Verb::Get, Pattern::Exact("/data/reminders"), |c, r| exact(c, r, reminders));
-    routes.route(Verb::Post, Pattern::Exact("/data/reminders/add"), |c, r| exact(c, r, reminder_change));
-    routes.route(Verb::Post, Pattern::Exact("/data/reminders/complete"), |c, r| exact(c, r, reminder_change));
-    routes.route(Verb::Get, Pattern::Exact("/data/linear/issues"), |c, r| exact(c, r, linear_issues));
-    routes.route(Verb::Get, Pattern::Exact("/data/linear/states"), |c, r| exact(c, r, linear_states));
-    routes.route(Verb::Post, Pattern::Exact("/data/linear/assign"), |c, r| exact(c, r, linear_assign));
     routes.route(Verb::Post, Pattern::Exact("/file/write"), |c, r| exact(c, r, file_write));
     routes.route(Verb::Post, Pattern::Exact("/file/open"), |c, r| exact(c, r, file_open));
     routes.route(Verb::Post, Pattern::Exact("/file/save"), |c, r| exact(c, r, file_save));
@@ -67,12 +60,6 @@ fn body_json(req: &HubRequest) -> Result<Value, String> {
     let text = String::from_utf8_lossy(&req.body);
     let text = if text.is_empty() { "{}" } else { &text };
     serde_json::from_str(text).map_err(|e| parse_error(text, &e))
-}
-
-/// The JSON body Node reads with `try { b = JSON.parse(…) } catch {}`:
-/// `{}` when it does not parse.
-fn body_or_empty(req: &HubRequest) -> Value {
-    body_json(req).unwrap_or_else(|_| json!({}))
 }
 
 /// `b.<name>` of a parsed body; `Err` with the TypeError Node throws when
@@ -129,44 +116,6 @@ pub fn parse_error(src: &str, e: &serde_json::Error) -> String {
         None => "Unexpected end of JSON input".to_owned(),
     }
 }
-
-// ————— the data routes (until step 7 removes them): thin wrappers over `hub::sources` —————
-
-/// `GET /data/reminders`.
-async fn reminders(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
-    ok(&sources::reminders::list(&ctx).await)
-}
-
-/// `POST /data/reminders/add` and `/complete` `{name, list?, due?}`.
-async fn reminder_change(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    match sources::reminders::change(&ctx, req.path() == "/data/reminders/complete", &body_or_empty(&req)).await {
-        Ok(v) => ok(&v),
-        Err(e) => thrown(&e),
-    }
-}
-
-fn bad_gateway(error: &str) -> HubResponse {
-    types::json(StatusCode::BAD_GATEWAY, &json!({ "error": error }))
-}
-
-/// `GET /data/linear/issues`.
-async fn linear_issues(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
-    sources::linear::issues(&ctx).await.map_or_else(|e| bad_gateway(&e), |v| ok(&v))
-}
-
-/// `GET /data/linear/states`.
-async fn linear_states(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
-    sources::linear::states(&ctx).await.map_or_else(|e| bad_gateway(&e), |v| ok(&v))
-}
-
-/// `POST /data/linear/assign {uid}`.
-async fn linear_assign(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    match sources::linear::assign(&ctx, &body_or_empty(&req)).await {
-        Ok(v) => ok(&v),
-        Err(e) => thrown(&e),
-    }
-}
-
 
 // ————— files —————
 
@@ -503,6 +452,7 @@ async fn file_save(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hub::sources;
     use crate::hub::sources::reminders::{HINT, REMINDERS_ADD, REMINDERS_COMPLETE, REMINDERS_LIST};
     use crate::hub::traits::{Clock, LocalCommand, LocalOutput, LocalTools};
     use std::sync::Mutex;
@@ -572,36 +522,47 @@ mod tests {
         d
     }
 
+    /// A hub context whose local tools are the stub.
+    fn ctx_with(stub: &Arc<Stub>, label: &str) -> HubCtx {
+        let mut ctx = HubCtx::new(temp(label), Clock::manual());
+        ctx.local = Some(stub.clone());
+        ctx
+    }
+
+    fn stub(out: LocalOutput) -> Arc<Stub> {
+        Arc::new(Stub { out: Mutex::new(out), calls: Mutex::new(Vec::new()), ek: Mutex::new(None), ek_calls: Mutex::new(Vec::new()) })
+    }
+
+    /// What `/data/reminders*` pinned, now through the `reminders` source's own code
+    /// (the routes are gone; widgets call the source).
     #[tokio::test]
     async fn left_01b_reminders_use_eventkit_and_fall_back_to_osascript_only_when_it_is_unavailable() {
-        let data = temp("rem-ek");
-        let (hub, stub) = hub(&data, printed("[{\"name\":\"jxa\"}]\n", 0));
-        let routes = [
-            (Method::GET, "/data/reminders", ""),
-            (Method::POST, "/data/reminders/add", r#"{"name":"x","list":"Home","due":"2026-11-13"}"#),
-            (Method::POST, "/data/reminders/complete", r#"{"name":"x"}"#),
-        ];
+        let stub = stub(printed("[{\"name\":\"jxa\"}]\n", 0));
+        let ctx = ctx_with(&stub, "rem-ek");
+        let add = json!({"name": "x", "list": "Home", "due": "2026-11-13"});
+        let complete = json!({"name": "x"});
+        let all = |ctx: &HubCtx, add: Value, complete: Value| {
+            let ctx = ctx as *const HubCtx;
+            // the three actions, in the order the widget calls them
+            async move {
+                let ctx = unsafe { &*ctx };
+                [sources::reminders::list(ctx).await, sources::reminders::change(ctx, false, &add).await.unwrap(), sources::reminders::change(ctx, true, &complete).await.unwrap()]
+            }
+        };
         // a real EventKit result is the body, and osascript does not run
         *stub.ek.lock().unwrap() = Some(Ok(json!({ "ok": true })));
-        for (m, url, body) in routes.clone() {
-            assert_eq!(call(&hub, m, url, body).await, (200, r#"{"ok":true}"#.into()), "{url}");
-        }
+        assert_eq!(all(&ctx, add.clone(), complete.clone()).await, [json!({"ok": true}), json!({"ok": true}), json!({"ok": true})]);
         // a real EventKit error is the error body, and osascript does not run
         *stub.ek.lock().unwrap() = Some(Err("save failed".into()));
-        for (m, url, body) in routes.clone() {
-            assert_eq!(call(&hub, m, url, body).await, (200, r#"{"error":"save failed"}"#.into()), "{url}");
-        }
+        assert_eq!(all(&ctx, add.clone(), complete.clone()).await, [json!({"error": "save failed"}), json!({"error": "save failed"}), json!({"error": "save failed"})]);
         assert!(stub.calls.lock().unwrap().is_empty());
-        assert_eq!(
-            stub.ek_calls.lock().unwrap().iter().filter(|c| c.starts_with("add ")).collect::<Vec<_>>(),
-            ["add x|Home|2026-11-13", "add x|Home|2026-11-13"]
-        );
+        assert_eq!(stub.ek_calls.lock().unwrap().iter().filter(|c| c.starts_with("add ")).collect::<Vec<_>>(), ["add x|Home|2026-11-13", "add x|Home|2026-11-13"]);
         // unavailable or denied: the old osascript path answers, same shapes
         *stub.ek.lock().unwrap() = None;
-        assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, r#"{"reminders":[{"name":"jxa"}]}"#.into()));
+        assert_eq!(sources::reminders::list(&ctx).await, json!({"reminders": [{"name": "jxa"}]}));
         *stub.out.lock().unwrap() = printed("{\"ok\":true}\n", 0);
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/add", r#"{"name":"x"}"#).await, (200, r#"{"ok":true}"#.into()));
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/complete", r#"{"name":"x"}"#).await, (200, r#"{"ok":true}"#.into()));
+        assert_eq!(sources::reminders::change(&ctx, false, &json!({"name": "x"})).await.unwrap(), json!({"ok": true}));
+        assert_eq!(sources::reminders::change(&ctx, true, &json!({"name": "x"})).await.unwrap(), json!({"ok": true}));
         let cmds = stub.calls.lock().unwrap().clone();
         assert_eq!(cmds.len(), 3);
         assert!(cmds.iter().all(|c| c.program == "osascript"));
@@ -612,19 +573,19 @@ mod tests {
 
     #[tokio::test]
     async fn left_01_reminders_wrap_the_jxa_list_and_keep_its_errors() {
-        let data = temp("rem");
-        let (hub, stub) = hub(&data, printed("[{\"name\":\"a\"}]\n", 0));
-        assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, r#"{"reminders":[{"name":"a"}]}"#.into()));
+        let stub = stub(printed("[{\"name\":\"a\"}]\n", 0));
+        let ctx = ctx_with(&stub, "rem");
+        assert_eq!(sources::reminders::list(&ctx).await, json!({"reminders": [{"name": "a"}]}));
         let cmd = stub.calls.lock().unwrap()[0].clone();
         assert_eq!((cmd.program.as_str(), &cmd.args[..3], cmd.args[3].as_str()), ("osascript", &["-l".to_owned(), "JavaScript".into(), "-e".into()][..], REMINDERS_LIST));
         *stub.out.lock().unwrap() = printed("", 1);
-        let failed = format!(r#"{{"error":"Command failed: osascript -l JavaScript -e ","hint":"{HINT}"}}"#);
-        assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, failed.clone()));
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/add", r#"{"name":"x"}"#).await, (200, failed));
+        let failed = json!({"error": "Command failed: osascript -l JavaScript -e ", "hint": HINT});
+        assert_eq!(sources::reminders::list(&ctx).await, failed);
+        assert_eq!(sources::reminders::change(&ctx, false, &json!({"name": "x"})).await.unwrap(), failed);
         assert_eq!(stub.calls.lock().unwrap()[2].env, [("REM_NAME".to_owned(), "x".to_owned()), ("REM_LIST".into(), "".into()), ("REM_DUE".into(), "".into())]);
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/complete", "nope").await, (200, r#"{"error":"name?"}"#.into()));
-        assert_eq!(call(&hub, Method::GET, "/data/reminders?x", "").await, (404, "not found".into()));
-        let _ = std::fs::remove_dir_all(data);
+        assert_eq!(sources::reminders::change(&ctx, true, &json!({})).await.unwrap(), json!({"error": "name?"}));
+        // a `null` body is Node's TypeError
+        assert_eq!(sources::reminders::change(&ctx, true, &Value::Null).await.unwrap_err(), "Cannot read properties of null (reading 'name')");
     }
 
     #[tokio::test]
