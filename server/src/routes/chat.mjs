@@ -2,6 +2,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { flushState } from "./apps.mjs";
 import { GEN_DIR, MODEL, MOCK, WIDGETS_DIR } from "../config.mjs";
 import { uuidv7, findThread, nextThreadSeq, modelCtx, jobs, allocJobId, setJob, jobJson, db, store, seq, threadSeq, activeThread, turnsJson, writeIndex, threadBot } from "../state.mjs";
 import { choiceFor } from "../model.mjs";
@@ -215,6 +216,7 @@ export default async function handle(req, res) {
             unlinkSync(join(GEN_DIR, `${name}.tsx`));
           } catch {}
           db.prepare("DELETE FROM kv WHERE name=?").run(name);
+          flushState(name); // waiting widgets learn it is gone
           db.prepare("DELETE FROM apps WHERE name=?").run(name);
         }
         for (const b of store.bots) if (b.threadId === id) b.threadId = null;

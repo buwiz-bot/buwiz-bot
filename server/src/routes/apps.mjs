@@ -13,6 +13,42 @@ import { appInfo, appsMeta, artHints, genAppIcon, iconPath, iconUrl, originOf, u
 import { forgetArtifact } from "../artifacts.mjs";
 import { mcpAppModule } from "../tools.mjs";
 
+// /state long-poll: `GET /state/<name>?wait=<ms>&v=<hash>` parks until a
+// POST to the same name lands or the wait runs out (the Rust leaf does the
+// same in buwiz-broker/src/leaf/state.rs). `v` is an FNV-1a of the stored
+// text; a stale one answers at once, closing the gap between a surface's
+// last read and this request.
+const stateWaiters = new Map(); // name -> Set<{res, timer}>
+const stateV = (data) => {
+  let h = 0xcbf29ce484222325n;
+  for (const b of Buffer.from(String(data ?? ""), "utf8")) {
+    h ^= BigInt(b);
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, "0");
+};
+const stateRow = (name) => db.prepare("SELECT data FROM kv WHERE name=?").get(name);
+const stateAnswer = (name) => {
+  const row = stateRow(name);
+  let state = null;
+  try {
+    state = row ? JSON.parse(row.data) : null;
+  } catch {}
+  return JSON.stringify({ state, v: stateV(row?.data ?? "") });
+};
+export const flushState = (name, only) => {
+  const set = stateWaiters.get(name);
+  if (!set) return;
+  const answer = stateAnswer(name); // once, however many wait
+  for (const w of [...set]) {
+    if (only && w !== only) continue;
+    clearTimeout(w.timer);
+    set.delete(w);
+    if (!w.res.writableEnded) w.res.end(answer);
+  }
+  if (!set.size) stateWaiters.delete(name);
+};
+
 
 // opencodex's providers and how each authenticates (its config file):
 // a ChatGPT / OAuth login is a subscription, a key an API connection.
@@ -458,6 +494,7 @@ export default async function handle(req, res) {
         if (everywhere)
           db.prepare("DELETE FROM widgets WHERE name=?").run(name);
         db.prepare("DELETE FROM kv WHERE name=?").run(name);
+        flushState(name); // waiting widgets learn it is gone
         db.prepare("DELETE FROM apps WHERE name=?").run(name);
         db.prepare("INSERT OR IGNORE INTO tombstones(name) VALUES(?)").run(name);
         // …and out of every group, the archive and its edited details
@@ -553,13 +590,31 @@ export default async function handle(req, res) {
     const name = stateName();
     res.setHeader("content-type", "application/json");
     if (!/^[\w.-]+$/.test(name)) return res.end(JSON.stringify({ state: null }));
-    const row = db.prepare("SELECT data FROM kv WHERE name=?").get(name);
-    let state = null;
-    try {
-      state = row ? JSON.parse(row.data) : null;
-    } catch {}
-    console.log(`  /state GET ${name} → ${state ? "hit" : "empty"}`);
-    return res.end(JSON.stringify({ state }));
+    const u = new URL(req.url, "http://x");
+    const waitMs = Math.min(30000, Math.max(0, parseInt(u.searchParams.get("wait") || "0", 10) || 0));
+    if (waitMs > 0) {
+      const cur = stateV(stateRow(name)?.data ?? "");
+      const seen = u.searchParams.get("v");
+      const set = stateWaiters.get(name) ?? new Set();
+      if ((seen ?? cur) === cur && (!set.size || set.size < 32)) {
+        stateWaiters.set(name, set);
+        const w = {
+          res,
+          timer: setTimeout(() => flushState(name, w), waitMs),
+        };
+        set.add(w);
+        res.on("close", () => {
+          clearTimeout(w.timer);
+          set.delete(w);
+          // a flush may have dropped this set for a newer one: leave that be
+          if (!set.size && stateWaiters.get(name) === set) stateWaiters.delete(name);
+        });
+        console.log(`  /state GET ${name} → waiting ${waitMs}ms`);
+        return true;
+      }
+    }
+    console.log(`  /state GET ${name} → ${stateRow(name) ? "hit" : "empty"}`);
+    return res.end(stateAnswer(name));
   }
   if (req.method === "POST" && req.url.startsWith("/state")) {
     let body = "";
@@ -576,6 +631,7 @@ export default async function handle(req, res) {
           name,
           data,
         );
+        flushState(String(name));
         // the size only: saved state can hold what the user typed (drafts, TINs)
         console.log(`  /state POST ${name} → ${data.length} bytes`);
         res.setHeader("content-type", "application/json");
