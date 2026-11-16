@@ -3243,6 +3243,10 @@ pub struct Store {
     /// Compiled mini-app sources, per module name (`R<n>`): the JS the
     /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
     pub minis: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
+    /// Each generated widget's `call` path from `/v1/host/widget/open`
+    /// (absent: the broker could not open it). Set before its source, so
+    /// the component never sees new code with the old path.
+    mini_calls: std::cell::RefCell<std::collections::HashMap<String, String>>,
     /// Display titles of mini apps (from `/module`), for card headers.
     pub mini_titles: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
     /// Per-module load/compile errors, shown in the card.
@@ -3520,6 +3524,7 @@ impl Store {
             bots_json: std::cell::RefCell::new(String::new()),
             groups_json: std::cell::RefCell::new(String::new()),
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
+            mini_calls: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -7807,6 +7812,21 @@ impl Store {
             };
             match crate::mini::compile_widget(&name, &src) {
                 Ok(js) => {
+                    // a generated widget is opened at the broker first: its
+                    // `source` helper and its network rule need the answer.
+                    // An older broker has no such route; the widget still
+                    // mounts, its helper answering "unavailable".
+                    let mut js = js;
+                    if crate::mini::is_widget(&name) {
+                        let base = app_name(&name);
+                        let answer = client::post_any("/v1/host/widget/open", serde_json::json!({ "name": base })).await;
+                        let call = crate::mini::open_call(&name, answer.as_ref());
+                        js = format!("{}{js}", crate::mini::widget_helper(call.as_deref()));
+                        match call {
+                            Some(call) => self.mini_calls.borrow_mut().insert(name.clone(), call),
+                            None => self.mini_calls.borrow_mut().remove(&name),
+                        };
+                    }
                     // each fetch is a new open, as v1's: Retry after a run
                     // error reloads the card even when the code is the same
                     static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -7864,6 +7884,11 @@ impl Store {
             return;
         };
         self.fetch_mini(app.to_owned(), sig);
+    }
+
+    /// The `call` path the broker opened widget `app` with, if it did.
+    pub fn mini_call(&self, app: &str) -> Option<String> {
+        self.mini_calls.borrow().get(app).cloned()
     }
 
     /// The display title of widget `app` (set when `mini_source` loads).
