@@ -10,7 +10,8 @@
 //! The element `native("rox/mini-app")` mounts a registered native
 //! component whose NSView *is* an `AppView`: each mini app gets its own
 //! engine + QuickJS inside the Rust tree — the pure-Rust root is untouched.
-//! `mini_bundle` selects a deny-all policy for generated widgets and an
+//! `mini_bundle` selects, for a generated widget, a policy of its own state
+//! and its one `source` call path (`widget_policy`), and an
 //! app-server-only policy for `mcp:` modules. The `source` prop carries the
 //! module key and compiled JS; a changed pair reloads the app.
 //!
