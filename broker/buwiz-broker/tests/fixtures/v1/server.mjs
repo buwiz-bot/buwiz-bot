@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-// v1/fixture/server.mjs — the conformance fixture plugin (stdio MCP).
+// the conformance fixture plugin (stdio MCP).
+//
+// Plain Node with no packages: the MCP framing it needs (JSON-RPC lines on
+// stdio, initialize, cancellation, MCP error codes) is the few lines at the
+// end of this file, and ed.mjs and jcs.mjs beside it are the ed25519 and JCS
+// helpers it signs with. Used by the Rust broker's tests and by the Node
+// conformance tests.
 //
 // Plugin id app.buwiz.fixture, short `fx`. It implements every
 // reserved tool of spec 10 the way a conforming plugin must (the key in
@@ -28,19 +34,29 @@
 // capabilities the broker sent at initialize.
 //
 // fx_echo and fx_search answer `args.result_meta` as the result's `_meta`.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema, ErrorCode, ListResourcesRequestSchema, ListToolsRequestSchema, McpError, ReadResourceRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { isV1 } from "../../grammar.mjs";
-import { generate, pubOf, sign } from "../ed.mjs";
-import { isObject, isString, parseIJson, signedBytes } from "../jcs.mjs";
-import { manifestHash, permsDigest, sha256hex } from "../manifest.mjs";
+import { generate, pubOf, sign } from "./ed.mjs";
+import { canonicalSigned, isObject, isString, parseIJson, signedBytes } from "./jcs.mjs";
+
+const sha256hex = (s) => createHash("sha256").update(s).digest("hex");
+const permsDigest = (perms) => sha256hex(canonicalSigned(perms ?? {}));
+const manifestHash = (m) => sha256hex(canonicalSigned(m));
+// the v1 reserved tool names: the spec's `reservedTool` grammar
+const isReservedTool = (name) => /^buwiz\.[a-z.]+$/.test(String(name ?? ""));
+
+const ErrorCode = { InvalidRequest: -32600, MethodNotFound: -32601, InvalidParams: -32602, InternalError: -32603 };
+
+class McpError extends Error {
+  constructor(code, message, data) {
+    super(`MCP error ${code}: ${message}`);
+    this.code = code;
+    this.data = data;
+  }
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANIFEST = process.env.FX_MANIFEST || join(HERE, "manifest.json");
@@ -300,22 +316,104 @@ const TOOLS = [
   },
 ];
 
+// ── the MCP framing: what the SDK's low-level Server did for this fixture ──
+// JSON-RPC 2.0 lines on stdin and stdout; requests run concurrently and are
+// answered when done (a cancelled one is not answered); an unknown method is
+// -32601 "Method not found"; a thrown McpError answers its code and its
+// "MCP error <code>: <message>" text, any other throw -32603.
+function mcpServer(serverInfo, { capabilities, instructions }) {
+  const handlers = new Map();
+  const running = new Map();
+  let clientCapabilities;
+  const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
+  const SUPPORTED = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
+
+  handlers.set("initialize", (req) => {
+    clientCapabilities = req.params.capabilities;
+
+    return {
+      protocolVersion: SUPPORTED.includes(req.params.protocolVersion) ? req.params.protocolVersion : SUPPORTED[0],
+      capabilities,
+      serverInfo,
+      ...(instructions && { instructions }),
+    };
+  });
+  handlers.set("ping", () => ({}));
+
+  const onRequest = (req) => {
+    const handler = handlers.get(req.method);
+
+    if (!handler) return send({ jsonrpc: "2.0", id: req.id, error: { code: ErrorCode.MethodNotFound, message: "Method not found" } });
+    const abort = new AbortController();
+
+    running.set(req.id, abort);
+    Promise.resolve()
+      .then(() => handler(req, { signal: abort.signal }))
+      .then(
+        (result) => {
+          if (!abort.signal.aborted) send({ result, jsonrpc: "2.0", id: req.id });
+        },
+        (error) => {
+          if (abort.signal.aborted) return;
+          const code = Number.isSafeInteger(error?.code) ? error.code : ErrorCode.InternalError;
+
+          send({ jsonrpc: "2.0", id: req.id, error: { code, message: error?.message ?? "Internal error", ...(error?.data !== undefined && { data: error.data }) } });
+        },
+      )
+      .finally(() => {
+        if (running.get(req.id) === abort) running.delete(req.id);
+      });
+  };
+
+  createInterface({ input: process.stdin }).on("line", (line) => {
+    let m;
+
+    try {
+      m = JSON.parse(line);
+    } catch {
+      return;
+    }
+
+    if (m.method && m.id !== undefined) onRequest(m);
+    else if (m.method === "notifications/cancelled") running.get(m.params?.requestId)?.abort(m.params?.reason);
+  });
+
+  return {
+    setRequestHandler(method, handler) {
+      handlers.set(
+        method,
+        method === "tools/call"
+          ? async (req, extra) => {
+              if (typeof req.params?.name !== "string") throw new McpError(ErrorCode.InvalidParams, "Invalid tools/call request: name must be a string");
+              const result = await handler(req, extra);
+
+              // as the schema's default: a result always has its content list
+              return result.content === undefined ? { ...result, content: [] } : result;
+            }
+          : handler,
+      );
+    },
+    getClientCapabilities: () => clientCapabilities,
+    sendResourceListChanged: async () => send({ jsonrpc: "2.0", method: "notifications/resources/list_changed" }),
+  };
+}
+
 // ── the MCP server ───────────────────────────────────────────────────────
 const instructions = process.env.FX_INSTRUCTIONS ?? "## Fixture\nUse fx_search to find items; fx_echo answers with what it was sent.";
-const server = new Server({ name: "rox-fixture", version: "1.0.0" }, { capabilities: { tools: {}, resources: { listChanged: true } }, instructions });
+const server = mcpServer({ name: "rox-fixture", version: "1.0.0" }, { capabilities: { tools: {}, resources: { listChanged: true } }, instructions });
 
 const ROX = misbehave("rox");
 const reservedName = (name) => (ROX ? name.replace(/^buwiz\./, "rox.") : name);
 const manifestUri = ROX ? "rox://manifest" : "buwiz://manifest";
 
-server.setRequestHandler(ListToolsRequestSchema, () => ({
+server.setRequestHandler("tools/list", () => ({
   tools: [
     ...Object.keys(RESERVED).map((name) => ({ name: reservedName(name), description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
     ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations, ...(t.meta && { _meta: t.meta }) })),
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+server.setRequestHandler("tools/call", async (req, extra) => {
   const { name, arguments: args = {}, _meta: meta } = req.params;
 
   if (ROX && name !== "rox.provision") {
@@ -325,7 +423,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
   if (Object.hasOwn(RESERVED, name)) return RESERVED[name](args);
 
-  if (isV1("reservedTool", name)) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
+  if (isReservedTool(name)) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
 
   // P7: nothing before a successful provision
   if (!key && !misbehave("skip-provision")) throw new McpError(ErrorCode.InvalidRequest, "buwiz.provision must come first");
@@ -344,14 +442,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 
 const APPS = { board: "board.tsx", card: "card.tsx" };
 
-server.setRequestHandler(ListResourcesRequestSchema, () => ({
+server.setRequestHandler("resources/list", () => ({
   resources: [
     { uri: manifestUri, name: "manifest", mimeType: "application/json" },
     ...Object.keys(APPS).map((id) => ({ uri: `buwiz-app://${id}`, name: id, mimeType: "text/x-nsh-tsx" })),
   ],
 }));
 
-server.setRequestHandler(ReadResourceRequestSchema, (req) => {
+server.setRequestHandler("resources/read", (req) => {
   const { uri } = req.params;
 
   if (uri === manifestUri) return { contents: [{ uri, mimeType: "application/json", text: readFileSync(MANIFEST, "utf8") }] };
@@ -363,4 +461,3 @@ server.setRequestHandler(ReadResourceRequestSchema, (req) => {
   return { contents: [{ uri, mimeType: "text/x-nsh-tsx", text: readFileSync(file, "utf8") }] };
 });
 
-await server.connect(new StdioServerTransport());

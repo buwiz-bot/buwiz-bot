@@ -17,7 +17,7 @@ import { signManifest } from "../src/v1/sign-manifest.mjs";
 import { loadTrust } from "../src/v1/trust.mjs";
 import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
 
-export const FIXTURE_DIR = join(ROOT, "src", "v1", "fixture");
+export const FIXTURE_DIR = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "v1");
 export const FIXTURE = join(FIXTURE_DIR, "server.mjs");
 export const FX = "app.buwiz.fixture";
 export const GWS = "app.buwiz.google-workspace";
