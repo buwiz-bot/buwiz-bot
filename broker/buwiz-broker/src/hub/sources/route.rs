@@ -7,9 +7,11 @@
 //! { "ok": false, "error": { "code": "…", "message": "…", "ask": "<card id, with not_granted>" } }
 //! ```
 //!
-//! The checks, in order: the ticket; the source is listed for the widget's Bot; the action
-//! exists; the source is ready; what the person allowed ([`super::grants`]); the limits (8
-//! calls in flight and 20 new calls a second per widget); then the call.
+//! The checks, in order: the ticket; the limits (8 calls in flight and 20 new calls a second
+//! per widget, counted before anything is looked up, so a widget that calls in a loop costs
+//! no more refused or waiting than allowed); the source is listed for the widget's Bot; the
+//! action exists; the source is ready; what the person allowed ([`super::grants`]); then
+//! the call.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -112,13 +114,18 @@ pub async fn call(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Ok(p) => p,
         Err(e) => return failed(StatusCode::OK, &e, None),
     };
+    // 2. the limits: a call that will be refused, or wait for an answer, counts too
+    let _slot = match admit(&ctx, name) {
+        Ok(s) => s,
+        Err(e) => return failed(StatusCode::OK, &e, None),
+    };
     let home = grants::home(&ctx, name);
-    // 2-4. the source is listed for the Bot, has the action, is ready
+    // 3-5. the source is listed for the Bot, has the action, is ready
     let r = match super::resolve(&ctx, &home.owner, &source, &action).await {
         Ok(r) => r,
         Err(e) => return failed(StatusCode::OK, &e, None),
     };
-    // 5. what the person allowed
+    // 6. what the person allowed
     match grants::verdict(grants::row(&ctx, name, &r.source.name).as_ref(), &r.action) {
         Verdict::Allowed => {}
         Verdict::Refused(why) => return failed(StatusCode::OK, &CallError::new("refused", why), None),
@@ -129,11 +136,6 @@ pub async fn call(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             };
         }
     }
-    // 6. the limits
-    let _slot = match admit(&ctx, name) {
-        Ok(s) => s,
-        Err(e) => return failed(StatusCode::OK, &e, None),
-    };
     // 7. the call
     match super::run(&ctx, Caller::Widget(name), &r, &args).await {
         Ok(result) => types::json(StatusCode::OK, &json!({"ok": true, "result": result})),

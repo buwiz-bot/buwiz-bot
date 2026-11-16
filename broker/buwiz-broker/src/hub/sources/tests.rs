@@ -588,6 +588,14 @@ async fn w_01_a_ticket_is_stable_per_widget_and_the_secret_is_private_to_its_own
     // made once: a second process finds the same secret and a third dir gets another
     assert_eq!(ticket::secret_in(&fx.ctx.data).unwrap().to_vec(), secret);
     assert_ne!(ticket::secret_in(&temp("ticket-other")).unwrap().to_vec(), secret);
+    // a file cut short is replaced, not an error on every call
+    let cut = temp("ticket-cut");
+    std::fs::create_dir_all(&cut).unwrap();
+    std::fs::write(cut.join("widget-ticket-secret"), b"short").unwrap();
+    let made = ticket::secret_in(&cut).unwrap();
+    assert_eq!(std::fs::read(cut.join("widget-ticket-secret")).unwrap(), made);
+    assert_eq!(std::fs::metadata(cut.join("widget-ticket-secret")).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(std::fs::read_dir(&cut).unwrap().count() == 1, "no half-written file is left beside it");
     // a version of a widget is the widget's
     assert_eq!((ticket::base_of("R37@v2"), ticket::base_of("R37"), ticket::base_of("R37@x"), ticket::base_of("37"), ticket::base_of("R")), (Some("R37"), Some("R37"), None, None, None));
     assert!(ticket::valid(&fx.ctx, "R37", &a) && !ticket::valid(&fx.ctx, "R38", &a) && !ticket::valid(&fx.ctx, "R37", "") && !ticket::valid(&fx.ctx, "R37", &format!("{a}x")));
@@ -855,8 +863,8 @@ async fn w_12_limits_are_eight_in_flight_and_twenty_new_calls_a_second() {
         assert_eq!(r.await.unwrap()["ok"], true);
     }
     assert_eq!(call_as(&fx, "R37", "books", "list_invoices", json!({"customer": "a"})).await["ok"], true, "the places were given back");
-    // twenty new calls in a second: 1 + 8 above, so eleven more fit
-    for _ in 0..(PER_SECOND - IN_FLIGHT - 1) {
+    // twenty new calls in a second: the one that asked, 8 + 1 above, so ten more fit
+    for _ in 0..(PER_SECOND - IN_FLIGHT - 2) {
         assert_eq!(call_as(&fx, "R37", "books", "list_invoices", json!({"customer": "a"})).await["ok"], true);
     }
     let over = call_as(&fx, "R37", "books", "list_invoices", json!({"customer": "a"})).await;
@@ -864,6 +872,11 @@ async fn w_12_limits_are_eight_in_flight_and_twenty_new_calls_a_second() {
     // a second later the window is clear
     fx.ctx.clock.manual_step(Some(1500.0), false);
     assert_eq!(call_as(&fx, "R37", "books", "list_invoices", json!({"customer": "a"})).await["ok"], true);
+    // a widget still waiting for its answer is counted the same: its loop is turned away
+    for _ in 0..PER_SECOND {
+        assert_eq!(code_of(&call_as(&fx, "R38", "books", "list_invoices", json!({})).await), "not_granted");
+    }
+    assert_eq!(code_of(&call_as(&fx, "R38", "books", "list_invoices", json!({})).await), "rate_limited");
 }
 
 #[tokio::test]

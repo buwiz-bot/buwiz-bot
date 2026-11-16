@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 use super::reminders::local;
 use crate::helper::http;
 use crate::hub::ctx::HubCtx;
-use crate::hub::routes::leftovers::{field, get, parse_error, trim, truthy};
+use crate::hub::jsval::{field, get, parse_error, trim, truthy};
 use crate::hub::traits::LocalCommand;
 use crate::js;
 
@@ -28,8 +28,18 @@ pub struct LinearApi {
     pub key: Option<String>,
 }
 
-/// The key once found (Node's `linearKey`); a miss is looked up again.
+/// The key once found (Node's `linearKey`).
 static LINEAR_KEY: Mutex<Option<String>> = Mutex::new(None);
+/// When a lookup last found no key. A miss is looked up again (the person may add a key
+/// while the broker runs), but not before [`MISS_FOR`] has passed: every listing of the
+/// sources asks, and a lookup starts a process.
+static LINEAR_MISS: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+const MISS_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a lookup that found no key at `missed` still stands at `now`.
+fn miss_stands(missed: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    missed.is_some_and(|at| now.saturating_duration_since(at) < MISS_FOR)
+}
 
 /// `getLinearKey()`: `LINEAR_API_KEY`, else `secret get LINEAR_API_KEY`.
 pub async fn key(ctx: &HubCtx) -> Option<String> {
@@ -40,6 +50,9 @@ pub async fn key(ctx: &HubCtx) -> Option<String> {
         return Some(k);
     }
     let mut key = std::env::var("LINEAR_API_KEY").ok().filter(|k| !k.is_empty());
+    if key.is_none() && miss_stands(*LINEAR_MISS.lock().unwrap_or_else(|e| e.into_inner()), std::time::Instant::now()) {
+        return None;
+    }
     if key.is_none() {
         let cmd = LocalCommand { program: "secret".into(), args: vec!["get".into(), "LINEAR_API_KEY".into()], ..Default::default() };
         if let Ok(out) = local(ctx).run(cmd).await {
@@ -48,8 +61,9 @@ pub async fn key(ctx: &HubCtx) -> Option<String> {
             }
         }
     }
-    if let Some(k) = &key {
-        *LINEAR_KEY.lock().unwrap_or_else(|e| e.into_inner()) = Some(k.clone());
+    match &key {
+        Some(k) => *LINEAR_KEY.lock().unwrap_or_else(|e| e.into_inner()) = Some(k.clone()),
+        None => *LINEAR_MISS.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now()),
     }
     key
 }
@@ -205,4 +219,19 @@ pub async fn assign(ctx: &HubCtx, b: &Value) -> Result<Value, String> {
         Ok(()) => json!({ "ok": true }),
         Err(e) => json!({ "error": e }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{miss_stands, MISS_FOR};
+
+    #[test]
+    fn a_lookup_that_found_no_key_is_not_repeated_at_once() {
+        let at = Instant::now();
+        assert!(!miss_stands(None, at), "never looked: look");
+        assert!(miss_stands(Some(at), at) && miss_stands(Some(at), at + MISS_FOR - Duration::from_millis(1)));
+        assert!(!miss_stands(Some(at), at + MISS_FOR), "after a while, look again");
+    }
 }

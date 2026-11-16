@@ -37,42 +37,69 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, [u8; 32]>> {
     CACHE.get_or_init(Default::default)
 }
 
-fn read(path: &Path) -> std::io::Result<Option<[u8; 32]>> {
+/// What the secret's file holds.
+enum Found {
+    Secret([u8; 32]),
+    Missing,
+    /// not 32 bytes: the file was cut short or written over
+    Damaged,
+}
+
+fn read(path: &Path) -> std::io::Result<Found> {
     let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Found::Missing),
         Err(e) => return Err(e),
     };
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
-    Ok(<[u8; 32]>::try_from(buf.as_slice()).ok())
+    Ok(<[u8; 32]>::try_from(buf.as_slice()).map_or(Found::Damaged, Found::Secret))
+}
+
+/// A new secret, written whole (mode 0600) under another name in `data`: the bytes and
+/// the file to put in place.
+fn fresh(data: &Path) -> Result<([u8; 32], PathBuf), String> {
+    std::fs::create_dir_all(data).map_err(|e| format!("{}: {e}", data.display()))?;
+    let secret: [u8; 32] = random();
+    let tmp = data.join(format!(".{FILE}.{}", buwiz_protocol::keys::random_id()));
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    f.write_all(&secret).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    Ok((secret, tmp))
 }
 
 /// The secret in `<data dir>/widget-ticket-secret` (mode 0600), made on first use. A file of
-/// the wrong size is a partial write of another process or damage: it is replaced.
+/// the wrong size is damage: it is replaced, and every ticket made from it stops working
+/// (an open widget gets a new one the next time it is opened).
 pub fn secret_in(data: &Path) -> Result<[u8; 32], String> {
     let path = data.join(FILE);
     if let Some(s) = cache().lock().unwrap_or_else(|e| e.into_inner()).get(&path) {
         return Ok(*s);
     }
     let found = match read(&path).map_err(|e| format!("{}: {e}", path.display()))? {
-        Some(s) => s,
-        None => {
-            std::fs::create_dir_all(data).map_err(|e| format!("{}: {e}", data.display()))?;
-            // written whole under another name, then linked in: a second process finds the
-            // file complete or not at all
-            let fresh: [u8; 32] = random();
-            let tmp = data.join(format!(".{FILE}.{}", buwiz_protocol::keys::random_id()));
-            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-            f.write_all(&fresh).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        Found::Secret(s) => s,
+        Found::Missing => {
+            // linked in, not written in place: a second process finds the file complete
+            // or not at all, and the first one there wins
+            let (secret, tmp) = fresh(data)?;
             let linked = std::fs::hard_link(&tmp, &path);
             let _ = std::fs::remove_file(&tmp);
             match linked {
-                Ok(()) => fresh,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{} is not a 32-byte secret", path.display()))?,
+                Ok(()) => secret,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match read(&path).map_err(|e| e.to_string())? {
+                    Found::Secret(s) => s,
+                    Found::Missing | Found::Damaged => return Err(format!("{} is not a 32-byte secret", path.display())),
+                },
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
+        }
+        Found::Damaged => {
+            let (secret, tmp) = fresh(data)?;
+            if let Err(e) = std::fs::rename(&tmp, &path) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("{}: {e}", path.display()));
+            }
+            secret
         }
     };
     cache().lock().unwrap_or_else(|e| e.into_inner()).insert(path, found);
