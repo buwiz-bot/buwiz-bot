@@ -1,12 +1,23 @@
-//! The store against Node's own modules (server/src/state.mjs): a
-//! database Node seeded loads and serializes as Node's does, byte for
-//! byte, and writes the rows Node's start would (`tools/db-diff.mjs`);
-//! what Rust writes, Node loads into the same reads (R8); and the rules
-//! Node's tests pin (STORE-04 building turns, STORE-05 the uid backfill).
+//! The store against pins recorded from the old Node implementation
+//! (server/src/state.mjs): a database Node seeded loads and serializes as
+//! Node's did, byte for byte, and writes the rows Node's start would; what
+//! Rust writes, Node loaded into the same reads (R8); and the rules Node's
+//! tests pinned (STORE-04 building turns, STORE-05 the uid backfill). The
+//! pins are under `tests/pins/store/` (see `test-support/pins.rs`):
+//!   seed_db            the database Node seeded, as SQL (`sqlite3 .dump`)
+//!   seed_reads         what Node read back from it after its own start
+//!   seed_start_rows    its rows after that start
+//!   rollback_reads     what Node read back from a database Rust wrote
+//!   rollback_rows      its rows after Node's persist of that database
+//! A row pin has `== <table>` and then the table's rows, one JSON object a
+//! line, with what differs between any two runs of the same writes left
+//! out (rowids, uids, timestamps, the data dir): the rules of Node's
+//! `tools/db-diff.mjs`, which recorded them.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use regex_lite::Regex;
 use serde_json::{json, Value};
 
 use super::json::{out, threads_json, turns_json, Lookups};
@@ -15,57 +26,12 @@ use super::{Bot, Thread, Turn};
 use crate::hub::ctx::HubCtx;
 use crate::hub::library::botctx;
 use crate::hub::traits::Clock;
-
-fn server() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server")
-}
+use crate::pins;
 
 fn temp(label: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("rox-store-{label}-{}", super::uuidv7()));
     std::fs::create_dir_all(d.join("widgets")).unwrap();
     d
-}
-
-/// `nodeIn`: an ES module body run by Node on data dir `dir`, cwd server/.
-fn node_in(dir: &Path, code: &str) -> String {
-    let o = Command::new("node")
-        .args(["--input-type=module", "-e", &format!("{code}\nprocess.exit(0);")])
-        .current_dir(server())
-        .env("BUWIZ_BROKER_DATA_DIR", dir)
-        .env("MOCK", "1")
-        .env_remove("BUWIZ_NODE_ROLE")
-        .env_remove("ROX_NODE_ROLE")
-        .output()
-        .expect("node runs");
-    assert!(o.status.success(), "node failed: {}", String::from_utf8_lossy(&o.stderr));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-/// What Node reads back after a load and a `persist()`: each thread's
-/// `turnsJson` and `/threads`' body, one per line.
-const NODE_READS: &str = r#"
-  const st = await import("./src/state.mjs");
-  st.persist();
-  const h = (await import("./src/routes/chat.mjs")).default;
-  let body = "";
-  await h({ method: "GET", url: "/threads", headers: {} }, { setHeader() {}, end(b) { body = b; } });
-  for (const t of st.store.list) console.log("T " + t.id + " " + JSON.stringify(st.turnsJson(t)));
-  console.log("THREADS " + body);
-"#;
-
-fn node_reads(dir: &Path) -> (Vec<(String, String)>, String) {
-    let text = node_in(dir, NODE_READS);
-    let mut turns = Vec::new();
-    let mut threads = String::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("T ") {
-            let (id, json) = rest.split_once(' ').unwrap();
-            turns.push((id.to_owned(), json.to_owned()));
-        } else if let Some(rest) = line.strip_prefix("THREADS ") {
-            threads = rest.to_owned();
-        }
-    }
-    (turns, threads)
 }
 
 fn rust_reads(ctx: &HubCtx) -> (Vec<(String, String)>, String) {
@@ -84,78 +50,195 @@ fn hub(dir: &Path) -> HubCtx {
     ctx
 }
 
-fn copy_db(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to.join("generated")).unwrap();
-    std::fs::create_dir_all(to.join("widgets")).unwrap();
-    std::fs::copy(from.join("generated/app.db"), to.join("generated/app.db")).unwrap();
+/// A pinned read: one `T <thread> <turnsJson>` line per thread and a
+/// `THREADS <body>` line; `norm` writes uuids as `{uuid}`.
+fn reads_text(turns: &[(String, String)], threads: &str, norm: bool) -> String {
+    let mut text = String::new();
+    for (id, json) in turns {
+        text.push_str(&format!("T {id} {json}\n"));
+    }
+    text.push_str(&format!("THREADS {threads}\n"));
+    if norm {
+        text = Regex::new(UUID).unwrap().replace_all(&text, "{uuid}").into_owned();
+    }
+    text
 }
 
-/// `tools/db-diff.mjs a b`'s differences in rows, leaving out tables only
-/// one side has (the twin's Node imports other tracks' modules, which
-/// create their own tables).
-fn db_diff(a: &Path, b: &Path) -> String {
-    let o = Command::new("node").arg("tools/db-diff.mjs").arg(a.join("generated/app.db")).arg(b.join("generated/app.db")).current_dir(server()).output().unwrap();
-    let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    let tables_only = text.lines().filter(|l| l.ends_with("(table only here)")).count();
-    let rest: Vec<&str> = text.lines().filter(|l| !l.is_empty() && !l.ends_with("(table only here)") && *l != format!("{tables_only} rows differ")).collect();
-    rest.join("\n")
+/// A data dir whose database is the pinned seed: what Node's seed script
+/// wrote.
+fn seeded(label: &str) -> PathBuf {
+    let dir = temp(label);
+    std::fs::create_dir_all(dir.join("generated")).unwrap();
+    let c = rusqlite::Connection::open(dir.join("generated/app.db")).unwrap();
+    c.execute_batch(&pins::load_text("store/seed_db")).unwrap();
+    dir
 }
 
-const SEED: &str = r##"
-  const { store, nextThreadSeq, uuidv7, writeIndex } = await import("./src/state.mjs");
-  const t1 = store.list[0];
-  const t2 = { id: "t" + nextThreadSeq(), uid: uuidv7(), title: "Routine thread", hidden: true, archived: true, routine: { plugin: "p.one", id: "daily", name: "Daily", thread: t1.id }, turns: [] };
-  const t3 = { id: "t" + nextThreadSeq(), uid: uuidv7(), title: "Q3 😀 plans", agents: { subject: "Q3", participants: ["ann", "bob"] }, turns: [] };
-  store.list.push(t2, t3);
-  t1.turns.push(
-    { id: uuidv7(), role: "user", text: "hello", reaction: "🎉", reply: { i: 0, text: "quoted", files: ["m1/a.txt"] }, attachments: [{ uri: "file:///x/a.png", name: "a.png", kind: "image" }], v1Attachments: [{ plugin: "p.one", token: "@p:x:1" }] },
-    { id: uuidv7(), role: "ai", text: "answer", name: "", label: "claude-haiku-5-5", caption: "cap", reaction: "👍", retries: 2, files: [{ path: "m1/a.txt", name: "a.txt", kind: "text" }], links: [{ provider: "gdrive", id: "f1", name: "Doc", link: "https://example.com/d", mime: "application/vnd.google-apps.document", account: "a@example.com" }, { provider: "mcp-app", id: "mcp:apps/x", name: "X", token: "@apps:i:1", kind: "app", file_type: "An item" }], suggest: ["Next step"], art: { title: "T", desc: "D", w: 100, h: 80 } },
-    { id: uuidv7(), role: "ai", text: null, name: "R1", label: "mock", v: 1, widget: true, art: { title: "Counter", desc: "", w: 0, h: 0 } },
-    { id: uuidv7(), role: "notice", text: "Daily ran", notice: { routine: "daily", thread: t2.id } },
-    { id: uuidv7(), role: "ai", text: "x".repeat(150) + " **bold** ## heading _under_ `code` > quote 😀😀", label: "m" },
-  );
-  t2.turns.push({ id: uuidv7(), role: "user", text: "Routine · Daily", routine: { plugin: "p.one", id: "daily", run: 1 } });
-  t3.turns.push(
-    { id: uuidv7(), role: "agent_message", text: "Check Q3.", message: { id: "m1", from: { id: "ann", name: "Ann" }, to: ["bob"], subject: "Q3" }, pending: ["bob"], read_by: ["ann"] },
-    { id: uuidv7(), role: "ai", text: "woken", agent: { id: "bob", name: "Bob" } },
-  );
-  store.bots.push(
-    { id: "ann", name: "Ann", shape: "star", color: "#FF309B", threadId: t1.id, pinned: true, section: "Work", hidden: false, image: "file:///x/ann.png", crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }, model: "gpt-5.5", effort: "high", fast: true, label: "tagline", description: "", instructions: "Be kind.", memories: [{ id: uuidv7(), text: "likes tea", at: 1700000000000 }], integrations: [{ id: "s1", kind: "skill", at: 1700000000000, via: "user" }], made_by: "bob", purpose: "help Bob", accepts: ["bob"] },
-    { id: "bob", name: "Bob", shape: "blob", color: "#1084FE", outline: "M10 10 L90 10 L90 90 Z", layers: [{ path: "M1 1 L9 1 L9 9 Z", fill: "#000000" }], eyes: "#FFFFFF", threadId: null, helper: { parent: "ann", task: "sort" } },
-    { id: "cy", name: "Cy", shape: "custom", color: "#FFFFFF", outline: "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M30 30 L40 30 L35 40 Z", fill: "#F2C3B5", opacity: 0.6 }], eyes: "#58D63A", threadId: t3.id },
-    { id: "dee", name: "Dee", shape: "custom", color: "#D9232E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#111111" }], threadId: null },
-    { id: "eve", name: "Eve", shape: "custom", color: "#D9232E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#111111" }], eyes: { c: "#58D63A", at: [50, 45.5], gap: 20, s: 1.25, rim: "#111111", rw: 0.3 }, threadId: null },
-    { id: "fay", name: "Fay", shape: "custom", color: "#1E1E1E", outline: "M26 14 L74 14 L74 80 L26 80 Z", layers: [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5D7B5" }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }], eyes: { c: "#1E1E1E", shut: "l" }, parts: [{ outline: "M12 38 L86 36 L86 42 L14 42 Z", color: "#4C8CC9", layers: [{ path: "M32 24 L68 24 L68 30 L32 30 Z", fill: "#F4F4F4" }], z: 1 }, { outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22", z: -0.5, d: 1.1 }], threadId: null },
-    { id: "gus", name: "Gus", shape: "custom", color: "#1E1E1E", outline: "M26 14 L74 14 L74 80 L26 80 Z", parts: [{ outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22" }], threadId: null },
-    { id: "hal", name: "Hal", shape: "blob", color: "#1E1E1E", parts: [{ outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22" }], threadId: null },
-  );
-  store.sections = ["Work"];
-  writeIndex();
-"##;
+const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+/// The rows of `dir`'s database as Node's db-diff.mjs reads them: per
+/// table, a JSON line per row, sorted, after leaving out what differs
+/// between any two runs of the same writes (turns.id, uids, timestamps,
+/// every 13-digit millisecond time, the reply folders `m<base36>/`, bot
+/// and group ids built from the clock, and the data dir).
+fn db_rows(dir: &Path) -> BTreeMap<String, Vec<String>> {
+    let c = rusqlite::Connection::open_with_flags(dir.join("generated/app.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let tables: Vec<String> = c
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|n: &String| n != "sqlite_sequence")
+        .collect();
+    let mut dirs = vec![dir.display().to_string()];
+    if let Ok(real) = std::fs::canonicalize(dir) {
+        dirs.push(real.display().to_string());
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
+    let (uuid, rel, ms, ided) = (Regex::new(UUID).unwrap(), Regex::new(r"\bm[0-9a-z]{6,10}/").unwrap(), Regex::new(r"\b1[0-9]{12}\b").unwrap(), Regex::new(r"\b[bg][0-9a-z]{8,12}\b").unwrap());
+    let time_col = Regex::new(r"^(at|last_run|last_check|clock_in|clock_out)$|_at$").unwrap();
+    let all = |t: &str| -> Vec<serde_json::Map<String, Value>> {
+        let mut st = c.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
+        let names: Vec<String> = st.column_names().iter().map(|n| n.to_string()).collect();
+        st.query_map([], |r| {
+            let mut m = serde_json::Map::new();
+            for (i, n) in names.iter().enumerate() {
+                use rusqlite::types::ValueRef::*;
+                m.insert(
+                    n.clone(),
+                    match r.get_ref(i)? {
+                        Null => Value::Null,
+                        Integer(v) => json!(v),
+                        Real(v) if v.fract() == 0.0 && v.abs() < 1e15 => json!(v as i64),
+                        Real(v) => json!(v),
+                        Text(t) => json!(String::from_utf8_lossy(t)),
+                        Blob(b) => json!(b),
+                    },
+                );
+            }
+            Ok(m)
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    };
+    let id_of = |r: &serde_json::Map<String, Value>| r["id"].as_str().map(str::to_owned).unwrap_or_else(|| r["id"].to_string());
+    // ids built from Date.now(), named by their order instead
+    let mut ids = BTreeMap::new();
+    for (table, prefix) in [("bots", "bot"), ("groups", "group")] {
+        if tables.iter().any(|t| t == table) {
+            let mut rows = all(table);
+            rows.sort_by_key(|r| (r.get("ord").and_then(Value::as_i64).unwrap_or(0), id_of(r)));
+            for (k, r) in rows.iter().enumerate() {
+                ids.insert(id_of(r), format!("{prefix}#{k}"));
+            }
+        }
+    }
+    let norm = |s: &str| -> String {
+        let mut s = s.to_owned();
+        for d in &dirs {
+            s = s.replace(d.as_str(), "{data}");
+        }
+        let s = uuid.replace_all(&s, "{uuid}").into_owned();
+        let s = rel.replace_all(&s, "{rel}/").into_owned();
+        let s = ms.replace_all(&s, "{ms}").into_owned();
+        if ids.is_empty() {
+            return s;
+        }
+        ided.replace_all(&s, |m: &regex_lite::Captures| ids.get(&m[0]).cloned().unwrap_or_else(|| m[0].to_owned())).into_owned()
+    };
+    tables
+        .iter()
+        .map(|t| {
+            let mut rows: Vec<String> = all(t)
+                .into_iter()
+                .map(|row| {
+                    let mut out = serde_json::Map::new();
+                    for (k, v) in row {
+                        if (t == "turns" && k == "id") || k == "uid" || time_col.is_match(&k) {
+                            continue;
+                        }
+                        let v = match v {
+                            Value::String(s) => json!(norm(&s)),
+                            Value::Number(n) if n.as_f64().is_some_and(|f| (1e12..2e12).contains(&f)) => json!("{ms}"),
+                            v => v,
+                        };
+                        out.insert(k, v);
+                    }
+                    Value::Object(out).to_string()
+                })
+                .collect();
+            rows.sort();
+            (t.clone(), rows)
+        })
+        .collect()
+}
+
+fn rows_text(rows: &BTreeMap<String, Vec<String>>) -> String {
+    rows.iter().map(|(t, r)| format!("== {t}\n{}", r.iter().map(|l| format!("{l}\n")).collect::<String>())).collect()
+}
+
+/// `dir`'s rows against the pin, table by table, leaving out the tables only
+/// one side has (the pin's Node imported other modules' tables, and Rust
+/// has tables of its own), as db-diff's "(table only here)" did.
+fn assert_rows(dir: &Path, pin: &str, what: &str) {
+    let ours = db_rows(dir);
+    let mut pinned: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut table = String::new();
+    for line in pins::load_text(pin).lines() {
+        if let Some(t) = line.strip_prefix("== ") {
+            table = t.to_owned();
+            pinned.entry(table.clone()).or_default();
+        } else {
+            pinned.get_mut(&table).unwrap().push(line.to_owned());
+        }
+    }
+    // a refresh rewrites the pin's tables Rust has and leaves the others, as the comparison does
+    if std::env::var("BUWIZ_REFRESH_PINS").is_ok_and(|v| !v.is_empty() && v != "0") {
+        for (t, rows) in &mut pinned {
+            if let Some(now) = ours.get(t) {
+                *rows = now.clone();
+            }
+        }
+        return pins::write_text(pin, &rows_text(&pinned));
+    }
+    let mut diffs = Vec::new();
+    for (t, want) in &pinned {
+        let Some(got) = ours.get(t) else { continue };
+        let mut left = want.clone();
+        left.sort();
+        for row in got {
+            match left.iter().position(|w| w == row) {
+                Some(i) => {
+                    left.remove(i);
+                }
+                None => diffs.push(format!("{t}: only in Rust: {row}")),
+            }
+        }
+        diffs.extend(left.into_iter().map(|row| format!("{t}: only in the pin: {row}")));
+    }
+    assert!(diffs.is_empty(), "{what}:\n{}", diffs.join("\n"));
+}
 
 #[test]
-fn store_loads_a_node_seeded_database_and_reads_it_as_node_does() {
-    let dir = temp("seed");
-    node_in(&dir, SEED);
-    let twin = temp("seed-twin");
-    copy_db(&dir, &twin);
-    // Node's own start (a load and a persist), and Rust's
-    let (node_turns, node_threads) = node_reads(&twin);
+fn store_loads_a_node_seeded_database_and_reads_it_as_node_did() {
+    let dir = seeded("seed");
+    // Rust's start; Node's (a load and a persist) is the pins
     let ctx = hub(&dir);
     let (turns, threads) = rust_reads(&ctx);
-    assert_eq!(turns, node_turns);
-    assert_eq!(threads, node_threads);
-    assert_eq!(db_diff(&twin, &dir), "", "the start's writes");
+    pins::check_text("store/seed_reads", &reads_text(&turns, &threads, false));
+    assert_rows(&dir, "store/seed_start_rows", "the start's writes");
     // and a second load reads the same bytes
     let again = hub(&dir);
     assert_eq!(rust_reads(&again), (turns, threads));
-    for d in [dir, twin] {
-        let _ = std::fs::remove_dir_all(d);
-    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn store_rust_writes_what_node_loads_back_unchanged() {
+fn store_rust_writes_what_node_loaded_back_unchanged() {
     let dir = temp("rollback");
     let ctx = hub(&dir);
     let first = ctx.store.read(|s| s.list[0].id.clone());
@@ -202,12 +285,9 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
     // the building card stays in memory only: Node loads what Rust wrote
     // (the placeholder's gap closed, bob's NULL context read as the
     // defaults), and so does a Rust restart
-    let twin = temp("rollback-twin");
-    copy_db(&dir, &twin);
-    let (node_turns, node_threads) = node_reads(&twin);
     let (turns, threads) = rust_reads(&hub(&dir));
-    assert_eq!(turns, node_turns);
-    assert_eq!(threads, node_threads);
+    pins::check_text("store/rollback_reads", &reads_text(&turns, &threads, true));
+    let node_threads = threads;
     assert!(node_threads.contains("\"description\":\"Bob is a personal assistant bot in Buwiz Bot.\""));
     assert!(node_threads.contains("\"shape\":\"custom\",\"color\":\"#FFFFFF\",\"outline\":\"M18 44 L22 14"), "a custom bot's outline, in bots[] and list[].bot");
     // its outline and its two parts', in bots[] and list[].bot: bob's stray outline never
@@ -219,10 +299,8 @@ fn store_rust_writes_what_node_loads_back_unchanged() {
     assert_eq!(node_threads.matches("\"layers\"").count(), 4, "only the custom bot's");
     assert_eq!(node_threads.matches("\"parts\":[{\"outline\":\"M12 38").count(), 2, "its parts, in bots[] and list[].bot");
     assert_eq!(node_threads.matches("\"z\":-0.5,\"d\":1.1}").count(), 2, "a part's depth");
-    assert_eq!(db_diff(&twin, &dir), "", "Node's persist() writes what Rust wrote, the placeholder's gap closed");
-    for d in [dir, twin] {
-        let _ = std::fs::remove_dir_all(d);
-    }
+    assert_rows(&dir, "store/rollback_rows", "Node's persist() wrote what Rust wrote, the placeholder's gap closed");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

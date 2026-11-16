@@ -1,0 +1,54 @@
+[
+  [],
+  [
+    "eyes must be #RRGGBB"
+  ],
+  [
+    "eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"
+  ],
+  [
+    "eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"
+  ],
+  [
+    "eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"
+  ],
+  [],
+  [],
+  [
+    "eyes.c must be #RRGGBB",
+    "eyes.at must sit inside the outline's box",
+    "eyes.gap must be a number 0..100",
+    "eyes.s must be 0.6..2.2",
+    "eyes.rim must be #RRGGBB",
+    "eyes.rw must be 0..1.2"
+  ],
+  [
+    "eyes.at must be [x, y]"
+  ],
+  [
+    "eyes.at must be [x, y]"
+  ],
+  [
+    "eyes.gap must be a number 0..100",
+    "eyes.s must be 0.6..2.2"
+  ],
+  [],
+  [],
+  [],
+  [
+    "eyes.gap must be a number 0..100",
+    "eyes.s must be 0.6..2.2",
+    "eyes.rw must be 0..1.2"
+  ],
+  [],
+  [],
+  [
+    "eyes.shut must be l or r"
+  ],
+  [
+    "eyes.shut must be l or r"
+  ],
+  [
+    "eyes.shut must be l or r"
+  ]
+]
