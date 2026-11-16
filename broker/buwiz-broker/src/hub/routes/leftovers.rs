@@ -203,8 +203,9 @@ async fn jxa(ctx: &HubCtx, script: &str, env: Vec<(String, String)>) -> Value {
 }
 
 /// `GET /data/reminders`: `{reminders}`, or the script's `{error}` as is.
-/// EventKit where the Mac has it (ms, not the JXA's ~30 s of Apple
-/// Events); the osascript path stays for stubs and other platforms.
+/// EventKit where the Mac lets it (ms, not the JXA's ~30 s of Apple
+/// Events); the osascript path answers when EventKit says `None` (access
+/// denied, no permission text, an old OS) and on other platforms and stubs.
 async fn reminders(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
     if let Some(res) = local(&ctx).reminders_list().await {
         return ok(&res.unwrap_or_else(|e| json!({ "error": e })));
@@ -782,6 +783,10 @@ mod tests {
     struct Stub {
         out: Mutex<LocalOutput>,
         calls: Mutex<Vec<LocalCommand>>,
+        /// What EventKit would say: `None` is "unavailable or denied", so the
+        /// route runs osascript. Calls to the EventKit methods are recorded.
+        ek: Mutex<Option<Result<Value, String>>>,
+        ek_calls: Mutex<Vec<String>>,
     }
 
     impl LocalTools for Stub {
@@ -790,10 +795,28 @@ mod tests {
             let out = self.out.lock().unwrap().clone();
             Box::pin(async move { Ok(out) })
         }
+
+        fn reminders_list(&self) -> types::BoxFuture<'static, Option<Result<Value, String>>> {
+            self.ek_calls.lock().unwrap().push("list".into());
+            let ek = self.ek.lock().unwrap().clone();
+            Box::pin(async move { ek })
+        }
+
+        fn reminders_complete(&self, name: String) -> types::BoxFuture<'static, Option<Result<Value, String>>> {
+            self.ek_calls.lock().unwrap().push(format!("complete {name}"));
+            let ek = self.ek.lock().unwrap().clone();
+            Box::pin(async move { ek })
+        }
+
+        fn reminders_add(&self, name: String, list: String, due: String) -> types::BoxFuture<'static, Option<Result<Value, String>>> {
+            self.ek_calls.lock().unwrap().push(format!("add {name}|{list}|{due}"));
+            let ek = self.ek.lock().unwrap().clone();
+            Box::pin(async move { ek })
+        }
     }
 
     fn hub(data: &Path, out: LocalOutput) -> (Hub, Arc<Stub>) {
-        let stub = Arc::new(Stub { out: Mutex::new(out), calls: Mutex::new(Vec::new()) });
+        let stub = Arc::new(Stub { out: Mutex::new(out), calls: Mutex::new(Vec::new()), ek: Mutex::new(None), ek_calls: Mutex::new(Vec::new()) });
         let mut ctx = HubCtx::new(data.to_path_buf(), Clock::manual());
         ctx.local = Some(stub.clone());
         (Hub::with(ctx, Vec::new(), install), stub)
@@ -816,6 +839,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("generated/files/t1")).unwrap();
         d
+    }
+
+    #[tokio::test]
+    async fn left_01b_reminders_use_eventkit_and_fall_back_to_osascript_only_when_it_is_unavailable() {
+        let data = temp("rem-ek");
+        let (hub, stub) = hub(&data, printed("[{\"name\":\"jxa\"}]\n", 0));
+        let routes = [
+            (Method::GET, "/data/reminders", ""),
+            (Method::POST, "/data/reminders/add", r#"{"name":"x","list":"Home","due":"2026-11-13"}"#),
+            (Method::POST, "/data/reminders/complete", r#"{"name":"x"}"#),
+        ];
+        // a real EventKit result is the body, and osascript does not run
+        *stub.ek.lock().unwrap() = Some(Ok(json!({ "ok": true })));
+        for (m, url, body) in routes.clone() {
+            assert_eq!(call(&hub, m, url, body).await, (200, r#"{"ok":true}"#.into()), "{url}");
+        }
+        // a real EventKit error is the error body, and osascript does not run
+        *stub.ek.lock().unwrap() = Some(Err("save failed".into()));
+        for (m, url, body) in routes.clone() {
+            assert_eq!(call(&hub, m, url, body).await, (200, r#"{"error":"save failed"}"#.into()), "{url}");
+        }
+        assert!(stub.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            stub.ek_calls.lock().unwrap().iter().filter(|c| c.starts_with("add ")).collect::<Vec<_>>(),
+            ["add x|Home|2026-11-13", "add x|Home|2026-11-13"]
+        );
+        // unavailable or denied: the old osascript path answers, same shapes
+        *stub.ek.lock().unwrap() = None;
+        assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, r#"{"reminders":[{"name":"jxa"}]}"#.into()));
+        *stub.out.lock().unwrap() = printed("{\"ok\":true}\n", 0);
+        assert_eq!(call(&hub, Method::POST, "/data/reminders/add", r#"{"name":"x"}"#).await, (200, r#"{"ok":true}"#.into()));
+        assert_eq!(call(&hub, Method::POST, "/data/reminders/complete", r#"{"name":"x"}"#).await, (200, r#"{"ok":true}"#.into()));
+        let cmds = stub.calls.lock().unwrap().clone();
+        assert_eq!(cmds.len(), 3);
+        assert!(cmds.iter().all(|c| c.program == "osascript"));
+        assert_eq!(cmds[0].args[3], REMINDERS_LIST);
+        assert_eq!(cmds[1].args[3], REMINDERS_ADD);
+        assert_eq!(cmds[2].args[3], REMINDERS_COMPLETE);
     }
 
     #[tokio::test]

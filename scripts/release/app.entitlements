@@ -5,8 +5,15 @@
   (scripts/release/sign.sh; docs/release.md says why each one is or isn't
   here). Everything else in the bundle is signed with none.
 
-  automation.apple-events: the broker runs osascript for Reminders, Finder
-  and the save-as picker (hub/routes/leftovers.rs, bots.rs, popout.rs).
+  personal-information.calendars: the broker reads and updates Reminders
+  through EventKit (helper/reminders_ek.rs); without it the hardened
+  runtime refuses the access request and the broker falls back to osascript.
+  The Info.plist texts are NSRemindersFullAccessUsageDescription and
+  NSRemindersUsageDescription.
+
+  automation.apple-events: the broker runs osascript for Finder, the
+  save-as picker and, where EventKit is refused, Reminders
+  (hub/routes/leftovers.rs, bots.rs, popout.rs).
   Under the hardened runtime, Apple Events the app's processes cause are
   refused without it, and TCC asks the user with the app's
   NSAppleEventsUsageDescription.
@@ -18,6 +25,8 @@
 -->
 <plist version="1.0">
 <dict>
+  <key>com.apple.security.personal-information.calendars</key>
+  <true/>
   <key>com.apple.security.automation.apple-events</key>
   <true/>
 </dict>

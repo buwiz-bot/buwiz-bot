@@ -23,7 +23,8 @@ BUNDLE_ID="$(plist_get "$PLIST" CFBundleIdentifier)"
 EXE="$APP/Contents/MacOS/$(plist_get "$PLIST" CFBundleExecutable)"
 [ -n "$BUNDLE_ID" ] && [ -f "$EXE" ] || die "$PLIST names no bundle id or no executable that exists"
 ENTITLEMENTS="$(dirname "$0")/app.entitlements"
-# the broker spawns osascript on the app's behalf (app/src/broker.rs places it)
+# the broker reads Reminders through EventKit and spawns osascript (Finder, the
+# file picker, and Reminders where EventKit is refused) on the app's behalf (app/src/broker.rs places it)
 ENTITLED=("$APP/Contents/Resources/broker/buwiz-broker")
 
 FLAGS=(--force --options runtime --sign "$ID")
