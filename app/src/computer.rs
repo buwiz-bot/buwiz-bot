@@ -293,16 +293,24 @@ struct Pane {
     note: String,
 }
 
+/// What a person is asked to confirm about a Bot's computer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Remake {
+    /// make it again on the current image, files kept
+    Update,
+    /// wipe its files
+    Reset,
+}
+
 thread_local! {
     static PANE: Signal<Pane> = Owner::detached().run(|| keep("computer.pane", Pane::default));
     /// The open recordings: each Bot's own, so one Bot's doesn't strand another's.
     static RECORDING: Signal<Recordings> = Owner::detached().run(|| keep("computer.recording", Recordings::default));
     /// A Bot delete waiting for a person's answer.
     static DELETE_ASK: Signal<Option<DeleteAsk>> = Owner::detached().run(|| keep("computer.delete-ask", || None));
-    /// The Bot whose computer a person is asked to make again.
-    static UPDATE_ASK: Signal<Option<String>> = Owner::detached().run(|| keep("computer.update-ask", || None));
-    /// The Bot whose computer a person is asked to wipe.
-    static RESET_ASK: Signal<Option<String>> = Owner::detached().run(|| keep("computer.reset-ask", || None));
+    /// The Bot whose computer a person is asked to make again or wipe, and which. One question at
+    /// a time: they share one place on screen, so a second ask replaces the first.
+    static REMAKE_ASK: Signal<Option<(String, Remake)>> = Owner::detached().run(|| keep("computer.remake-ask", || None));
     /// The Bots whose screen a person pressed Take control on.
     static DRIVING: Signal<std::collections::HashSet<String>> = Owner::detached().run(|| keep("computer.driving", Default::default));
     /// What the viewer open full screen last heard, with whose it is.
@@ -634,37 +642,30 @@ pub(crate) fn sleep(bot: String) {
 
 /// The first press on Update: the tab asks before anything is made again.
 pub(crate) fn ask_update(bot: String) {
-    UPDATE_ASK.with(|s| s.set(Some(bot)));
+    REMAKE_ASK.with(|s| s.set(Some((bot, Remake::Update))));
 }
 
 /// The first press on Reset: the tab asks before the files go.
 pub(crate) fn ask_reset(bot: String) {
-    RESET_ASK.with(|s| s.set(Some(bot)));
+    REMAKE_ASK.with(|s| s.set(Some((bot, Remake::Reset))));
 }
 
-/// The second press: the computer is made again on the provider's current image.
-fn update_computer(bot: String) {
-    UPDATE_ASK.with(|s| s.set(None));
+/// The second press: the computer is made again on the provider's current image, or its files
+/// are wiped and the record stays. Only what was asked for is done, whatever else is on screen.
+fn remake_computer(bot: String, what: Remake) {
+    REMAKE_ASK.with(|s| s.set(None));
+    let path = match what {
+        Remake::Update => "/update",
+        Remake::Reset => "/reset",
+    };
     update(&bot, |p| {
         p.note.clear();
-        p.status.state = "waking".to_owned();
-    });
-    spawn_detached(async move {
-        let reply = form_post(&route(&bot, "/update"), json!({})).await;
-        if let Some(why) = refusal(reply.as_ref()) {
-            update(&bot, |p| p.note = why);
-            refresh(bot).await;
-        } else if let Some(v) = reply {
-            update(&bot, |p| p.status = Status::parse(&v));
+        if what == Remake::Update {
+            p.status.state = "waking".to_owned();
         }
     });
-}
-
-/// The second press on Reset: the computer's files are wiped; the record stays.
-fn reset_computer(bot: String) {
-    RESET_ASK.with(|s| s.set(None));
     spawn_detached(async move {
-        let reply = form_post(&route(&bot, "/reset"), json!({})).await;
+        let reply = form_post(&route(&bot, path), json!({})).await;
         if let Some(why) = refusal(reply.as_ref()) {
             update(&bot, |p| p.note = why);
             refresh(bot).await;
@@ -1113,10 +1114,12 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
     if !p.status.sleep_note.is_empty() {
         out = out.child(view().test_id("computer-sleep-note").child(note(p.status.sleep_note.clone())));
     }
-    let ask_update = UPDATE_ASK.with(|s| s.with(|a| a.as_deref() == Some(bot)));
-    let ask_reset = RESET_ASK.with(|s| s.with(|a| a.as_deref() == Some(bot)));
-    if ask_update || ask_reset {
-        let (words, yes) = if ask_update { (UPDATE_WORDS, "Update") } else { (RESET_WORDS, "Reset") };
+    let asked = REMAKE_ASK.with(|s| s.with(|a| a.as_ref().filter(|(b, _)| b == bot).map(|(_, what)| *what)));
+    if let Some(what) = asked {
+        let (words, yes) = match what {
+            Remake::Update => (UPDATE_WORDS, "Update"),
+            Remake::Reset => (RESET_WORDS, "Reset"),
+        };
         let b = bot.to_owned();
         out = out
             .child(view().test_id("computer-update-ask").child(note(words.to_owned())))
@@ -1125,17 +1128,8 @@ fn body(bot: &str, name: &str, shape: &str, p: &Pane) -> impl IntoElement {
                     .flex_row()
                     .gap_2()
                     .pt(px(10.0))
-                    .child(small_button("computer-update-cancel", "Cancel", || {
-                        UPDATE_ASK.with(|s| s.set(None));
-                        RESET_ASK.with(|s| s.set(None));
-                    }))
-                    .child(small_button("computer-update-yes", yes, move || {
-                        if ask_update {
-                            update_computer(b.clone());
-                        } else {
-                            reset_computer(b.clone());
-                        }
-                    })),
+                    .child(small_button("computer-update-cancel", "Cancel", || REMAKE_ASK.with(|s| s.set(None))))
+                    .child(small_button("computer-update-yes", yes, move || remake_computer(b.clone(), what))),
             );
     }
     let shared = p.status.shared_with(bot);

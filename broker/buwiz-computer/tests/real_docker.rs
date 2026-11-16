@@ -278,6 +278,22 @@ fn docker(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// Like [`docker`], with the exit code: `Some(0)` is Docker and the command both succeeding.
+fn docker_status(args: &[&str]) -> (Option<i32>, String) {
+    let out = std::process::Command::new("docker").args(args).output().expect("docker");
+    (out.status.code(), String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// The `keep-*.txt` files on the box's two kept volumes, found as root. Fails if `docker exec` or
+/// `find` did, so an empty list means there are none.
+fn kept_files(name: &str) -> Vec<String> {
+    let (code, found) = docker_status(&["exec", "--user", "0", name, "find", "/workspace", "/home/box", "-name", "keep-*.txt"]);
+    assert_eq!(code, Some(0), "the look at the volumes itself worked: {found}");
+    let mut files: Vec<String> = found.lines().map(str::to_owned).collect();
+    files.sort();
+    files
+}
+
 fn name_of(m: &buwiz_computer::Machine) -> String {
     match &m.reach {
         buwiz_computer::Reach::Container { name } => name.clone(),
@@ -1545,11 +1561,12 @@ async fn remake_and_reset(p: &DockerProvider, m: &buwiz_computer::Machine, image
     let s2 = p.screen_up(&m2, "c2r_a").await.unwrap();
     assert_eq!(p.read_file(&m2, "keep-workspace.txt").await.unwrap(), b"kept", "the workspace volume kept it");
     assert_eq!(docker(&["exec", "--user", "0", &name, "cat", "/home/box/keep-home.txt"]), "home", "the home volume kept it");
+    assert_eq!(kept_files(&name).len(), 2, "both files are on the volumes: {:?}", kept_files(&name));
     assert_eq!(p.run(&m2, &s2, "pgrep -cf 'sleep 29[7]'", 10_000).await.unwrap().stdout.trim(), "0", "what ran on it ended");
 
     p.reset(&m2).await.unwrap();
     assert_eq!(p.power(&m2).await.unwrap(), Power::Absent);
     p.wake(&m2).await.unwrap();
-    assert!(p.read_file(&m2, "keep-workspace.txt").await.is_err(), "the reset left the file");
-    assert!(docker(&["exec", "--user", "0", &name, "cat", "/home/box/keep-home.txt"]).is_empty(), "the reset left the home file");
+    assert_eq!(kept_files(&name), Vec::<String>::new(), "the reset left a file on a kept volume");
+    assert!(p.read_file(&m2, "keep-workspace.txt").await.is_err());
 }

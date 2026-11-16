@@ -1325,6 +1325,51 @@ async fn reset_with_no_computer_is_gone_and_a_busy_one_is_refused() {
     assert!(!b.mock.calls().contains(&"reset".to_owned()));
 }
 
+#[tokio::test]
+async fn the_status_says_whether_the_computer_can_be_made_again_in_every_state_it_reads_in() {
+    let b = bed("remake-status");
+    let id = awake(&b, &b.ann.0).await;
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["remake"], true, "healthy");
+
+    // a recorded problem: Update and Reset stay offered
+    b.computers.now().problems.insert(id.clone(), Problem::Failed("it broke".to_owned()));
+    let status = b.computers.status(&b.ctx, &b.ann.0).await;
+    assert_eq!((status["state"].as_str(), status["remake"].as_bool()), (Some("error"), Some(true)), "{status}");
+
+    // a provider that doesn't make computers again
+    b.mock.no_remake.store(true, Ordering::SeqCst);
+    let status = b.computers.status(&b.ctx, &b.ann.0).await;
+    assert_eq!((status["state"].as_str(), status["remake"].as_bool()), (Some("error"), Some(false)), "{status}");
+    b.mock.no_remake.store(false, Ordering::SeqCst);
+
+    // a computer a person connected is the remote provider's, which never does
+    b.computers.machines.lock().unwrap().get_mut(&id).unwrap().provider = buwiz_computer::ProviderKind::Remote;
+    let status = b.computers.status(&b.ctx, &b.ann.0).await;
+    assert_eq!((status["state"].as_str(), status["remake"].as_bool()), (Some("error"), Some(false)), "{status}");
+}
+
+#[tokio::test]
+async fn a_reset_that_fails_lets_go_of_the_computer_and_says_why() {
+    let b = bed("reset-fails");
+    let id = awake(&b, &b.ann.0).await;
+    *b.mock.problem.lock().unwrap() = Some(Problem::Failed("docker said no".to_owned()));
+    let e = b.computers.reset(&b.ctx, &b.ann.0).await.unwrap_err();
+    assert_eq!(e, Problem::Failed("docker said no".to_owned()));
+    assert!(!b.computers.now().waking.contains(&id), "a failed wipe doesn't leave it waking");
+    *b.mock.problem.lock().unwrap() = None;
+    b.computers.reset(&b.ctx, &b.ann.0).await.expect("and it can be tried again");
+}
+
+#[tokio::test]
+async fn a_reset_clears_the_error_a_computer_was_showing() {
+    let b = bed("reset-clears");
+    let id = awake(&b, &b.ann.0).await;
+    b.computers.now().problems.insert(id.clone(), Problem::Failed("it broke".to_owned()));
+    b.computers.reset(&b.ctx, &b.ann.0).await.unwrap();
+    assert!(!b.computers.now().problems.contains_key(&id));
+    assert_eq!(b.computers.status(&b.ctx, &b.ann.0).await["state"], "absent");
+}
+
 mod homes;
 mod jobs;
 mod login;

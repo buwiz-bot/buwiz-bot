@@ -95,6 +95,8 @@ const RECORDING_LIFE: Duration = Duration::from_secs(300);
 /// How long a person's ticket waits on a recording that's starting or stopping: as long as a stop
 /// can take (`guest.rs`), and a little.
 const RECORDING_PATIENCE: Duration = Duration::from_secs(130);
+/// What a person is told when what they asked would pull the computer from under something.
+const IN_USE: &str = "Something is using this computer right now: a run, a hand-over, a job or a recording. Try again when it's idle.";
 /// How often a waiting call looks again.
 const PERSON_POLL: Duration = Duration::from_millis(100);
 /// How often a wake looks for a sleep under way to finish.
@@ -153,6 +155,17 @@ struct Now {
     numbers: u64,
 }
 
+/// What counts as a computer being in use, for what is about to be done to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Use {
+    /// something may run on it: frozen jobs count, a recording doesn't
+    Running,
+    /// made again on its files: a frozen job's files stay, so it doesn't count; a recording does
+    Remake,
+    /// its files go: frozen jobs and recordings both count
+    Wipe,
+}
+
 impl Now {
     fn number(&mut self) -> u64 {
         self.numbers += 1;
@@ -172,17 +185,18 @@ impl Now {
     /// Whether a run or a person has a screen on `computer`, or a job needs it. From what's here,
     /// not the seats: this has no read to fail.
     fn in_use(&self, computer: &str) -> bool {
-        self.busy(computer, true, false)
+        self.busy(computer, Use::Running)
     }
 
-    /// Whether `computer` is in use: a screen held or handed over, a job that needs it — frozen
-    /// jobs count only when `count_frozen` says their files still matter — or a recording when
-    /// `count_recordings` says so.
-    fn busy(&self, computer: &str, count_frozen: bool, count_recordings: bool) -> bool {
+    /// Whether `computer` is in use, as `kind` counts it: a screen held or handed over and a job
+    /// that needs it always count; frozen jobs and recordings count by `kind`.
+    fn busy(&self, computer: &str, kind: Use) -> bool {
+        let frozen = matches!(kind, Use::Running | Use::Wipe);
+        let recordings = matches!(kind, Use::Remake | Use::Wipe);
         self.holds.values().any(|(_, c)| c == computer)
             || self.handovers.values().any(|h| h.computer == computer)
-            || self.jobs.values().any(|j| j.computer == computer && !j.past && !j.unread && (count_frozen || !j.frozen))
-            || (count_recordings && self.recordings.values().any(|r| r.computer == computer))
+            || self.jobs.values().any(|j| j.computer == computer && !j.past && !j.unread && (frozen || !j.frozen))
+            || (recordings && self.recordings.values().any(|r| r.computer == computer))
     }
 }
 
@@ -661,16 +675,6 @@ impl Computers {
         if Self::is_remote(ctx, &id)? {
             return Err(Problem::Remote(CONNECTED.to_owned()));
         }
-        {
-            let now = self.now();
-            if now.waking.contains(&id) || now.sleeping.contains(&id) {
-                return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
-            }
-            // its files stay, so a frozen job's are still its own
-            if now.busy(&id, false, true) {
-                return Err(Problem::Failed("Something is using this computer right now: a run, a hand-over, a job or a recording. Try again when it's idle.".to_owned()));
-            }
-        }
         let machine = self.machine(ctx, &id)?;
         let provider = self.provider_of(ctx, &machine);
         if !provider.remakes() {
@@ -680,8 +684,18 @@ impl Computers {
         if wanted != buwiz_computer::Network::Plain && provider.image_has_proxy().await == Some(false) {
             return Err(Problem::Refused { code: "image", message: network::NO_PROXY_IMAGE.to_owned() });
         }
-        if !self.now().waking.insert(id.clone()) {
-            return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+        // the look at what's in use and the mark that it's being made again have no await between
+        // them, so nothing takes the computer in the gap
+        {
+            let mut now = self.now();
+            if now.waking.contains(&id) || now.sleeping.contains(&id) {
+                return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+            }
+            // its files stay, so a frozen job's are still its own
+            if now.busy(&id, Use::Remake) {
+                return Err(Problem::Failed(IN_USE.to_owned()));
+            }
+            now.waking.insert(id.clone());
         }
         let (me, ctx) = (self.clone(), ctx.clone());
         tokio::spawn(async move {
@@ -718,30 +732,35 @@ impl Computers {
         if Self::is_remote(ctx, &id)? {
             return Err(Problem::Remote(CONNECTED.to_owned()));
         }
-        {
-            let now = self.now();
-            if now.waking.contains(&id) || now.sleeping.contains(&id) {
-                return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
-            }
-            // its files go, frozen jobs' included
-            if now.busy(&id, true, true) {
-                return Err(Problem::Failed("Something is using this computer right now: a run, a hand-over, a job or a recording. Try again when it's idle.".to_owned()));
-            }
-        }
         let machine = self.machine(ctx, &id)?;
         let provider = self.provider_of(ctx, &machine);
         if !provider.remakes() {
             return Err(Problem::Unsupported("wipe its files".to_owned()));
         }
-        // held like a wake, so a click can't make it again while its files are going
-        if !self.now().waking.insert(id.clone()) {
-            return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+        // held like a wake, so a click can't make it again while its files are going; the look at
+        // what's in use and the mark have no await between them
+        {
+            let mut now = self.now();
+            if now.waking.contains(&id) || now.sleeping.contains(&id) {
+                return Err(Problem::Failed("It's waking or sleeping right now. Try again in a moment.".to_owned()));
+            }
+            // its files go, frozen jobs' included
+            if now.busy(&id, Use::Wipe) {
+                return Err(Problem::Failed(IN_USE.to_owned()));
+            }
+            now.waking.insert(id.clone());
         }
-        let done = provider.reset(&machine).await;
-        self.now().waking.remove(&id);
-        done?;
-        self.tunnels.stop(&id);
-        Ok(())
+        // the wipe runs to its end even if the request is dropped, and lets go of the mark however
+        // it ends; the caller still gets what it said
+        let me = self.clone();
+        let work = tokio::spawn(async move {
+            let _marked = Waking(&me, id.clone());
+            provider.reset(&machine).await?;
+            me.tunnels.stop(&id);
+            me.now().problems.remove(&id);
+            Ok::<(), Problem>(())
+        });
+        work.await.unwrap_or_else(|_| Err(Problem::Failed("The wipe stopped before it finished.".to_owned())))
     }
 
     /// The computer to wake. One recovered with new secrets has a stop owed first.
@@ -1682,6 +1701,10 @@ impl Computers {
         };
         let mut out = json!({"computer": id, "bots": bots, "sleepAfterS": sleep_after, "display": seat.screen.as_ref().map(|s| s.display.clone())});
         let record = self.machine(ctx, &id);
+        // what the menu offers doesn't depend on how the computer is: Update and Reset stay in an error
+        if let Ok(m) = &record {
+            out["remake"] = json!(self.provider_of(ctx, m).remakes());
+        }
         match &record {
             Ok(m) if m.link.is_some() => out["remote"] = json!({"screen": m.has_screen(), "where": where_of(&m.reach)}),
             Err(_) if matches!(Self::is_remote(ctx, &id), Ok(true)) => out["remote"] = json!({"screen": false, "where": "", "lost": true}),
@@ -1716,7 +1739,6 @@ impl Computers {
                 Ok(m) => {
                     out["provider"] = json!(m.provider.label());
                     let provider = self.provider_of(ctx, &m);
-                    out["remake"] = json!(provider.remakes());
                     match provider.power(&m).await {
                         Ok(Power::Broken(why)) => {
                             out["message"] = json!(why);
@@ -1850,6 +1872,15 @@ impl Drop for Coming<'_> {
         if left == Some(0) {
             now.coming.remove(&self.1);
         }
+    }
+}
+
+/// Marks a computer as being wiped for as long as it's held, however that ends.
+struct Waking<'a>(&'a Computers, String);
+
+impl Drop for Waking<'_> {
+    fn drop(&mut self) {
+        self.0.now().waking.remove(&self.1);
     }
 }
 

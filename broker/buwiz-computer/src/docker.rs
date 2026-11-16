@@ -947,13 +947,14 @@ pub fn unstage_rules(machine_dir: &Path) {
 }
 
 impl DockerProvider {
-    /// What the image's label says about the proxy: `None` when there's no image to read —
-    /// never "no proxy" for that. Docker not answering is an error, not an answer.
+    /// What the image's label says about the proxy: `None` when there's no image to read. Docker
+    /// not answering is an error, not an answer. A Docker that says "no such object" for a missing
+    /// image counts as missing, as [`DockerProvider::check`] counts it.
     async fn image_proxy(&self) -> Result<Option<bool>> {
         let label = format!("{{{{index .Config.Labels \"{EGRESS_LABEL}\"}}}}");
         match self.docker(&["image", "inspect", "--format", &label, &self.image], None).await {
             Ok(v) => Ok(Some(v.trim() == "1")),
-            Err(Problem::ImageMissing(_)) => Ok(None),
+            Err(Problem::ImageMissing(_) | Problem::Gone) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -1282,7 +1283,11 @@ impl Provider for DockerProvider {
     }
 
     async fn image_has_proxy(&self) -> Option<bool> {
-        self.image_proxy().await.ok().flatten()
+        // an image that isn't there has no proxy; Docker failing says nothing about it
+        match self.image_proxy().await {
+            Ok(label) => Some(label.unwrap_or(false)),
+            Err(_) => None,
+        }
     }
 
     async fn remake(&self, machine: &Machine, network: Network) -> Result<Machine> {
@@ -1566,6 +1571,37 @@ mod tests {
         let m = made(&dir, "").create(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }).await.unwrap();
         assert_eq!(m.egress, None, "an image from before the proxy makes a computer as before");
         assert!(!calls(&dir).contains("BOX_EGRESS") && !calls(&dir).contains(":8790"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn the_image_proxy_is_what_its_label_says_and_a_missing_image_has_none() {
+        let probe = |name: &str, body: &str| {
+            let dir = tmp(name);
+            DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body))
+        };
+        let labelled = probe("proxy-label", "case \"$1 $4\" in image*app.buwiz.box.egress*) echo 1;; esac");
+        assert_eq!(labelled.image_has_proxy().await, Some(true));
+        assert!(labelled.has_proxy().await.unwrap());
+        let old = probe("proxy-old", "case \"$1 $4\" in image*app.buwiz.box.egress*) echo;; esac");
+        assert_eq!(old.image_has_proxy().await, Some(false));
+        for (name, words) in [("proxy-gone", "Error response from daemon: No such image: img:1"), ("proxy-nothing", "Error: No such object: img:1")] {
+            let missing = probe(name, &format!("echo '{words}' >&2; exit 1"));
+            assert_eq!(missing.image_proxy().await, Ok(None), "{words}");
+            assert!(!missing.has_proxy().await.unwrap(), "{words}");
+            assert_eq!(missing.image_has_proxy().await, Some(false), "a missing image has no proxy: update the image first");
+        }
+        let down = probe("proxy-down", "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1");
+        assert_eq!(down.image_has_proxy().await, None, "Docker failing says nothing of the image");
+        assert!(down.has_proxy().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_lost_record_is_recovered_on_an_image_that_docker_says_no_such_object_of() {
+        let dir = tmp("recover-no-image");
+        let body = "case \"$1 $4\" in ps*) ;; volume*) echo c2-x-home;; inspect*) echo '[]'; echo 'Error: No such container: c2-x' >&2; exit 1;; image*) echo 'Error: No such object: img:1' >&2; exit 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap().unwrap();
+        assert_eq!(m.egress, None, "no image, no proxy, and the files are still recovered");
     }
 
     #[test]

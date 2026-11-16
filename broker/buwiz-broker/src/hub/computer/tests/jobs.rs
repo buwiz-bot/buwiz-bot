@@ -1088,3 +1088,33 @@ async fn a_job_given_up_on_lets_the_mac_go_with_its_box_still_up() {
     assert_eq!(power(&b), Power::Awake);
     assert!(!running(&line));
 }
+
+#[tokio::test]
+async fn a_frozen_job_refuses_a_reset_but_not_an_update() {
+    let b = bed("frozen-reset");
+    let computer = awake(&b, &b.ann.0).await;
+    started(&b, json!({"command": "x"})).await;
+    b.computers.sleep(&b.ctx, &computer, Sleep::Light).await.unwrap();
+    assert!(b.computers.now().jobs.values().all(|j| j.frozen));
+
+    let e = b.computers.reset(&b.ctx, &b.ann.0).await.unwrap_err();
+    assert!(e.sentence().contains("using this computer"), "{e}");
+    assert!(!b.mock.calls().contains(&"reset".to_owned()), "its files are the job's");
+
+    b.computers.update(&b.ctx, &b.ann.0).await.expect("its files stay, so a frozen job doesn't stop it");
+}
+
+#[tokio::test]
+async fn a_recording_refuses_a_reset_and_an_update_but_does_not_keep_a_computer_awake() {
+    let b = bed("recording-reset");
+    let id = awake(&b, &b.ann.0).await;
+    let screen = seated(&b.ctx, &b.ann.0).unwrap().screen.unwrap();
+    b.computers.now().recordings.insert(b.ann.0.clone(), Recording { computer: id.clone(), screen, id: Some(7), stopping: false, began: Instant::now() });
+    assert!(b.computers.now().busy(&id, Use::Remake) && b.computers.now().busy(&id, Use::Wipe));
+    assert!(!b.computers.now().in_use(&id), "a recording alone is not a run");
+    for e in [b.computers.update(&b.ctx, &b.ann.0).await.unwrap_err(), b.computers.reset(&b.ctx, &b.ann.0).await.unwrap_err()] {
+        assert!(e.sentence().contains("using this computer"), "{e}");
+    }
+    let calls = b.mock.calls();
+    assert!(!calls.contains(&"remake".to_owned()) && !calls.contains(&"reset".to_owned()), "{calls:?}");
+}

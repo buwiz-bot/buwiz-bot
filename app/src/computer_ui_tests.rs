@@ -372,6 +372,30 @@ fn the_reset_asks_first_and_then_posts() {
     assert_eq!(sent(), ["/v1/host/computer/bot/b1/reset"]);
 }
 
+/// Asking Reset and then Update leaves one question, Update's: confirming it sends the update
+/// and never a reset, so a second press can't wipe what was only to be made again.
+#[test]
+fn asking_update_after_reset_leaves_only_the_update_to_confirm() {
+    if !in_child("asking_update_after_reset_leaves_only_the_update_to_confirm") {
+        return;
+    }
+    let mut app = on_the_tab();
+    put(&mut app, "b1", in_state("awake"), Some(PICTURE));
+
+    app.right_click("Open computer", 20.0, 20.0);
+    pick(&mut app, "Reset computer");
+    assert!(shows(&mut app, "makes it again, empty"), "{:?}", app.texts());
+    app.right_click("Open computer", 20.0, 20.0);
+    pick(&mut app, "Update computer");
+    assert!(shows(&mut app, "Its files stay") && !shows(&mut app, "makes it again, empty"), "{:?}", app.texts());
+    assert!(!app.texts().contains(&"Reset"), "no Reset button is left: {:?}", app.texts());
+
+    app.press("Update");
+    wait_until_sent(&mut app);
+    assert!(!shows(&mut app, "makes it again, empty"), "{:?}", app.texts());
+    assert_eq!(sent(), ["/v1/host/computer/bot/b1/update"], "no reset went out");
+}
+
 fn wait_until_sent(app: &mut Headless) {
     for _ in 0..100 {
         if !crate::computer::CANNED.lock().unwrap().1.is_empty() {

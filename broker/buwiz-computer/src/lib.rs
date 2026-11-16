@@ -878,8 +878,10 @@ pub trait Provider: Send + Sync {
         unsupported("take browsing rules")
     }
 
-    /// Whether a computer made now would get the browser's proxy (the image says it has one).
-    /// `None` when this provider can't tell, or never makes one.
+    /// Whether a computer made now would get the browser's proxy. `Some(true)`: the image says it
+    /// has one. `Some(false)`: the image says it has none, or isn't there at all, so it has to be
+    /// updated first. `None`: this provider can't tell (Docker failing to answer, say) or never
+    /// makes one.
     async fn image_has_proxy(&self) -> Option<bool> {
         None
     }
