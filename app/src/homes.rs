@@ -1068,7 +1068,7 @@ fn bot_choice(bot: &str, label: String, kind: Option<String>, chosen: bool) -> i
 // ---------------------------------------------------------------------------
 
 /// The sub-commands, with what each does.
-const SUBS: [(&str, &str); 8] = [
+const SUBS: [(&str, &str); 9] = [
     ("setup", "Enter a home's key"),
     ("use", "Where this Bot's next new computer is made"),
     ("default", "Where new computers are made"),
@@ -1077,11 +1077,13 @@ const SUBS: [(&str, &str); 8] = [
     ("takeover", "Take over this Bot's screen yourself"),
     ("session", "Save or load this Bot's browser sign-ins: session save <name> | session load <name>"),
     ("update", "Make this Bot's computer again on the current image"),
+    ("reset", "Wipe this Bot's computer's files"),
 ];
 
-const USAGE: &str = "/computer setup <home> | use <home> | default <home> | check [<home>] | status | takeover | session save|load <name> | update [yes]";
+const USAGE: &str = "/computer setup <home> | use <home> | default <home> | check [<home>] | status | takeover | session save|load <name> | update [yes] | reset [yes]";
 const SESSION_USAGE: &str = "/computer session save <name> or /computer session load <name>: a name is letters, digits, _ and -.";
 const UPDATE_ASK: &str = "This makes the computer again on its provider's current image. Its files stay; the programs running on it and its open browser are lost. Type /computer update yes to do it.";
+const RESET_ASK: &str = "This erases the computer's files and everything on it for good. The computer itself stays; the next wake makes it again, empty. Type /computer reset yes to do it.";
 
 /// What follows `/computer`, read whole against the homes there are.
 #[derive(Debug, PartialEq)]
@@ -1100,8 +1102,11 @@ pub(crate) enum Line {
     Takeover,
     /// `save` or `load`, and the session's name
     Session(&'static str, String),
-    /// `yes` is the person's yes to what [`UPDATE_ASK`] said; without it, that's all that's said.
+    /// `yes` is the person's yes to what [`UPDATE_ASK`] or [`RESET_ASK`] said; without it, that's
+    /// all that's said.
     Update { sure: bool },
+    /// as [`Line::Update`], for [`RESET_ASK`]
+    Reset { sure: bool },
 }
 
 /// A session's name as the box takes it: 1 to 64 letters, digits, `_` and `-`.
@@ -1124,6 +1129,8 @@ pub(crate) fn parse(rest: &str, h: &Homes) -> Line {
         ("takeover", "") => Line::Takeover,
         ("update", "") => Line::Update { sure: false },
         ("update", a) if a.eq_ignore_ascii_case("yes") => Line::Update { sure: true },
+        ("reset", "") => Line::Reset { sure: false },
+        ("reset", a) if a.eq_ignore_ascii_case("yes") => Line::Reset { sure: true },
         ("session", a) => {
             let (op, name) = a.split_once(char::is_whitespace).map(|(o, n)| (o, n.trim())).unwrap_or((a, ""));
             match op.to_lowercase().as_str() {
@@ -1162,7 +1169,7 @@ pub(crate) fn rows(rest: &str, h: &Homes, in_bot: bool) -> (Vec<crate::slash::Po
     let line = rest.trim_start();
     let starts = |word: &str, q: &str| word.to_lowercase().starts_with(&q.to_lowercase());
     let Some((sub, q)) = line.split_once(char::is_whitespace) else {
-        let rows = SUBS.iter().filter(|(s, _)| starts(s, line)).map(|(s, d)| fill_row(if matches!(*s, "status" | "takeover" | "update") { format!("/computer {s}") } else { format!("/computer {s} ") }, s, d)).collect();
+        let rows = SUBS.iter().filter(|(s, _)| starts(s, line)).map(|(s, d)| fill_row(if matches!(*s, "status" | "takeover" | "update" | "reset") { format!("/computer {s}") } else { format!("/computer {s} ") }, s, d)).collect();
         return (rows, String::new());
     };
     let sub = sub.to_lowercase();
@@ -1171,9 +1178,9 @@ pub(crate) fn rows(rest: &str, h: &Homes, in_bot: bool) -> (Vec<crate::slash::Po
     if sub == "use" && starts("default", q) {
         out.push(fill_row("/computer use default".to_owned(), "default", &format!("Follow the default: {}", h.default.label)));
     }
-    if sub == "update" {
+    if matches!(sub.as_str(), "update" | "reset") {
         if starts("yes", q) {
-            out.push(fill_row("/computer update yes".to_owned(), "yes", "Make it again on the current image"));
+            out.push(fill_row(format!("/computer {sub} yes"), "yes", if sub == "update" { "Make it again on the current image" } else { "Wipe its files" }));
         }
         return (out, String::new());
     }
@@ -1262,6 +1269,14 @@ async fn act(line: Line, h: &Homes) {
             let Some(b) = bot else { return say("Open a Bot's chat first.".to_owned()) };
             say(update(&b.id, &b.name).await);
         }
+        Line::Reset { sure: false } => match bot {
+            Some(b) => say(format!("{}: {RESET_ASK}", b.name)),
+            None => say("Open a Bot's chat first.".to_owned()),
+        },
+        Line::Reset { sure: true } => {
+            let Some(b) = bot else { return say("Open a Bot's chat first.".to_owned()) };
+            say(reset(&b.id, &b.name).await);
+        }
         Line::Use(_) if bot.is_none() => say("Open a Bot's chat first.".to_owned()),
         Line::Use(Some(k)) if !ready(&k) => local_card("key", &k),
         Line::Use(kind) => {
@@ -1306,6 +1321,15 @@ async fn update(bot: &str, name: &str) -> String {
     match client::post_status(&format!("{}/update", bot_path(bot)), json!({})).await {
         Some((200, _)) => format!("{name}'s computer is being made again on the current image. Its files stay; the programs running on it and its open browser are lost."),
         Some((_, v)) => v.get("message").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| format!("Couldn't update {name}'s computer.")),
+        None => "Buwiz Bot's broker isn't answering.".to_owned(),
+    }
+}
+
+/// `POST /v1/host/computer/bot/{bot}/reset`: the person's yes to [`RESET_ASK`].
+async fn reset(bot: &str, name: &str) -> String {
+    match client::post_status(&format!("{}/reset", bot_path(bot)), json!({})).await {
+        Some((200, _)) => format!("{name}'s computer's files are wiped. The next wake makes it again, empty."),
+        Some((_, v)) => v.get("message").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| format!("Couldn't reset {name}'s computer.")),
         None => "Buwiz Bot's broker isn't answering.".to_owned(),
     }
 }
@@ -1401,6 +1425,8 @@ mod tests {
         assert_eq!(parse(" check boat", &h), Line::Check("boat".into()));
         assert_eq!(parse(" update", &h), Line::Update { sure: false });
         assert_eq!(parse(" update yes", &h), Line::Update { sure: true });
+        assert_eq!(parse(" reset", &h), Line::Reset { sure: false });
+        assert_eq!(parse(" reset yes", &h), Line::Reset { sure: true });
         assert_eq!(parse(" default remote", &h), Line::Say("A remote computer can't be the default.".into()));
         assert_eq!(parse(" use mars", &h), Line::Say("No home is called mars. The homes: docker, ec2, e2b, boat, remote.".into()));
         assert_eq!(parse(" fly", &h), Line::Say(USAGE.into()));
@@ -1410,7 +1436,7 @@ mod tests {
     fn the_menu_lists_the_sub_commands_then_the_homes_each_takes() {
         let h = listed();
         let labels = |rest: &str| rows(rest, &h, true).0.into_iter().map(|r| r.label).collect::<Vec<_>>();
-        assert_eq!(labels(""), ["setup", "use", "default", "check", "status", "takeover", "session", "update"]);
+        assert_eq!(labels(""), ["setup", "use", "default", "check", "status", "takeover", "session", "update", "reset"]);
         assert_eq!(labels("s"), ["setup", "status", "session"]);
         assert_eq!(labels("default "), ["Docker on this Mac", "AWS EC2", "E2B", "boat.dev"], "not remote");
         assert_eq!(labels("use "), ["default", "Docker on this Mac", "AWS EC2", "E2B", "boat.dev", "A remote computer"]);

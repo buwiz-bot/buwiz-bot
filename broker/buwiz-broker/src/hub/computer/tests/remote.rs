@@ -101,6 +101,16 @@ async fn a_lost_record_is_never_swapped_for_a_local_computer() {
 }
 
 #[tokio::test]
+async fn a_remote_computer_is_never_made_again_or_wiped_from_here() {
+    let b = bed("remote-noremake");
+    lost_remote(&b, "b_ann");
+    for said in [b.computers.update(&b.ctx, "b_ann").await.unwrap_err().sentence(), b.computers.reset(&b.ctx, "b_ann").await.unwrap_err().sentence()] {
+        assert!(said.contains("connected by a person"), "{said}");
+    }
+    assert_eq!(b.mock.calls(), Vec::<String>::new(), "no local provider had a part in it");
+}
+
+#[tokio::test]
 async fn a_key_lost_from_the_keystore_says_so_and_nothing_else_stands_in() {
     let b = bed("remote-nokey");
     let (id, dir) = ("cmp_00ff".to_owned(), far_dir("nokey"));

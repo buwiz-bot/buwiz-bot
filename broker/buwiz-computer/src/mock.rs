@@ -101,6 +101,8 @@ pub struct MockProvider {
     pub egress_problem: Mutex<Option<Problem>>,
     /// the box's image has no proxy, as one from before it
     pub no_proxy_image: AtomicBool,
+    /// this provider can't make a computer again, as one that never could
+    pub no_remake: AtomicBool,
     /// where `tunnel_url` says the tunnel's WebSocket is
     pub tunnel_at: Mutex<Option<String>>,
     /// a client is attached, as the box would say
@@ -160,7 +162,7 @@ fn refusal(status: u16, code: &str) -> BrowserReply {
 
 impl Default for MockProvider {
     fn default() -> Self {
-        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default(), hold_browser: AtomicBool::new(false), egress_rules: Mutex::new(None), egress_problem: Mutex::new(None), no_proxy_image: AtomicBool::new(false), tunnel_at: Mutex::new(None), tunnel_attached: AtomicBool::new(false) }
+        Self { power: Mutex::new(Power::Absent), calls: Mutex::new(Vec::new()), problem: Mutex::new(None), stdout: Mutex::new(String::new()), replies: Mutex::default(), fails: Mutex::new(None), hold_run: Mutex::new(None), hold: AtomicBool::new(false), paused: AtomicBool::new(false), poison_save: AtomicBool::new(false), create_ms: std::sync::atomic::AtomicU64::new(0), create_problem: Mutex::new(None), hang_sleep: AtomicBool::new(false), hang_destroy: AtomicBool::new(false), recoverable: Mutex::new(None), look_problem: Mutex::new(None), screen_problem: Mutex::new(None), unsafe_now: Mutex::new(None), links: Mutex::default(), screens: Mutex::new(Vec::new()), viewer_addr: Mutex::new(None), record_problem: Mutex::new(None), sleep_problem: Mutex::new(None), hold_record: AtomicBool::new(false), strays: Mutex::default(), stray_problem: Mutex::new(None), apart: Mutex::new(None), sleep_note: Mutex::new(None), noted: Mutex::new(None), leftovers: Mutex::default(), hang_leftovers: AtomicBool::new(false), leftovers_unknown: AtomicBool::new(false), cant_keep: Mutex::new(None), recover_note: Mutex::new(None), page: Mutex::new(None), front: Mutex::new(None), caps: Mutex::new(serde_json::json!({"browser": {"enabled": true, "ready": true}})), browser_refusal: Mutex::new(None), typed: Mutex::default(), hold_browser: AtomicBool::new(false), egress_rules: Mutex::new(None), egress_problem: Mutex::new(None), no_proxy_image: AtomicBool::new(false), no_remake: AtomicBool::new(false), tunnel_at: Mutex::new(None), tunnel_attached: AtomicBool::new(false) }
     }
 }
 
@@ -239,11 +241,7 @@ impl Provider for MockProvider {
             viewer_password: Secret::new(PASSWORD),
             dir: spec.dir.clone(),
             link: None,
-            egress: match spec.network {
-                crate::Network::Plain => None,
-                crate::Network::Proxy => Some(crate::Egress { tunnel: false, bearer: None }),
-                crate::Network::Tunnel => Some(crate::Egress { tunnel: true, bearer: Some(Secret::new(BEARER)) }),
-            },
+            egress: spec.network.egress(|| Ok(Secret::new(BEARER)))?,
             seen: None,
         })
     }
@@ -536,9 +534,20 @@ impl Provider for MockProvider {
         self.check().await?;
         self.note("remake".to_owned());
         self.set_power(Power::Asleep);
-        let proxy = network != crate::Network::Plain && !self.no_proxy_image.load(Ordering::SeqCst);
-        let egress = proxy.then(|| crate::Egress { tunnel: network == crate::Network::Tunnel, bearer: (network == crate::Network::Tunnel).then(|| Secret::new(BEARER)) });
+        let egress = if network != crate::Network::Plain && !self.no_proxy_image.load(Ordering::SeqCst) { network.egress(|| Ok(Secret::new(BEARER)))? } else { None };
         Ok(Machine { egress, image: Some("mock:1".to_owned()), seen: None, ..machine.clone() })
+    }
+
+    fn remakes(&self) -> bool {
+        !self.no_remake.load(Ordering::SeqCst)
+    }
+
+    async fn reset(&self, _: &Machine) -> Result<()> {
+        self.check().await?;
+        self.note("reset".to_owned());
+        self.screens.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.set_power(Power::Absent);
+        Ok(())
     }
 
     async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
