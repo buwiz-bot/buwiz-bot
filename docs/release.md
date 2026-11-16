@@ -130,8 +130,14 @@ binary), not the dev launcher. On top of those:
   macOS the binaries load on at all.
 - `CFBundleURLTypes`: the `buwiz` scheme only.
 - `NSHumanReadableCopyright`: "Copyright © Goldcoders Corp".
-- `NSAppleEventsUsageDescription`: the broker drives Reminders and Finder
-  through `osascript`; macOS shows this text when it asks.
+- `NSRemindersFullAccessUsageDescription` and `NSRemindersUsageDescription`:
+  the broker reads and updates Reminders through EventKit (macOS 14 asks
+  with the first text, macOS 13 with the second). Without them macOS
+  refuses the request without a prompt, and the broker falls back to
+  `osascript`.
+- `NSAppleEventsUsageDescription`: the broker drives Finder, the save-as
+  picker and, where EventKit is refused, Reminders through `osascript`;
+  macOS shows this text when it asks.
 - `CFBundleIconFile`: only with an icon (below); `build.sh` warns loudly
   without one.
 
@@ -150,7 +156,8 @@ Put one of these in `app/resources/` (or point `APP_ICON` at it):
 
 | Entitlement | Why |
 | --- | --- |
-| `com.apple.security.automation.apple-events` | The broker runs `osascript` (Reminders, Finder's desktop bounds, the save-as picker). The hardened runtime refuses Apple Events without it. |
+| `com.apple.security.personal-information.calendars` | The broker reads and updates Reminders through EventKit. The hardened runtime refuses the access request without it. (Reminders sit under the calendars entitlement.) |
+| `com.apple.security.automation.apple-events` | The broker runs `osascript` (Finder's desktop bounds, the save-as picker, and Reminders where EventKit is refused). The hardened runtime refuses Apple Events without it. |
 
 Left out on purpose, after inspecting the bundle:
 

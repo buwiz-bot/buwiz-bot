@@ -53,39 +53,34 @@ impl LocalTools for MacTools {
     }
 
     /// `/data/reminders` through EventKit (helper/reminders_ek.rs): the
-    /// osascript JXA it replaces took ~30 s per call in Apple Events.
+    /// osascript JXA it replaces took ~30 s per call in Apple Events. `None`
+    /// (EventKit unusable: access denied, no permission text, old OS) sends
+    /// the route down the osascript path.
     #[cfg(target_os = "macos")]
     fn reminders_list(&self) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
-        Box::pin(async move {
-            Some(
-                tokio::task::spawn_blocking(crate::helper::reminders_ek::list)
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string())),
-            )
-        })
+        ek(crate::helper::reminders_ek::list)
     }
 
     #[cfg(target_os = "macos")]
     fn reminders_complete(&self, name: String) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
-        Box::pin(async move {
-            Some(
-                tokio::task::spawn_blocking(move || crate::helper::reminders_ek::complete(&name))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string())),
-            )
-        })
+        ek(move || crate::helper::reminders_ek::complete(&name))
     }
 
     #[cfg(target_os = "macos")]
     fn reminders_add(&self, name: String, list: String, due: String) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
-        Box::pin(async move {
-            Some(
-                tokio::task::spawn_blocking(move || crate::helper::reminders_ek::add(&name, &list, &due))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string())),
-            )
-        })
+        ek(move || crate::helper::reminders_ek::add(&name, &list, &due))
     }
+}
+
+/// An EventKit call on a blocking thread, as `LocalTools` answers it.
+#[cfg(target_os = "macos")]
+fn ek(call: impl FnOnce() -> crate::helper::reminders_ek::Ek + Send + 'static) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(call).await {
+            Ok(out) => out.into_local(),
+            Err(e) => Some(Err(e.to_string())),
+        }
+    })
 }
 
 /// The hub's local tools: the ones a track installed, else this Mac's.
