@@ -330,6 +330,8 @@ cd app && cargo build --target aarch64-apple-darwin
 ```
 app/           the Buwiz Bot application (dev.sh / ios.sh / ios-dev.sh inside)
 server/        the broker Buwiz Bot talks to (Node): chats, models, routines, plugins, agent messaging
+office/        the office editor page and viewer, seeds, and the BetterOffice packages and fonts (npm ci here, then npm run build:office-editor)
+broker/buwiz-broker/assets/  what the Rust broker compiles in or ships: templates, plugins, trust.json
 app/src/hot.rs the patchable UI root
 app/src/live.rs the ra-jit bridge — store anchor; don't edit while live
 app/src/store.rs the model, as anchored signals

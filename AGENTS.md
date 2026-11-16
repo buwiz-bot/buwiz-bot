@@ -3,7 +3,10 @@
 A native chat app in Rust on Native Shell (nsh). `app/` is the app,
 `server/` the broker it talks to (Node), `nsh/` the nsh fork it builds on
 (a submodule), `connectors/` and `blaze/` (ra-jit, a submodule) its
-helpers. `README.md` explains the build and the live loop.
+helpers. `office/` holds the office editor and viewer pages, seeds and the
+BetterOffice packages (`npm ci` there; `npm run build:office-editor` builds the
+editor the bundles ship); `broker/buwiz-broker/assets/` the templates, bundled
+plugins and trust list. `README.md` explains the build and the live loop.
 
 ## Private files
 
