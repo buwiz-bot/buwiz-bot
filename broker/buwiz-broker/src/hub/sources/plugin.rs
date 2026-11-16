@@ -73,7 +73,7 @@ pub fn all(ctx: &HubCtx) -> Vec<Source> {
             actions.push(Action { name: action.to_owned(), about: about_of(&t), write: !declared_read(&t), args: args_of(t.get("inputSchema")), returns: String::new() });
         }
         // a built-in's name is never a plugin's
-        if actions.is_empty() || ["timeclock", "reminders", "linear"].contains(&row.short.as_str()) {
+        if actions.is_empty() || super::builtin::is_name(&row.short) {
             continue;
         }
         let m = row.manifest();

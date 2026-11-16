@@ -13,6 +13,7 @@ pub mod agents;
 pub mod computer;
 pub mod ctx;
 pub mod jobs;
+pub mod jsval;
 pub mod library;
 pub mod market;
 pub mod model;

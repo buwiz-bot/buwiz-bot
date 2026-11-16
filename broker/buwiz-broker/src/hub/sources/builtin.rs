@@ -17,7 +17,21 @@ fn action(name: &str, about: &str, write: bool, args: &str, returns: &str) -> Ac
     Action { name: name.into(), about: about.into(), write, args: args.into(), returns: returns.into() }
 }
 
-fn source(name: &str, title: &str, about: &str, ready: Ready, actions: Vec<Action>) -> Source {
+/// The built-ins: each one's name, its title, and what it is in a sentence's words.
+const KNOWN: [(&str, &str, &str); 3] = [
+    ("timeclock", "Time clock", "the app's clock-in and clock-out tracker"),
+    ("reminders", "Reminders", "the user's Apple Reminders"),
+    ("linear", "Linear", "the user's Linear issues"),
+];
+
+/// Whether `name` is a built-in's (on any system): a plugin's source never takes it.
+pub fn is_name(name: &str) -> bool {
+    KNOWN.iter().any(|k| k.0 == name)
+}
+
+/// Built-in `name` as a source; `about` is what the widget-writing model is told of it.
+fn source(name: &str, about: &str, ready: Ready, actions: Vec<Action>) -> Source {
+    let title = KNOWN.iter().find(|k| k.0 == name).map_or(name, |k| k.1);
     Source { name: name.into(), title: title.into(), about: about.into(), key: format!("{KEY_PREFIX}{name}"), ready, actions, off: false, origin: Origin::Builtin }
 }
 
@@ -35,7 +49,6 @@ pub async fn all(ctx: &HubCtx) -> Vec<Source> {
 pub async fn all_on(ctx: &HubCtx, apple: bool) -> Vec<Source> {
     let mut out = vec![source(
         "timeclock",
-        "Time clock",
         "a local clock-in/out tracker kept in the app",
         Ready::Ready,
         vec![
@@ -49,7 +62,6 @@ pub async fn all_on(ctx: &HubCtx, apple: bool) -> Vec<Source> {
         let ready = if super::reminders::local(ctx).reminders_blocked().is_some() { Ready::NeedsPermission } else { Ready::Ready };
         out.push(source(
             "reminders",
-            "Reminders",
             "the user's Apple Reminders",
             ready,
             vec![
@@ -62,7 +74,6 @@ pub async fn all_on(ctx: &HubCtx, apple: bool) -> Vec<Source> {
     let ready = if super::linear::key(ctx).await.is_some() { Ready::Ready } else { Ready::NeedsKey };
     out.push(source(
         "linear",
-        "Linear",
         "the user's Linear issues (assigned, else recent workspace issues). Every issue has uid (internal id for mutations), id (FER-12 label), stateId",
         ready,
         vec![
@@ -94,10 +105,5 @@ pub async fn run(ctx: &HubCtx, source: &str, action: &str, args: &Value) -> Resu
 
 /// A built-in source's title and what it is, whether or not this system has it.
 pub fn describe(name: &str) -> Option<(&'static str, &'static str)> {
-    match name {
-        "timeclock" => Some(("Time clock", "the app's clock-in and clock-out tracker")),
-        "reminders" if reminders_exist() => Some(("Reminders", "the user's Apple Reminders")),
-        "linear" => Some(("Linear", "the user's Linear issues")),
-        _ => None,
-    }
+    KNOWN.iter().find(|k| k.0 == name && (name != "reminders" || reminders_exist())).map(|k| (k.1, k.2))
 }

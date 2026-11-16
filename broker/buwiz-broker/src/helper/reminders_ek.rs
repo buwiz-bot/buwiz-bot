@@ -602,6 +602,10 @@ mod tests {
     #[test]
     fn statuses_settle_or_ask() {
         assert_eq!(classify(EKAuthorizationStatus::FullAccess), Some(Access::Granted));
+        // what a system before macOS 14 calls a grant is the same value
+        #[allow(deprecated)]
+        let older = EKAuthorizationStatus::Authorized;
+        assert_eq!(classify(older), Some(Access::Granted));
         assert!(matches!(classify(EKAuthorizationStatus::Denied), Some(Access::Fallback(_))));
         assert!(matches!(classify(EKAuthorizationStatus::Restricted), Some(Access::Fallback(_))));
         assert!(matches!(classify(EKAuthorizationStatus::WriteOnly), Some(Access::Fallback(_))));
