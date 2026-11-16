@@ -42,6 +42,11 @@
 //! /v1/host/tools/set {bot | "chats", key, state}`, `/v1/host/shell/mode {mode}` and
 //! `/v1/host/shell/rules {op, kind, pattern}`, and `POST /v1/host/tools/undo {undo}`.
 //!
+//! Widget data sources (`hub::sources`): `POST /v1/host/widget/open {name}` (a widget's
+//! ticket and call path), `POST /v1/host/widget/grant {id, answer}` (the person's answer on
+//! a `widget_ask` card), `GET /v1/host/widget/grants?name=` and `POST /v1/host/widget/revoke
+//! {name, source}`. The call itself, `POST /w/<name>/<ticket>/call`, takes no host token.
+//!
 //! The agents' `/v1/host/agents/*` routes (5.6, track E) answer 501 here
 //! until that track registers them; it checks the token with
 //! [`authorized`].
@@ -303,6 +308,9 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
         let bot = url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "bot").map(|(_, v)| v.into_owned());
         return sent(&path, crate::hub::policy::host_view(&ctx, bot.as_deref()));
     }
+    if req.method == Method::GET && path == "/v1/host/widget/grants" {
+        return sent(&path, crate::hub::sources::grants::host_grants(&ctx, req.query("name").as_deref()).await);
+    }
     if let Some(raw) = path.strip_prefix("/v1/host/plugins/").and_then(|r| r.strip_suffix("/accounts")).filter(|r| req.method == Method::GET && !r.is_empty() && !r.contains('/')) {
         let out = match (js::decode_uri_component(raw), ctx.plugins.as_ref()) {
             (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
@@ -361,6 +369,9 @@ const POSTS: &[&str] = &[
     "/v1/host/tools/undo",
     "/v1/host/shell/mode",
     "/v1/host/shell/rules",
+    "/v1/host/widget/open",
+    "/v1/host/widget/grant",
+    "/v1/host/widget/revoke",
 ];
 
 impl Route {
@@ -393,6 +404,9 @@ impl Route {
                     "/v1/host/tools/undo" => return policy::host_undo(ctx, b),
                     "/v1/host/shell/mode" => return policy::host_mode(ctx, b),
                     "/v1/host/shell/rules" => return policy::host_rules(ctx, b),
+                    "/v1/host/widget/open" => return crate::hub::sources::grants::host_open(ctx, b).await,
+                    "/v1/host/widget/grant" => return crate::hub::sources::grants::host_grant(ctx, b),
+                    "/v1/host/widget/revoke" => return crate::hub::sources::grants::host_revoke(ctx, b),
                     _ => {}
                 }
                 if let Some(op) = path.strip_prefix("/v1/host/routines/") {

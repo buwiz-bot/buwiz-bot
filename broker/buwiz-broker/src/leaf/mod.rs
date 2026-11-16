@@ -9,7 +9,7 @@ pub mod mcp;
 mod prefs;
 mod skills;
 mod state;
-mod timeclock;
+pub mod timeclock;
 
 use std::path::PathBuf;
 use std::sync::Mutex;

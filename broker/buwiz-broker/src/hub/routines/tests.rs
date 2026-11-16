@@ -986,7 +986,10 @@ async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
             "instances"
         ]
     );
-    assert_eq!(fx["tools"][1], json!({"name": "fx_search", "description": "fx_search", "disabled": false, "readOnly": true}));
+    assert_eq!(fx["tools"][1], json!({"name": "fx_search", "description": "fx_search", "disabled": false, "readOnly": true, "widget": false}));
+    // a tool marked for widgets says so (the Connect apps list)
+    assert_eq!(crate::hub::sources::plugin::for_widget(&json!({"name": "x", "_meta": {"buwiz/audience": ["app", "widget"]}})), true);
+    assert_eq!(crate::hub::sources::plugin::for_widget(&json!({"name": "x", "_meta": {"buwiz/audience": ["app"]}})), false);
     assert_eq!(fx["first_party"], true);
 
     // a restart writes a new token; the old one is refused (RTH-14)

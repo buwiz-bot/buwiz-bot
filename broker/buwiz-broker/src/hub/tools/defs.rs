@@ -83,27 +83,28 @@ pub fn builtin_names() -> impl Iterator<Item = &'static str> {
 }
 
 /// `baseSystem()`: the agent's prompt with the skill sections and the
-/// widget contract (`linear`: whether a Linear key is set).
-pub fn base_system(ctx: &HubCtx, linear: bool) -> String {
-    base_system_for(ctx, linear, &|_| false)
+/// widget contract (`sources`: the data sources a widget may call,
+/// `sources::prompt::block`).
+pub fn base_system(ctx: &HubCtx, sources: &str) -> String {
+    base_system_for(ctx, sources, &|_| false)
 }
 
 /// [`base_system`] without the private skills a Bot has switched off (`off` takes an id).
-pub fn base_system_for(ctx: &HubCtx, linear: bool, off: &dyn Fn(&str) -> bool) -> String {
+pub fn base_system_for(ctx: &HubCtx, sources: &str, off: &dyn Fn(&str) -> bool) -> String {
     let d = defs();
     let plugins = ctx.ext.get::<Arc<Market>>().map(|m| crate::hub::market::install::plugin_skills_inject(m, ctx)).unwrap_or_default();
-    format!("{}{}{}{}{}", d.system, crate::hub::market::skills::private_skills_inject_for(ctx, off), plugins, d.contract, crate::hub::model::prompts::contract_for("__NAME__", linear))
+    format!("{}{}{}{}{}", d.system, crate::hub::market::skills::private_skills_inject_for(ctx, off), plugins, d.contract, crate::hub::model::prompts::contract_for("__NAME__", sources))
 }
 
 /// `agentSystem(thread)`: the base prompt plus, in a bot's thread, the
 /// bot's own section.
 pub async fn agent_system(ctx: &HubCtx, turn: &TurnCtx) -> String {
-    let linear = crate::hub::routes::leftovers::linear_key(ctx).await.is_some();
+    let sources = crate::hub::sources::prompt::block(ctx, &crate::hub::sources::owner_of_turn(ctx, turn)).await;
     let (bot, id) = ctx.store.read(|s| (botctx::bot_section(botctx::bot_of(s, turn)), botctx::bot_of(s, turn).map(|b| b.id.clone())));
     // a plain chat: the Chats profile's switches, and the memories every plain chat shares
     let mine = if id.is_some() { bot } else { botctx::chats_section(ctx) };
     let off = crate::hub::policy::off_keys(ctx, id.as_deref().unwrap_or(crate::hub::policy::CHATS));
-    format!("{}{mine}", base_system_for(ctx, linear, &|skill| off.contains(&format!("skill:{skill}"))))
+    format!("{}{mine}", base_system_for(ctx, &sources, &|skill| off.contains(&format!("skill:{skill}"))))
 }
 
 #[cfg(test)]

@@ -240,7 +240,7 @@ pub fn log_activity(ctx: &HubCtx, bot: Option<&str>, command: &str, result: &str
     }
 }
 
-fn bot_name(ctx: &HubCtx, bot: &str) -> String {
+pub(crate) fn bot_name(ctx: &HubCtx, bot: &str) -> String {
     if bot.is_empty() {
         return NO_BOT_NAME.to_owned();
     }

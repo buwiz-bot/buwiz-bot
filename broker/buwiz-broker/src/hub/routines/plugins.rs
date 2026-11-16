@@ -264,7 +264,7 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
         .map(|t| {
             let name = t.get("name").and_then(Value::as_str).unwrap_or_default();
             let description = t.get("description").filter(|d| js::truthy(d)).cloned().unwrap_or(json!(""));
-            json!({"name": t.get("name"), "description": description, "disabled": off.iter().any(|o| o == name), "readOnly": read_only(t)})
+            json!({"name": t.get("name"), "description": description, "disabled": off.iter().any(|o| o == name), "readOnly": read_only(t), "widget": crate::hub::sources::plugin::for_widget(t)})
         })
         .collect();
     out.insert("tools".into(), json!(listed));

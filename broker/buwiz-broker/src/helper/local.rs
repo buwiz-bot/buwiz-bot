@@ -62,6 +62,11 @@ impl LocalTools for MacTools {
     }
 
     #[cfg(target_os = "macos")]
+    fn reminders_blocked(&self) -> Option<String> {
+        crate::helper::reminders_ek::blocked().map(str::to_owned)
+    }
+
+    #[cfg(target_os = "macos")]
     fn reminders_complete(&self, name: String) -> BoxFuture<'static, Option<Result<serde_json::Value, String>>> {
         ek(move || crate::helper::reminders_ek::complete(&name))
     }

@@ -238,6 +238,8 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/file/write"), Hub(Leftovers)),
     e(Post, X("/file/open"), Hub(Leftovers)),
     e(Post, X("/file/save"), Hub(Leftovers)),
+    // a widget's call of a data source: the ticket in the path is the proof
+    e(Post, P("/w/"), Hub(Artifacts)),
     // pop-out windows (6.3; Node's office role's until then, D36)
     e(Post, X("/popout"), Hub(Artifacts)),
     // office: in Rust since 6.1 (`classify` gives office files'
@@ -366,7 +368,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 129);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 130);
         assert_eq!(count(&|o| o == Rust), 33);
     }
 }

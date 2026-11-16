@@ -322,7 +322,7 @@ async fn legacy(run: &Run, prompt: &str, extra: &Value, retry: Option<&str>, rev
     let mut ok = false;
     let mut used = if use_llm { run.settings.model.clone() } else { "mock".into() };
     if use_llm {
-        let linear = crate::hub::routes::leftovers::linear_key(ctx).await.is_some();
+        let sources = crate::hub::sources::prompt::block(ctx, &crate::hub::sources::owner_of_turn(ctx, &run.turn)).await;
         for attempt in 0..3 {
             if ok {
                 break;
@@ -334,7 +334,7 @@ async fn legacy(run: &Run, prompt: &str, extra: &Value, retry: Option<&str>, rev
             }
             let asked = match &ctx.model {
                 Some(api) => {
-                    let ask = Ask { prompt, prev_error: err.as_deref(), prev_code: last_code.as_deref(), name: &name, linear };
+                    let ask = Ask { prompt, prev_error: err.as_deref(), prev_code: last_code.as_deref(), name: &name, sources: &sources };
                     model::ask_model(&run.settings, api.as_ref(), &run.turn, &ask, pipeline::mock_module, || run.set_job("coding", "Writing some code")).await
                 }
                 None => Err(crate::hub::model::anthropic::llm(None, "no model client")),

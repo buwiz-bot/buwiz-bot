@@ -267,13 +267,13 @@ async fn model_ask_model_streams_the_module_with_its_follow_ups() {
     let api = client(&s);
     fake.push(Answer::sse(&sse_text(&events_of(&say(&format!("Fixed it\n```tsx\n{CODE}\n```")))), 9));
     let mut typed = 0;
-    let ask = Ask { prompt: "build", prev_error: Some("error TS2304\n"), prev_code: Some("bad"), name: "R4", linear: false };
+    let ask = Ask { prompt: "build", prev_error: Some("error TS2304\n"), prev_code: Some("bad"), name: "R4", sources: "" };
     let m = ask_model(&s, &api, &turn(choice("gpt-5.5", "high", false, Some("Ada"))), &ask, |_| unreachable!(), || typed += 1).await.unwrap();
     assert_eq!(m, Module { caption: "Fixed it".into(), code: CODE.into() });
     assert_eq!(typed, 2);
     let r = fake.taken().remove(0).json();
     assert_eq!(r.as_object().unwrap().keys().collect::<Vec<_>>(), ["model", "max_tokens", "system", "messages", "output_config", "reasoning_effort", "stream"]);
-    assert_eq!((&r["model"], &r["max_tokens"], &r["system"]), (&json!("gpt-5.5"), &json!(20000), &json!(prompts::system_for("R4", false))));
+    assert_eq!((&r["model"], &r["max_tokens"], &r["system"]), (&json!("gpt-5.5"), &json!(20000), &json!(prompts::system_for("R4", ""))));
     assert_eq!(
         r["messages"],
         json!([{"role": "user", "content": "build"}, {"role": "assistant", "content": "bad"}, {"role": "user", "content": "The nsh compiler rejected it:\nerror TS2304\n\nReturn a corrected module only."}])
@@ -383,7 +383,7 @@ async fn model_the_openai_path_classifies_chats_and_generates_over_chat_completi
     let got = fake.taken();
     let first = got[0].json();
     assert_eq!(first.as_object().unwrap().keys().collect::<Vec<_>>(), ["model", "messages", "temperature", "max_tokens"]);
-    assert_eq!((&first["temperature"], &first["max_tokens"], &first["messages"][0]["content"]), (&json!(0.4), &json!(20000), &json!(prompts::system_for("R2", false))));
+    assert_eq!((&first["temperature"], &first["max_tokens"], &first["messages"][0]["content"]), (&json!(0.4), &json!(20000), &json!(prompts::system_for("R2", ""))));
     assert_eq!(
         got[1].json()["messages"].as_array().unwrap()[1..],
         [

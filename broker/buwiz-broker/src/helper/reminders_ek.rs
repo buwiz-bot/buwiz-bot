@@ -88,6 +88,20 @@ fn status() -> EKAuthorizationStatus {
     unsafe { EKEventStore::authorizationStatusForEntityType(EKEntityType::Reminder) }
 }
 
+/// Whether the person already refused Reminders access, or the system restricts it: read
+/// from the authorization status, which never shows the prompt. `None` when it is granted,
+/// has not been asked yet (the first use asks) or is write-only.
+pub fn blocked() -> Option<&'static str> {
+    let s = status();
+    if s == EKAuthorizationStatus::Denied {
+        Some("reminders access denied")
+    } else if s == EKAuthorizationStatus::Restricted {
+        Some("reminders access restricted")
+    } else {
+        None
+    }
+}
+
 /// Starts the system's access request. macOS 14 has
 /// `requestFullAccessToRemindersWithCompletion:`; on 13 that selector does
 /// not exist (calling it aborts the process), so the older

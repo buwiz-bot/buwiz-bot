@@ -123,6 +123,14 @@ pub trait LocalTools: Send + Sync {
         Box::pin(async move { let _ = name; None })
     }
 
+    /// Why this Mac will not let the reminders be read, from a check that never asks the
+    /// person (the authorization status, not a request): `Some` when access was refused or
+    /// is restricted. `None`: it was granted, was not asked yet (the first use asks), or
+    /// this system cannot tell.
+    fn reminders_blocked(&self) -> Option<String> {
+        None
+    }
+
     /// `POST /data/reminders/add` `{name, list?, due?}`.
     fn reminders_add(&self, name: String, list: String, due: String) -> BoxFuture<'static, Option<Result<Value, String>>> {
         Box::pin(async move { let _ = (name, list, due); None })
