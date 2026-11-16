@@ -1,5 +1,6 @@
 import { colorScheme, mount, Text, View } from "nsh";
 import { isAvailable, Window } from "nsh/desktop";
+import "./${sourceFile}";
 import R, * as mod from "${rel}";
 // Sizing contract: `export const popoutSize = { w, h }` fixes both axes
 // (canvas apps, games); `export const popoutWidth` sets the width and

@@ -38,6 +38,26 @@ use crate::js;
 
 /// The wrapper's text, copied from routes/apps.mjs, with its `${…}`s.
 const WRAPPER: &str = include_str!("popout_wrapper.tsx");
+/// The `source()` helper the wrapper imports before the module, with its `${url}`.
+const SOURCE_HELPER: &str = include_str!("popout_source.tsx");
+
+/// `capabilities.json` beside a pop-out's bundle: what `nsh-macos-host --bundle` enforces on
+/// it (a bundle with the file may do only what it lists; without, everything). The network
+/// is exactly GET and POST on the widget's `/state/<name>` and POST on its one `call` path;
+/// `window` and `clipboard` are what the mount wrapper and the contract's Clipboard use.
+pub(crate) fn capabilities(name: &str, call: &str) -> Value {
+    json!({
+        "network": {
+            "hosts": [],
+            "http": [
+                {"host": "127.0.0.1", "methods": ["GET", "POST"], "schemes": ["http"], "paths": [format!("/state/{name}")]},
+                {"host": "127.0.0.1", "methods": ["POST"], "schemes": ["http"], "paths": [call]},
+            ],
+        },
+        "window": true,
+        "clipboard": true,
+    })
+}
 
 /// An open window: Node's child process with the fields it hung on it.
 struct Win {
@@ -444,9 +464,18 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let badge = if shown_v != 0.0 { format!("v{}{}", tpl(shown_v), if ver_label.is_empty() { String::new() } else { format!(" · {ver_label}") }) } else { String::new() };
     let win_dir = ctx.data.join("windows");
     let _ = std::fs::create_dir_all(&win_dir);
+    // the data helper, in a module the wrapper imports ahead of the widget's own
+    let call = match crate::hub::sources::ticket::call_path(&ctx, &name) {
+        Ok(c) => c,
+        Err(e) => return reply(&json!({"ok": false, "error": format!("widget ticket: {e}")})),
+    };
+    let helper = fill(SOURCE_HELPER, &[("url", js::stringify(&Value::String(format!("http://127.0.0.1:{}{call}", crate::hub::market::node_paths().1))))]);
+    let source_file = format!("pop-{name}-source");
+    let _ = std::fs::write(win_dir.join(format!("{source_file}.tsx")), &helper);
     let wrapper = fill(
         WRAPPER,
         &[
+            ("sourceFile", source_file),
             ("rel", rel),
             ("POP_W", pop_w.clone()),
             ("hintW || POP_W", if hint_w != 0.0 { tpl(hint_w) } else { pop_w.clone() }),
@@ -462,7 +491,7 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     // compile the wrapper once per key (the wrapper, the module it mounts,
     // both binaries), then a bare host on the bundle
     let (nsh, host) = nsh_bins();
-    let key = build_key(&wrapper, &src_bytes, &bin_identity(&nsh), &bin_identity(&host));
+    let key = build_key(&format!("{wrapper}\n{helper}"), &src_bytes, &bin_identity(&nsh), &bin_identity(&host));
     let build_dir = win_dir.join(format!(".pop-{name}{}-{key}", suffix("-")));
     let bundle = build_dir.join("bundle.nshc");
     if !bundle.exists() {
@@ -490,6 +519,10 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             eprintln!("  /popout {name}: build of {} failed:\n{text}", wrapper_file.display());
             return reply(&json!({"ok": false, "error": format!("build failed: {text}")}));
         }
+    }
+    // after the build: `nsh build` removes a capabilities.json its app does not declare
+    if let Err(e) = std::fs::write(build_dir.join("capabilities.json"), js::stringify(&capabilities(&name, &call))) {
+        return reply(&json!({"ok": false, "error": format!("capabilities.json: {e}")}));
     }
     let shown_name = if shown_v != 0.0 { format!("{app_title} · v{}", tpl(shown_v)) } else { app_title };
     let bundle_id = env_or("BUWIZ_BUNDLE_ID", "dev.goldcoders.grokshell");
@@ -540,7 +573,7 @@ mod tests {
     #[test]
     fn popout_wrapper_fills_every_placeholder_once() {
         let vars: Vec<(&str, String)> =
-            ["rel", "POP_W", "hintW || POP_W", "capH", "JSON.stringify(popName)", "wantH", "hintH ? wantH : 0", "JSON.stringify(badge)"].iter().map(|k| (*k, format!("<{k}>"))).collect();
+            ["sourceFile", "rel", "POP_W", "hintW || POP_W", "capH", "JSON.stringify(popName)", "wantH", "hintH ? wantH : 0", "JSON.stringify(badge)"].iter().map(|k| (*k, format!("<{k}>"))).collect();
         let s = fill(WRAPPER, &vars);
         assert!(!s.contains("${"), "every placeholder is known");
         assert!(s.contains("import R, * as mod from \"<rel>\";"));
@@ -556,6 +589,37 @@ mod tests {
         }
         assert!(WRAPPER.contains("const main = isAvailable ? Window.get(\"main\") : null;"));
         assert!(WRAPPER.contains("titleBar: { style: \"hidden\", height: 32 },") && WRAPPER.contains("hug(e.bounds.size.height)"));
+    }
+
+    #[test]
+    fn popout_capabilities_grant_exactly_the_state_and_the_one_call_path() {
+        let c = capabilities("R37", "/w/R37/tk_-9/call");
+        assert_eq!(
+            c,
+            json!({
+                "network": {"hosts": [], "http": [
+                    {"host": "127.0.0.1", "methods": ["GET", "POST"], "schemes": ["http"], "paths": ["/state/R37"]},
+                    {"host": "127.0.0.1", "methods": ["POST"], "schemes": ["http"], "paths": ["/w/R37/tk_-9/call"]},
+                ]},
+                "window": true,
+                "clipboard": true,
+            })
+        );
+        // nothing under /data/, no other host, no other method
+        let text = c.to_string();
+        assert!(!text.contains("/data") && !text.contains("\"*\"") && !text.contains("DELETE"));
+    }
+
+    #[test]
+    fn popout_mounts_the_source_helper_before_the_module_and_calls_only_its_own_path() {
+        // evaluation follows import order: the helper is in place before the widget's code runs
+        let at = |needle: &str| WRAPPER.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        assert!(at("import \"./${sourceFile}\";") < at("import R, * as mod from"));
+        let h = fill(SOURCE_HELPER, &[("url", js::stringify(&Value::String("http://127.0.0.1:8787/w/R37/tk/call".into())))]);
+        assert!(h.contains("const CALL_URL: string = \"http://127.0.0.1:8787/w/R37/tk/call\";") && !h.contains("${"));
+        // it never throws, and a failure is {error, message}
+        assert!(h.contains("catch (e: any)") && h.contains("return { error:") && h.contains("(globalThis as any).source = "));
+        assert!(!h.contains("/data/"));
     }
 
     #[test]
