@@ -654,6 +654,8 @@ pub(crate) fn turn_row(t: Turn, chat: &str) -> impl IntoElement {
         crate::tools::notice_row(n, chat.to_owned()).into_element()
     } else if let Some(n) = t.tool_ask.clone() {
         crate::tools::ask_row(n, chat.to_owned()).into_element()
+    } else if let Some(n) = t.widget_ask.clone() {
+        crate::widget_ask::row(n).into_element()
     } else if let Some(n) = t.computer_setup.clone() {
         crate::cards::computer_setup::row(n).into_element()
     } else if let Some(spec) = t.user_form.clone() {

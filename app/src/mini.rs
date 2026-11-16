@@ -10,7 +10,8 @@
 //! The element `native("rox/mini-app")` mounts a registered native
 //! component whose NSView *is* an `AppView`: each mini app gets its own
 //! engine + QuickJS inside the Rust tree — the pure-Rust root is untouched.
-//! `mini_bundle` selects a deny-all policy for generated widgets and an
+//! `mini_bundle` selects, for a generated widget, a policy of its own state
+//! and its one `source` call path (`widget_policy`), and an
 //! app-server-only policy for `mcp:` modules. The `source` prop carries the
 //! module key and compiled JS; a changed pair reloads the app.
 //!
@@ -75,6 +76,7 @@ pub(crate) fn mini_app(
             serde_json::json!({
                 "module": name.clone(),
                 "js": store().mini_source(&name).get(),
+                "call": store().mini_call(&name),
             })
         })
         .prop(
@@ -126,6 +128,7 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
             serde_json::json!({
                 "module": name.clone(),
                 "js": store().mini_source(&name).get(),
+                "call": store().mini_call(&name),
             })
         })
         .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
@@ -627,18 +630,34 @@ pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
 }
 
 /// A generated widget keeps its state at the server (the generator's
-/// contract): GET `/state/<name>` restores it, POST saves it. This grants
-/// those two on the server's HTTP origin (`client::backend()`) for the
-/// widget's own name only — the base name, `R28` for `R28@v2` — as an exact
-/// path, so `/state/R280` and `/state/R28/x` stay out; nothing else. Any
-/// other name, or an origin-configuration error, gets [`deny_all_policy`].
+/// contract): GET `/state/<name>` restores it, POST saves it. It reads
+/// other data through the `source` helper ([`widget_helper`]), which POSTs
+/// to the one `call` path the broker's open answer names (`call`). This
+/// grants those two on the server's HTTP origin (`client::backend()`) for
+/// the widget's own name only — the base name, `R28` for `R28@v2` — as
+/// exact paths, so `/state/R280` and `/state/R28/x` stay out; nothing else.
+/// Any other name, or an origin-configuration error, gets
+/// [`deny_all_policy`].
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn widget_policy(module: &str) -> nsh_engine::Policy {
-    widget_state_policy(module).unwrap_or_else(|_| deny_all_policy())
+pub(crate) fn widget_policy(module: &str, call: Option<&str>) -> nsh_engine::Policy {
+    widget_state_policy(module, call).unwrap_or_else(|_| deny_all_policy())
+}
+
+/// One exact-path grant on the server's origin: the one place the widget's
+/// two grants (its state, its `call` path) are built.
+#[cfg(any(target_os = "macos", test))]
+fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result<nsh_core::access::HttpGrant, String> {
+    let mut grant = nsh_core::access::HttpGrant::default();
+    grant.host = nsh_core::access::HostPattern::new(host)?;
+    grant.methods = methods.iter().map(|m| (*m).to_owned()).collect();
+    grant.schemes = vec!["http".into()];
+    grant.port = Some(port);
+    grant.paths = vec![path];
+    Ok(grant)
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn widget_state_policy(module: &str) -> Result<nsh_engine::Policy, String> {
+fn widget_state_policy(module: &str, call: Option<&str>) -> Result<nsh_engine::Policy, String> {
     let name = crate::store::app_name(module);
     // the server's state names (`/^[\w.-]+$/`), and not `.` / `..`, which
     // a URL path resolves away
@@ -651,19 +670,86 @@ fn widget_state_policy(module: &str) -> Result<nsh_engine::Policy, String> {
         return Err(format!("no state name for module {module:?}"));
     }
     let (host, port) = mcp_app_server_host_port()?;
-    let mut grant = nsh_core::access::HttpGrant::default();
-    grant.host = nsh_core::access::HostPattern::new(&host)?;
-    grant.methods = vec!["GET".into(), "POST".into()];
-    grant.schemes = vec!["http".into()];
-    grant.port = Some(port);
-    grant.paths = vec![format!("/state/{name}")];
-
     let mut declared = nsh_core::access::Capabilities::default();
-    declared.network.http.push(grant);
+    declared.network.http.push(widget_grant(&host, port, &["GET", "POST"], format!("/state/{name}"))?);
+    if let Some(call) = call.and_then(|c| widget_call_path(name, c)) {
+        declared.network.http.push(widget_grant(&host, port, &["POST"], call.to_owned())?);
+    }
     Ok(nsh_engine::Policy {
         declared: Some(declared),
         ..nsh_engine::Policy::default()
     })
+}
+
+/// Whether `module` is a generated widget (`R<digits>`, with or without
+/// `@v<n>`), as opposed to an `mcp:` or `v1:` app.
+pub(crate) fn is_widget(module: &str) -> bool {
+    let base = crate::store::app_name(module);
+    base.strip_prefix('R').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `call` if it is the call path of widget `name`
+/// (`/w/<name>/<ticket>/call`, the ticket base64url), else `None`: a path
+/// of another widget, or with a query, a dot or a slash out of place, never
+/// reaches the policy or the helper.
+pub(crate) fn widget_call_path<'a>(name: &str, call: &'a str) -> Option<&'a str> {
+    let rest = call.strip_prefix("/w/")?.strip_prefix(name)?.strip_prefix('/')?;
+    let ticket = rest.strip_suffix("/call")?;
+    let ok = !ticket.is_empty() && ticket.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'='));
+    ok.then_some(call)
+}
+
+/// The `call` path out of `POST /v1/host/widget/open`'s answer for widget
+/// `module`: `None` when the broker did not open it (an older broker has no
+/// such route; a refusal; a path that is not this widget's).
+pub(crate) fn open_call(module: &str, answer: Option<&serde_json::Value>) -> Option<String> {
+    let answer = answer?;
+    if answer.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let call = answer.get("call")?.as_str()?;
+    widget_call_path(crate::store::app_name(module), call).map(str::to_owned)
+}
+
+/// What the widget sees when the broker could not open it.
+const SOURCE_UNAVAILABLE: &str = "Update Buwiz Bot to use data in this widget.";
+
+/// The helper's code; `__URL__` and `__UNAVAILABLE__` are JSON values.
+const WIDGET_HELPER: &str = r#"(function () {
+  var url = __URL__;
+  var send = fetch;
+  function fail(error, message) { return { error: error, message: String(message) }; }
+  globalThis.source = function (name) {
+    return {
+      call: function (action, args) {
+        if (!url) return Promise.resolve(fail("unavailable", __UNAVAILABLE__));
+        var body = JSON.stringify({ source: name, action: action, args: args });
+        return send(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d && d.ok) return d.result;
+            var e = (d && d.error) || {};
+            return fail(e.code || "source_error", e.message || "The source did not answer.");
+          })
+          .catch(function (e) { return fail("unreachable", (e && e.message) || e); });
+      }
+    };
+  };
+})();
+"#;
+
+/// The global `source` helper, as code to run ahead of a widget's module:
+/// `source(name).call(action, args)` POSTs to `call` (a path on the app
+/// server's origin) and resolves, never throws: to the result, or to
+/// `{ error, message }`. The URL lives in a closure the widget cannot
+/// reach. With no `call` (the broker could not open the widget) every call
+/// resolves to the `unavailable` error.
+pub(crate) fn widget_helper(call: Option<&str>) -> String {
+    let json = |v: serde_json::Value| v.to_string();
+    let url = call.map(|c| format!("{}{c}", crate::client::backend()));
+    WIDGET_HELPER
+        .replace("__URL__", &json(serde_json::json!(url)))
+        .replace("__UNAVAILABLE__", &json(serde_json::json!(SOURCE_UNAVAILABLE)))
 }
 
 /// The app server's routes an MCP app may call: its tools (`/mcp/call`),
@@ -723,11 +809,11 @@ fn mcp_app_server_host_port() -> Result<(String, u16), String> {
 /// The module key, not the server-supplied title, selects the bundle policy.
 /// Any origin-configuration error falls back to deny-all.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn mini_bundle(module: &str, js: String) -> nsh_engine::Bundle {
+pub(crate) fn mini_bundle(module: &str, js: String, call: Option<&str>) -> nsh_engine::Bundle {
     let policy = if module.starts_with("mcp:") {
         mcp_app_policy().unwrap_or_else(|_| deny_all_policy())
     } else {
-        widget_policy(module)
+        widget_policy(module, call)
     };
     nsh_engine::Bundle::source(js).with_policy(policy)
 }
@@ -1543,6 +1629,7 @@ mod imp {
             {
                 return;
             }
+            let call = source.get("call").and_then(|v| v.as_str()).map(str::to_owned);
             self.last = Some((module.clone(), js.clone()));
             self.fit.sync_appearance();
             if crate::mini_v1::is_v1(&module) {
@@ -1563,7 +1650,7 @@ mod imp {
                 }
             });
             self.view
-                .load(nsh_platform_macos::App::Js(super::mini_bundle(&module, js)));
+                .load(nsh_platform_macos::App::Js(super::mini_bundle(&module, js, call.as_deref())));
         }
     }
 }
@@ -1655,7 +1742,12 @@ export default function R() {
 
     struct RecordingNetwork {
         seen: Arc<Mutex<Vec<String>>>,
+        /// Request bodies, in the order `seen` has their URLs.
+        bodies: Arc<Mutex<Vec<String>>>,
     }
+
+    /// What the fake answers a `source` call with.
+    const CALL_ANSWER: &str = r#"{"ok":true,"result":{"n":7}}"#;
 
     impl Network for RecordingNetwork {
         fn fetch(
@@ -1665,12 +1757,21 @@ export default function R() {
         ) -> Box<dyn FetchTask> {
             let url = request.url;
             self.seen.lock().unwrap().push(url.clone());
+            let body = match &request.body {
+                nsh_core::platform::HttpBody::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
+                _ => String::new(),
+            };
+            self.bodies.lock().unwrap().push(body);
             std::thread::spawn(move || {
+                let answer = url.ends_with("/call").then_some(CALL_ANSWER);
                 events(FetchEvent::Head(HttpHead {
                     status: 200,
                     url,
                     ..HttpHead::default()
                 }));
+                if let Some(answer) = answer {
+                    events(FetchEvent::Data(answer.as_bytes().to_vec()));
+                }
                 events(FetchEvent::End);
             });
             Box::new(CompletedTask)
@@ -1680,12 +1781,21 @@ export default function R() {
     fn start_widget(
         bundle: Bundle,
     ) -> (Engine, mpsc::Receiver<MountBatch>, Arc<Mutex<Vec<String>>>) {
+        let (engine, rx, seen, _) = start_widget_with_bodies(bundle);
+        (engine, rx, seen)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn start_widget_with_bodies(
+        bundle: Bundle,
+    ) -> (Engine, mpsc::Receiver<MountBatch>, Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let bodies = Arc::new(Mutex::new(Vec::new()));
         let mut config = EngineConfig::new(App::Js(bundle));
-        config.network = Some(Arc::new(RecordingNetwork { seen: seen.clone() }));
+        config.network = Some(Arc::new(RecordingNetwork { seen: seen.clone(), bodies: bodies.clone() }));
         let (tx, rx) = mpsc::channel();
         let engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
-        (engine, rx, seen)
+        (engine, rx, seen, bodies)
     }
 
     fn run_until_text(
@@ -1765,14 +1875,17 @@ export default function R() {
         assert!(out.contains("const s = \"nsh/canvas\";"), "a string is no import:\n{out}");
     }
 
+    /// R1's `call` path, as the broker's open answer gives it.
+    const CALL_R1: &str = "/w/R1/dGlja2V0LW9uZQ/call";
+
     #[test]
-    fn widget_policy_grants_only_its_own_state() {
-        let access = super::mini_bundle("R1", String::new()).policy.access();
+    fn widget_policy_grants_only_its_own_state_and_call_path() {
+        let access = super::mini_bundle("R1", String::new(), None).policy.access();
         // its own state, GET to restore and POST to save
         assert!(access.allows_http("GET", "http://127.0.0.1:8787/state/R1"));
         assert!(access.allows_http("POST", "http://127.0.0.1:8787/state/R1"));
         // a pinned version keeps the base name's state
-        let pinned = super::mini_bundle("R1@v2", String::new()).policy.access();
+        let pinned = super::mini_bundle("R1@v2", String::new(), None).policy.access();
         assert!(pinned.allows_http("GET", "http://127.0.0.1:8787/state/R1"));
         assert!(pinned.allows_http("POST", "http://127.0.0.1:8787/state/R1"));
         assert!(!pinned.allows_http("GET", "http://127.0.0.1:8787/state/R1@v2"));
@@ -1793,7 +1906,7 @@ export default function R() {
             assert!(!access.allows_http("GET", "http://127.0.0.1/state/R1"));
             assert!(!access.allows_http("GET", "http://attacker.example:8787/state/R1"));
             // no other route
-            for path in ["/", "/threads", "/data/linear/issues", "/mcp/call", "/file/raw/x", "/popout", "/chat"] {
+            for path in ["/", "/threads", "/data/linear/issues", "/data/timeclock", "/mcp/call", "/v1/host/call", "/file/raw/x", "/popout", "/chat"] {
                 assert!(!access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
                 assert!(!access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
             }
@@ -1814,18 +1927,182 @@ export default function R() {
         assert!(!access.allows_host("anything"));
         assert!(!access.allows_process("sh"));
         assert!(!access.allows_socket("127.0.0.1", 8787));
-        assert!(super::widget_policy("R1").harden);
+        assert!(super::widget_policy("R1", None).harden);
 
         // a module key that is no state name gets nothing (a v1 app never
         // runs on this policy: it gets its own, mini_v1)
         for module in ["file:/x", "", "v1:app.buwiz.fixture/board", ".", "..", "@v2", "a/b", "R1?name=R2", "R 1"] {
-            let policy = super::mini_bundle(module, String::new()).policy;
+            let policy = super::mini_bundle(module, String::new(), Some(CALL_R1)).policy;
             assert_eq!(
                 policy.declared,
                 Some(nsh_core::access::Capabilities::default())
             );
             assert!(policy.harden);
         }
+    }
+
+    #[test]
+    fn a_widget_may_post_to_its_one_call_path_and_nothing_under_data() {
+        const ORIGIN: &str = "http://127.0.0.1:8787";
+        for module in ["R1", "R1@v2"] {
+            let access = super::mini_bundle(module, String::new(), Some(CALL_R1)).policy.access();
+            // POST only, with or without a query string
+            assert!(access.allows_http("POST", &format!("{ORIGIN}{CALL_R1}")));
+            assert!(access.allows_http("POST", &format!("{ORIGIN}{CALL_R1}?x=1")));
+            for method in ["GET", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] {
+                assert!(!access.allows_http(method, &format!("{ORIGIN}{CALL_R1}")), "{method}");
+            }
+            // its state grant is unchanged
+            assert!(access.allows_http("GET", &format!("{ORIGIN}/state/R1")));
+            assert!(access.allows_http("POST", &format!("{ORIGIN}/state/R1")));
+            // not another widget's call path, nor this one with another ticket
+            for path in [
+                "/w/R2/dGlja2V0LW9uZQ/call",
+                "/w/R1/b3RoZXI/call",
+                "/w/R1/dGlja2V0LW9uZQ/call/",
+                "/w/R1/dGlja2V0LW9uZQ/calls",
+                "/w/R1/dGlja2V0LW9uZQ",
+                "/w/R1//call",
+                "/w/R10/dGlja2V0LW9uZQ/call",
+            ] {
+                assert!(!access.allows_http("POST", &format!("{ORIGIN}{path}")), "{path}");
+                assert!(!access.allows_http("GET", &format!("{ORIGIN}{path}")), "{path}");
+            }
+            // the old data routes and the rest of the server stay out
+            for path in ["/data/timeclock", "/data/timeclock/in", "/data/../state/R1", "/mcp/call", "/v1/host/call", "/state/R2", "/sources"] {
+                assert!(!access.allows_http("POST", &format!("{ORIGIN}{path}")), "{path}");
+                assert!(!access.allows_http("GET", &format!("{ORIGIN}{path}")), "{path}");
+            }
+            // another port, host or scheme
+            for origin in ["http://127.0.0.1:8788", "http://127.0.0.1", "http://localhost:8787", "https://127.0.0.1:8787", "http://attacker.example:8787"] {
+                assert!(!access.allows_http("POST", &format!("{origin}{CALL_R1}")), "{origin}");
+            }
+            assert!(!access.allows_websocket(&format!("ws://127.0.0.1:8787{CALL_R1}")));
+        }
+        // a call path of another widget (or no path) grants no call at all
+        for call in [Some("/w/R2/dGlja2V0LW9uZQ/call"), Some("/data/timeclock"), Some("/w/R1/t/call?x=1"), None] {
+            let access = super::mini_bundle("R1", String::new(), call).policy.access();
+            assert!(access.allows_http("GET", &format!("{ORIGIN}/state/R1")));
+            for path in [CALL_R1, "/w/R2/dGlja2V0LW9uZQ/call", "/data/timeclock", "/w/R1/t/call"] {
+                assert!(!access.allows_http("POST", &format!("{ORIGIN}{path}")), "{call:?}: {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_open_answer_gives_the_call_path_or_none() {
+        use serde_json::json;
+        let ok = json!({"ok": true, "ticket": "dGlja2V0LW9uZQ", "call": CALL_R1, "grants": []});
+        assert_eq!(super::open_call("R1", Some(&ok)).as_deref(), Some(CALL_R1));
+        assert_eq!(super::open_call("R1@v2", Some(&ok)).as_deref(), Some(CALL_R1));
+        // another widget's path, a refusal, an older broker's answer, no answer
+        assert_eq!(super::open_call("R2", Some(&ok)), None);
+        assert_eq!(super::open_call("R1", Some(&json!({"ok": false, "error": "no such widget"}))), None);
+        assert_eq!(super::open_call("R1", Some(&json!({"ok": true}))), None);
+        assert_eq!(super::open_call("R1", Some(&json!({"error": "not found"}))), None);
+        assert_eq!(super::open_call("R1", Some(&json!({"ok": true, "call": "/data/timeclock"}))), None);
+        assert_eq!(super::open_call("R1", None), None);
+        // only generated widgets are opened
+        for yes in ["R1", "R37@v2", "R1000"] {
+            assert!(super::is_widget(yes), "{yes}");
+        }
+        for no in ["", "R", "Rx", "R1x", "mcp:bir/forms", "v1:app.buwiz.fixture/board", "r1", "R1/2"] {
+            assert!(!super::is_widget(no), "{no}");
+        }
+    }
+
+    const WIDGET_SOURCE: &str = r#"
+import { signal, Text } from "nsh";
+
+const data = source("timeclock");
+const go = (url) => fetch(url).then(() => "ok", () => "no");
+
+export default function R() {
+  const result = signal("waiting");
+  Promise.all([
+    data.call("status", { day: 1 }),
+    go("http://127.0.0.1:8787/data/timeclock"),
+    go("http://127.0.0.1:8787/state/R994"),
+  ]).then(([called, direct, other]) => result.set(`${JSON.stringify(called)} ${direct} ${other}`));
+  return <Text>{result()}</Text>;
+}
+"#;
+
+    /// A widget's `source(...).call(...)` reaches the broker's call path
+    /// with the right body and gets the result; a fetch of `/data/` or of
+    /// another state never leaves the sandbox.
+    #[test]
+    fn a_widgets_source_call_reaches_the_call_path_and_data_does_not() {
+        let js = super::compile_widget("R995", WIDGET_SOURCE).expect("compile widget");
+        let call = "/w/R995/dGlja2V0LW9uZQ/call";
+        let js = format!("{}{js}", super::widget_helper(Some(call)));
+        let (engine, rx, seen, bodies) = start_widget_with_bodies(super::mini_bundle("R995", js, Some(call)));
+        run_until_text(&engine, &rx, r#"{"n":7} no no"#);
+        let url = format!("http://127.0.0.1:8787{call}");
+        assert_eq!(*seen.lock().unwrap(), [url]);
+        let body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).expect("a JSON body");
+        assert_eq!(body, serde_json::json!({"source": "timeclock", "action": "status", "args": {"day": 1}}));
+    }
+
+    const WIDGET_SOURCE_FAILS: &str = r#"
+import { signal, Text } from "nsh";
+
+export default function R() {
+  const result = signal("waiting");
+  source("books").call("list").then((r) => result.set(JSON.stringify(r)));
+  return <Text>{result()}</Text>;
+}
+"#;
+
+    /// With no `call` path (an older broker) the widget still mounts and
+    /// its helper answers `unavailable` without sending anything.
+    #[test]
+    fn without_an_open_the_helper_answers_unavailable_and_sends_nothing() {
+        let js = super::compile_widget("R994", WIDGET_SOURCE_FAILS).expect("compile widget");
+        let js = format!("{}{js}", super::widget_helper(None));
+        let (engine, rx, seen) = start_widget(super::mini_bundle("R994", js, None));
+        run_until_text(
+            &engine,
+            &rx,
+            r#"{"error":"unavailable","message":"Update Buwiz Bot to use data in this widget."}"#,
+        );
+        assert!(seen.lock().unwrap().is_empty(), "{seen:?}");
+    }
+
+    /// A network failure resolves to `unreachable` (the fake refuses a
+    /// call to a path the policy does not grant).
+    #[test]
+    fn a_refused_call_resolves_to_unreachable_not_a_throw() {
+        let js = super::compile_widget("R993", WIDGET_SOURCE_FAILS).expect("compile widget");
+        // the helper points at a path the bundle's policy does not grant
+        let js = format!("{}{js}", super::widget_helper(Some("/w/R993/dGlja2V0LW9uZQ/call")));
+        let (engine, rx, seen) = start_widget(super::mini_bundle("R993", js, None));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut text = String::new();
+        while Instant::now() < deadline && !text.contains("unreachable") {
+            if let Ok(batch) = rx.recv_timeout(Duration::from_millis(200)) {
+                for item in &batch.items {
+                    if let MountItem::Text { text: t, .. } = item {
+                        text = t.text.to_string();
+                    }
+                }
+            }
+        }
+        assert!(text.contains(r#""error":"unreachable""#), "{text}");
+        assert!(seen.lock().unwrap().is_empty(), "{seen:?}");
+        drop(engine);
+    }
+
+    #[test]
+    fn the_helper_keeps_its_path_out_of_reach() {
+        let call = "/w/R7/dGlja2V0LW9uZQ/call";
+        let helper = super::widget_helper(Some(call));
+        assert!(helper.starts_with("(function () {"), "{helper}");
+        assert_eq!(helper.matches(call).count(), 1);
+        assert!(helper.contains(&format!("http://127.0.0.1:8787{call}")));
+        // the only global it defines is `source`
+        assert_eq!(helper.matches("globalThis.").count(), 1);
+        assert!(super::widget_helper(None).contains("var url = null;"));
     }
 
     #[test]
@@ -1875,7 +2152,7 @@ export default function R() {
 
     #[test]
     fn mcp_apps_reach_only_the_app_server() {
-        let policy = super::mini_bundle("mcp:bir/forms", String::new()).policy;
+        let policy = super::mini_bundle("mcp:bir/forms", String::new(), None).policy;
         let access = policy.access();
         assert!(access.allows_http("POST", "http://127.0.0.1:8787/mcp/call"));
         assert!(access.allows_http("POST", "http://127.0.0.1:8787/mcp/open"));
@@ -1940,7 +2217,7 @@ export default function R() {
     #[test]
     fn a_widget_reaches_its_own_state_and_no_other() {
         let js = super::compile_widget("R996", WIDGET_STATE).expect("compile widget");
-        let (engine, rx, seen) = start_widget(super::mini_bundle("R996@v3", js));
+        let (engine, rx, seen) = start_widget(super::mini_bundle("R996@v3", js, None));
         run_until_text(&engine, &rx, "ok ok no no no");
         assert_eq!(
             *seen.lock().unwrap(),
@@ -1952,7 +2229,7 @@ export default function R() {
     fn a_widget_cannot_fetch_the_app_server_or_read_the_clipboard() {
         let js = super::compile_widget("R998", WIDGET_EXFIL).expect("compile widget");
 
-        let (engine, rx, seen) = start_widget(super::mini_bundle("R998", js.clone()));
+        let (engine, rx, seen) = start_widget(super::mini_bundle("R998", js.clone(), None));
         let commands = run_until_text(&engine, &rx, "refused ERR_ACCESS_DENIED [ERR_ACCESS_DENIED]");
         assert!(
             seen.lock().unwrap().is_empty(),
@@ -1965,7 +2242,7 @@ export default function R() {
         drop(engine);
 
         // an MCP app reaches the app server's app routes only, not the chats
-        let (engine, rx, seen) = start_widget(super::mini_bundle("mcp:bir/forms", js.clone()));
+        let (engine, rx, seen) = start_widget(super::mini_bundle("mcp:bir/forms", js.clone(), None));
         let commands = run_until_text(&engine, &rx, "refused ERR_ACCESS_DENIED [ERR_ACCESS_DENIED]");
         assert!(
             seen.lock().unwrap().is_empty(),
@@ -2015,7 +2292,7 @@ export default function R() {
         // window's commands never reach the platform and `os.homedir()`
         // fails with `ERR_ACCESS_DENIED`.
         for module in ["R997", "mcp:bir/forms"] {
-            let (engine, rx, _) = start_widget(super::mini_bundle(module, js.clone()));
+            let (engine, rx, _) = start_widget(super::mini_bundle(module, js.clone(), None));
             let commands = run_until_text(&engine, &rx, "home ERR_ACCESS_DENIED");
             assert!(
                 commands.is_empty(),
