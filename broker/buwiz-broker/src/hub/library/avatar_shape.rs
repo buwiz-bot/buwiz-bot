@@ -30,19 +30,19 @@ pub const OUTLINE_MAX: usize = 4000;
 
 /// The designer's system prompt: the file Node's `DESIGN_SYSTEM` reads.
 pub fn design_system() -> &'static str {
-    const TEXT: &str = include_str!("../../../../../server/src/templates/avatar-design-system.txt");
+    const TEXT: &str = include_str!("../../../assets/templates/avatar-design-system.txt");
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
 }
 
 /// The rich designer's extra instructions (Node's `RICH_SYSTEM`).
 pub fn rich_system() -> &'static str {
-    const TEXT: &str = include_str!("../../../../../server/src/templates/avatar-rich-system.txt");
+    const TEXT: &str = include_str!("../../../assets/templates/avatar-rich-system.txt");
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
 }
 
 /// Picture mode's style prompt (avatar-design.mjs `PICTURE_STYLE`).
 pub fn picture_style() -> &'static str {
-    const TEXT: &str = include_str!("../../../../../server/src/templates/avatar-picture-style.txt");
+    const TEXT: &str = include_str!("../../../assets/templates/avatar-picture-style.txt");
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
 }
 

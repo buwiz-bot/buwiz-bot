@@ -31,11 +31,15 @@ fi
 bun build "$ROOT/src/app-server.mjs" --target=node --format=esm \
   --external "@betteroffice/*" --outfile "$R/server/app-server.mjs"
 cp -R "$ROOT/widgets" "$R/server/widgets" 2>/dev/null || true
-cp -R "$ROOT/src/plugins" "$R/server/plugins" 2>/dev/null || true
+cp -R "$ROOT/../broker/buwiz-broker/assets/plugins" "$R/server/plugins" 2>/dev/null || true
 # Runtime assets the bundle reads beside itself: TSX templates, the office
 # viewer/editor.
-cp -R "$ROOT/src/templates" "$R/server/templates" 2>/dev/null || true
+cp -R "$ROOT/../broker/buwiz-broker/assets/templates" "$R/server/templates" 2>/dev/null || true
 cp -R "$ROOT/src/office" "$R/server/office" 2>/dev/null || true
+# (the pages, the editor and the seeds live in ../office/, not src/office/)
+cp -R "$ROOT/../office/viewer.html" "$ROOT/../office/seeds" "$R/server/office/" 2>/dev/null || true
+mkdir -p "$R/server/office/editor"
+cp -R "$ROOT/../office/editor/." "$R/server/office/editor/" 2>/dev/null || true
 # The BetterOffice engines are runtime-resolved (import.meta.resolve for the
 # caps probe, /office/vendor/ for the viewer's ESM imports, wasm + font
 # assets loaded off disk) — they must ship as real packages, not be inlined.
@@ -57,7 +61,7 @@ rm -rf "$MCP_OUT"
 # reads trust.json next to the module it was bundled into), and each
 # first-party v1 plugin ships bundled with its SDK deps, as its own process
 # runs it, with its (signed at release) manifest beside it.
-cp "$ROOT/src/v1/trust.json" "$R/server/trust.json"
+cp "$ROOT/../broker/buwiz-broker/assets/trust.json" "$R/server/trust.json"
 GWS="$R/server/v1-plugins/google-workspace"
 mkdir -p "$GWS"
 bun build "$ROOT/src/v1/plugins/google-workspace/server.mjs" --target=node --format=esm --outfile "$GWS/server.mjs"

@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { isObject, isString, parseIJson } from "./jcs.mjs";
 import { fromB64u } from "./ed.mjs";
 
-export const TRUST_FILE = () => process.env.BUWIZ_TRUST_FILE || join(dirname(fileURLToPath(import.meta.url)), "trust.json");
+export const TRUST_FILE = () => process.env.BUWIZ_TRUST_FILE || join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "broker", "buwiz-broker", "assets", "trust.json");
 
 /** {publishers: Map key_id -> {publisher, public_key, first_party}, approved: [{id,
  *  publisher_key_id}]}. A missing or broken file trusts nothing. */

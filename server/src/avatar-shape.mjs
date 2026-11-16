@@ -514,7 +514,7 @@ export function validateAvatar({ shape, color, outline, layers, eyes, parts, sol
 
 // The system prompt lives in templates/ (beside the bundle when packaged),
 // so the Rust hub's /avatar/design reads the very same text.
-export const DESIGN_SYSTEM = readFileSync(new URL("./templates/avatar-design-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
+export const DESIGN_SYSTEM = readFileSync(new URL("../../broker/buwiz-broker/assets/templates/avatar-design-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
 
 /** The user turn's text for a design request. */
 export function designRequest({ prompt, name, image, rich = false }) {
@@ -840,7 +840,7 @@ export function mockCandidates({ image } = {}) {
 // --- Rich: a multi-colour mark avatar (a shell, painted layers, eyes) -------
 
 /** The rich designer's extra instructions (appended to DESIGN_SYSTEM). */
-export const RICH_SYSTEM = readFileSync(new URL("./templates/avatar-rich-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
+export const RICH_SYSTEM = readFileSync(new URL("../../broker/buwiz-broker/assets/templates/avatar-rich-system.txt", import.meta.url), "utf8").replace(/\n$/, "");
 
 /** The user turn's text for a rich design request. */
 export function richRequest({ prompt, name, image }) {

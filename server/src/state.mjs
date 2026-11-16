@@ -711,7 +711,7 @@ export function writeIndex() {
 // writeShelf lives in templates.mjs — its body was a 480-line embedded TSX
 // template, now a real file read at call time.
 export function writeShelf() {
-  writeFileSync(join(WIDGETS_DIR, "index.tsx"), readFileSync(new URL("./templates/shelf.tsx", import.meta.url), "utf8"));
+  writeFileSync(join(WIDGETS_DIR, "index.tsx"), readFileSync(new URL("../../broker/buwiz-broker/assets/templates/shelf.tsx", import.meta.url), "utf8"));
 }
 
 export const widgetRow = (name) =>

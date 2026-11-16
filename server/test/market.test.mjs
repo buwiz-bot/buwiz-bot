@@ -619,7 +619,7 @@ test("MKT-15 the bundled catalog lists the three vendored plugins; no catalog fi
     ["neon", "Neon", "Neon", ["data"]],
     ["google-workspace", "Google Workspace", "taylorwilsdon", ["productivity"]],
   ]);
-  for (const name of ["calcom", "neon", "google-workspace"]) assert.ok(existsSync(join(ROOT, "src", "plugins", "external_plugins", name, ".mcp.json")), name);
+  for (const name of ["calcom", "neon", "google-workspace"]) assert.ok(existsSync(join(ROOT, "..", "broker", "buwiz-broker", "assets", "plugins", "external_plugins", name, ".mcp.json")), name);
   const none = read({ BUWIZ_PLUGIN_CATALOG: join(dir, "no-such-catalog.json") });
 
   assert.deepEqual(none, { rows: [], kept: "Kept" });
