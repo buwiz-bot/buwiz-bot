@@ -62,7 +62,5 @@ are lost at the next rebuild.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.
-- Package it into an app bundle with
-  `server/tools/package-server.sh <Resources dir>`.
 - A plugin's `BUWIZ_BROKER_DIR` is this `server/` directory (BIR's manifest
   signing and broker tests read `src/v1/` from it).
