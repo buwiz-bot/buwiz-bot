@@ -1485,6 +1485,8 @@ pub struct Turn {
     pub tools_change: Option<ToolsChangeNotice>,
     /// A `notice` turn asking the user's OK for one call.
     pub tool_ask: Option<ToolAskNotice>,
+    /// A `notice` turn asking whether a widget may use a data source.
+    pub widget_ask: Option<crate::widget_ask::Notice>,
     /// A `notice` turn suggesting a computer be set up (`cards/computer_setup.rs`).
     pub(crate) computer_setup: Option<crate::cards::computer_setup::Notice>,
     /// A `notice` turn holding the broker's login card (`cards/user_form.rs`).
@@ -2673,6 +2675,7 @@ impl Turn {
             messages_card: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::messages::Notice::of)).flatten(),
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
+            widget_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::widget_ask::Notice::of)).flatten(),
             computer_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::computer_setup::Notice::of)).flatten(),
             user_form: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::user_form::UserFormSpec::from_notice)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
@@ -3034,6 +3037,8 @@ pub struct Store {
     /// The Tools sheet and full view, and the `tools_change` cards'
     /// answers (`tools.rs`).
     pub tools: crate::tools::Tools,
+    /// The chat's `widget_ask` cards by id, as answered here (`widget_ask.rs`).
+    pub(crate) widget_asks: Signal<std::collections::HashMap<String, crate::widget_ask::Local>>,
     /// The draft was rewritten for v1 plugins already: the next `send`
     /// sends it as it is.
     pub v1_resolved: std::cell::Cell<bool>,
@@ -3392,6 +3397,7 @@ impl Store {
             link_ask: signal(None),
             v1: crate::mini_v1::ui::V1::new(),
             tools: crate::tools::Tools::new(),
+            widget_asks: signal(std::collections::HashMap::new()),
             v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
