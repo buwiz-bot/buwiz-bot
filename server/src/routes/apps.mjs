@@ -36,14 +36,15 @@ const stateAnswer = (name) => {
   } catch {}
   return JSON.stringify({ state, v: stateV(row?.data ?? "") });
 };
-const flushState = (name, only) => {
+export const flushState = (name, only) => {
   const set = stateWaiters.get(name);
   if (!set) return;
+  const answer = stateAnswer(name); // once, however many wait
   for (const w of [...set]) {
     if (only && w !== only) continue;
     clearTimeout(w.timer);
     set.delete(w);
-    if (!w.res.writableEnded) w.res.end(stateAnswer(name));
+    if (!w.res.writableEnded) w.res.end(answer);
   }
   if (!set.size) stateWaiters.delete(name);
 };
@@ -493,6 +494,7 @@ export default async function handle(req, res) {
         if (everywhere)
           db.prepare("DELETE FROM widgets WHERE name=?").run(name);
         db.prepare("DELETE FROM kv WHERE name=?").run(name);
+        flushState(name); // waiting widgets learn it is gone
         db.prepare("DELETE FROM apps WHERE name=?").run(name);
         db.prepare("INSERT OR IGNORE INTO tombstones(name) VALUES(?)").run(name);
         // …and out of every group, the archive and its edited details
@@ -604,7 +606,8 @@ export default async function handle(req, res) {
         res.on("close", () => {
           clearTimeout(w.timer);
           set.delete(w);
-          if (!set.size) stateWaiters.delete(name);
+          // a flush may have dropped this set for a newer one: leave that be
+          if (!set.size && stateWaiters.get(name) === set) stateWaiters.delete(name);
         });
         console.log(`  /state GET ${name} → waiting ${waitMs}ms`);
         return true;

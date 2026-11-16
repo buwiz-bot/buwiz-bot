@@ -23,32 +23,33 @@ const post = (path, body) =>
   request("POST", path, { headers: { "Content-Type": "application/json" }, body });
 
 test("STATE-01 a widget's state round-trips by path, query and body name", async () => {
-  assert.deepEqual((await request("GET", "/state/leaf-a")).json, { state: null });
+  // nothing stored: state null, v the hash of the empty text
+  assert.deepEqual((await request("GET", "/state/leaf-a")).json, { state: null, v: "cbf29ce484222325" });
   assert.deepEqual((await postJson("/state/leaf-a", { n: 1, list: ["x"] })).json, { ok: true });
   const r = await request("GET", "/state/leaf-a");
   assert.equal(r.status, 200);
   assert.match(r.headers["content-type"], /application\/json/);
-  assert.equal(r.text, '{"state":{"n":1,"list":["x"]}}');
+  assert.equal(r.text, '{"state":{"n":1,"list":["x"]},"v":"6adbb1cf7fb04f0e"}');
 
   await postJson("/state?name=leaf-b", { state: { b: true } });
-  assert.equal((await request("GET", "/state?name=leaf-b")).text, '{"state":{"b":true}}');
+  assert.equal((await request("GET", "/state?name=leaf-b")).text, '{"state":{"b":true},"v":"9da3011cdbf61d71"}');
 
   await postJson("/state", { name: "leaf-c", state: [1, 2] });
-  assert.equal((await request("GET", "/state/leaf-c")).text, '{"state":[1,2]}');
+  assert.equal((await request("GET", "/state/leaf-c")).text, '{"state":[1,2],"v":"6a12f12d4705a9b6"}');
 
   // an encoded name is decoded; a state of null is kept as {}
   await postJson("/state/leaf%2Dd", { state: null });
-  assert.equal((await request("GET", "/state/leaf-d")).text, '{"state":{}}');
+  assert.equal((await request("GET", "/state/leaf-d")).text, '{"state":{},"v":"08f44b07b5901a25"}');
 });
 
 test("STATE-02 numbers and key order come back as JavaScript writes them", async () => {
   await post("/state/leaf-num", '{"b":1.0,"a":1e21,"2":0.000001,"1":1e-7,"z":-0,"big":12345678901234567890}');
   assert.equal(
     (await request("GET", "/state/leaf-num")).text,
-    '{"state":{"1":1e-7,"2":0.000001,"b":1,"a":1e+21,"z":0,"big":12345678901234567000}}',
+    '{"state":{"1":1e-7,"2":0.000001,"b":1,"a":1e+21,"z":0,"big":12345678901234567000},"v":"74aeb6e9819fa174"}',
   );
   await post("/state/leaf-dup", '{"a":1,"b":2,"a":3}');
-  assert.equal((await request("GET", "/state/leaf-dup")).text, '{"state":{"a":3,"b":2}}');
+  assert.equal((await request("GET", "/state/leaf-dup")).text, '{"state":{"a":3,"b":2},"v":"bd525b6b366106fd"}');
   await post("/state/leaf-str", JSON.stringify({ s: 'q"\\\n\t\u0001\u2028é😀/' }));
   assert.equal((await request("GET", "/state/leaf-str")).json.state.s, 'q"\\\n\t\u0001\u2028é😀/');
 });
@@ -68,16 +69,16 @@ test("STATE-03 a bad name or body is refused, and a bad name reads as empty", as
   const nul = await post("/state/leaf-e", "null");
   assert.equal(nul.status, 400);
   assert.match(nul.json.error, /reading 'state'/);
-  assert.deepEqual((await request("GET", "/state/leaf-e")).json, { state: null });
+  assert.deepEqual((await request("GET", "/state/leaf-e")).json, { state: null, v: "cbf29ce484222325" });
 
   // a bare value is the state itself
   await post("/state/leaf-f", "5");
-  assert.equal((await request("GET", "/state/leaf-f")).text, '{"state":5}');
+  assert.equal((await request("GET", "/state/leaf-f")).text, '{"state":5,"v":"af63a84c86019430"}');
 });
 
 test("STATE-04 an empty body stores {}", async () => {
   assert.equal((await request("POST", "/state/leaf-g")).status, 200);
-  assert.equal((await request("GET", "/state/leaf-g")).text, '{"state":{}}');
+  assert.equal((await request("GET", "/state/leaf-g")).text, '{"state":{},"v":"08f44b07b5901a25"}');
 });
 
 test("PREFS-01 defaults, then what was set", async () => {

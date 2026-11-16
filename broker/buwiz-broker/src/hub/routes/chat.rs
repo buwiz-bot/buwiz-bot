@@ -373,6 +373,7 @@ pub fn sweep_modules(ctx: &HubCtx, names: &[String]) -> Result<(), String> {
             c.execute("DELETE FROM kv WHERE name=?", [name])?;
             c.execute("DELETE FROM apps WHERE name=?", [name])
         })?;
+        crate::leaf::state_changed();
     }
     Ok(())
 }

@@ -2,6 +2,8 @@
 //! (server/src/routes/apps.mjs). Accepts `/state/<name>`, `/state?name=`,
 //! and bodies of `{name, state}` or the bare state.
 
+use std::collections::HashMap;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::OptionalExtension;
@@ -53,12 +55,76 @@ fn version(data: Option<&str>) -> String {
     format!("{h:016x}")
 }
 
+/// Held GETs of one name at most (Node's cap too); past it a GET answers now.
+const MAX_WAITERS_PER_NAME: usize = 32;
+
+/// Held GETs in all. Each pins a runtime thread in `block_in_place` for up
+/// to [`MAX_WAIT`], so this stays well under tokio's 512-thread blocking
+/// pool, which chat and the other routes share.
+const MAX_WAITERS: usize = 128;
+
+/// Long-polls sleep on `CV` (anchored by `WAKE`); a write notifies after
+/// it lands so waiters answer in ~a millisecond, not a poll interval.
+/// `WAKE` is held from a waiter's read until it sleeps, so a write can
+/// never slip between the two unseen. One pair for the process: the hub's
+/// deletes notify it too.
+static WAKE: Mutex<()> = Mutex::new(());
+static CV: Condvar = Condvar::new();
+
+/// Wake every waiter; each re-reads its own name.
+pub(super) fn notify() {
+    let _guard = WAKE.lock().unwrap_or_else(|e| e.into_inner());
+    CV.notify_all();
+}
+
+/// How many GETs are held, in all and per name.
+#[derive(Default)]
+pub(super) struct Waiting {
+    total: usize,
+    by_name: HashMap<String, usize>,
+}
+
+/// A held place; the count drops with it on every way out of `get`.
+struct Seat<'a> {
+    waiting: &'a Mutex<Waiting>,
+    name: String,
+}
+
+impl<'a> Seat<'a> {
+    fn take(waiting: &'a Mutex<Waiting>, name: &str, per_name: usize, total: usize) -> Option<Self> {
+        let mut w = waiting.lock().unwrap_or_else(|e| e.into_inner());
+        if w.total >= total || w.by_name.get(name).copied().unwrap_or(0) >= per_name {
+            return None;
+        }
+        w.total += 1;
+        *w.by_name.entry(name.to_owned()).or_insert(0) += 1;
+        Some(Self { waiting, name: name.to_owned() })
+    }
+}
+
+impl Drop for Seat<'_> {
+    fn drop(&mut self) {
+        let mut w = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        w.total -= 1;
+        if let Some(n) = w.by_name.get_mut(&self.name) {
+            *n -= 1;
+            if *n == 0 {
+                w.by_name.remove(&self.name);
+            }
+        }
+    }
+}
+
 fn read(leaf: &Leaf, name: &str) -> Result<Option<String>, String> {
     leaf.db(|db| db.query_row("SELECT CAST(data AS TEXT) FROM kv WHERE name=?", [name], |r| r.get::<_, Option<String>>(0)).optional())
         .map(|row| row.flatten())
 }
 
 pub fn get(leaf: &Leaf, url: &str) -> Answer {
+    get_capped(leaf, url, MAX_WAITERS_PER_NAME, MAX_WAITERS)
+}
+
+fn get_capped(leaf: &Leaf, url: &str, per_name: usize, total: usize) -> Answer {
     let Ok(name) = state_name(url) else {
         return Answer::bare(500, "{\"error\":\"URI malformed\"}");
     };
@@ -76,11 +142,13 @@ pub fn get(leaf: &Leaf, url: &str) -> Answer {
     let hold = wait(url);
     if !hold.is_zero() {
         let baseline = js::search_param(url, "v").unwrap_or_else(|| version(data.as_deref()));
-        if baseline == version(data.as_deref()) {
-            // `wake` stays held from the re-read to the sleep, so a POST's
+        // past a cap the GET answers now with what is stored, as Node does
+        let seat = if baseline == version(data.as_deref()) { Seat::take(&leaf.waiting, &name, per_name, total) } else { None };
+        if seat.is_some() {
+            // `WAKE` stays held from the re-read to the sleep, so a
             // notify can't land between them unseen; a write wakes every
             // waiter and each re-checks its own name.
-            let mut guard = leaf.wake.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = WAKE.lock().unwrap_or_else(|e| e.into_inner());
             let deadline = Instant::now() + hold;
             data = match read(leaf, &name) {
                 Ok(d) => d,
@@ -91,7 +159,7 @@ pub fn get(leaf: &Leaf, url: &str) -> Answer {
                 if remaining.is_zero() {
                     break;
                 }
-                let (g, res) = leaf.cv.wait_timeout(guard, remaining).unwrap_or_else(|e| e.into_inner());
+                let (g, res) = CV.wait_timeout(guard, remaining).unwrap_or_else(|e| e.into_inner());
                 guard = g;
                 if res.timed_out() {
                     break;
@@ -145,8 +213,7 @@ pub fn post(leaf: &Leaf, url: &str, body: &str) -> Answer {
     };
     match leaf.db(|db| db.execute("INSERT OR REPLACE INTO kv(name,data) VALUES(?,?)", rusqlite::params![key, data])) {
         Ok(_) => {
-            let _guard = leaf.wake.lock().unwrap_or_else(|e| e.into_inner());
-            leaf.cv.notify_all();
+            notify();
             Answer::json(200, "{\"ok\":true}")
         }
         Err(e) => bad(&e),
@@ -241,5 +308,108 @@ mod tests {
         let e = t.elapsed();
         assert!(e >= Duration::from_millis(300) && e < Duration::from_secs(5), "{e:?}");
         assert_eq!(v_of(&a), v1);
+    }
+
+    /// Waits until `n` GETs are held (the spawned ones have reached their sleep).
+    fn held(leaf: &Leaf, n: usize) {
+        let t = std::time::Instant::now();
+        while leaf.waiting.lock().unwrap().total != n {
+            assert!(t.elapsed() < Duration::from_secs(5), "waiters never reached {n}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// With the caps already full by a held GET of `w`, a GET of `other`
+    /// (a name with a stored state, `v` current) answers at once.
+    fn capped_second_answers_now(per_name: usize, total: usize, other: &str) {
+        let leaf = scratch_leaf();
+        post(&leaf, 1);
+        assert_eq!(super::post(&leaf, &format!("/state/{other}"), "{\"n\":1}").status, 200);
+        let v = v_of(&super::get(&leaf, "/state/w"));
+        let v_other = v_of(&super::get(&leaf, &format!("/state/{other}")));
+        std::thread::scope(|s| {
+            let a = s.spawn(|| get_capped(&leaf, &format!("/state/w?wait=10000&v={v}"), per_name, total));
+            held(&leaf, 1);
+            let t = std::time::Instant::now();
+            let b = get_capped(&leaf, &format!("/state/{other}?wait=10000&v={v_other}"), per_name, total);
+            assert!(t.elapsed() < Duration::from_secs(2), "past the cap the GET was held");
+            assert_eq!(v_of(&b), v_other);
+            assert!(body(&b).contains("\"n\":1"), "{}", body(&b));
+            // the first is still held until a write lands
+            assert_eq!(leaf.waiting.lock().unwrap().total, 1);
+            post(&leaf, 2);
+            assert!(body(&a.join().unwrap()).contains("\"n\":2"));
+        });
+    }
+
+    #[test]
+    fn waiters_per_name_are_capped() {
+        capped_second_answers_now(1, 100, "w");
+    }
+
+    #[test]
+    fn waiters_in_all_are_capped() {
+        capped_second_answers_now(100, 1, "other");
+    }
+
+    #[test]
+    fn the_caps_are_what_node_and_the_runtime_allow() {
+        assert_eq!(MAX_WAITERS_PER_NAME, 32);
+        assert!(MAX_WAITERS >= MAX_WAITERS_PER_NAME && MAX_WAITERS < 512);
+    }
+
+    #[test]
+    fn a_seat_is_freed_on_every_way_out() {
+        let leaf = scratch_leaf();
+        post(&leaf, 1);
+        let v = v_of(&super::get(&leaf, "/state/w"));
+        // timed out
+        super::get(&leaf, &format!("/state/w?wait=100&v={v}"));
+        assert_eq!(leaf.waiting.lock().unwrap().total, 0);
+        // woken
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                held(&leaf, 1);
+                post(&leaf, 2);
+            });
+            super::get(&leaf, &format!("/state/w?wait=10000&v={v}"));
+        });
+        let w = leaf.waiting.lock().unwrap();
+        assert!(w.total == 0 && w.by_name.is_empty());
+    }
+
+    /// The `v` Node computes for the same text (server/test/state-wait.test.mjs
+    /// holds the same vectors).
+    #[test]
+    fn the_version_is_fnv1a_as_node_computes_it() {
+        assert_eq!(version(None), "cbf29ce484222325");
+        assert_eq!(version(Some("")), "cbf29ce484222325");
+        assert_eq!(version(Some("{\"n\":1}")), "0c85d1734a1666a0");
+        assert_eq!(version(Some("{\"s\":\"caf\u{e9} \u{1f600}\"}")), "91d0c4d813eafc7b");
+    }
+
+    #[test]
+    fn deleting_a_chats_modules_wakes_their_waiters() {
+        use crate::hub::{ctx::HubCtx, traits::Clock};
+        let leaf = scratch_leaf();
+        let dir = leaf.data.clone();
+        std::fs::create_dir_all(dir.join("widgets")).unwrap();
+        let ctx = HubCtx::new(dir, Clock::manual());
+        ctx.store.load().unwrap();
+        assert_eq!(super::post(&leaf, "/state/R7", "{\"n\":1}").status, 200);
+        let v = v_of(&super::get(&leaf, "/state/R7"));
+        let t = std::time::Instant::now();
+        let mut held_get = None;
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                held(&leaf, 1);
+                crate::hub::routes::chat::sweep_modules(&ctx, &["R7".to_owned()]).unwrap();
+            });
+            held_get = Some(super::get(&leaf, &format!("/state/R7?wait=10000&v={v}")));
+        });
+        let a = held_get.unwrap();
+        assert!(t.elapsed() < Duration::from_secs(5), "the delete did not wake the GET");
+        assert!(body(&a).starts_with("{\"state\":null"), "{}", body(&a));
+        assert_ne!(v_of(&a), v);
     }
 }

@@ -585,6 +585,8 @@ async fn app_delete(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
             c.execute("DELETE FROM apps WHERE name=?", [&name])?;
             c.execute("INSERT OR IGNORE INTO tombstones(name) VALUES(?)", [&name])
         })?;
+        // a widget showing this state learns it is gone
+        crate::leaf::state_changed();
         forget_artifact(&ctx, &name)?;
         ctx.store.write(|s| {
             for t in s.list.iter_mut() {
