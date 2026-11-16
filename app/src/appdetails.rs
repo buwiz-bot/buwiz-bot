@@ -221,6 +221,10 @@ fn sheet() -> impl IntoElement {
                             })
                             .when(current().kind != "mcp-app", |v| {
                                 v.child(identity()).child(fields()).child(facts())
+                            })
+                            // what a generated widget may use, and Remove
+                            .when(current().kind == "app" && crate::mini::is_widget(&current().name), |v| {
+                                v.child(crate::widget_ask::data_section(current().name))
                             }),
                     ),
                 )

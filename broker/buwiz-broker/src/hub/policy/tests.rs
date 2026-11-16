@@ -1651,7 +1651,7 @@ async fn skill_enable_and_mcp_enable_propose_and_disable_acts_as_before() {
     ctx.db.with(|c| c.execute("UPDATE skills SET enabled=1", [])).unwrap();
     let prompt = |ctx: &HubCtx| {
         let off = off_keys(ctx, "hex");
-        crate::hub::tools::defs::base_system_for(ctx, false, &|id| off.contains(&format!("skill:{id}")))
+        crate::hub::tools::defs::base_system_for(ctx, "", &|id| off.contains(&format!("skill:{id}")))
     };
     assert!(prompt(&ctx).contains("### Tone"));
     host_set(&ctx, &json!({"bot": "hex", "key": "skill:tone", "enabled": false})).unwrap();

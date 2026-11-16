@@ -684,17 +684,23 @@ async fn reuse(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// `GET /sources`: the data sources a generated module may call.
-async fn sources(ctx: Arc<HubCtx>, _: HubRequest) -> HubResponse {
-    let mut names = vec!["timeclock", "reminders"];
-    if super::leftovers::linear_key(&ctx).await.is_some() {
-        names.push("linear");
-    }
-    json_at(200, &json!({"sources": names.iter().map(|n| json!({"name": n})).collect::<Vec<_>>()}), true)
+/// `GET /sources` (`?bot=<id>` for a Bot, else the plain chats): the data sources a generated
+/// module may call, from the registry (`hub::sources`): `{sources: [{name, title, about, ready,
+/// state, actions: [{name, about, write}]}]}`.
+async fn sources(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
+    let owner = req.query("bot").filter(|b| !b.is_empty()).map(|b| crate::hub::policy::owner_of(&b).to_owned()).unwrap_or_else(|| crate::hub::policy::CHATS.to_owned());
+    json_at(200, &crate::hub::sources::sources_json(&ctx, &owner).await, true)
+}
+
+/// Whether widget source calls a data source: a `source(` call, not a method of that name or
+/// the tail of another word.
+fn calls_a_source(src: &str) -> bool {
+    static CALL: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
+    CALL.get_or_init(|| regex_lite::Regex::new(r"(^|[^.\w$])source\s*\(").expect("the source-call pattern")).is_match(src)
 }
 
 /// `GET /catalog`: every published widget as a Mini Apps card (kinds:
-/// "db" saves state, "api" reads /data/, "keys" binds keys, else "mem").
+/// "db" saves state, "api" calls a data source, "keys" binds keys, else "mem").
 async fn catalog(ctx: Arc<HubCtx>, _: HubRequest) -> HubResponse {
     let read = ctx.db.with(|c| {
         let meta = |like: &str| rows_of(c, &format!("SELECT k,v FROM meta WHERE k LIKE '{like}'"), &[]);
@@ -731,7 +737,7 @@ async fn catalog(ctx: Arc<HubCtx>, _: HubRequest) -> HubResponse {
         if has_state {
             kinds.push("db");
         }
-        if src.contains("/data/") {
+        if calls_a_source(&src) {
             kinds.push("api");
         }
         if imports_keymap(&src) {

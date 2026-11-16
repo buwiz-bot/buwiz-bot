@@ -1066,7 +1066,7 @@ impl Host {
             .iter()
             .map(|t| {
                 let read_only = get(t, "annotations").and_then(|a| get(a, "readOnlyHint")) == Some(&Value::Bool(true));
-                json!({"name": get(t, "name"), "description": get(t, "description").filter(|d| js::truthy(d)).cloned().unwrap_or(json!("")), "readOnly": read_only})
+                json!({"name": get(t, "name"), "description": get(t, "description").filter(|d| js::truthy(d)).cloned().unwrap_or(json!("")), "readOnly": read_only, "widget": crate::hub::sources::plugin::for_widget(t)})
             })
             .collect();
         let s = |k: &str| tpl(get(m, k));

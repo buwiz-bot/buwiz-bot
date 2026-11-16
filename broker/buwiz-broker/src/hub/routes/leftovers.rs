@@ -6,71 +6,21 @@
 //! `helper/http.rs`. Pinned by server/test/leftovers.test.mjs (LEFT-xx).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Response, StatusCode};
 use rusqlite::OptionalExtension;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
-use crate::helper::http;
 use crate::helper::local::MacTools;
 use crate::hub::ctx::HubCtx;
+use crate::hub::jsval::{get, parse_error, trim, truthy};
 use crate::hub::traits::{LocalCommand, LocalTools};
 use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
-
-const HINT: &str = "grant permission in System Settings → Privacy & Security → Reminders / Automation";
-
-const REMINDERS_LIST: &str = r#"
-      const app = Application("Reminders");
-      const out = [];
-      outer: for (const l of app.lists()) {
-        const ln = l.name();
-        for (const r of l.reminders.whose({completed: false})()) {
-          let due = null, flagged = false;
-          try { const d = r.dueDate(); if (d) due = d.toISOString(); } catch (e) {}
-          try { flagged = !!r.flagged(); } catch (e) {}
-          out.push({ name: r.name(), list: ln, due, flagged });
-          if (out.length >= 50) break outer;
-        }
-      }
-      JSON.stringify(out);"#;
-
-const REMINDERS_COMPLETE: &str = r#"
-            const app = Application("Reminders");
-            ObjC.import("Cocoa");
-            const env = $.NSProcessInfo.processInfo.environment;
-            const name = ObjC.unwrap(env.objectForKey("REM_NAME"));
-            let done = false;
-            outer: for (const l of app.lists()) {
-              const hits = l.reminders.whose({completed: false, name})();
-              if (hits.length) { hits[0].completed = true; done = true; break outer; }
-            }
-            JSON.stringify({ ok: done });"#;
-
-const REMINDERS_ADD: &str = r#"
-            const app = Application("Reminders");
-            ObjC.import("Cocoa");
-            const env = $.NSProcessInfo.processInfo.environment;
-            const get = (k) => { const v = env.objectForKey(k); return v ? ObjC.unwrap(v) : null; };
-            const name = get("REM_NAME"), listName = get("REM_LIST"), due = get("REM_DUE");
-            let list = null;
-            if (listName) { const hits = app.lists.whose({name: listName})(); if (hits.length) list = hits[0]; }
-            if (!list) list = app.defaultList();
-            const props = { name };
-            if (due) props.dueDate = new Date(due);
-            list.reminders.push(app.Reminder(props));
-            JSON.stringify({ ok: true, name, list: list.name() });"#;
-
-const LINEAR_URL: &str = "https://api.linear.app/graphql";
-const L_FIELDS: &str = "nodes { id identifier title priority url updatedAt state { id name } assignee { displayName } team { key } }";
-const Q_STATES: &str = "{ teams(first: 10) { nodes { key states { nodes { id name type position } } } } }";
-const Q_VIEWER: &str = "{ viewer { id } }";
-const Q_UPDATE: &str = "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }";
 
 /// Registers the nine routes, and the Mac's local tools unless a test
 /// already gave the hub its own.
@@ -78,12 +28,6 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     if ctx.local.is_none() {
         ctx.local = Some(Arc::new(MacTools));
     }
-    routes.route(Verb::Get, Pattern::Exact("/data/reminders"), |c, r| exact(c, r, reminders));
-    routes.route(Verb::Post, Pattern::Exact("/data/reminders/add"), |c, r| exact(c, r, reminder_change));
-    routes.route(Verb::Post, Pattern::Exact("/data/reminders/complete"), |c, r| exact(c, r, reminder_change));
-    routes.route(Verb::Get, Pattern::Exact("/data/linear/issues"), |c, r| exact(c, r, linear_issues));
-    routes.route(Verb::Get, Pattern::Exact("/data/linear/states"), |c, r| exact(c, r, linear_states));
-    routes.route(Verb::Post, Pattern::Exact("/data/linear/assign"), |c, r| exact(c, r, linear_assign));
     routes.route(Verb::Post, Pattern::Exact("/file/write"), |c, r| exact(c, r, file_write));
     routes.route(Verb::Post, Pattern::Exact("/file/open"), |c, r| exact(c, r, file_open));
     routes.route(Verb::Post, Pattern::Exact("/file/save"), |c, r| exact(c, r, file_save));
@@ -119,305 +63,10 @@ fn body_json(req: &HubRequest) -> Result<Value, String> {
     serde_json::from_str(text).map_err(|e| parse_error(text, &e))
 }
 
-/// The JSON body Node reads with `try { b = JSON.parse(…) } catch {}`:
-/// `{}` when it does not parse.
-fn body_or_empty(req: &HubRequest) -> Value {
-    body_json(req).unwrap_or_else(|_| json!({}))
-}
-
-/// `b.<name>` of a parsed body; `Err` with the TypeError Node throws when
-/// the body is `null`.
-fn field<'a>(b: &'a Value, name: &str) -> Result<Option<&'a Value>, String> {
-    match b {
-        Value::Null => Err(format!("Cannot read properties of null (reading '{name}')")),
-        Value::Object(m) => Ok(m.get(name)),
-        _ => Ok(None),
-    }
-}
-
 /// What Node's dispatcher answers for a throw before any answer (there, a
 /// throw inside a body's `end` handler is uncaught and ends the process).
 fn thrown(error: &str) -> HubResponse {
     types::json(StatusCode::INTERNAL_SERVER_ERROR, &json!({ "error": error }))
-}
-
-/// `a?.b`: the member of an object, else nothing.
-fn get<'a>(v: Option<&'a Value>, name: &str) -> Option<&'a Value> {
-    v.and_then(|v| v.as_object()).and_then(|m| m.get(name))
-}
-
-fn truthy(v: Option<&Value>) -> bool {
-    v.is_some_and(js::truthy)
-}
-
-/// `s.trim()`.
-fn trim(s: &str) -> &str {
-    s.trim_matches(js::is_space)
-}
-
-/// V8's SyntaxError message for `JSON.parse(src)`, for the shapes of
-/// error serde reports (V8 shortens a long source; this does not).
-pub fn parse_error(src: &str, e: &serde_json::Error) -> String {
-    if e.is_eof() {
-        return "Unexpected end of JSON input".to_owned();
-    }
-    // serde's line and column (1-based) of the character it stopped at
-    let line_start: usize = src.split_inclusive('\n').take(e.line().saturating_sub(1)).map(str::len).sum();
-    let line = &src[line_start..];
-    let ch = line.chars().nth(e.column().saturating_sub(1));
-    let pos = src[..line_start].encode_utf16().count() + line.chars().take(e.column().saturating_sub(1)).map(char::len_utf16).sum::<usize>();
-    let at = format!("in JSON at position {pos} (line {} column {})", e.line(), e.column());
-    let msg = e.to_string();
-    if msg.starts_with("trailing characters") {
-        return format!("Unexpected non-whitespace character after JSON at position {pos} (line {} column {})", e.line(), e.column());
-    }
-    if msg.starts_with("key must be a string") {
-        return format!("Expected property name or '}}' {at}");
-    }
-    match ch {
-        Some(c) => format!("Unexpected token '{c}', \"{src}\" is not valid JSON"),
-        None => "Unexpected end of JSON input".to_owned(),
-    }
-}
-
-// ————— Reminders —————
-
-/// `jxa(script, env)` (state.mjs): `osascript -l JavaScript -e <script>`
-/// with a 15 s timeout, its output parsed as JSON, or `{error, hint}`.
-async fn jxa(ctx: &HubCtx, script: &str, env: Vec<(String, String)>) -> Value {
-    let cmd = LocalCommand { program: "osascript".into(), args: vec!["-l".into(), "JavaScript".into(), "-e".into(), script.into()], env, stdin: None, timeout: Some(Duration::from_secs(15)) };
-    let failed = |message: String| json!({ "error": message.split('\n').next().unwrap_or(""), "hint": HINT });
-    match local(ctx).run(cmd).await {
-        Err(code) => failed(format!("spawnSync osascript {code}")),
-        Ok(out) if out.code.is_none() => failed("spawnSync osascript ETIMEDOUT".into()),
-        Ok(out) if out.code != Some(0) => failed(format!("Command failed: osascript -l JavaScript -e {script}\n{}", String::from_utf8_lossy(&out.stderr))),
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let text = trim(&text);
-            let text = if text.is_empty() { "null" } else { text };
-            serde_json::from_str(text).unwrap_or_else(|e| failed(parse_error(text, &e)))
-        }
-    }
-}
-
-/// `GET /data/reminders`: `{reminders}`, or the script's `{error}` as is.
-async fn reminders(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
-    let out = jxa(&ctx, REMINDERS_LIST, Vec::new()).await;
-    if truthy(get(Some(&out), "error")) {
-        return ok(&out);
-    }
-    ok(&json!({ "reminders": if js::truthy(&out) { out } else { json!([]) } }))
-}
-
-/// `POST /data/reminders/add` and `/complete` `{name, list?, due?}`.
-async fn reminder_change(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    let b = body_or_empty(&req);
-    let mut env = Vec::new();
-    for (key, name) in [("REM_NAME", "name"), ("REM_LIST", "list"), ("REM_DUE", "due")] {
-        let v = match field(&b, name) {
-            Ok(v) => v,
-            Err(e) => return thrown(&e),
-        };
-        env.push((key.to_owned(), if truthy(v) { js::string_of(v.expect("truthy")) } else { String::new() }));
-    }
-    if env[0].1.is_empty() {
-        return ok(&json!({ "error": "name?" }));
-    }
-    let script = if req.path() == "/data/reminders/complete" { REMINDERS_COMPLETE } else { REMINDERS_ADD };
-    ok(&jxa(&ctx, script, env).await)
-}
-
-// ————— Linear —————
-
-/// The key once found (Node's `linearKey`); a miss is looked up again.
-static LINEAR_KEY: Mutex<Option<String>> = Mutex::new(None);
-
-/// `getLinearKey()`: `LINEAR_API_KEY`, else `secret get LINEAR_API_KEY`.
-pub async fn linear_key(ctx: &HubCtx) -> Option<String> {
-    if let Some(k) = LINEAR_KEY.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        return Some(k);
-    }
-    let mut key = std::env::var("LINEAR_API_KEY").ok().filter(|k| !k.is_empty());
-    if key.is_none() {
-        let cmd = LocalCommand { program: "secret".into(), args: vec!["get".into(), "LINEAR_API_KEY".into()], ..Default::default() };
-        if let Ok(out) = local(ctx).run(cmd).await {
-            if out.code == Some(0) {
-                key = Some(trim(&String::from_utf8_lossy(&out.stdout)).to_owned()).filter(|k| !k.is_empty());
-            }
-        }
-    }
-    if let Some(k) = &key {
-        *LINEAR_KEY.lock().unwrap_or_else(|e| e.into_inner()) = Some(k.clone());
-    }
-    key
-}
-
-/// `lgql(query, variables)`: the response's JSON, `{_nokey: true}` with no
-/// key, or the message fetch or `r.json()` rejects with.
-async fn lgql(ctx: &HubCtx, query: &str, variables: Option<Value>) -> Result<Value, String> {
-    let Some(key) = linear_key(ctx).await else { return Ok(json!({ "_nokey": true })) };
-    let body = match variables {
-        Some(v) => json!({ "query": query, "variables": v }),
-        None => json!({ "query": query }),
-    };
-    let url = url::Url::parse(LINEAR_URL).expect("a fixed URL");
-    let req = http::Req::post(url, js::stringify(&body).into_bytes()).header("Authorization", &key).header("Content-Type", "application/json");
-    let res = http::fetch(req).await.map_err(|_| "fetch failed".to_owned())?;
-    let text = res.text().await.map_err(|_| "terminated".to_owned())?;
-    serde_json::from_str(&text).map_err(|e| parse_error(&text, &e))
-}
-
-/// `throw new Error(String(d.errors[0]?.message))`, caught as
-/// `String(e?.message || e)`.
-fn graphql_error(d: &Value) -> Option<String> {
-    let errors = get(Some(d), "errors");
-    if !truthy(errors) {
-        return None;
-    }
-    let first = errors.and_then(|e| e.as_array()).and_then(|a| a.first());
-    let msg = get(first, "message").map(js::string_of).unwrap_or_else(|| "undefined".to_owned());
-    Some(if msg.is_empty() { "Error".to_owned() } else { msg })
-}
-
-fn bad_gateway(error: &str) -> HubResponse {
-    types::json(StatusCode::BAD_GATEWAY, &json!({ "error": error }))
-}
-
-/// `a.b?.c || fallback`.
-fn or(v: Option<&Value>, fallback: Value) -> Value {
-    if truthy(v) {
-        v.cloned().expect("truthy")
-    } else {
-        fallback
-    }
-}
-
-/// An issue as the widget gets it (keys of missing members left out, as
-/// JSON.stringify drops `undefined`).
-fn issue(n: &Value) -> Value {
-    let mut m = Map::new();
-    let mut put = |k: &str, v: Option<&Value>| {
-        if let Some(v) = v {
-            m.insert(k.to_owned(), v.clone());
-        }
-    };
-    put("uid", get(Some(n), "id"));
-    put("id", get(Some(n), "identifier"));
-    put("title", get(Some(n), "title"));
-    m.insert("state".into(), or(get(get(Some(n), "state"), "name"), json!("")));
-    m.insert("stateId".into(), or(get(get(Some(n), "state"), "id"), json!("")));
-    if let Some(p) = get(Some(n), "priority") {
-        m.insert("priority".into(), p.clone());
-    }
-    m.insert("assignee".into(), or(get(get(Some(n), "assignee"), "displayName"), Value::Null));
-    m.insert("team".into(), or(get(get(Some(n), "team"), "key"), Value::Null));
-    if let Some(u) = get(Some(n), "url") {
-        m.insert("url".into(), u.clone());
-    }
-    Value::Object(m)
-}
-
-fn shape(nodes: &[Value], scope: &str) -> Value {
-    json!({ "scope": scope, "issues": nodes.iter().map(issue).collect::<Vec<_>>() })
-}
-
-/// `x || []` of a nodes list; a list only.
-fn nodes(v: Option<&Value>) -> Vec<Value> {
-    v.and_then(|v| v.as_array()).cloned().unwrap_or_default()
-}
-
-/// `GET /data/linear/issues`: assigned to me, else the workspace's latest.
-async fn linear_issues(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
-    let filter = r#"filter: { state: { type: { nin: ["completed","canceled"] } } }"#;
-    let d = match lgql(&ctx, &format!("{{ viewer {{ assignedIssues(first: 25, {filter}) {{ {L_FIELDS} }} }} }}"), None).await {
-        Ok(d) => d,
-        Err(e) => return bad_gateway(&e),
-    };
-    if truthy(get(Some(&d), "_nokey")) {
-        return ok(&json!({ "error": "linear not configured — run `secret set LINEAR_API_KEY`" }));
-    }
-    if let Some(e) = graphql_error(&d) {
-        return bad_gateway(&e);
-    }
-    let assigned = nodes(get(get(get(get(Some(&d), "data"), "viewer"), "assignedIssues"), "nodes"));
-    if !assigned.is_empty() {
-        return ok(&shape(&assigned, "assigned"));
-    }
-    let d2 = match lgql(&ctx, &format!("{{ issues(first: 25, orderBy: updatedAt, {filter}) {{ {L_FIELDS} }} }}"), None).await {
-        Ok(d) => d,
-        Err(e) => return bad_gateway(&e),
-    };
-    if let Some(e) = graphql_error(&d2) {
-        return bad_gateway(&e);
-    }
-    ok(&shape(&nodes(get(get(get(Some(&d2), "data"), "issues"), "nodes")), "workspace"))
-}
-
-/// `GET /data/linear/states`: every team's workflow states, by position.
-async fn linear_states(ctx: Arc<HubCtx>, _req: HubRequest) -> HubResponse {
-    let d = match lgql(&ctx, Q_STATES, None).await {
-        Ok(d) => d,
-        Err(e) => return bad_gateway(&e),
-    };
-    if truthy(get(Some(&d), "_nokey")) {
-        return ok(&json!({ "error": "linear not configured" }));
-    }
-    if let Some(e) = graphql_error(&d) {
-        return bad_gateway(&e);
-    }
-    let position = |s: &Value| get(Some(s), "position").and_then(Value::as_f64).unwrap_or(f64::NAN);
-    let teams: Vec<Value> = nodes(get(get(get(Some(&d), "data"), "teams"), "nodes"))
-        .iter()
-        .map(|t| {
-            let mut states = nodes(get(get(Some(t), "states"), "nodes"));
-            states.sort_by(|a, b| (position(a) - position(b)).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal));
-            let mut m = Map::new();
-            if let Some(k) = get(Some(t), "key") {
-                m.insert("team".into(), k.clone());
-            }
-            let states = states
-                .iter()
-                .map(|s| {
-                    let mut m = Map::new();
-                    for k in ["id", "name", "type"] {
-                        if let Some(v) = get(Some(s), k) {
-                            m.insert(k.into(), v.clone());
-                        }
-                    }
-                    Value::Object(m)
-                })
-                .collect();
-            m.insert("states".into(), Value::Array(states));
-            Value::Object(m)
-        })
-        .collect();
-    ok(&json!({ "teams": teams }))
-}
-
-/// `POST /data/linear/assign {uid}`: the issue to the key's owner. Every
-/// answer here is a 200.
-async fn linear_assign(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    let b = body_or_empty(&req);
-    let uid = match field(&b, "uid") {
-        Ok(v) => v.cloned(),
-        Err(e) => return thrown(&e),
-    };
-    if !truthy(uid.as_ref()) {
-        return ok(&json!({ "error": "uid?" }));
-    }
-    let run = async {
-        let d = lgql(&ctx, Q_VIEWER, None).await?;
-        let vid = get(get(get(Some(&d), "data"), "viewer"), "id").filter(|v| js::truthy(v)).cloned().ok_or_else(|| "no viewer".to_owned())?;
-        let d2 = lgql(&ctx, Q_UPDATE, Some(json!({ "id": uid, "input": { "assigneeId": vid } }))).await?;
-        match graphql_error(&d2) {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    };
-    match run.await {
-        Ok(()) => ok(&json!({ "ok": true })),
-        Err(e) => ok(&json!({ "error": e })),
-    }
 }
 
 // ————— files —————
@@ -755,7 +404,10 @@ async fn file_save(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::traits::{Clock, LocalOutput};
+    use crate::hub::sources;
+    use crate::hub::sources::reminders::{HINT, REMINDERS_ADD, REMINDERS_COMPLETE, REMINDERS_LIST};
+    use crate::hub::traits::{Clock, LocalCommand, LocalOutput, LocalTools};
+    use std::sync::Mutex;
     use crate::hub::Hub;
     use hyper::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
     use hyper::Method;
@@ -764,6 +416,10 @@ mod tests {
     struct Stub {
         out: Mutex<LocalOutput>,
         calls: Mutex<Vec<LocalCommand>>,
+        /// What EventKit would say: `None` is "unavailable or denied", so the
+        /// route runs osascript. Calls to the EventKit methods are recorded.
+        ek: Mutex<Option<Result<Value, String>>>,
+        ek_calls: Mutex<Vec<String>>,
     }
 
     impl LocalTools for Stub {
@@ -772,10 +428,28 @@ mod tests {
             let out = self.out.lock().unwrap().clone();
             Box::pin(async move { Ok(out) })
         }
+
+        fn reminders_list(&self) -> types::BoxFuture<'static, Option<Result<Value, String>>> {
+            self.ek_calls.lock().unwrap().push("list".into());
+            let ek = self.ek.lock().unwrap().clone();
+            Box::pin(async move { ek })
+        }
+
+        fn reminders_complete(&self, name: String) -> types::BoxFuture<'static, Option<Result<Value, String>>> {
+            self.ek_calls.lock().unwrap().push(format!("complete {name}"));
+            let ek = self.ek.lock().unwrap().clone();
+            Box::pin(async move { ek })
+        }
+
+        fn reminders_add(&self, name: String, list: String, due: String) -> types::BoxFuture<'static, Option<Result<Value, String>>> {
+            self.ek_calls.lock().unwrap().push(format!("add {name}|{list}|{due}"));
+            let ek = self.ek.lock().unwrap().clone();
+            Box::pin(async move { ek })
+        }
     }
 
     fn hub(data: &Path, out: LocalOutput) -> (Hub, Arc<Stub>) {
-        let stub = Arc::new(Stub { out: Mutex::new(out), calls: Mutex::new(Vec::new()) });
+        let stub = Arc::new(Stub { out: Mutex::new(out), calls: Mutex::new(Vec::new()), ek: Mutex::new(None), ek_calls: Mutex::new(Vec::new()) });
         let mut ctx = HubCtx::new(data.to_path_buf(), Clock::manual());
         ctx.local = Some(stub.clone());
         (Hub::with(ctx, Vec::new(), install), stub)
@@ -800,21 +474,70 @@ mod tests {
         d
     }
 
+    /// A hub context whose local tools are the stub.
+    fn ctx_with(stub: &Arc<Stub>, label: &str) -> HubCtx {
+        let mut ctx = HubCtx::new(temp(label), Clock::manual());
+        ctx.local = Some(stub.clone());
+        ctx
+    }
+
+    fn stub(out: LocalOutput) -> Arc<Stub> {
+        Arc::new(Stub { out: Mutex::new(out), calls: Mutex::new(Vec::new()), ek: Mutex::new(None), ek_calls: Mutex::new(Vec::new()) })
+    }
+
+    /// What `/data/reminders*` pinned, now through the `reminders` source's own code
+    /// (the routes are gone; widgets call the source).
+    #[tokio::test]
+    async fn left_01b_reminders_use_eventkit_and_fall_back_to_osascript_only_when_it_is_unavailable() {
+        let stub = stub(printed("[{\"name\":\"jxa\"}]\n", 0));
+        let ctx = ctx_with(&stub, "rem-ek");
+        let add = json!({"name": "x", "list": "Home", "due": "2026-11-13"});
+        let complete = json!({"name": "x"});
+        let all = |ctx: &HubCtx, add: Value, complete: Value| {
+            let ctx = ctx as *const HubCtx;
+            // the three actions, in the order the widget calls them
+            async move {
+                let ctx = unsafe { &*ctx };
+                [sources::reminders::list(ctx).await, sources::reminders::change(ctx, false, &add).await.unwrap(), sources::reminders::change(ctx, true, &complete).await.unwrap()]
+            }
+        };
+        // a real EventKit result is the body, and osascript does not run
+        *stub.ek.lock().unwrap() = Some(Ok(json!({ "ok": true })));
+        assert_eq!(all(&ctx, add.clone(), complete.clone()).await, [json!({"ok": true}), json!({"ok": true}), json!({"ok": true})]);
+        // a real EventKit error is the error body, and osascript does not run
+        *stub.ek.lock().unwrap() = Some(Err("save failed".into()));
+        assert_eq!(all(&ctx, add.clone(), complete.clone()).await, [json!({"error": "save failed"}), json!({"error": "save failed"}), json!({"error": "save failed"})]);
+        assert!(stub.calls.lock().unwrap().is_empty());
+        assert_eq!(stub.ek_calls.lock().unwrap().iter().filter(|c| c.starts_with("add ")).collect::<Vec<_>>(), ["add x|Home|2026-11-13", "add x|Home|2026-11-13"]);
+        // unavailable or denied: the old osascript path answers, same shapes
+        *stub.ek.lock().unwrap() = None;
+        assert_eq!(sources::reminders::list(&ctx).await, json!({"reminders": [{"name": "jxa"}]}));
+        *stub.out.lock().unwrap() = printed("{\"ok\":true}\n", 0);
+        assert_eq!(sources::reminders::change(&ctx, false, &json!({"name": "x"})).await.unwrap(), json!({"ok": true}));
+        assert_eq!(sources::reminders::change(&ctx, true, &json!({"name": "x"})).await.unwrap(), json!({"ok": true}));
+        let cmds = stub.calls.lock().unwrap().clone();
+        assert_eq!(cmds.len(), 3);
+        assert!(cmds.iter().all(|c| c.program == "osascript"));
+        assert_eq!(cmds[0].args[3], REMINDERS_LIST);
+        assert_eq!(cmds[1].args[3], REMINDERS_ADD);
+        assert_eq!(cmds[2].args[3], REMINDERS_COMPLETE);
+    }
+
     #[tokio::test]
     async fn left_01_reminders_wrap_the_jxa_list_and_keep_its_errors() {
-        let data = temp("rem");
-        let (hub, stub) = hub(&data, printed("[{\"name\":\"a\"}]\n", 0));
-        assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, r#"{"reminders":[{"name":"a"}]}"#.into()));
+        let stub = stub(printed("[{\"name\":\"a\"}]\n", 0));
+        let ctx = ctx_with(&stub, "rem");
+        assert_eq!(sources::reminders::list(&ctx).await, json!({"reminders": [{"name": "a"}]}));
         let cmd = stub.calls.lock().unwrap()[0].clone();
         assert_eq!((cmd.program.as_str(), &cmd.args[..3], cmd.args[3].as_str()), ("osascript", &["-l".to_owned(), "JavaScript".into(), "-e".into()][..], REMINDERS_LIST));
         *stub.out.lock().unwrap() = printed("", 1);
-        let failed = format!(r#"{{"error":"Command failed: osascript -l JavaScript -e ","hint":"{HINT}"}}"#);
-        assert_eq!(call(&hub, Method::GET, "/data/reminders", "").await, (200, failed.clone()));
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/add", r#"{"name":"x"}"#).await, (200, failed));
+        let failed = json!({"error": "Command failed: osascript -l JavaScript -e ", "hint": HINT});
+        assert_eq!(sources::reminders::list(&ctx).await, failed);
+        assert_eq!(sources::reminders::change(&ctx, false, &json!({"name": "x"})).await.unwrap(), failed);
         assert_eq!(stub.calls.lock().unwrap()[2].env, [("REM_NAME".to_owned(), "x".to_owned()), ("REM_LIST".into(), "".into()), ("REM_DUE".into(), "".into())]);
-        assert_eq!(call(&hub, Method::POST, "/data/reminders/complete", "nope").await, (200, r#"{"error":"name?"}"#.into()));
-        assert_eq!(call(&hub, Method::GET, "/data/reminders?x", "").await, (404, "not found".into()));
-        let _ = std::fs::remove_dir_all(data);
+        assert_eq!(sources::reminders::change(&ctx, true, &json!({})).await.unwrap(), json!({"error": "name?"}));
+        // a `null` body is Node's TypeError
+        assert_eq!(sources::reminders::change(&ctx, true, &Value::Null).await.unwrap_err(), "Cannot read properties of null (reading 'name')");
     }
 
     #[tokio::test]

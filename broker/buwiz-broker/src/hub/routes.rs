@@ -229,15 +229,11 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/skills/state"), Hub(Market)),
     e(Post, X("/skills/delete"), Hub(Market)),
     // L leftovers
-    e(Get, X("/data/linear/issues"), Hub(Leftovers)),
-    e(Get, X("/data/linear/states"), Hub(Leftovers)),
-    e(Post, X("/data/linear/assign"), Hub(Leftovers)),
-    e(Get, X("/data/reminders"), Hub(Leftovers)),
-    e(Post, X("/data/reminders/add"), Hub(Leftovers)),
-    e(Post, X("/data/reminders/complete"), Hub(Leftovers)),
     e(Post, X("/file/write"), Hub(Leftovers)),
     e(Post, X("/file/open"), Hub(Leftovers)),
     e(Post, X("/file/save"), Hub(Leftovers)),
+    // a widget's call of a data source: the ticket in the path is the proof
+    e(Post, P("/w/"), Hub(Artifacts)),
     // pop-out windows (6.3; Node's office role's until then, D36)
     e(Post, X("/popout"), Hub(Artifacts)),
     // office: in Rust since 6.1 (`classify` gives office files'
@@ -248,9 +244,6 @@ pub const ROUTES: &[Entry] = &[
     // already Rust's: leaf (phase 2)
     e(Any, X("/prefs"), Rust),
     e(Any, X("/keymap"), Rust),
-    e(Get, X("/data/timeclock"), Rust),
-    e(Post, X("/data/timeclock/in"), Rust),
-    e(Post, X("/data/timeclock/out"), Rust),
     e(Get, X("/skills"), Rust),
     e(Get, P("/file/raw/"), Rust),
     e(Get, P("/file/preview/"), Rust),
@@ -366,7 +359,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 129);
-        assert_eq!(count(&|o| o == Rust), 33);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 124);
+        assert_eq!(count(&|o| o == Rust), 30);
     }
 }

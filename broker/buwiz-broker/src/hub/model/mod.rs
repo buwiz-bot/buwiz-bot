@@ -256,8 +256,8 @@ pub struct Ask<'a> {
     pub prev_code: Option<&'a str>,
     /// the module's name (its `/state` key)
     pub name: &'a str,
-    /// whether a Linear key is set (`getLinearKey()`)
-    pub linear: bool,
+    /// the data sources a widget may call (`sources::prompt::block`)
+    pub sources: &'a str,
 }
 
 /// `askModel`: one module from the model, streamed (`on_text` runs as
@@ -275,7 +275,7 @@ pub async fn ask_model(settings: &Settings, api: &dyn ModelApi, turn: &TurnCtx, 
         }
         messages.push(json!({ "role": "user", "content": prompts::follow_up(err) }));
     }
-    let system = prompts::system_for(ask.name, ask.linear);
+    let system = prompts::system_for(ask.name, ask.sources);
     if settings.anthropic() {
         // haiku-5.5 deprecates temperature — omit it
         let body = json!({ "model": settings.model, "max_tokens": settings.max_tokens, "system": system, "messages": messages });

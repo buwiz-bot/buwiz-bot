@@ -65,6 +65,7 @@ mod toast;
 mod tools;
 mod vault;
 mod versions;
+mod widget_ask;
 mod widgets;
 pub mod zoom;
 
@@ -253,6 +254,8 @@ mod network_ui_tests;
 mod login_ui_tests;
 #[cfg(test)]
 mod boot_ui_tests;
+#[cfg(test)]
+mod widget_ask_ui_tests;
 
 #[cfg(test)]
 mod app_name_tests {

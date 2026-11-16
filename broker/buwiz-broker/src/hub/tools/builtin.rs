@@ -161,21 +161,17 @@ pub async fn shell_run(data: &std::path::Path, input: &Value) -> Out {
     Out { content: json!(js::slice_utf16(&out, 50000)), is_error: Some(code.is_some()) }
 }
 
-/// `query_source`: one of the app's `/data` sources, through this broker's
-/// front door (its public port, D34; never a fixed 8787).
-pub async fn query_source(input: &Value) -> Out {
-    let src = input.get("source").filter(|s| js::truthy(s)).map(js::string_of).unwrap_or_default();
-    let port = crate::hub::market::node_paths().1;
-    let url = if src == "linear" { format!("http://127.0.0.1:{port}/data/linear/issues") } else { format!("http://127.0.0.1:{port}/data/{src}") };
-    let got: Result<Value, String> = async {
-        let r = fetch_follow(&url, &[], 25000).await?;
-        let text = r.text().await.map_err(|_| "terminated".to_owned())?;
-        serde_json::from_str::<Value>(&text).map_err(|e| format!("Unexpected token in JSON: {e}"))
-    }
-    .await;
-    match got {
+/// `query_source {source, action?, args?}`: one of the data sources a widget may call, read
+/// by the model (`hub::sources::query`): only an action that reads, from the sources the
+/// registry lists for the turn's Bot.
+pub async fn query_source(run: &Run, input: &Value) -> Out {
+    let text = |k: &str| input.get(k).filter(|s| js::truthy(s)).map(js::string_of);
+    let source = text("source").unwrap_or_default();
+    let args = input.get("args").filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let owner = crate::hub::sources::owner_of_turn(&run.ctx, &run.turn);
+    match crate::hub::sources::query(&run.ctx, &owner, &source, text("action").as_deref(), &args).await {
         Ok(j) => Out::ok(js::slice_utf16(&js::stringify(&j), 12000)),
-        Err(e) => Out::err(format!("source error: {e}")),
+        Err(e) => Out::err(format!("source error: {}", e.message)),
     }
 }
 

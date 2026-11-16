@@ -9,7 +9,7 @@ pub mod mcp;
 mod prefs;
 mod skills;
 mod state;
-mod timeclock;
+pub mod timeclock;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -25,7 +25,7 @@ use rusqlite::Connection;
 use crate::proxy::Body;
 
 /// The route groups `/meta` lists as ported.
-pub const PORTED: &[&str] = &["state", "prefs", "keymap", "timeclock", "skills", "files"];
+pub const PORTED: &[&str] = &["state", "prefs", "keymap", "skills", "files"];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Route {
@@ -33,9 +33,6 @@ pub enum Route {
     StatePost,
     Prefs,
     Keymap,
-    Timeclock,
-    ClockIn,
-    ClockOut,
     Skills,
     FileRaw,
     FilePreview,
@@ -53,9 +50,6 @@ pub fn route(method: &Method, url: &str) -> Option<Route> {
         _ if method == Method::OPTIONS => None,
         "/prefs" => Some(Route::Prefs),
         "/keymap" => Some(Route::Keymap),
-        "/data/timeclock" if get => Some(Route::Timeclock),
-        "/data/timeclock/in" if post => Some(Route::ClockIn),
-        "/data/timeclock/out" if post => Some(Route::ClockOut),
         "/skills" if get => Some(Route::Skills),
         _ if get && url.starts_with("/file/raw/") => Some(Route::FileRaw),
         _ if get && url.starts_with("/file/preview/") => Some(Route::FilePreview),
@@ -153,9 +147,6 @@ impl Leaf {
             Route::Prefs => prefs::post(self, body),
             Route::Keymap if method == Method::GET => keymap::get(self),
             Route::Keymap => keymap::post(self, body),
-            Route::Timeclock => timeclock::get(self),
-            Route::ClockIn => timeclock::clock_in(self),
-            Route::ClockOut => timeclock::clock_out(self),
             Route::Skills => skills::get(self),
             Route::FileRaw => files::raw(self, url, range),
             Route::FilePreview => files::preview(self, url, range),
@@ -241,9 +232,9 @@ mod tests {
         assert_eq!(route(&Method::PUT, "/prefs"), Some(Route::Prefs));
         assert_eq!(route(&get, "/prefs?x=1"), None);
         assert_eq!(route(&post, "/keymap"), Some(Route::Keymap));
-        assert_eq!(route(&get, "/data/timeclock"), Some(Route::Timeclock));
-        assert_eq!(route(&get, "/data/timeclock/in"), None);
-        assert_eq!(route(&post, "/data/timeclock/out"), Some(Route::ClockOut));
+        // the data routes are gone: widgets reach their data through `hub::sources`
+        assert_eq!(route(&get, "/data/timeclock"), None);
+        assert_eq!(route(&post, "/data/timeclock/in"), None);
         assert_eq!(route(&get, "/skills"), Some(Route::Skills));
         assert_eq!(route(&post, "/skills"), None);
         assert_eq!(route(&get, "/threads"), None);

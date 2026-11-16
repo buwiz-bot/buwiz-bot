@@ -78,6 +78,10 @@ pub fn label_of(ctx: &HubCtx, key: &str) -> Option<(String, String)> {
         computer::ROUTINES_KEY => return fixed("Computer in routines", "Lets this Bot's routines wake its computer and use it with nobody watching."),
         _ => {}
     }
+    if let Some(name) = key.strip_prefix(crate::hub::sources::KEY_PREFIX) {
+        let (title, about) = crate::hub::sources::builtin::describe(name)?;
+        return Some((title.to_owned(), format!("Lets a widget use {about}.")));
+    }
     if let Some(id) = key.strip_prefix("skill:") {
         let row = ctx.db.with(|c| c.query_row("SELECT name, description, enabled FROM skills WHERE id=?", [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<i64>>(2)?)))).ok()?;
         let sub = if row.2 == Some(0) { "Off for every Bot.".to_owned() } else { row.1.filter(|d| !d.is_empty()).unwrap_or_else(|| "A private skill.".into()) };

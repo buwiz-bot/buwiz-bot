@@ -1,62 +1,49 @@
-//! `/data/timeclock`: clock-in and clock-out rows in `timeclock`
-//! (server/src/routes/data.mjs). Times are `toISOString()` strings; minutes
+//! The `timeclock` source: clock-in and clock-out rows in `timeclock`
+//! (what `/data/timeclock` was, server/src/routes/data.mjs). Times are `toISOString()` strings; minutes
 //! and "today" are counted as Node counts them, in local time.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::{Answer, Leaf};
-use crate::js;
 
 type Rows = Vec<(Option<String>, Option<String>)>;
 
-fn rows(leaf: &Leaf) -> Result<Rows, String> {
-    leaf.db(|db| {
-        let mut stmt = db.prepare("SELECT clock_in AS cin, clock_out AS cout FROM timeclock ORDER BY id DESC LIMIT 25")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        rows.collect()
-    })
+fn rows(db: &Connection) -> rusqlite::Result<Rows> {
+    let mut stmt = db.prepare("SELECT clock_in AS cin, clock_out AS cout FROM timeclock ORDER BY id DESC LIMIT 25")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
 }
 
-pub fn get(leaf: &Leaf) -> Answer {
-    match rows(leaf) {
-        Ok(rows) => Answer::json(200, js::stringify(&Value::Object(summary(&rows, now_ms(), local_midnight_ms(now_ms()))))),
-        Err(e) => Answer::thrown(&e),
-    }
+/// `tcJson()` of the rows now: what the widget source `timeclock` answers to `status`.
+pub fn status_of(db: &Connection) -> rusqlite::Result<Value> {
+    let now = now_ms();
+    Ok(Value::Object(summary(&rows(db)?, now, local_midnight_ms(now))))
 }
 
-pub fn clock_in(leaf: &Leaf) -> Answer {
-    let open = leaf.db(|db| db.query_row("SELECT id FROM timeclock WHERE clock_out IS NULL", [], |_| Ok(())).optional());
-    let open = match open {
-        Ok(open) => open.is_some(),
-        Err(e) => return Answer::thrown(&e),
-    };
+/// Clock in unless a session is open: `{ok, already, ...tcJson()}`.
+pub fn clock_in_on(db: &Connection) -> rusqlite::Result<Value> {
+    let open = db.query_row("SELECT id FROM timeclock WHERE clock_out IS NULL", [], |_| Ok(())).optional()?.is_some();
     if !open {
-        if let Err(e) = leaf.db(|db| db.execute("INSERT INTO timeclock(clock_in) VALUES(?)", [crate::js::iso(now_ms())])) {
-            return Answer::thrown(&e);
-        }
+        db.execute("INSERT INTO timeclock(clock_in) VALUES(?)", [crate::js::iso(now_ms())])?;
     }
-    with_summary(leaf, json!({ "ok": true, "already": open }))
+    with_summary(db, json!({ "ok": true, "already": open }))
 }
 
-pub fn clock_out(leaf: &Leaf) -> Answer {
-    if let Err(e) = leaf.db(|db| db.execute("UPDATE timeclock SET clock_out=? WHERE clock_out IS NULL", [crate::js::iso(now_ms())])) {
-        return Answer::thrown(&e);
-    }
-    with_summary(leaf, json!({ "ok": true }))
+/// Clock out of the open session: `{ok, ...tcJson()}`.
+pub fn clock_out_on(db: &Connection) -> rusqlite::Result<Value> {
+    db.execute("UPDATE timeclock SET clock_out=? WHERE clock_out IS NULL", [crate::js::iso(now_ms())])?;
+    with_summary(db, json!({ "ok": true }))
 }
 
 /// `{...head, ...tcJson()}`
-fn with_summary(leaf: &Leaf, head: Value) -> Answer {
-    let rows = match rows(leaf) {
-        Ok(rows) => rows,
-        Err(e) => return Answer::thrown(&e),
-    };
+fn with_summary(db: &Connection, head: Value) -> rusqlite::Result<Value> {
+    let rows = rows(db)?;
     let mut out = head.as_object().cloned().unwrap_or_default();
-    out.extend(summary(&rows, now_ms(), local_midnight_ms(now_ms())));
-    Answer::json(200, js::stringify(&Value::Object(out)))
+    let now = now_ms();
+    out.extend(summary(&rows, now, local_midnight_ms(now)));
+    Ok(Value::Object(out))
 }
 
 /// `tcJson()`: in or out, since when, today's minutes, the last 10 sessions.
@@ -149,6 +136,7 @@ fn parse_iso(s: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::js;
 
     #[test]
     fn iso_times_round_trip() {

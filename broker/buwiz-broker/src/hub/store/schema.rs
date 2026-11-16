@@ -168,6 +168,11 @@ const TRIED: &[&str] = &[
     // a computer's browser network (`hub/computer/network.rs`): the tunnel switch, the mode, the
     // allow and block lists (JSON arrays of site names) and the set's number. No row: the defaults
     "CREATE TABLE IF NOT EXISTS computer_network(computer_id TEXT PRIMARY KEY, tunnel INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'all', allow TEXT NOT NULL DEFAULT '[]', block TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 0, at INTEGER)",
+    // what a person allowed a generated widget to use of a data source (`hub/sources/grants.rs`):
+    // `actions` is the JSON list of the action names they were shown
+    "CREATE TABLE IF NOT EXISTS widget_grants(
+    widget TEXT NOT NULL, source TEXT NOT NULL, mode TEXT NOT NULL CHECK (mode IN ('read','write','no')),
+    actions TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (widget, source))",
 ];
 
 /// Creates what is missing; never drops or changes what is there, but

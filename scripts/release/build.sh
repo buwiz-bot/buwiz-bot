@@ -234,7 +234,12 @@ cat > "$C/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>$COPYRIGHT</string>
   <key>NSHighResolutionCapable</key><true/>
   $ICON_KEY
-  <!-- the broker's Reminders, Finder and file-picker calls go through osascript -->
+  <!-- Reminders: the broker reads and updates them through EventKit (the two
+       Reminders texts; the broker's entitlement is in app.entitlements). Finder,
+       the file picker, and Reminders where EventKit is refused, go through
+       osascript (the Apple Events text). -->
+  <key>NSRemindersFullAccessUsageDescription</key><string>$APP_NAME reads and updates your Reminders for widgets and the assistant when you ask it to.</string>
+  <key>NSRemindersUsageDescription</key><string>$APP_NAME reads and updates your Reminders for widgets and the assistant when you ask it to.</string>
   <key>NSAppleEventsUsageDescription</key><string>$APP_NAME uses AppleScript for the Mac actions you ask it for, such as adding a reminder.</string>
   <key>CFBundleURLTypes</key>
   <array>

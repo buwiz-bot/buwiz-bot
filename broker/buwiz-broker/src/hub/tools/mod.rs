@@ -311,7 +311,7 @@ async fn dispatch(run: &Run, name: &str, input: &Value) -> Result<Out, String> {
             }
             return miniapps::tool(run, name, input).await;
         }
-        "query_source" => return Ok(builtin::query_source(input).await),
+        "query_source" => return Ok(builtin::query_source(run, input).await),
         "web_search" => return builtin::web_search(input).await,
         "app_icon" => return artifact::app_icon(run, input).await,
         "app_details_update" => return artifact::app_details_update(run, input).await,

@@ -1485,6 +1485,8 @@ pub struct Turn {
     pub tools_change: Option<ToolsChangeNotice>,
     /// A `notice` turn asking the user's OK for one call.
     pub tool_ask: Option<ToolAskNotice>,
+    /// A `notice` turn asking whether a widget may use a data source.
+    pub widget_ask: Option<crate::widget_ask::Notice>,
     /// A `notice` turn suggesting a computer be set up (`cards/computer_setup.rs`).
     pub(crate) computer_setup: Option<crate::cards::computer_setup::Notice>,
     /// A `notice` turn holding the broker's login card (`cards/user_form.rs`).
@@ -2673,6 +2675,7 @@ impl Turn {
             messages_card: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::messages::Notice::of)).flatten(),
             tools_change: (s(v, "role") == "notice").then(|| v.get("notice").and_then(|n| ToolsChangeNotice::of(n, s(v, "text")))).flatten(),
             tool_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(ToolAskNotice::of)).flatten(),
+            widget_ask: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::widget_ask::Notice::of)).flatten(),
             computer_setup: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::computer_setup::Notice::of)).flatten(),
             user_form: (s(v, "role") == "notice").then(|| v.get("notice").and_then(crate::cards::user_form::UserFormSpec::from_notice)).flatten(),
             ui_refused: (s(v, "role") == "notice" && v.get("notice").is_some_and(|n| s(n, "kind") == "ui_refused")).then(|| s(v, "text")),
@@ -3034,6 +3037,10 @@ pub struct Store {
     /// The Tools sheet and full view, and the `tools_change` cards'
     /// answers (`tools.rs`).
     pub tools: crate::tools::Tools,
+    /// The chat's `widget_ask` cards by id, as answered here (`widget_ask.rs`).
+    pub(crate) widget_asks: Signal<std::collections::HashMap<String, crate::widget_ask::Local>>,
+    /// The sources the widget in App Details may use (`widget_ask.rs`).
+    pub(crate) widget_grants: Signal<crate::widget_ask::Grants>,
     /// The draft was rewritten for v1 plugins already: the next `send`
     /// sends it as it is.
     pub v1_resolved: std::cell::Cell<bool>,
@@ -3243,6 +3250,10 @@ pub struct Store {
     /// Compiled mini-app sources, per module name (`R<n>`): the JS the
     /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
     pub minis: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
+    /// Each generated widget's `call` path from `/v1/host/widget/open`
+    /// (absent: the broker could not open it). Set before its source, so
+    /// the component never sees new code with the old path.
+    mini_calls: std::cell::RefCell<std::collections::HashMap<String, String>>,
     /// Display titles of mini apps (from `/module`), for card headers.
     pub mini_titles: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
     /// Per-module load/compile errors, shown in the card.
@@ -3388,6 +3399,8 @@ impl Store {
             link_ask: signal(None),
             v1: crate::mini_v1::ui::V1::new(),
             tools: crate::tools::Tools::new(),
+            widget_asks: signal(std::collections::HashMap::new()),
+            widget_grants: signal(crate::widget_ask::Grants::default()),
             v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),
@@ -3520,6 +3533,7 @@ impl Store {
             bots_json: std::cell::RefCell::new(String::new()),
             groups_json: std::cell::RefCell::new(String::new()),
             minis: std::cell::RefCell::new(std::collections::HashMap::new()),
+            mini_calls: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_titles: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -7807,6 +7821,21 @@ impl Store {
             };
             match crate::mini::compile_widget(&name, &src) {
                 Ok(js) => {
+                    // a generated widget is opened at the broker first: its
+                    // `source` helper and its network rule need the answer.
+                    // An older broker has no such route; the widget still
+                    // mounts, its helper answering "unavailable".
+                    let mut js = js;
+                    if crate::mini::is_widget(&name) {
+                        let base = app_name(&name);
+                        let answer = client::post_any("/v1/host/widget/open", serde_json::json!({ "name": base })).await;
+                        let call = crate::mini::open_call(&name, answer.as_ref());
+                        js = format!("{}{js}", crate::mini::widget_helper(call.as_deref()));
+                        match call {
+                            Some(call) => self.mini_calls.borrow_mut().insert(name.clone(), call),
+                            None => self.mini_calls.borrow_mut().remove(&name),
+                        };
+                    }
                     // each fetch is a new open, as v1's: Retry after a run
                     // error reloads the card even when the code is the same
                     static FETCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -7864,6 +7893,11 @@ impl Store {
             return;
         };
         self.fetch_mini(app.to_owned(), sig);
+    }
+
+    /// The `call` path the broker opened widget `app` with, if it did.
+    pub fn mini_call(&self, app: &str) -> Option<String> {
+        self.mini_calls.borrow().get(app).cloned()
     }
 
     /// The display title of widget `app` (set when `mini_source` loads).

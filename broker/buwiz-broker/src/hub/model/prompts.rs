@@ -1,33 +1,23 @@
 //! The model's prompt texts, byte for byte as model.mjs writes them
-//! (`systemFor`, `contractFor`, `sourcesBlock`, the classifier's and the
+//! (`systemFor`, `contractFor`, the classifier's and the
 //! chat reply's system prompts, the generator's follow-ups). The long
 //! texts sit beside this file as dumped from Node; `{{NAME}}`,
 //! `{{SOURCES}}` and `{{CONTRACT}}` mark what is filled in.
 
 const SYSTEM: &str = include_str!("prompts/system.txt");
 const CONTRACT: &str = include_str!("prompts/contract.txt");
-const SOURCES: &str = include_str!("prompts/sources.txt");
-const LINEAR: &str = include_str!("prompts/linear.txt");
-
-/// `sourcesBlock()`: the `/data` sources a widget may fetch; Linear's
-/// only when there is a Linear key (`getLinearKey()`).
-pub fn sources_block(linear: bool) -> String {
-    if linear {
-        format!("{SOURCES}\n{LINEAR}")
-    } else {
-        SOURCES.to_owned()
-    }
-}
 
 /// `contractFor(name)`: the module contract; `name` is the module's
-/// `/state` key (`__NAME__` for the tool loop, replaced on write).
-pub fn contract_for(name: &str, linear: bool) -> String {
-    CONTRACT.replace("{{SOURCES}}", &sources_block(linear)).replace("{{NAME}}", name)
+/// `/state` key (`__NAME__` for the tool loop, replaced on write). `sources` is the
+/// block of data sources the widget may call (`hub::sources::prompt`), for the Bot
+/// the module is written for.
+pub fn contract_for(name: &str, sources: &str) -> String {
+    CONTRACT.replace("{{SOURCES}}", sources).replace("{{NAME}}", name)
 }
 
 /// `systemFor(name)`: the one-shot generator's system prompt.
-pub fn system_for(name: &str, linear: bool) -> String {
-    SYSTEM.replace("{{NAME}}", name).replace("{{CONTRACT}}", &contract_for(name, linear))
+pub fn system_for(name: &str, sources: &str) -> String {
+    SYSTEM.replace("{{NAME}}", name).replace("{{CONTRACT}}", &contract_for(name, sources))
 }
 
 /// `classifyIntent`'s system prompt.
@@ -53,13 +43,18 @@ mod tests {
 
     #[test]
     fn model_prompts_fill_in_the_name_and_sources() {
-        let s = system_for("R7", false);
+        let sources = "  reminders — the user's Apple Reminders\n     source(\"reminders\").call(\"list\") → {reminders:[]}";
+        let s = system_for("R7", sources);
         assert!(s.starts_with("You write Native Shell (nsh) modules: ONE TSX file, rendered as native UI (UIKit/AppKit). You are writing module R7.\nReply format:"));
         assert!(s.contains("\n\nContract:\n- Exactly one default export"));
         assert!(s.contains("fetch ONLY http://127.0.0.1:8787/state/R7 (all other hosts") && s.contains("const S = \"R7\"; fetch(`http://127.0.0.1:8787/state/${S}`)"));
         assert!(!s.contains("{{") || s.contains("style={{ width"));
         assert!(!s.contains("{{NAME}}") && !s.contains("{{SOURCES}}") && !s.contains("{{CONTRACT}}"));
-        assert!(!s.contains("linear —") && contract_for("x", true).contains("\n  linear — the user's Linear issues"));
+        // the helper, never a /data URL, and the sources the caller built, as given
+        assert!(s.contains("real data comes through ONE global helper, never a URL: `const r = await source(\"name\").call(\"action\", args)`"));
+        assert!(s.contains(" Available now:\n  reminders — the user's Apple Reminders\n     source(\"reminders\").call(\"list\") → {reminders:[]}\n- KEYBOARD:"));
+        assert!(!s.contains("/data/") && !s.contains("linear —"));
+        assert!(s.contains("no fetch other than /state (data comes only from source()): render standalone"));
         assert!(s.ends_with("Compact code, but take the lines a working game needs (~150 is fine)."));
     }
 }

@@ -44,8 +44,17 @@ pub fn prepare_stage(stage: &Path) -> std::io::Result<()> {
             let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
         }
     }
+    // the helper a widget calls for data is the app's global, not an import: tell the check
+    std::fs::write(stage.join(SOURCE_DECL.0), SOURCE_DECL.1)?;
     std::fs::write(stage.join("tsconfig.json"), "{\"extends\":\"./.nsh/tsconfig.json\",\"include\":[\"*.ts\",\"*.tsx\"]}\n")
 }
+
+/// The stage's declaration of `source`, the global a widget reads data through
+/// (`hub::sources`): the file's name and text.
+pub const SOURCE_DECL: (&str, &str) = (
+    "widget-source.d.ts",
+    "declare function source(name: string): { call(action: string, args?: Record<string, unknown>): Promise<any> };\n",
+);
 
 /// Where the pipeline reads and writes, under Node's data dir
 /// (config.mjs's GEN_DIR, STAGE_DIR, CHUNK_DIR, WIDGETS_DIR).
@@ -234,7 +243,9 @@ pub(crate) mod tests {
         prepare_stage(&stage).unwrap();
         let mut names: Vec<String> = std::fs::read_dir(&stage).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
-        assert_eq!(names, [".nsh", "chunk-R2", "keep.ts", "tsconfig.json"]);
+        assert_eq!(names, [".nsh", "chunk-R2", "keep.ts", "tsconfig.json", "widget-source.d.ts"]);
+        // the global a widget reads data through is declared for the type check
+        assert!(std::fs::read_to_string(stage.join("widget-source.d.ts")).unwrap().starts_with("declare function source(name: string): { call(action: string, args?: Record<string, unknown>): Promise<any> };"));
         assert_eq!(std::fs::read_to_string(stage.join("tsconfig.json")).unwrap(), "{\"extends\":\"./.nsh/tsconfig.json\",\"include\":[\"*.ts\",\"*.tsx\"]}\n");
         // a data dir with no .stage gets one
         let fresh = dir.join("fresh/.stage");

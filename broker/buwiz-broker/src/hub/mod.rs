@@ -13,6 +13,7 @@ pub mod agents;
 pub mod computer;
 pub mod ctx;
 pub mod jobs;
+pub mod jsval;
 pub mod library;
 pub mod market;
 pub mod model;
@@ -20,6 +21,7 @@ pub mod pipeline;
 pub mod policy;
 pub mod render;
 pub mod routes;
+pub mod sources;
 pub mod store;
 pub mod tools;
 pub mod routines;
@@ -114,6 +116,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     agent::install(routes, ctx);
     market::install(routes, ctx);
     routes::leftovers::install(routes, ctx);
+    sources::install(routes, ctx);
     routes::popout::install(routes, ctx);
     // before routines: its /v1/host/ catch-all would answer the agents' routes
     agents::install(routes, ctx);

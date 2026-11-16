@@ -118,6 +118,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>0.1.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>Buwiz Bot reads and updates your Reminders for widgets and the assistant when you ask it to.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>Buwiz Bot reads and updates your Reminders for widgets and the assistant when you ask it to.</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
