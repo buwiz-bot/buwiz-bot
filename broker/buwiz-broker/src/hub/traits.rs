@@ -108,7 +108,7 @@ pub struct LocalOutput {
 pub trait LocalTools: Send + Sync {
     fn run(&self, cmd: LocalCommand) -> BoxFuture<'static, Result<LocalOutput, String>>;
 
-    /// `/data/reminders` through the Mac's reminder store where it is
+    /// the `reminders` source through the Mac's reminder store where it is
     /// cheap (EventKit on macOS: milliseconds; the osascript JXA fallback
     /// costs ~30 s in Apple Events). `Ok(v)` is the response body, `Err`
     /// its error text; `None` → the caller's own path (the JXA, or a
@@ -117,7 +117,7 @@ pub trait LocalTools: Send + Sync {
         Box::pin(async { None })
     }
 
-    /// `POST /data/reminders/complete` `{name}`: mark the first open
+    /// `reminders` `complete {name}`: mark the first open
     /// reminder of that name done. Same contract as [`Self::reminders_list`].
     fn reminders_complete(&self, name: String) -> BoxFuture<'static, Option<Result<Value, String>>> {
         Box::pin(async move { let _ = name; None })
@@ -131,7 +131,7 @@ pub trait LocalTools: Send + Sync {
         None
     }
 
-    /// `POST /data/reminders/add` `{name, list?, due?}`.
+    /// `reminders` `add {name, list?, due?}`.
     fn reminders_add(&self, name: String, list: String, due: String) -> BoxFuture<'static, Option<Result<Value, String>>> {
         Box::pin(async move { let _ = (name, list, due); None })
     }

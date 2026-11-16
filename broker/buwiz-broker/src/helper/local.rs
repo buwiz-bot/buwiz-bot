@@ -52,7 +52,7 @@ impl LocalTools for MacTools {
         })
     }
 
-    /// `/data/reminders` through EventKit (helper/reminders_ek.rs): the
+    /// the `reminders` source through EventKit (helper/reminders_ek.rs): the
     /// osascript JXA it replaces took ~30 s per call in Apple Events. `None`
     /// (EventKit unusable: access denied, no permission text, old OS) sends
     /// the route down the osascript path.

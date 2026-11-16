@@ -468,9 +468,7 @@ async fn plug_01_a_tool_marked_for_widgets_is_an_action_and_the_rest_are_not() {
     assert_eq!(s.action("list_invoices").unwrap().about, "List the invoices.");
     assert_eq!(s.action("create_invoice").unwrap().args, "{customer,limit?}");
     // no marked tool, no source
-    let mut r = fx.plugins.row.lock().unwrap();
-    r.tools = json!([tool("books_plain", "x", json!({}))]).to_string();
-    drop(r);
+    fx.plugins.row.lock().unwrap().tools = json!([tool("books_plain", "x", json!({}))]).to_string();
     assert!(books(&super::all(&fx.ctx, "@chats").await).is_none());
 }
 

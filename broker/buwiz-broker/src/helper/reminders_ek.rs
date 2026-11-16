@@ -1,4 +1,4 @@
-//! `/data/reminders` through EventKit. The osascript JXA path costs ~30 s
+//! The `reminders` source through EventKit. The osascript JXA path costs ~30 s
 //! per call (Apple Events, one round-trip per property), so the widget's
 //! poll and every tap lagged for seconds; EventKit answers in ms.
 //!
@@ -288,7 +288,7 @@ fn fetch_open<T: Send + 'static>(
     }
 }
 
-/// `GET /data/reminders` → `{reminders: [{name,list,due,flagged}]}`.
+/// `list` → `{reminders: [{name,list,due,flagged}]}`.
 pub fn list() -> Ek {
     with_store(|store| {
         let rows = fetch_open(store, |arr| arr.iter().map(|r| row(&r)).collect::<Vec<Row>>());
@@ -299,7 +299,7 @@ pub fn list() -> Ek {
     })
 }
 
-/// `POST /data/reminders/complete` `{name}` → `{ok: done}`: the first open
+/// `complete {name}` → `{ok: done}`: the first open
 /// reminder of that name in [`order`] (the JXA's `whose({completed:false,
 /// name})` took the first in Reminders' own order, which EventKit has not).
 pub fn complete(name: &str) -> Ek {
@@ -464,7 +464,7 @@ fn due_components(due: Due) -> Retained<NSDateComponents> {
     }
 }
 
-/// `POST /data/reminders/add` `{name, list?, due?}` → `{ok,name,list}`.
+/// `add {name, list?, due?}` → `{ok,name,list}`.
 pub fn add(name: &str, list: &str, due: &str) -> Ek {
     let due = if due.is_empty() {
         None

@@ -67,7 +67,7 @@ pub enum Verdict {
 /// the source had this action, asks; `no` refuses; `read` covers the actions that only read;
 /// `write` covers all.
 pub fn verdict(grant: Option<&Grant>, action: &super::Action) -> Verdict {
-    let Some(g) = grant.filter(|g| g.actions.iter().any(|a| *a == action.name)) else { return Verdict::Ask };
+    let Some(g) = grant.filter(|g| g.actions.contains(&action.name)) else { return Verdict::Ask };
     match g.mode {
         Mode::No => Verdict::Refused("the person said no to this widget using this source".into()),
         Mode::Read if action.write => Verdict::Refused("the person allowed this widget to read this source, not to change it".into()),
