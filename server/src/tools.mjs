@@ -139,11 +139,13 @@ export const TOOLS = [
   {
     name: "query_source",
     description:
-      "Read one of the app's live local data sources and return its JSON. Sources: 'timeclock' (the user's clock-in/out tracker), 'reminders' (macOS Reminders), 'linear' (Linear issues). Use it when the user asks about their own data — answer in text, or feed it into a widget you build.",
+      "Read one of the app's live local data sources and return its JSON. The sources are the ones listed under DATA SOURCES in your instructions (the user's clock-in/out tracker, Reminders, Linear, and connected apps that offer one). Pass the source's name and, to pick which read it does, an action; without one the source's first read is used. Only a read works here: an action marked \"changes data\" is for a widget the user allowed. Use it when the user asks about their own data — answer in text, or feed it into a widget you build.",
     input_schema: {
       type: "object",
       properties: {
-        source: { type: "string", enum: ["timeclock", "reminders", "linear"] },
+        source: { type: "string" },
+        action: { type: "string" },
+        args: { type: "object" },
       },
       required: ["source"],
     },

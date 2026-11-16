@@ -43,23 +43,25 @@ export const choiceFor = (threadId) => {
 };
 export const labelOf = (c) =>
   c?.name || (c?.model ? c.model + (c.fast ? "--fast" : "") : MODEL);
+// The data sources a widget may call, as the Rust broker lists them for the
+// test setup (an Apple system, no connected apps): the registry itself is
+// Rust only, this keeps the comparison tests about the rest of the request.
 export function sourcesBlock() {
   const srcs = [
-    `  timeclock — local clock-in/out tracker stored in the app's sqlite db
-     GET  /data/timeclock → {status:"in"|"out", since:iso|null, todayMin:number, sessions:[{in,out,min}]}
-     POST /data/timeclock/in  — clock in    POST /data/timeclock/out — clock out`,
-    `  reminders — the user's macOS Reminders
-     GET  /data/reminders → [{name,list,due,flagged}] (or {error:"…"})
-     POST /data/reminders/add {name,list?,due?}    POST /data/reminders/complete {name}`,
+    `  timeclock — a local clock-in/out tracker kept in the app
+     source("timeclock").call("status") → {status:"in"|"out", since:iso|null, todayMin:number, sessions:[{in,out,min}]}
+     source("timeclock").call("in")  — changes data
+     source("timeclock").call("out")  — changes data`,
+    `  reminders — the user's Apple Reminders
+     source("reminders").call("list") → {reminders:[{name,list,due,flagged}]} (or {error})
+     source("reminders").call("add", {name,list?,due?})  — changes data
+     source("reminders").call("complete", {name})  — changes data`,
   ];
   if (getLinearKey())
-    srcs.push(`  linear — the user's Linear issues (assigned, else recent workspace issues). Every issue has uid (internal id for mutations), id (FER-12 label), stateId.
-     GET  /data/linear/issues → {scope:"assigned"|"workspace", issues:[{uid,id,title,state,stateId,priority,assignee,team,url}]}
-     GET  /data/linear/states → {teams:[{team,states:[{id,name,type}]}]} (transition targets per team)
-     POST /data/linear/update {uid, stateId?, priority?}  — change state/priority
-     POST /data/linear/assign {uid}                       — assign to me
-     POST /data/linear/comment {uid, body}                — comment on it
-     Interactive Linear widgets SHOULD: list issues, let a tap select one, then offer per-team state transitions (GET states once), assign-to-me, and a small comment input; refetch issues after any mutation.`);
+    srcs.push(`  linear — the user's Linear issues (assigned, else recent workspace issues). Every issue has uid (internal id for mutations), id (FER-12 label), stateId
+     source("linear").call("issues") → {scope:"assigned"|"workspace", issues:[{uid,id,title,state,stateId,priority,assignee,team,url}]} (or {error})
+     source("linear").call("states") → {teams:[{team,states:[{id,name,type}]}]} (transition targets per team)
+     source("linear").call("assign", {uid})  — changes data`);
   return srcs.join("\n");
 }
 
@@ -83,13 +85,13 @@ export const contractFor = (name) => `Contract:
 - Style with Tailwind: class="…" using only common utilities: flex, flex-row, flex-1, gap-N, p-N, px-N, py-N, m-N, mt-N, mb-N, rounded*, border, border-*, bg-*, text-* (size AND color), font-*, items-*, justify-*, self-*, w-N, h-N, max-w-*, min-h-*, overflow-hidden, opacity-*. Or style={{ camelCase }} — flexbox, column default, numbers in points.
 - PERSISTED STATE: the app has a database — every widget that produces data worth remembering MUST persist it. Scores, streaks, session counts, check-ins, notes, settings, timers' completions: if the widget counts or collects anything, save it. fetch ONLY http://127.0.0.1:8787/state/${name} (all other hosts are sandbox-blocked). On mount restore once: const S = "${name}"; fetch(\`http://127.0.0.1:8787/state/\${S}\`).then(r=>r.json()).then(d=>{ if (d && d.state) /* set your signals from d.state fields */ }). Save via POST (replaces the stored object): fetch(\`http://127.0.0.1:8787/state/\${S}\`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ score: score(), done: done() }) }). Put saves in a save() called from the same handlers that mutate state; never save during render. A pomodoro persists { sessions, minutesFocused }; a habit tracker { streak, lastCheckIn }; a game { best, plays }.
 - MULTI-SURFACE SYNC: the same widget may run in the chat AND its own window at once — they share the database, not memory. Sync is event-driven, NOT polled: the state endpoint long-polls. Every GET /state response carries a "v" (opaque version); keep the latest as lastV (the mount restore's response has it too). Then loop forever: fetch(\`http://127.0.0.1:8787/state/\${S}?wait=25000&v=\${lastV}\`) — the server holds it until ANOTHER surface writes (answers immediately) or 25s pass (heartbeat). On each response set lastV = d.v; if d.v changed, re-apply d.state fields to your signals — but NEVER while one of your own saves is in flight (an answer can be older than what the person just typed, and applying it puts the old value back): count them, busy++ before the POST in save() and .finally(() => busy--); and never after the widget closed. Schedule the next fetch after a ~300ms setTimeout (on fetch error wait ~2s and retry). Example skeleton: let lastV = ""; let dead = false; let busy = 0; const sync = async () => { while (!dead) { try { const d = await fetch(\`http://127.0.0.1:8787/state/\${S}?wait=25000&v=\${lastV}\`).then(r=>r.json()); if (dead) return; const was = lastV; lastV = d?.v ?? lastV; if (d?.v && d.v !== was && !busy) { /* set signals from d.state */ } } catch { await new Promise(r=>setTimeout(r,2000)); } if (!dead) await new Promise(r=>setTimeout(r,300)); } }; effect(() => { dead = false; sync(); cleanup(() => { dead = true; }); }); — NEVER use setInterval for state sync. Clocks/elapsed timers must ALSO tick on wall-second boundaries so two surfaces show the same second: schedule each tick with setTimeout to the next boundary — const tick = () => { now.set(Date.now()); timer = setTimeout(tick, 1000 - (Date.now() % 1000)); }; timer = setTimeout(tick, 1000 - (Date.now() % 1000)) — NEVER setInterval for a clock: it drifts and the surfaces disagree by milliseconds.
-- DATA SOURCES: real external data is proxied at http://127.0.0.1:8787/data/… (GET returns JSON; POST takes a JSON body; all other hosts are sandbox-blocked — never fetch elsewhere). When the request needs real data, fetch the right source on mount, keep an {error}-aware fallback (small "couldn't load" text + a retry button), and offer refresh (a button and/or a setInterval poll). Available:
+- DATA SOURCES: real data comes through ONE global helper, never a URL: \`const r = await source("name").call("action", args)\` (a global function, no import; \`source(name)\` is cheap, so it may be called at the module's top level). It resolves to the action's result, and on failure it never throws: it resolves to {error:"<code>", message:"<sentence>"}, so check r.error before using r. Codes to handle: "not_granted" (the user has been asked and the widget waits for their OK: show a small "waiting for your OK" with a retry button) and "refused" (they said no: say so, do not ask again by itself); show any other message as "couldn't load" with a retry button. When the request needs real data, call the right source on mount, keep that error-aware fallback, and offer refresh (a button and/or a setInterval poll). An action marked "changes data" changes the user's real data: call it only from a press or tap, never on mount or in a poll. Available now:
 ${sourcesBlock()}
 - KEYBOARD: import { keymap } from "nsh" (never from "nsh/base": its keymap is another function); inside the component call keymap.bind({ left: () => move(-1), right: () => move(1), down: () => step(), up: () => rotate(), space: () => drop() }, { repeat: true }). Keystrokes: letters/numbers/space/enter/escape/tab/arrows/f1-f24, optional mod+/cmd+/ctrl+/alt+/shift+ prefix. Bindings auto-unbind with the component and don't fire while a text input eats the key. Reserved keys (cmd+q etc.) throw — skip them. A binding fires while ITS OWN window has the focus: inside the chat card the chat's input still owns typing keys (arrows/space included), so a keyboard-driven app MUST ALSO render tap controls for the chat surface — the user can send it to its own window (the ↗ action), where every bound key goes to it. Games SHOULD use it: arrows + space beat tap buttons.
 - CLIPBOARD: import { Clipboard } from "nsh"; Clipboard.writeText(text) copies natively — use it for copy-to-clipboard affordances (a small ⧉ button on values, ids, results).
 - POP-OUT SIZE (optional): the same module may be opened in its own floating window — resizable, normal z-order. Its WIDTH there is what you declare: export const popoutWidth = 520; (plain number, 240–720). Canvas apps/games may fix BOTH axes: export const popoutSize = { w: 320, h: 560 }; — the window is exactly that, no measuring. Without either: 360pt wide, height hugs content. Pop-out rules: (a) the top ~26pt of the window is an invisible drag strip — keep essential controls out of it (traffic lights sit in its left ~80pt); (b) lists that can grow tall MUST wrap in a bounded Scroll (max-h-96 or a fixed height) — an unbounded list measures its full content height and the window swallows the screen; (c) keep a min-h on the root so a transient empty/loading render never collapses the window.
 - THEME (Sand design system — match it exactly): pop-out windows follow the system light/dark appearance — put dark: variants on every bg/text/border color; a hardcoded light card glows on a dark desktop. Surfaces: bg-white dark:bg-[#161616] (pane) · bg-[#f5f5f5] dark:bg-[#1f1f1f] (elevated card) · bg-black/5 dark:bg-white/5 (inset/track). Text: text-[#1c1c1c] dark:text-[#f5f5f5] (primary) · /60 alpha for secondary, /40 for tertiary (e.g. text-[#1c1c1c99] dark:text-[#f5f5f599]). Hairline borders: border-black/10 dark:border-white/10. Accent: #1680f3 light / #1884fc dark. Radius: 6 small, 10 medium, 14 card, 18 bubble/pill-ish. Spacing on a 4pt grid (p-2=8, p-3=12). Type: 12–14px body, 600 weight for emphasis — SF look, no exotic fonts. Canvas code may read colorScheme() from "nsh" inside draw() — reading it there redraws on theme change.
-- No props, no imports beyond nsh modules, no fetch other than /state and /data: render standalone inside a ~340pt-wide chat card (it may also run in its own window).
+- No props, no imports beyond nsh modules, no fetch other than /state (data comes only from source()): render standalone inside a ~340pt-wide chat card (it may also run in its own window).
 - Make it a small, polished, interactive widget for the user's request: cards, charts as View bars, forms, lists, counters, steppers, games with real loops. Compact code, but take the lines a working game needs (~150 is fine).`;
 
 export function extractCode(raw) {

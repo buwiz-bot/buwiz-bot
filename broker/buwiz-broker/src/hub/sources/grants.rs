@@ -54,12 +54,6 @@ pub struct Grant {
     pub at: i64,
 }
 
-impl Grant {
-    fn json(&self) -> Value {
-        json!({"source": self.source, "mode": self.mode.as_str(), "actions": self.actions, "at": self.at})
-    }
-}
-
 /// What a grant says of a call.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verdict {

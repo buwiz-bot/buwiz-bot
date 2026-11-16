@@ -243,7 +243,9 @@ pub(crate) mod tests {
         prepare_stage(&stage).unwrap();
         let mut names: Vec<String> = std::fs::read_dir(&stage).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
-        assert_eq!(names, [".nsh", "chunk-R2", "keep.ts", "tsconfig.json"]);
+        assert_eq!(names, [".nsh", "chunk-R2", "keep.ts", "tsconfig.json", "widget-source.d.ts"]);
+        // the global a widget reads data through is declared for the type check
+        assert!(std::fs::read_to_string(stage.join("widget-source.d.ts")).unwrap().starts_with("declare function source(name: string): { call(action: string, args?: Record<string, unknown>): Promise<any> };"));
         assert_eq!(std::fs::read_to_string(stage.join("tsconfig.json")).unwrap(), "{\"extends\":\"./.nsh/tsconfig.json\",\"include\":[\"*.ts\",\"*.tsx\"]}\n");
         // a data dir with no .stage gets one
         let fresh = dir.join("fresh/.stage");

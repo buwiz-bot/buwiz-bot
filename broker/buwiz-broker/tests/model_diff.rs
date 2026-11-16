@@ -12,7 +12,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 
 use buwiz_broker::hub::model::{self, images, sse, Ask, ModelClient, Settings};
-use buwiz_broker::hub::traits::{LocalCommand, LocalOutput, LocalTools, ModelApi};
+use buwiz_broker::hub::ctx::HubCtx;
+use buwiz_broker::hub::traits::{Clock, LocalCommand, LocalOutput, LocalTools, ModelApi};
 use buwiz_broker::hub::types::{BoxFuture, ModelChoice, TurnCtx};
 use serde_json::{json, Value};
 
@@ -100,12 +101,24 @@ fn settings(mode: &str, url: &str) -> Settings {
     })
 }
 
+/// The data sources the prompt lists, as the registry builds them for the test's setup: an
+/// Apple system, no connected apps, and a Linear key when `linear` (Node's text is the
+/// same lines, written by hand in server/src/model.mjs).
+async fn sources_for(data: &Path, linear: bool) -> String {
+    let mut ctx = HubCtx::new(data.to_path_buf(), Clock::manual());
+    ctx.local = Some(Arc::new(Stubs));
+    ctx.ext.insert(buwiz_broker::hub::sources::linear::LinearApi { url: "http://127.0.0.1:9/never".into(), key: linear.then(|| "lin-test".to_owned()) });
+    ctx.ext.insert(buwiz_broker::hub::sources::builtin::Apple(true));
+    buwiz_broker::hub::sources::prompt::block(&ctx, "@chats").await
+}
+
 async fn run(s: &Settings, api: &dyn ModelApi, data: &Path, sc: &Value) -> Value {
     let turn = ctx_of(&sc["ctx"]);
     let str_of = |k: &str| sc[k].as_str();
     match sc["kind"].as_str().unwrap() {
         "ask" => {
-            let ask = Ask { prompt: str_of("prompt").unwrap(), prev_error: str_of("prevError"), prev_code: str_of("prevCode"), name: str_of("name").unwrap(), linear: sc["linear"] == json!(true) };
+            let sources = sources_for(data, sc["linear"] == json!(true)).await;
+            let ask = Ask { prompt: str_of("prompt").unwrap(), prev_error: str_of("prevError"), prev_code: str_of("prevCode"), name: str_of("name").unwrap(), sources: &sources };
             match model::ask_model(s, api, &turn, &ask, |_| unreachable!(), || {}).await {
                 Ok(m) => json!({ "caption": m.caption, "code": m.code }),
                 Err(e) => json!({ "error": e }),
