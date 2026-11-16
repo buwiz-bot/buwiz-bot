@@ -82,6 +82,10 @@ pub(crate) fn maker_logo(id: &str) -> Option<&'static str> {
         "logoZhipu"
     } else if has(&["minimax", "abab"]) {
         "logoMinimax"
+    } else if m.strip_prefix("swe-").is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit())) {
+        // Cognition's own SWE models (swe-1-6, swe-2-flash …), last so a
+        // routed model of another maker (devin/claude-…) keeps its logo
+        "logoCognition"
     } else {
         return None;
     })
@@ -1011,4 +1015,21 @@ fn model_row(m: crate::store::ModelDef) -> AnyElement {
         })
         .label(full_name(&m.id))
         .into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::maker_logo;
+
+    #[test]
+    fn cognition_logo_for_swe_models_only() {
+        assert_eq!(maker_logo("devin/swe-2-flash"), Some("logoCognition"));
+        assert_eq!(maker_logo("devin/swe-1-6-slow"), Some("logoCognition"));
+        assert_eq!(maker_logo("swe-1-7"), Some("logoCognition"));
+        assert_eq!(maker_logo("devin/claude-opus-5-high-fast"), Some("logoAnthropic"));
+        assert_eq!(maker_logo("devin/kimi-k3"), Some("logoKimi"));
+        assert_eq!(maker_logo("swe-bench-agent"), None);
+        assert_eq!(maker_logo("answer-1"), None);
+        assert_eq!(maker_logo("some-unknown-model"), None);
+    }
 }
