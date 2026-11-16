@@ -438,7 +438,7 @@ export async function generate(job, prompt) {
     // seeds/ — betteroffice-demo.docx, showcase.xlsx, presentation.pptx), so
     // the cards exercise the editor on real-world content; when a seed is
     // absent we still emit the generated fallback file
-    const SEEDS = join(dirname(fileURLToPath(import.meta.url)), "office", "seeds");
+    const SEEDS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "office", "seeds");
     const OFFICE = { docx: "betteroffice-demo.docx", xlsx: "showcase.xlsx", pptx: "presentation.pptx" };
 
     // The pptx fallback depends on the optional BetterOffice engine — absent,

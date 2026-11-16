@@ -43,6 +43,7 @@ import {
   GEN_DIR,
   MOCK,
   MODEL,
+  OFFICE_DIR,
   OFFICE_ROLE,
   OUT_DIR,
   PORT,
@@ -163,15 +164,15 @@ if (!OFFICE_ROLE) {
 // are installed and dist/editor.js is missing; until then renderFile hands
 // out the read-only /office/ viewer URL instead.
 {
-  const editorJs = join(dirname(fileURLToPath(import.meta.url)), "office", "editor", "dist", "editor.js");
+  const editorJs = join(OFFICE_DIR, "editor", "dist", "editor.js");
 
   if (!existsSync(editorJs) && officeCaps().docx) {
     execFile("npx", ["esbuild", "editor.jsx", "--bundle", "--format=esm", "--splitting", "--outdir=dist",
       "--loader:.wasm=file", "--loader:.ttf=file", "--loader:.otf=file", "--external:*.png", "--minify"],
-      { cwd: join(dirname(fileURLToPath(import.meta.url)), "office", "editor") }, (e) => {
+      { cwd: join(OFFICE_DIR, "editor") }, (e) => {
       if (e) console.error(`  office editor build: ${String(e.message || e).slice(0, 160)}`);
       else {
-        const ed = join(dirname(fileURLToPath(import.meta.url)), "office", "editor");
+        const ed = join(OFFICE_DIR, "editor");
         execFile("node", [join(ed, "patch-dist.mjs")], () => {});
         const g = join(ed, "dist", "generated");
 

@@ -1,0 +1,23 @@
+{
+  "name": "buwiz-office",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The office editor page the broker serves, and the BetterOffice fonts the app bundles",
+  "scripts": {
+    "build:office-editor": "esbuild editor/editor.jsx --bundle --format=esm --splitting --outdir=editor/dist --loader:.wasm=file --loader:.ttf=file --loader:.otf=file --external:\"*.png\" --minify && node editor/patch-dist.mjs && for p in docx xlsx pptx; do cp -R \"node_modules/@betteroffice/$p/dist/generated/\" editor/dist/generated/ 2>/dev/null; done"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@betteroffice/docx": "^0.4.3",
+    "@betteroffice/docx-react": "^0.4.3",
+    "@betteroffice/fonts": "^0.4.0",
+    "@betteroffice/pptx": "^0.2.0",
+    "@betteroffice/pptx-react": "^0.2.0",
+    "@betteroffice/xlsx": "^0.3.0",
+    "@betteroffice/xlsx-react": "^0.3.0",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

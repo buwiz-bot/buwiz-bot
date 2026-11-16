@@ -49,7 +49,7 @@ cargo test -p buwiz-office-kit
 ```
 
 The fonts' tests read BetterOffice's font files: `BUWIZ_OFFICE_FONTS`, or the
-checkout's `server/node_modules/@betteroffice/fonts/assets`.
+checkout's `office/node_modules/@betteroffice/fonts/assets`.
 
 ## Licence
 

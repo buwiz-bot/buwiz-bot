@@ -32,7 +32,7 @@ cargo test -p buwiz-spreadsheet
 ```
 
 Some read the showcase workbook from the Buwiz Bot checkout
-(`server/src/office/seeds/`). The feature `testing` gives the app's tests
+(`office/seeds/`). The feature `testing` gives the app's tests
 the test workbook (`fixture`).
 
 ## Licence
