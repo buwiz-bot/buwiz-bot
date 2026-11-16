@@ -196,15 +196,6 @@ fn assert_rows(dir: &Path, pin: &str, what: &str) {
             pinned.get_mut(&table).unwrap().push(line.to_owned());
         }
     }
-    // a refresh rewrites the pin's tables Rust has and leaves the others, as the comparison does
-    if std::env::var("BUWIZ_REFRESH_PINS").is_ok_and(|v| !v.is_empty() && v != "0") {
-        for (t, rows) in &mut pinned {
-            if let Some(now) = ours.get(t) {
-                *rows = now.clone();
-            }
-        }
-        return pins::write_text(pin, &rows_text(&pinned));
-    }
     let mut diffs = Vec::new();
     for (t, want) in &pinned {
         let Some(got) = ours.get(t) else { continue };
@@ -220,7 +211,20 @@ fn assert_rows(dir: &Path, pin: &str, what: &str) {
         }
         diffs.extend(left.into_iter().map(|row| format!("{t}: only in the pin: {row}")));
     }
-    assert!(diffs.is_empty(), "{what}:\n{}", diffs.join("\n"));
+    if diffs.is_empty() {
+        return;
+    }
+    // a refresh rewrites the pin's tables Rust has and leaves the others, then fails
+    if pins::refreshing() {
+        for (t, rows) in &mut pinned {
+            if let Some(now) = ours.get(t) {
+                *rows = now.clone();
+            }
+        }
+        pins::write_text(pin, &rows_text(&pinned));
+        pins::rewritten(pin, "txt");
+    }
+    panic!("{what}:\n{}", diffs.join("\n"));
 }
 
 #[test]
@@ -287,18 +291,17 @@ fn store_rust_writes_what_node_loaded_back_unchanged() {
     // defaults), and so does a Rust restart
     let (turns, threads) = rust_reads(&hub(&dir));
     pins::check_text("store/rollback_reads", &reads_text(&turns, &threads, true));
-    let node_threads = threads;
-    assert!(node_threads.contains("\"description\":\"Bob is a personal assistant bot in Buwiz Bot.\""));
-    assert!(node_threads.contains("\"shape\":\"custom\",\"color\":\"#FFFFFF\",\"outline\":\"M18 44 L22 14"), "a custom bot's outline, in bots[] and list[].bot");
+    assert!(threads.contains("\"description\":\"Bob is a personal assistant bot in Buwiz Bot.\""));
+    assert!(threads.contains("\"shape\":\"custom\",\"color\":\"#FFFFFF\",\"outline\":\"M18 44 L22 14"), "a custom bot's outline, in bots[] and list[].bot");
     // its outline and its two parts', in bots[] and list[].bot: bob's stray outline never
-    assert_eq!(node_threads.matches("\"outline\"").count(), 6, "only the custom bot's");
-    assert!(node_threads.contains("\"layers\":[{\"path\":\"M34 64 C34 56"), "a rich bot's layers");
-    assert_eq!(node_threads.matches("\"eyes\":{\"c\":\"#2B1D12\",\"at\":[50,52.5],\"gap\":21,\"s\":1.1,\"rim\":\"#111111\",\"rw\":0.25,\"shut\":\"r\"}").count(), 2, "a placement, in bots[] and list[].bot");
-    assert_eq!(node_threads.matches("\"fill\":\"#2B1D12\",\"over\":true}").count(), 2, "an over-layer");
+    assert_eq!(threads.matches("\"outline\"").count(), 6, "only the custom bot's");
+    assert!(threads.contains("\"layers\":[{\"path\":\"M34 64 C34 56"), "a rich bot's layers");
+    assert_eq!(threads.matches("\"eyes\":{\"c\":\"#2B1D12\",\"at\":[50,52.5],\"gap\":21,\"s\":1.1,\"rim\":\"#111111\",\"rw\":0.25,\"shut\":\"r\"}").count(), 2, "a placement, in bots[] and list[].bot");
+    assert_eq!(threads.matches("\"fill\":\"#2B1D12\",\"over\":true}").count(), 2, "an over-layer");
     // the custom bot's head layers and its hat's, in bots[] and list[].bot; bob's stray ones never
-    assert_eq!(node_threads.matches("\"layers\"").count(), 4, "only the custom bot's");
-    assert_eq!(node_threads.matches("\"parts\":[{\"outline\":\"M12 38").count(), 2, "its parts, in bots[] and list[].bot");
-    assert_eq!(node_threads.matches("\"z\":-0.5,\"d\":1.1}").count(), 2, "a part's depth");
+    assert_eq!(threads.matches("\"layers\"").count(), 4, "only the custom bot's");
+    assert_eq!(threads.matches("\"parts\":[{\"outline\":\"M12 38").count(), 2, "its parts, in bots[] and list[].bot");
+    assert_eq!(threads.matches("\"z\":-0.5,\"d\":1.1}").count(), 2, "a part's depth");
     assert_rows(&dir, "store/rollback_rows", "Node's persist() wrote what Rust wrote, the placeholder's gap closed");
     let _ = std::fs::remove_dir_all(dir);
 }

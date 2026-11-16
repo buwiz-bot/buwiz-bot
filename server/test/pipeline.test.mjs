@@ -1,5 +1,5 @@
 // The build pipeline (Rust broker plan, phase 5 item 5.7a) as Node runs it
-// (pipeline.mjs), with nsh at the PATH stub (fixtures/bin/nsh, which records
+// (pipeline.mjs), with nsh at the PATH stub (broker/buwiz-broker/tests/fixtures/bin/nsh, which records
 // argv): runNsh's pass / failure text / missing binary, fixImports,
 // checkCandidate in .stage, writeVersion's files, `versions` and `heads`
 // rows and chunks (`R6v3.js`), setHead, the error card and the canned mock

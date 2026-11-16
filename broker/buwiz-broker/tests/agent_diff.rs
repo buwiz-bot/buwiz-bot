@@ -159,6 +159,7 @@ async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
     // Node has no Ask: the Chats profile's shell on, as every plain chat's was before it
     buwiz_broker::hub::policy::host_set(hub.ctx(), &json!({"bot": "chats", "key": "shell", "state": "on"})).unwrap();
 
+    let mut read = Vec::new();
     for (i, run) in scenarios["runs"].as_array().unwrap().iter().enumerate() {
         let thread = call(&hub, Method::POST, "/thread/new", &json!({})).await["id"].clone();
         let job = call(&hub, Method::POST, "/chat", &json!({"prompt": run["prompt"], "thread": thread})).await["id"].as_u64().unwrap();
@@ -192,7 +193,8 @@ async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
         let thread = thread.as_str().unwrap().to_owned();
         // a failed run's notice is Rust's own: Node's chat stays silent
         let turns: Vec<Value> = hub.ctx().store.read(|s| s.thread(&thread).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_none_or(|n| n["reason"] != "failed")).map(|u| json!([u.role, u.text, u.label, u.name, u.v, u.reaction])).collect());
-        eprintln!("run {i}: {} (the job is done: {}, its detail: {})", run["prompt"], st["done"], st["detail"]);
+        read.push(format!("agent_diff/run_{i}"));
         pins::check(&format!("agent_diff/run_{i}"), &json!({"calls": calls, "phases": phases, "detail": st["detail"], "turns": turns}));
     }
+    pins::assert_all_read("agent_diff", "run_", &read);
 }

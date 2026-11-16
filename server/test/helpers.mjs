@@ -80,8 +80,8 @@ export function dbRows(dataDir, sql, ...args) {
   }
 }
 
-/** The env for a broker that talks to a fake opencodex (fixtures/
- *  fake-opencodex.mjs) with MOCK off: every provider URL at the fake, the
+/** The env for a broker that talks to a fake opencodex (broker/buwiz-broker/tests/
+ *  fixtures/fake-opencodex.mjs) with MOCK off: every provider URL at the fake, the
  *  provider keys and model overrides of this shell removed, the stubs on
  *  PATH. `extra` goes over it. */
 export const modelEnv = (fake, log, extra = {}) => ({

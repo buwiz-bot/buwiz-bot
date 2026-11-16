@@ -1,6 +1,6 @@
 // The model client (Rust broker plan, phase 5 item 5.3) as Node drives it,
 // with MOCK off against the scripted fake opencodex
-// (fixtures/fake-opencodex.mjs): routing and effort, /models, the legacy
+// (broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs): routing and effort, /models, the legacy
 // generate path (compiler-error, truncation and no-module retries), the
 // OpenAI-compatible path, the SDK's retries and the error text a job
 // shows. The recorded requests are the contract a port must send too.

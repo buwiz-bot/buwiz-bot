@@ -7,9 +7,12 @@
 //!
 //! The pins were recorded from the old Node broker's own modules, which these
 //! tests used to run as the reference. To change one on purpose, after a
-//! deliberate change in Rust, run the test with `BUWIZ_REFRESH_PINS=1`: it
-//! rewrites the pin from the Rust output, and `git diff` shows what changed.
-//! CI never sets it. Included with `#[path]` by each crate's tests.
+//! deliberate change in Rust, run the test with `BUWIZ_REFRESH_PINS=1`. A
+//! refresh never turns a difference into a pass: if the output equals the
+//! pin the test passes; if it differs (or the pin is missing) the pin is
+//! rewritten from the Rust output and the test FAILS, naming the file. Review
+//! `git diff`, then run again without the variable. CI never sets it.
+//! Included with `#[path]` by each crate's tests.
 
 #![allow(dead_code)]
 
@@ -21,7 +24,7 @@ fn path(name: &str, ext: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pins").join(format!("{name}.{ext}"))
 }
 
-fn refreshing() -> bool {
+pub fn refreshing() -> bool {
     std::env::var("BUWIZ_REFRESH_PINS").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -84,12 +87,22 @@ fn first_difference(path: &str, ours: &Value, pinned: &Value) -> Option<String> 
     }
 }
 
+/// Fails a refresh that had to rewrite the pin `name` (`ext`: json or txt).
+pub fn rewritten(name: &str, ext: &str) -> ! {
+    panic!("the pin tests/pins/{name}.{ext} differed (or was missing) and was rewritten from the Rust output: review `git diff`, then run again without BUWIZ_REFRESH_PINS");
+}
+
 /// Compares `ours` with the JSON pin `name`.
 pub fn check(name: &str, ours: &Value) {
+    let pinned = std::fs::read_to_string(path(name, "json")).ok().map(|t| serde_json::from_str::<Value>(&t).unwrap_or_else(|e| panic!("the pin {name} is not JSON: {e}")));
     if refreshing() {
-        return write(name, ours);
+        if pinned.as_ref().is_some_and(|p| first_difference("$", ours, p).is_none()) {
+            return;
+        }
+        write(name, ours);
+        rewritten(name, "json");
     }
-    let pinned = load(name);
+    let pinned = pinned.unwrap_or_else(|| load(name));
     if let Some(d) = first_difference("$", ours, &pinned) {
         panic!("differs from the pin tests/pins/{name}.json at {d}\n(BUWIZ_REFRESH_PINS=1 rewrites the pin when the change is deliberate)");
     }
@@ -98,7 +111,11 @@ pub fn check(name: &str, ours: &Value) {
 /// Compares `ours` with the text pin `name`.
 pub fn check_text(name: &str, ours: &str) {
     if refreshing() {
-        return write_text(name, ours);
+        if std::fs::read_to_string(path(name, "txt")).is_ok_and(|p| p == ours) {
+            return;
+        }
+        write_text(name, ours);
+        rewritten(name, "txt");
     }
     let pinned = load_text(name);
     if ours != pinned {
@@ -110,4 +127,18 @@ pub fn check_text(name: &str, ours: &str) {
             pinned.lines().nth(line)
         );
     }
+}
+
+/// Fails when `tests/pins/<dir>` holds a JSON pin starting with `prefix` that
+/// is not in `read` (names without the extension): a leftover nothing compares.
+pub fn assert_all_read(dir: &str, prefix: &str, read: &[String]) {
+    let folder = path(&format!("{dir}/x"), "json").parent().unwrap().to_owned();
+    let mut left: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter_map(|f| f.strip_suffix(".json").map(str::to_owned))
+        .filter(|n| n.starts_with(prefix) && !read.contains(&format!("{dir}/{n}")))
+        .collect();
+    left.sort();
+    assert!(left.is_empty(), "tests/pins/{dir} holds pins no test compared: {}", left.join(", "));
 }

@@ -2,7 +2,7 @@
 // them today: new, update, memories, integrations, delete, the /threads bot
 // fields, avatars and the attachment picker. MOCK on, but MOCK does not
 // guard /avatar/gen or image models: those reach the fake opencodex
-// (fixtures/fake-opencodex.mjs). The Mac tools are PATH stubs.
+// (broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs). The Mac tools are PATH stubs.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

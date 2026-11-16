@@ -1,6 +1,7 @@
 // Buwiz Bot's environment variables by their Buwiz names, the old Rox and
 // Grok names still read: the same table as buwiz-protocol's `env` module
-// (broker/buwiz-protocol/src/env.rs; a test there checks they match).
+// (broker/buwiz-protocol/src/env.rs; its test there compares the Rust table
+// with a pin recorded from this one, so a change here is not checked).
 //
 // `env(name)` takes the new name when it has a value, else the old one when
 // it is set (an empty new name gives way to a non-empty old one), and then

@@ -161,12 +161,14 @@ async fn differ(mode: &str, scenarios: Value) {
     let url = fake["url"].as_str().unwrap().to_owned();
     let s = settings(mode, &url);
     let api = ModelClient::new(Arc::new(s.clone()));
+    let mut read = Vec::new();
     for (i, sc) in scenarios["list"].as_array().unwrap().iter().enumerate() {
         let result = run(&s, &api, &data, sc).await;
         let requests = driver.take();
-        eprintln!("scenario {i}: {sc}");
+        read.push(format!("model_diff/{mode}_{i}"));
         pins::check(&format!("model_diff/{mode}_{i}"), &json!({"requests": requests, "result": result}));
     }
+    pins::assert_all_read("model_diff", &format!("{mode}_"), &read);
     let _ = std::fs::remove_dir_all(&data);
 }
 
