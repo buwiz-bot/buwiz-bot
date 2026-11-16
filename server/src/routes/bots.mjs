@@ -2,6 +2,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { flushState } from "./apps.mjs";
 import { GEN_DIR, AVATAR_DIR, ATTACH_DIR } from "../config.mjs";
 import { feedVariant, imageSize, isAnimated } from "../files.mjs";
 import { uuidv7, nextThreadSeq, db, store, persist, threadSeq, turnsJson, writeIndex, botDefaults } from "../state.mjs";
@@ -258,6 +259,7 @@ export default async function handle(req, res) {
             unlinkSync(join(GEN_DIR, `${name}.tsx`));
           } catch {}
           db.prepare("DELETE FROM kv WHERE name=?").run(name);
+          flushState(name); // waiting widgets learn it is gone
           db.prepare("DELETE FROM apps WHERE name=?").run(name);
         }
         store.bots = store.bots.filter((b) => b.id !== id);

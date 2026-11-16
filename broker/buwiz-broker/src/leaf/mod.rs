@@ -108,17 +108,25 @@ impl Answer {
     }
 }
 
+/// Wakes every held `/state` long-poll to re-read its name; a write that
+/// bypasses `POST /state` (a delete in the hub) calls this after it.
+pub fn state_changed() {
+    state::notify();
+}
+
 pub struct Leaf {
     data: PathBuf,
     allowed: Vec<String>,
     db: Mutex<Option<Connection>>,
+    /// The `/state` long-polls held now (their caps are in `state.rs`).
+    waiting: Mutex<state::Waiting>,
 }
 
 impl Leaf {
     /// `data` is Node's data dir (`BUWIZ_BROKER_DATA_DIR`); `allowed` the origins
     /// the guard lets through.
     pub fn new(data: PathBuf, allowed: Vec<String>) -> Self {
-        Self { data, allowed, db: Mutex::new(None) }
+        Self { data, allowed, db: Mutex::new(None), waiting: Mutex::new(state::Waiting::default()) }
     }
 
     pub async fn serve(&self, route: Route, req: Request<Incoming>) -> Response<Body> {

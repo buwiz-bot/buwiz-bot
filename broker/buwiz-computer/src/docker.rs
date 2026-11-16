@@ -678,7 +678,7 @@ impl DockerProvider {
         let start = secret_dir(&machine.dir);
         private_dir(&start)?;
         let id = machine.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        // as it was made: a rebuild never adds or takes away the browser's proxy or the tunnel
+        // what it's made with is the caller's: a rebuild keeps the record's, a remake chooses it again
         self.make_containers(&self.image, name, &id, &start, machine.egress.as_ref()).await
     }
 
@@ -854,11 +854,7 @@ pub(crate) fn create_args(image: &str, name: &str, id: &str, secrets: &Path, egr
 
 /// What a computer made for `network` is made with: the tunnel's bearer is new for each computer.
 fn egress_for(network: Network) -> Result<Option<Egress>> {
-    Ok(match network {
-        Network::Plain => None,
-        Network::Proxy => Some(Egress { tunnel: false, bearer: None }),
-        Network::Tunnel => Some(Egress { tunnel: true, bearer: Some(Secret::fresh(BEARER_BYTES)?) }),
-    })
+    network.egress(|| Secret::fresh(BEARER_BYTES))
 }
 
 fn tunnel_of(machine: &Machine) -> bool {
@@ -951,10 +947,31 @@ pub fn unstage_rules(machine_dir: &Path) {
 }
 
 impl DockerProvider {
-    /// Whether this provider's image says its browser can go through its own proxy. Not knowing is no.
-    async fn has_proxy(&self) -> bool {
+    /// What the image's label says about the proxy: `None` when there's no image to read. Docker
+    /// not answering is an error, not an answer. A Docker that says "no such object" for a missing
+    /// image counts as missing, as [`DockerProvider::check`] counts it.
+    async fn image_proxy(&self) -> Result<Option<bool>> {
         let label = format!("{{{{index .Config.Labels \"{EGRESS_LABEL}\"}}}}");
-        self.docker(&["image", "inspect", "--format", &label, &self.image], None).await.is_ok_and(|v| v.trim() == "1")
+        match self.docker(&["image", "inspect", "--format", &label, &self.image], None).await {
+            Ok(v) => Ok(Some(v.trim() == "1")),
+            Err(Problem::ImageMissing(_) | Problem::Gone) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether a computer made now would get the browser's proxy. An image that can't be read
+    /// is an error; one that isn't there is no.
+    async fn has_proxy(&self) -> Result<bool> {
+        Ok(self.image_proxy().await?.unwrap_or(false))
+    }
+
+    /// The egress a computer made for `network` gets on this image: `None` for plain, or for an
+    /// image without the proxy — which a computer mustn't be made on anyway.
+    async fn egress_for_network(&self, network: Network) -> Result<Option<Egress>> {
+        if network == Network::Plain || !self.has_proxy().await? {
+            return Ok(None);
+        }
+        egress_for(network)
     }
 
     /// Whether `owner` is a box name [`Provider::create`] makes: the prefix and four random bytes.
@@ -1008,8 +1025,7 @@ impl Provider for DockerProvider {
         let name = format!("{}-{}", self.prefix, random_hex(4)?);
         let start = secret_dir(&spec.dir);
         private_dir(&start)?;
-        let network = if spec.network != Network::Plain && !self.has_proxy().await { Network::Plain } else { spec.network };
-        let egress = egress_for(network)?;
+        let egress = self.egress_for_network(spec.network).await?;
         if let Err(e) = self.make_containers(&self.image, &name, &spec.id, &start, egress.as_ref()).await {
             // nothing is on it yet; if this fails too, the hub sweeps by label
             let _ = self.remove(&name).await;
@@ -1157,8 +1173,7 @@ impl Provider for DockerProvider {
                 Some(tunnel) => egress_for(if tunnel { Network::Tunnel } else { Network::Proxy })?,
                 None => None,
             },
-            Err(Problem::Gone) if self.has_proxy().await => egress_for(spec.network)?,
-            Err(Problem::Gone) => None,
+            Err(Problem::Gone) => self.egress_for_network(spec.network).await?,
             Err(e) => return Err(e),
         };
         Ok(Some(Machine {
@@ -1268,13 +1283,17 @@ impl Provider for DockerProvider {
     }
 
     async fn image_has_proxy(&self) -> Option<bool> {
-        Some(self.has_proxy().await)
+        // an image that isn't there has no proxy; Docker failing says nothing about it
+        match self.image_proxy().await {
+            Ok(label) => Some(label.unwrap_or(false)),
+            Err(_) => None,
+        }
     }
 
     async fn remake(&self, machine: &Machine, network: Network) -> Result<Machine> {
         self.check().await?;
         let name = container(machine)?;
-        let egress = if network != Network::Plain && self.has_proxy().await { egress_for(network)? } else { None };
+        let egress = self.egress_for_network(network).await?;
         let found = match self.inspect(name).await {
             Ok(found) => Some(found),
             Err(Problem::Gone) => None,
@@ -1283,6 +1302,14 @@ impl Provider for DockerProvider {
         let wanted = Machine { egress, image: Some(self.image.clone()), seen: None, ..machine.clone() };
         self.rebuild(&wanted, name, found.as_ref()).await?;
         Ok(wanted)
+    }
+
+    fn remakes(&self) -> bool {
+        true
+    }
+
+    async fn reset(&self, machine: &Machine) -> Result<()> {
+        self.remove(container(machine)?).await
     }
 
     async fn tunnel_url(&self, machine: &Machine) -> Result<Option<String>> {
@@ -1544,6 +1571,37 @@ mod tests {
         let m = made(&dir, "").create(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }).await.unwrap();
         assert_eq!(m.egress, None, "an image from before the proxy makes a computer as before");
         assert!(!calls(&dir).contains("BOX_EGRESS") && !calls(&dir).contains(":8790"), "{}", calls(&dir));
+    }
+
+    #[tokio::test]
+    async fn the_image_proxy_is_what_its_label_says_and_a_missing_image_has_none() {
+        let probe = |name: &str, body: &str| {
+            let dir = tmp(name);
+            DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body))
+        };
+        let labelled = probe("proxy-label", "case \"$1 $4\" in image*app.buwiz.box.egress*) echo 1;; esac");
+        assert_eq!(labelled.image_has_proxy().await, Some(true));
+        assert!(labelled.has_proxy().await.unwrap());
+        let old = probe("proxy-old", "case \"$1 $4\" in image*app.buwiz.box.egress*) echo;; esac");
+        assert_eq!(old.image_has_proxy().await, Some(false));
+        for (name, words) in [("proxy-gone", "Error response from daemon: No such image: img:1"), ("proxy-nothing", "Error: No such object: img:1")] {
+            let missing = probe(name, &format!("echo '{words}' >&2; exit 1"));
+            assert_eq!(missing.image_proxy().await, Ok(None), "{words}");
+            assert!(!missing.has_proxy().await.unwrap(), "{words}");
+            assert_eq!(missing.image_has_proxy().await, Some(false), "a missing image has no proxy: update the image first");
+        }
+        let down = probe("proxy-down", "echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2; exit 1");
+        assert_eq!(down.image_has_proxy().await, None, "Docker failing says nothing of the image");
+        assert!(down.has_proxy().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_lost_record_is_recovered_on_an_image_that_docker_says_no_such_object_of() {
+        let dir = tmp("recover-no-image");
+        let body = "case \"$1 $4\" in ps*) ;; volume*) echo c2-x-home;; inspect*) echo '[]'; echo 'Error: No such container: c2-x' >&2; exit 1;; image*) echo 'Error: No such object: img:1' >&2; exit 1;; esac";
+        let p = DockerProvider::new("img:1", "c2").with_program(fake_docker(&dir, body));
+        let m = p.recover(&Spec { id: "cmp_1".into(), dir: dir.clone(), network: Network::Tunnel }, Some(&Reach::Container { name: "c2-x".into() })).await.unwrap().unwrap();
+        assert_eq!(m.egress, None, "no image, no proxy, and the files are still recovered");
     }
 
     #[test]
