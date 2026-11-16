@@ -3039,6 +3039,8 @@ pub struct Store {
     pub tools: crate::tools::Tools,
     /// The chat's `widget_ask` cards by id, as answered here (`widget_ask.rs`).
     pub(crate) widget_asks: Signal<std::collections::HashMap<String, crate::widget_ask::Local>>,
+    /// The sources the widget in App Details may use (`widget_ask.rs`).
+    pub(crate) widget_grants: Signal<crate::widget_ask::Grants>,
     /// The draft was rewritten for v1 plugins already: the next `send`
     /// sends it as it is.
     pub v1_resolved: std::cell::Cell<bool>,
@@ -3398,6 +3400,7 @@ impl Store {
             v1: crate::mini_v1::ui::V1::new(),
             tools: crate::tools::Tools::new(),
             widget_asks: signal(std::collections::HashMap::new()),
+            widget_grants: signal(crate::widget_ask::Grants::default()),
             v1_resolved: std::cell::Cell::new(false),
             main_pick_q: signal(String::new()),
             bot_name: signal(String::new()),

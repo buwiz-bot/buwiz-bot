@@ -57,6 +57,8 @@ fn turn(extra: Value) -> Value {
 struct Broker {
     log: Mutex<Vec<(String, Value)>>,
     grant: Value,
+    /// `GET /v1/host/widget/grants`'s answer; null: the route is not there.
+    grants: Value,
 }
 
 struct Done;
@@ -76,8 +78,18 @@ impl Network for Broker {
             _ => Value::Null,
         };
         self.log.lock().unwrap().push((path.clone(), body));
-        let answer = if path == GRANT { self.grant.clone() } else { json!({"ok": true}) };
-        events(FetchEvent::Head(HttpHead { status: 200, ..Default::default() }));
+        let grants = path.starts_with("/v1/host/widget/grants");
+        let answer = if path == GRANT {
+            self.grant.clone()
+        } else if grants && !self.grants.is_null() {
+            self.grants.clone()
+        } else if grants {
+            json!({"ok": false, "error": "no route"})
+        } else {
+            json!({"ok": true})
+        };
+        let status = if grants && self.grants.is_null() { 404 } else { 200 };
+        events(FetchEvent::Head(HttpHead { status, ..Default::default() }));
         events(FetchEvent::Data(answer.to_string().into_bytes()));
         events(FetchEvent::End);
         Box::new(Done)
@@ -85,7 +97,11 @@ impl Network for Broker {
 }
 
 fn start(grant: Value) -> (Headless, Arc<Broker>) {
-    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), grant });
+    start_with(grant, Value::Null)
+}
+
+fn start_with(grant: Value, grants: Value) -> (Headless, Arc<Broker>) {
+    let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), grant, grants });
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1000.0), px(800.0));
     config.network = Some(seen.clone());
@@ -153,6 +169,7 @@ fn Stage() -> impl IntoElement {
                 job();
             }
         }))
+        .child(crate::appdetails::layer())
         .child(dynamic(|| {
             let turns: Vec<_> = store().turns.get().into_iter().filter(|t| t.widget_ask.is_some()).collect();
             view().children(turns.into_iter().map(|t| crate::chat::turn_row(t, "t_plain").into_element())).into_element()
@@ -292,4 +309,74 @@ fn a_card_answered_elsewhere_mounts_the_widget_again_once() {
     show(&mut app, turn(json!({"state": "read"})));
     settle(&mut app);
     assert_eq!(heard(&seen, "/module?name=R37").len(), 2, "once");
+}
+
+fn details_of_widget(app: &mut Headless) {
+    on(app, || {
+        store().app_details.set(Some(crate::store::AppInfo {
+            name: "R37".to_owned(),
+            kind: "app".to_owned(),
+            title: "Time & Task Dashboard".to_owned(),
+            ..Default::default()
+        }));
+    });
+    settle(app);
+}
+
+/// App Details of a widget lists the sources it may use, each with Remove;
+/// Remove sends the widget and source and the row goes. A `no` is no grant.
+#[test]
+fn app_details_lists_what_a_widget_may_use_and_removes_it() {
+    if !in_child("app_details_lists_what_a_widget_may_use_and_removes_it") {
+        return;
+    }
+    let grants = json!({"ok": true, "grants": [
+        {"source": "reminders", "sourceTitle": "Reminders", "mode": "write"},
+        {"source": "timeclock", "mode": "read"},
+        {"source": "linear", "mode": "no"},
+    ]});
+    let (mut app, seen) = start_with(json!({"ok": true}), grants);
+    details_of_widget(&mut app);
+    wait_for(&mut app, &seen, "/v1/host/widget/grants?name=R37", 1);
+    settle(&mut app);
+    let texts = app.texts();
+    assert!(texts.contains(&"Data this widget can use"), "{texts:?}");
+    assert!(texts.contains(&"Reminders") && texts.contains(&"timeclock"), "{texts:?}");
+    assert!(texts.contains(&"Can read and change") && texts.contains(&"Can read"), "{texts:?}");
+    assert!(!texts.contains(&"linear"), "a no is no grant");
+    app.press("Remove Reminders");
+    assert_eq!(wait_for(&mut app, &seen, "/v1/host/widget/revoke", 1), [json!({"name": "R37", "source": "reminders"})]);
+    settle(&mut app);
+    settle(&mut app);
+    // (the harness keeps old labels, so the row's title is what shows it went)
+    assert!(!app.texts().contains(&"Reminders"), "Reminders went: {:?}", app.texts());
+    assert!(app.has("Remove timeclock"), "timeclock stayed: {:?}", app.texts());
+}
+
+/// An older broker has no grants route: the sheet shows no such section.
+#[test]
+fn app_details_without_a_grants_route_shows_no_section() {
+    if !in_child("app_details_without_a_grants_route_shows_no_section") {
+        return;
+    }
+    let (mut app, seen) = start_with(json!({"ok": true}), Value::Null);
+    details_of_widget(&mut app);
+    wait_for(&mut app, &seen, "/v1/host/widget/grants?name=R37", 1);
+    settle(&mut app);
+    assert!(!app.texts().contains(&"Data this widget can use"));
+}
+
+/// Not a generated widget: no section, and nothing asked.
+#[test]
+fn app_details_of_a_server_app_asks_nothing() {
+    if !in_child("app_details_of_a_server_app_asks_nothing") {
+        return;
+    }
+    let (mut app, seen) = start_with(json!({"ok": true}), json!({"ok": true, "grants": []}));
+    on(&mut app, || {
+        store().app_details.set(Some(crate::store::AppInfo { name: "mcp:bir/forms".to_owned(), kind: "app".to_owned(), ..Default::default() }));
+    });
+    settle(&mut app);
+    assert!(!app.texts().contains(&"Data this widget can use"));
+    assert!(seen.log.lock().unwrap().iter().all(|(p, _)| !p.starts_with("/v1/host/widget/")));
 }

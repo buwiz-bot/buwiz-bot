@@ -238,3 +238,141 @@ fn answer_ask(n: &Notice, answer: &'static str) {
         }
     });
 }
+
+// ---------------------------------------------------------------------------
+// What a widget may use (App Details)
+// ---------------------------------------------------------------------------
+
+/// One source a widget was allowed.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub(crate) struct Grant {
+    pub source: String,
+    pub title: String,
+    /// `read` or `write`.
+    pub mode: String,
+}
+
+/// The grants App Details shows for widget `name`.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub(crate) struct Grants {
+    pub name: String,
+    /// Whether the broker answered (an older one has no such route: the
+    /// section then does not show).
+    pub loaded: bool,
+    pub list: Vec<Grant>,
+    pub error: String,
+}
+
+/// The grants out of `GET /v1/host/widget/grants`'s answer: the sources
+/// the person said yes to (`read`, `write`); a `no` is no grant. The title
+/// is the answer's `sourceTitle` or `title` when it has one, else the
+/// source's name.
+pub(crate) fn parse_grants(answer: &Value) -> Vec<Grant> {
+    let Some(list) = answer.get("grants").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|g| {
+            let (source, mode) = (text_of(g, "source"), text_of(g, "mode"));
+            if source.is_empty() || !matches!(mode.as_str(), "read" | "write") {
+                return None;
+            }
+            let title = Some(text_of(g, "sourceTitle")).filter(|t| !t.is_empty()).or_else(|| Some(text_of(g, "title")).filter(|t| !t.is_empty())).unwrap_or_else(|| source.clone());
+            Some(Grant { source, title, mode })
+        })
+        .collect()
+}
+
+/// What a grant lets the widget do, in words.
+pub(crate) fn grant_words(g: &Grant) -> &'static str {
+    if g.mode == "write" { "Can read and change" } else { "Can read" }
+}
+
+/// Reads widget `name`'s grants into `Store::widget_grants`.
+pub(crate) fn load_grants(name: &str) {
+    let name = name.to_owned();
+    store().widget_grants.set(Grants { name: name.clone(), ..Grants::default() });
+    crate::store::spawn_detached(async move {
+        let answer = crate::client::get(&format!("/v1/host/widget/grants?name={}", crate::client::urlenc(&name))).await;
+        let ok = answer.as_ref().is_some_and(|v| v.get("ok").and_then(Value::as_bool) != Some(false));
+        let list = answer.as_ref().filter(|_| ok).map(parse_grants).unwrap_or_default();
+        store().widget_grants.update(|g| {
+            if g.name == name {
+                g.loaded = ok;
+                g.list = list;
+            }
+        });
+    });
+}
+
+/// `POST /v1/host/widget/revoke`: the source leaves the list; the widget's
+/// next call to it asks again.
+fn revoke(name: &str, source: &str) {
+    let (name, source) = (name.to_owned(), source.to_owned());
+    crate::store::spawn_detached(async move {
+        let r = crate::client::post_any("/v1/host/widget/revoke", json!({"name": name, "source": source})).await;
+        let done = grant_result(r.as_ref(), "").is_ok();
+        let why = grant_result(r.as_ref(), "").err().unwrap_or_default();
+        store().widget_grants.update(|g| {
+            if g.name != name {
+                return;
+            }
+            if done {
+                g.list.retain(|x| x.source != source);
+                g.error.clear();
+            } else {
+                g.error = why;
+            }
+        });
+    });
+}
+
+/// "Data this widget can use", in App Details of generated widget `name`:
+/// each source it may use, with Remove. Nothing while the broker has not
+/// answered (or cannot: an older one).
+pub(crate) fn data_section(name: String) -> impl IntoElement {
+    load_grants(&name);
+    dynamic(move || {
+        let g = store().widget_grants.get();
+        if g.name != name || !g.loaded {
+            return view().into_element();
+        }
+        let mut c = view().gap(px(6.0)).test_id("widget-data").child(text("Data this widget can use").text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme::TEXT));
+        if g.list.is_empty() {
+            c = c.child(cards::note("None yet. It asks you the first time it wants some.".to_owned()));
+        }
+        for grant in &g.list {
+            let (n, source) = (name.clone(), grant.source.clone());
+            let remove = format!("Remove {}", grant.title);
+            c = c.child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(text(grant.title.clone()).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::TEXT))
+                    .child(text(grant_words(grant)).flex_1().text_size(px(12.0)).line_height(px(17.0)).text_color(theme::MUTED))
+                    .child(remove_button(remove, move || revoke(&n, &source))),
+            );
+        }
+        if !g.error.is_empty() {
+            c = c.child(cards::error_line(g.error.clone()));
+        }
+        c.into_element()
+    })
+}
+
+/// A small "Remove" that names its source for the accessibility label.
+fn remove_button(aria: String, on: impl Fn() + 'static) -> impl IntoElement {
+    let hov = signal(false);
+    view()
+        .role(AccessibilityRole::Button)
+        .label(aria)
+        .px(px(8.0))
+        .py(px(3.0))
+        .rounded(px(7.0))
+        .bg(move || if hov.get() { theme::HOVER } else { AdaptiveColor::TRANSPARENT })
+        .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
+        .on_press(on)
+        .child(text("Remove").text_size(px(12.0)).text_color(theme::DOWN))
+}
