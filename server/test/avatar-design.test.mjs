@@ -8,7 +8,7 @@ import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
-import { PNG_B64, say, startFakeOpencodex } from "./fixtures/fake-opencodex.mjs";
+import { PNG_B64, say, startFakeOpencodex } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { PORT as TEST_PORT, modelEnv, postJson, request, startServer, tempDir } from "./helpers.mjs";
 import {
   DESIGN_SYSTEM, KIT, KIT_SHAPES, MOCK_OUTLINES, designCandidates, flattenPath, outlineErrors, parseCandidates, validateAvatar,

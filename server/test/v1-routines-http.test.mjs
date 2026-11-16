@@ -48,7 +48,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { generate, random128 } from "../src/v1/ed.mjs";
 import { permsDigest } from "../src/v1/manifest.mjs";
-import { say, startFakeOpencodex, use } from "./fixtures/fake-opencodex.mjs";
+import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { PORT, dbRows, modelEnv, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 import { FX, bed, envelope, fixtureSpec } from "./v1-helpers.mjs";
 

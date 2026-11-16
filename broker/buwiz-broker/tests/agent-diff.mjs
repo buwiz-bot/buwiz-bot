@@ -1,7 +1,8 @@
-// The Node side of tests/agent_diff.rs: runs agent.mjs's `generate` (the
+// The Node side of tests/agent_diff.rs, which no longer runs it: the pins in
+// tests/pins/agent_diff/ were recorded with it. It runs agent.mjs's `generate` (the
 // tool loop, as /chat runs it) on each scenario's prompt, in a thread of
 // its own on data dir argv[2], against the scripted fake opencodex
-// (server/test/fixtures/fake-opencodex.mjs), and records the model calls
+// (fixtures/fake-opencodex.mjs), and records the model calls
 // each sent, the job's phases and the thread's turns. Then it keeps the
 // fake up for the Rust side: every "take" line on stdin answers with the
 // requests since the last one.
@@ -18,15 +19,16 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const server = join(here, "..", "..", "..", "server");
+const fixtures = join(here, "fixtures");
 const [data, raw] = process.argv.slice(2);
 const scenarios = JSON.parse(raw);
-const { startFakeOpencodex } = await import(join(server, "test", "fixtures", "fake-opencodex.mjs"));
+const { startFakeOpencodex } = await import(join(fixtures, "fake-opencodex.mjs"));
 const fake = await startFakeOpencodex();
 
 for (const [name, steps] of Object.entries(scenarios.scripts || {})) fake.script(name, steps);
 mkdirSync(join(data, "widgets"), { recursive: true });
 for (const k of ["MOCK", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEN_PROVIDER", "GEN_BASE_URL", "GEN_MODEL", "GEN_MAX_TOKENS", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LINEAR_API_KEY"]) delete process.env[k];
-const bin = join(server, "test", "fixtures", "bin");
+const bin = join(fixtures, "bin");
 
 Object.assign(process.env, { BUWIZ_BROKER_DATA_DIR: data, OPENCODEX_URL: fake.url, PATH: `${bin}:${process.env.PATH}`, NSH: join(bin, "nsh"), BUWIZ_STUB_LOG: join(data, "stubs.log") });
 console.error = () => {};

@@ -1,0 +1,31 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer test-key"
+      },
+      "body": {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": "earlier"
+          },
+          {
+            "role": "assistant",
+            "content": "[built widget R2]"
+          },
+          {
+            "role": "user",
+            "content": "[[script:oai-chat]] hello"
+          }
+        ],
+        "max_tokens": 1024
+      }
+    }
+  ],
+  "result": "Hi from the fake."
+}

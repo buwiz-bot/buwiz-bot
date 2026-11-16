@@ -15,7 +15,7 @@
 // BUWIZ_STUB_LOG: each call appends {bin, argv} as a JSON line there.
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
-const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
+const STUB_LOG = process.env.BUWIZ_STUB_LOG;
 
 const argv = process.argv.slice(2);
 

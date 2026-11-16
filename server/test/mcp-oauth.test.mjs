@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { STATIC, oauthServer } from "./fixtures/oauth-server.mjs";
+import { STATIC, oauthServer } from "../../broker/buwiz-broker/tests/fixtures/oauth-server.mjs";
 import { PORT, postJson, request, startServer, tempDir } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp-oauth");

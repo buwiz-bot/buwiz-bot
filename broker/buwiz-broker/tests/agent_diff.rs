@@ -1,11 +1,16 @@
-//! The tool loop's differential test (plan 5.4): the same `/chat` turns run
-//! by Node's agent.mjs and by the hub's tool loop, against one scripted fake
-//! opencodex (server/test/fixtures/fake-opencodex.mjs, run by
-//! tests/agent-diff.mjs), must send the same model requests (method, path,
-//! the headers opencodex reads, the body: system prompt, tools, messages
-//! with tool results) and leave the same job phases and turns. The hub runs
-//! in this process (no port); nsh, `secret` and the Mac tools are the test
-//! PATH stubs. Needs `node` on PATH.
+//! The tool loop's pinned test (plan 5.4): the `/chat` turns Node's agent.mjs
+//! ran against one scripted fake opencodex (tests/fixtures/fake-opencodex.mjs,
+//! served by tests/fixtures/fake-opencodex-driver.mjs) are pinned under
+//! tests/pins/agent_diff/, one file per run: the model requests it sent
+//! (method, path, the headers opencodex reads, the body: system prompt,
+//! tools, messages with tool results), the job's phases and detail, and the
+//! thread's turns. The hub's tool loop, run here against the same fake,
+//! must send and leave the same. The hub runs in this process (no port);
+//! nsh, `secret` and the Mac tools are the test PATH stubs
+//! (tests/fixtures/bin). Needs `node` on PATH for the fake and the stubs.
+
+#[path = "../../test-support/pins.rs"]
+mod pins;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -24,8 +29,8 @@ use serde_json::{json, Value};
 
 const CODE: &str = "import { Text } from \"nsh\";\n\nexport default function R() {\n  return <Text>hi</Text>;\n}\n";
 
-fn server_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server")
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
 struct Driver {
@@ -67,7 +72,7 @@ fn temp(label: &str) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn agent_diff_node_and_rust_send_the_same_model_requests() {
+async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
     let scenarios = json!({
         "scripts": {
             "think-tools": [
@@ -105,24 +110,23 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
             {"prompt": "[[script:text]] again"}
         ]
     });
-    let node_data = temp("node");
     let mut child = Command::new("node")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/agent-diff.mjs"))
-        .args([node_data.display().to_string(), scenarios.to_string()])
+        .arg(fixtures().join("fake-opencodex-driver.mjs"))
+        .args(["calls", &scenarios.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("node");
+        .expect("node runs the fake opencodex");
     let stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
-    let node: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("the driver said {line:?}: {e}"));
+    let fake: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("the fake said {line:?}: {e}"));
     let mut driver = Driver { child, stdin, stdout };
 
-    // this process is the Rust broker: the same environment Node ran in
-    let bin = server_dir().join("test/fixtures/bin");
+    // this process is the hub: the same environment Node ran in
+    let bin = fixtures().join("bin");
     let rust_data = temp("rust");
     for k in [
         "MOCK",
@@ -140,7 +144,7 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
     ] {
         std::env::remove_var(k);
     }
-    std::env::set_var("OPENCODEX_URL", node["url"].as_str().unwrap());
+    std::env::set_var("OPENCODEX_URL", fake["url"].as_str().unwrap());
     std::env::set_var("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
     std::env::set_var("NSH", bin.join("nsh"));
     std::env::set_var("BUWIZ_STUB_LOG", rust_data.join("stubs.log"));
@@ -166,29 +170,29 @@ async fn agent_diff_node_and_rust_send_the_same_model_requests() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let want = &node["results"][i];
         let got = driver.take();
-        let prompt = run["prompt"].as_str().unwrap();
-        assert_eq!(got.as_array().map(Vec::len), want["calls"].as_array().map(Vec::len), "{prompt}: the number of model calls (the job: {st}, Rust sent {got})");
-        for (k, (g, w)) in got.as_array().unwrap().iter().zip(want["calls"].as_array().unwrap()).enumerate() {
-            // the bot controls are Rust's own tools (Node's path is not live), and so are a plain
-            // chat's memory and agent tools: not in Node's list
-            let mut g = g.clone();
-            if let Some(tools) = g.pointer_mut("/body/tools").and_then(Value::as_array_mut) {
-                tools.retain(|t| {
-                    let name = t["name"].as_str().unwrap_or("");
-                    !buwiz_broker::hub::tools::controls::NAMES.contains(&name) && !name.starts_with("memory_") && !buwiz_broker::hub::agents::tools::USER_NAMES.contains(&name)
-                });
-            }
-            let g = &g;
-            assert_eq!(g, w, "{prompt}: model call {k}");
-        }
+        // the bot controls are Rust's own tools (Node's path is not live), and so are a plain
+        // chat's memory and agent tools: not in Node's list
+        let calls: Vec<Value> = got
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| {
+                let mut g = g.clone();
+                if let Some(tools) = g.pointer_mut("/body/tools").and_then(Value::as_array_mut) {
+                    tools.retain(|t| {
+                        let name = t["name"].as_str().unwrap_or("");
+                        !buwiz_broker::hub::tools::controls::NAMES.contains(&name) && !name.starts_with("memory_") && !buwiz_broker::hub::agents::tools::USER_NAMES.contains(&name)
+                    });
+                }
+                g
+            })
+            .collect();
         let phases: Vec<Value> = st["events"].as_array().unwrap().iter().map(|e| e["phase"].clone()).collect();
-        assert_eq!(json!(phases), want["phases"], "{prompt}: the job's phases");
-        assert_eq!(st["detail"], want["detail"], "{prompt}: the job's detail");
         let thread = thread.as_str().unwrap().to_owned();
         // a failed run's notice is Rust's own: Node's chat stays silent
         let turns: Vec<Value> = hub.ctx().store.read(|s| s.thread(&thread).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_none_or(|n| n["reason"] != "failed")).map(|u| json!([u.role, u.text, u.label, u.name, u.v, u.reaction])).collect());
-        assert_eq!(json!(turns), want["turns"], "{prompt}: the thread's turns");
+        eprintln!("run {i}: {} (the job is done: {}, its detail: {})", run["prompt"], st["done"], st["detail"]);
+        pins::check(&format!("agent_diff/run_{i}"), &json!({"calls": calls, "phases": phases, "detail": st["detail"], "turns": turns}));
     }
 }

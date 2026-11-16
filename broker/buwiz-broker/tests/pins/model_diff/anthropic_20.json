@@ -1,0 +1,18 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/images/generations",
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "prompt": "a red fox",
+        "size": "512x512",
+        "n": 1,
+        "background": "transparent"
+      }
+    }
+  ],
+  "result": "chatgpt"
+}

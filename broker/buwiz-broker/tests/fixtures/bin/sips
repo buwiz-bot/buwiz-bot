@@ -5,7 +5,7 @@
 // default 64x64). SIPS_STUB_FAIL=1 exits 1 instead.
 // BUWIZ_STUB_LOG: each call appends {bin, argv} as a JSON line there.
 const { appendFileSync, copyFileSync, existsSync, writeFileSync } = require("node:fs");
-const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
+const STUB_LOG = process.env.BUWIZ_STUB_LOG;
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 const argv = process.argv.slice(2);

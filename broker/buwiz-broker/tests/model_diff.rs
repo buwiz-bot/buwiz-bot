@@ -1,10 +1,14 @@
-//! The model client's differential test (plan 5.3): the same calls made by
-//! Node's model.mjs and by the hub's model client, against one scripted
-//! fake opencodex (server/test/fixtures/fake-opencodex.mjs, run by
-//! tests/model-diff.mjs), must send the same requests (method, path, the
-//! headers opencodex reads, the body) and come back with the same result
-//! (the module, the classification, the reply, the message, the error
-//! text). Needs `node` on PATH, as the hub's other integration tests do.
+//! The model client's pinned test (plan 5.3): the calls Node's model.mjs
+//! made against one scripted fake opencodex (tests/fixtures/fake-opencodex.mjs,
+//! served by tests/fixtures/fake-opencodex-driver.mjs) are pinned under
+//! tests/pins/model_diff/, one file per call: the requests it sent (method,
+//! path, the headers opencodex reads, the body) and the result (the module,
+//! the classification, the reply, the message, the error text). The hub's
+//! model client makes the same calls here against the same fake and must
+//! send and get the same. Needs `node` on PATH for the fake and the stubs.
+
+#[path = "../../test-support/pins.rs"]
+mod pins;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -19,8 +23,8 @@ use serde_json::{json, Value};
 
 const CODE: &str = "import { Text } from \"nsh\";\n\nexport default function R() {\n  return <Text>hi</Text>;\n}";
 
-fn server_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server")
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
 struct Driver {
@@ -30,20 +34,20 @@ struct Driver {
 }
 
 impl Driver {
-    fn start(mode: &str, data: &Path, scenarios: &Value) -> (Self, Value) {
+    fn start(data: &Path, scenarios: &Value) -> (Self, Value) {
         let mut child = Command::new("node")
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/model-diff.mjs"))
-            .args([mode, &data.display().to_string(), &scenarios.to_string()])
+            .arg(fixtures().join("fake-opencodex-driver.mjs"))
+            .args(["all", &scenarios.to_string(), &data.display().to_string()])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("node");
+            .expect("node runs the fake opencodex");
         let stdin = child.stdin.take().unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let mut line = String::new();
         stdout.read_line(&mut line).unwrap();
-        let first: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("the driver said {line:?}: {e}"));
+        let first: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("the fake said {line:?}: {e}"));
         (Self { child, stdin, stdout }, first)
     }
 
@@ -63,13 +67,13 @@ impl Drop for Driver {
     }
 }
 
-/// The test PATH stubs (server/test/fixtures/bin) run for real.
+/// The test PATH stubs (tests/fixtures/bin) run for real.
 struct Stubs;
 
 impl LocalTools for Stubs {
     fn run(&self, cmd: LocalCommand) -> BoxFuture<'static, Result<LocalOutput, String>> {
         Box::pin(async move {
-            let bin = server_dir().join("test/fixtures/bin");
+            let bin = fixtures().join("bin");
             let program = if bin.join(&cmd.program).exists() { bin.join(&cmd.program).display().to_string() } else { cmd.program.clone() };
             let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
             let out = tokio::process::Command::new(program).args(&cmd.args).env("PATH", path).output().await.map_err(|e| e.to_string())?;
@@ -148,21 +152,20 @@ async fn run(s: &Settings, api: &dyn ModelApi, data: &Path, sc: &Value) -> Value
     }
 }
 
-/// Runs the scenarios on both sides and compares them one by one.
+/// Runs the scenarios against the fake and compares each with its pin.
 async fn differ(mode: &str, scenarios: Value) {
     let data = std::env::temp_dir().join(format!("rox-model-diff-{mode}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
-    let (mut driver, node) = Driver::start(mode, &data, &scenarios);
-    let url = node["url"].as_str().unwrap().to_owned();
+    let (mut driver, fake) = Driver::start(&data, &scenarios);
+    let url = fake["url"].as_str().unwrap().to_owned();
     let s = settings(mode, &url);
     let api = ModelClient::new(Arc::new(s.clone()));
     for (i, sc) in scenarios["list"].as_array().unwrap().iter().enumerate() {
-        let want = &node["results"][i];
         let result = run(&s, &api, &data, sc).await;
         let requests = driver.take();
-        assert_eq!(requests, want["requests"], "scenario {i} ({sc}): the requests differ");
-        assert_eq!(result, want["result"], "scenario {i} ({sc}): the results differ");
+        eprintln!("scenario {i}: {sc}");
+        pins::check(&format!("model_diff/{mode}_{i}"), &json!({"requests": requests, "result": result}));
     }
     let _ = std::fs::remove_dir_all(&data);
 }
@@ -172,7 +175,7 @@ fn say(text: &str) -> Value {
 }
 
 #[tokio::test]
-async fn model_diff_anthropic_requests_and_results_match_node() {
+async fn model_diff_anthropic_requests_and_results_match_the_pins() {
     let module = format!("Fixed it\n```tsx\n{CODE}\n```");
     let body = json!({ "model": "claude-haiku-5-5", "max_tokens": 20000, "system": "sys", "tools": [{ "name": "react", "input_schema": { "type": "object" } }], "messages": [{ "role": "user", "content": "[[script:tool-then-text]] go" }] });
     let scenarios = json!({
@@ -216,7 +219,7 @@ async fn model_diff_anthropic_requests_and_results_match_node() {
 }
 
 #[tokio::test]
-async fn model_diff_openai_requests_and_results_match_node() {
+async fn model_diff_openai_requests_and_results_match_the_pins() {
     let scenarios = json!({
         "scripts": {
             "oai-ui": [{ "classify": "UI", "content": [{ "type": "text", "text": "```tsx\nexport default function R() { return <" }], "stop_reason": "max_tokens" }, say(&format!("A card\n```tsx\n{CODE}\n```"))],

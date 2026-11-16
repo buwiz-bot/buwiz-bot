@@ -11,7 +11,7 @@
 // {env} with the REM_* variables (the arguments JXA scripts read) when any
 // is set.
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
-const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
+const STUB_LOG = process.env.BUWIZ_STUB_LOG;
 
 const rem = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("REM_")).sort(([a], [b]) => (a < b ? -1 : 1)));
 const call = { bin: "osascript", argv: process.argv.slice(2), ...(Object.keys(rem).length ? { env: rem } : {}) };

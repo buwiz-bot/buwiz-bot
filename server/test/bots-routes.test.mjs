@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { PNG_B64, say, startFakeOpencodex } from "./fixtures/fake-opencodex.mjs";
+import { PNG_B64, say, startFakeOpencodex } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { modelEnv, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("bots-routes");

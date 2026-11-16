@@ -41,7 +41,7 @@ export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}
 // nsh-macos-host beside it, pbcopy, open, osascript, sips, qlmanage,
 // secret, aerospace): each file's header says what it does and which env
 // vars steer it.
-export const STUB_BIN = join(ROOT, "test", "fixtures", "bin");
+export const STUB_BIN = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "bin");
 
 /** The env that puts the stubs first on the broker's PATH, NSH at the nsh
  *  stub, and their call log at `log` (BUWIZ_STUB_LOG). */

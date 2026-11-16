@@ -1,0 +1,21 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/images/edits",
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "prompt": "make it blue",
+        "size": "1024x1024",
+        "images": [
+          {
+            "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+          }
+        ]
+      }
+    }
+  ],
+  "result": "chatgpt"
+}

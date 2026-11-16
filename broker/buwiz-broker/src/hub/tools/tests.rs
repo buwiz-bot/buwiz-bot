@@ -545,7 +545,7 @@ async fn rtn_14_a_routines_turn_writes_only_what_its_writes_list() {
 // ————— mcp-agent.test.mjs —————
 
 fn fixture(name: &str) -> String {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server/test/fixtures").join(name).display().to_string()
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name).display().to_string()
 }
 
 fn node() -> String {

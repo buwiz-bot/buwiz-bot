@@ -1,6 +1,7 @@
-// The Node side of tests/model_diff.rs: runs model.mjs (and avatars.mjs'
+// The Node side of tests/model_diff.rs, which no longer runs it: the pins in
+// tests/pins/model_diff/ were recorded with it. It runs model.mjs (and avatars.mjs'
 // image calls) on the scenarios given in argv against the scripted fake
-// opencodex (server/test/fixtures/fake-opencodex.mjs), and records what
+// opencodex (fixtures/fake-opencodex.mjs), and records what
 // each sent. Then it keeps the fake up for the Rust side: every "take"
 // line on stdin answers with the requests since the last one.
 //
@@ -16,9 +17,10 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const server = join(here, "..", "..", "..", "server");
+const fixtures = join(here, "fixtures");
 const [mode, data, raw] = process.argv.slice(2);
 const scenarios = JSON.parse(raw);
-const { startFakeOpencodex, PNG_B64 } = await import(join(server, "test", "fixtures", "fake-opencodex.mjs"));
+const { startFakeOpencodex, PNG_B64 } = await import(join(fixtures, "fake-opencodex.mjs"));
 const fake = await startFakeOpencodex();
 
 for (const [name, steps] of Object.entries(scenarios.scripts || {})) fake.script(name, steps);
@@ -28,7 +30,7 @@ for (const k of ["MOCK", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEN_PROVI
 Object.assign(process.env, {
   BUWIZ_BROKER_DATA_DIR: data,
   OPENCODEX_URL: fake.url,
-  PATH: `${join(server, "test", "fixtures", "bin")}:${process.env.PATH}`,
+  PATH: `${join(fixtures, "bin")}:${process.env.PATH}`,
   ...(mode === "openai" ? { GEN_PROVIDER: "openai", GEN_BASE_URL: `${fake.url}/v1`, OPENROUTER_API_KEY: "test-key" } : { ANTHROPIC_BASE_URL: `${fake.url}/direct` }),
 });
 // quiet: the classifier and the SVG fallback log

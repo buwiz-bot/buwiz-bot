@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { oauthServer } from "./fixtures/oauth-server.mjs";
+import { oauthServer } from "../../broker/buwiz-broker/tests/fixtures/oauth-server.mjs";
 import { PORT, ROOT, env, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp-routes");
@@ -18,7 +18,7 @@ const bin = tempDir("mcp-routes-bin");
 const opened = join(bin, "opened");
 const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
-const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
+const APPS = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "mcp-apps-server.mjs");
 
 process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
 process.env.MOCK = "1";

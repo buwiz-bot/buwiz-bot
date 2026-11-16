@@ -2,7 +2,7 @@
 // pbcopy stub for the broker tests: reads stdin and copies nothing.
 // BUWIZ_STUB_LOG: each call appends {bin, argv, stdin} as a JSON line there.
 const { appendFileSync, readFileSync } = require("node:fs");
-const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
+const STUB_LOG = process.env.BUWIZ_STUB_LOG;
 
 const stdin = readFileSync(0, "utf8");
 

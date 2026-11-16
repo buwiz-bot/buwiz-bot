@@ -1,0 +1,27 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer test-key"
+      },
+      "body": {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Classify the user message for a generative-UI chat app. Reply with exactly one word: UI or CHAT.\nUI = the user wants an interface, widget, app, card, or game built/rendered — including terse requests that name a thing to build (\"pomodoro timer\", \"make a calculator\").\nCHAT = greetings, questions, discussion, feedback, or anything that only wants a text answer."
+          },
+          {
+            "role": "user",
+            "content": "[[script:oai-ui]] a card"
+          }
+        ],
+        "max_tokens": 8
+      }
+    }
+  ],
+  "result": "ui"
+}

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { say, startFakeOpencodex, use } from "./fixtures/fake-opencodex.mjs";
+import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { FIXTURE, dbRows, modelEnv, nodeIn, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
 
 const MODEL = "claude-haiku-5-5";

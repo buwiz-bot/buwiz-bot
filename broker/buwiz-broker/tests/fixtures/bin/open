@@ -2,6 +2,6 @@
 // open stub for the broker tests: opens nothing (no Finder, no browser).
 // BUWIZ_STUB_LOG: each call appends {bin, argv} as a JSON line there.
 const { appendFileSync } = require("node:fs");
-const STUB_LOG = require("../../../src/env.mjs").env("BUWIZ_STUB_LOG");
+const STUB_LOG = process.env.BUWIZ_STUB_LOG;
 
 if (STUB_LOG) appendFileSync(STUB_LOG, JSON.stringify({ bin: "open", argv: process.argv.slice(2) }) + "\n");
