@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::hub::ctx::HubCtx;
-use crate::hub::routes::leftovers::{field, get, parse_error, trim, truthy};
+use crate::hub::jsval::{field, get, parse_error, trim, truthy};
 use crate::hub::traits::LocalCommand;
 use crate::js;
 
@@ -50,7 +50,8 @@ pub(crate) const REMINDERS_ADD: &str = r#"
             if (listName) { const hits = app.lists.whose({name: listName})(); if (hits.length) list = hits[0]; }
             if (!list) list = app.defaultList();
             const props = { name };
-            if (due) props.dueDate = new Date(due);
+            // a bare date is that day here, not midnight UTC (which is the day before, west of it)
+            if (due) props.dueDate = new Date(/^\d{4}-\d{2}-\d{2}$/.test(due.trim()) ? due.trim() + "T00:00:00" : due);
             list.reminders.push(app.Reminder(props));
             JSON.stringify({ ok: true, name, list: list.name() });"#;
 

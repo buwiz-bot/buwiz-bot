@@ -43,15 +43,16 @@ const SOURCE_HELPER: &str = include_str!("popout_source.tsx");
 
 /// `capabilities.json` beside a pop-out's bundle: what `nsh-macos-host --bundle` enforces on
 /// it (a bundle with the file may do only what it lists; without, everything). The network
-/// is exactly GET and POST on the widget's `/state/<name>` and POST on its one `call` path;
-/// `window` and `clipboard` are what the mount wrapper and the contract's Clipboard use.
-pub(crate) fn capabilities(name: &str, call: &str) -> Value {
+/// is exactly GET and POST on the widget's `/state/<name>` and POST on its one `call` path,
+/// both on this broker's `port` only; `window` and `clipboard` are what the mount wrapper
+/// and the contract's Clipboard use.
+pub(crate) fn capabilities(name: &str, call: &str, port: u16) -> Value {
     json!({
         "network": {
             "hosts": [],
             "http": [
-                {"host": "127.0.0.1", "methods": ["GET", "POST"], "schemes": ["http"], "paths": [format!("/state/{name}")]},
-                {"host": "127.0.0.1", "methods": ["POST"], "schemes": ["http"], "paths": [call]},
+                {"host": "127.0.0.1", "port": port, "methods": ["GET", "POST"], "schemes": ["http"], "paths": [format!("/state/{name}")]},
+                {"host": "127.0.0.1", "port": port, "methods": ["POST"], "schemes": ["http"], "paths": [call]},
             ],
         },
         "window": true,
@@ -521,7 +522,7 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         }
     }
     // after the build: `nsh build` removes a capabilities.json its app does not declare
-    if let Err(e) = std::fs::write(build_dir.join("capabilities.json"), js::stringify(&capabilities(&name, &call))) {
+    if let Err(e) = std::fs::write(build_dir.join("capabilities.json"), js::stringify(&capabilities(&name, &call, crate::hub::market::node_paths().1))) {
         return reply(&json!({"ok": false, "error": format!("capabilities.json: {e}")}));
     }
     let shown_name = if shown_v != 0.0 { format!("{app_title} · v{}", tpl(shown_v)) } else { app_title };
@@ -593,13 +594,13 @@ mod tests {
 
     #[test]
     fn popout_capabilities_grant_exactly_the_state_and_the_one_call_path() {
-        let c = capabilities("R37", "/w/R37/tk_-9/call");
+        let c = capabilities("R37", "/w/R37/tk_-9/call", 8787);
         assert_eq!(
             c,
             json!({
                 "network": {"hosts": [], "http": [
-                    {"host": "127.0.0.1", "methods": ["GET", "POST"], "schemes": ["http"], "paths": ["/state/R37"]},
-                    {"host": "127.0.0.1", "methods": ["POST"], "schemes": ["http"], "paths": ["/w/R37/tk_-9/call"]},
+                    {"host": "127.0.0.1", "port": 8787, "methods": ["GET", "POST"], "schemes": ["http"], "paths": ["/state/R37"]},
+                    {"host": "127.0.0.1", "port": 8787, "methods": ["POST"], "schemes": ["http"], "paths": ["/w/R37/tk_-9/call"]},
                 ]},
                 "window": true,
                 "clipboard": true,
