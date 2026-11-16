@@ -324,7 +324,8 @@ fn details_of_widget(app: &mut Headless) {
 }
 
 /// App Details of a widget lists the sources it may use, each with Remove;
-/// Remove sends the widget and source and the row goes. A `no` is no grant.
+/// Remove sends the widget and source and the row goes. A source it was
+/// refused shows as not allowed, with Ask again.
 #[test]
 fn app_details_lists_what_a_widget_may_use_and_removes_it() {
     if !in_child("app_details_lists_what_a_widget_may_use_and_removes_it") {
@@ -333,7 +334,7 @@ fn app_details_lists_what_a_widget_may_use_and_removes_it() {
     let grants = json!({"ok": true, "grants": [
         {"source": "reminders", "sourceTitle": "Reminders", "mode": "write"},
         {"source": "timeclock", "mode": "read"},
-        {"source": "linear", "mode": "no"},
+        {"source": "linear", "sourceTitle": "Linear", "mode": "no"},
     ]});
     let (mut app, seen) = start_with(json!({"ok": true}), grants);
     details_of_widget(&mut app);
@@ -343,7 +344,7 @@ fn app_details_lists_what_a_widget_may_use_and_removes_it() {
     assert!(texts.contains(&"Data this widget can use"), "{texts:?}");
     assert!(texts.contains(&"Reminders") && texts.contains(&"timeclock"), "{texts:?}");
     assert!(texts.contains(&"Can read and change") && texts.contains(&"Can read"), "{texts:?}");
-    assert!(!texts.contains(&"linear"), "a no is no grant");
+    assert!(texts.contains(&"Linear") && texts.contains(&"Not allowed") && app.has("Ask again about Linear"), "a no shows, and can be undone: {texts:?}");
     app.press("Remove Reminders");
     assert_eq!(wait_for(&mut app, &seen, "/v1/host/widget/revoke", 1), [json!({"name": "R37", "source": "reminders"})]);
     settle(&mut app);
@@ -351,6 +352,9 @@ fn app_details_lists_what_a_widget_may_use_and_removes_it() {
     // (the harness keeps old labels, so the row's title is what shows it went)
     assert!(!app.texts().contains(&"Reminders"), "Reminders went: {:?}", app.texts());
     assert!(app.has("Remove timeclock"), "timeclock stayed: {:?}", app.texts());
+    // Ask again forgets the no: the widget's next call asks
+    app.press("Ask again about Linear");
+    assert_eq!(wait_for(&mut app, &seen, "/v1/host/widget/revoke", 2)[1], json!({"name": "R37", "source": "linear"}));
 }
 
 /// An older broker has no grants route: the sheet shows no such section.

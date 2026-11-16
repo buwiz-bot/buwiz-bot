@@ -243,12 +243,12 @@ fn answer_ask(n: &Notice, answer: &'static str) {
 // What a widget may use (App Details)
 // ---------------------------------------------------------------------------
 
-/// One source a widget was allowed.
+/// The person's answer about one source a widget asked for.
 #[derive(Clone, PartialEq, Default, Debug)]
 pub(crate) struct Grant {
     pub source: String,
     pub title: String,
-    /// `read` or `write`.
+    /// `read`, `write` or `no`.
     pub mode: String,
 }
 
@@ -263,10 +263,11 @@ pub(crate) struct Grants {
     pub error: String,
 }
 
-/// The grants out of `GET /v1/host/widget/grants`'s answer: the sources
-/// the person said yes to (`read`, `write`); a `no` is no grant. The title
-/// is the answer's `sourceTitle` or `title` when it has one, else the
-/// source's name.
+/// The answers out of `GET /v1/host/widget/grants`: the sources the person
+/// said yes to (`read`, `write`) and the ones they turned down (`no`, which
+/// stands until it is removed here: the widget does not ask twice). The
+/// title is the answer's `sourceTitle` or `title` when it has one, else
+/// the source's name.
 pub(crate) fn parse_grants(answer: &Value) -> Vec<Grant> {
     let Some(list) = answer.get("grants").and_then(Value::as_array) else {
         return Vec::new();
@@ -274,7 +275,7 @@ pub(crate) fn parse_grants(answer: &Value) -> Vec<Grant> {
     list.iter()
         .filter_map(|g| {
             let (source, mode) = (text_of(g, "source"), text_of(g, "mode"));
-            if source.is_empty() || !matches!(mode.as_str(), "read" | "write") {
+            if source.is_empty() || !matches!(mode.as_str(), "read" | "write" | "no") {
                 return None;
             }
             let title = Some(text_of(g, "sourceTitle")).filter(|t| !t.is_empty()).or_else(|| Some(text_of(g, "title")).filter(|t| !t.is_empty())).unwrap_or_else(|| source.clone());
@@ -285,7 +286,17 @@ pub(crate) fn parse_grants(answer: &Value) -> Vec<Grant> {
 
 /// What a grant lets the widget do, in words.
 pub(crate) fn grant_words(g: &Grant) -> &'static str {
-    if g.mode == "write" { "Can read and change" } else { "Can read" }
+    match g.mode.as_str() {
+        "write" => "Can read and change",
+        "no" => "Not allowed",
+        _ => "Can read",
+    }
+}
+
+/// The row's button: what removing the answer does, and its accessibility
+/// label. Removing a `no` is how the widget gets to ask again.
+pub(crate) fn grant_button(g: &Grant) -> (&'static str, String) {
+    if g.mode == "no" { ("Ask again", format!("Ask again about {}", g.title)) } else { ("Remove", format!("Remove {}", g.title)) }
 }
 
 /// Reads widget `name`'s grants into `Store::widget_grants`.
@@ -328,8 +339,9 @@ fn revoke(name: &str, source: &str) {
 }
 
 /// "Data this widget can use", in App Details of generated widget `name`:
-/// each source it may use, with Remove. Nothing while the broker has not
-/// answered (or cannot: an older one).
+/// each source it may use, with Remove, and each one turned down, with Ask
+/// again. Nothing while the broker has not answered (or cannot: an older
+/// one).
 pub(crate) fn data_section(name: String) -> impl IntoElement {
     load_grants(&name);
     dynamic(move || {
@@ -343,7 +355,7 @@ pub(crate) fn data_section(name: String) -> impl IntoElement {
         }
         for grant in &g.list {
             let (n, source) = (name.clone(), grant.source.clone());
-            let remove = format!("Remove {}", grant.title);
+            let (says, aria) = grant_button(grant);
             c = c.child(
                 view()
                     .flex_row()
@@ -351,7 +363,7 @@ pub(crate) fn data_section(name: String) -> impl IntoElement {
                     .gap_2()
                     .child(text(grant.title.clone()).text_size(px(12.0)).line_height(px(17.0)).text_color(theme::TEXT))
                     .child(text(grant_words(grant)).flex_1().text_size(px(12.0)).line_height(px(17.0)).text_color(theme::MUTED))
-                    .child(remove_button(remove, move || revoke(&n, &source))),
+                    .child(row_button(says, aria, move || revoke(&n, &source))),
             );
         }
         if !g.error.is_empty() {
@@ -361,8 +373,8 @@ pub(crate) fn data_section(name: String) -> impl IntoElement {
     })
 }
 
-/// A small "Remove" that names its source for the accessibility label.
-fn remove_button(aria: String, on: impl Fn() + 'static) -> impl IntoElement {
+/// A row's small button; `aria` names its source for the accessibility label.
+fn row_button(says: &'static str, aria: String, on: impl Fn() + 'static) -> impl IntoElement {
     let hov = signal(false);
     view()
         .role(AccessibilityRole::Button)
@@ -374,5 +386,5 @@ fn remove_button(aria: String, on: impl Fn() + 'static) -> impl IntoElement {
         .on_mouse_enter(move |_: &MouseEvent| hov.set(true))
         .on_mouse_leave(move |_: &MouseEvent| hov.set(false))
         .on_press(on)
-        .child(text("Remove").text_size(px(12.0)).text_color(theme::DOWN))
+        .child(text(says).text_size(px(12.0)).text_color(theme::DOWN))
 }
