@@ -194,7 +194,7 @@ test("install: the review lists every permission (13.1 step 3) and a changed man
 
     assert.equal((await api.list()).length, 0, "inspect installs nothing");
     assert.deepEqual(i.review.apps.find((a) => a.id === "board").lines, [
-      "Can call 6 Fixture tools: fx_echo, fx_slow, fx_fail, fx_big, fx_search, fx_open",
+      "Can call 7 Fixture tools: fx_echo, fx_slow, fx_fail, fx_big, fx_search, fx_open, fx_badge",
       "Can open: Fixture Card",
       "Can open in your browser (asks each time): https://example.com",
       "Can attach: Item",

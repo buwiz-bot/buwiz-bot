@@ -188,7 +188,7 @@ pub fn result_bytes(r: &Value) -> usize {
     text + get(r, "structuredContent").map_or(0, |s| js::stringify(s).len())
 }
 
-/// A tool result without `_meta` (16.1, 16.5: never shown past the broker).
+/// A tool result without `_meta` (16.1, 16.7: never shown past the broker).
 pub fn strip_meta(r: &Value) -> Value {
     let mut out = r.clone();
     if let Some(o) = out.as_object_mut() {
@@ -210,7 +210,7 @@ pub const ACCOUNT_USE_REFUSED: &str = "buwiz/account_use_refused";
 /// `_meta["buwiz/document"]`, `buwiz/open_with`, `buwiz/save` and
 /// [`ACCOUNT_USE`], the keys the Bot itself acts on. The Bot is the host's
 /// other half and judges them (`mini_v1::document`, `mini_v1::system_open`,
-/// `mini_v1::bridge`); the app and the model still never see them (16.5).
+/// `mini_v1::bridge`); the app and the model still never see them (16.7).
 /// When `may_switch` is false a [`ACCOUNT_USE`] in `r` is not passed on: [`ACCOUNT_USE_REFUSED`]
 /// stands in its place, and the answer's second part is `true` (for the log).
 pub fn host_result(r: &Value, may_switch: bool) -> (Value, bool) {

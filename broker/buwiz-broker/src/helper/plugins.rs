@@ -24,7 +24,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -60,6 +60,8 @@ pub fn client_capabilities() -> Value {
 }
 
 mod accounts;
+mod badges;
+pub use badges::{parse as parse_badge, CAP as BADGE_CAP, KEY as BADGE_KEY, TEXT_MAX as BADGE_TEXT_MAX};
 pub use accounts::{flow_id, token_ref, AccountRow, AccountsConfig, CLEAR as ACCOUNT_CLEAR, GOOGLE_AUTHORIZE, GOOGLE_TOKEN, NEEDS_GOOGLE_CLIENT, SET as ACCOUNT_SET};
 
 const SCHEMA: &str = "
@@ -292,11 +294,15 @@ struct Runtime {
     restarts: Vec<f64>,
     timer: Option<u64>,
     next_delay: Option<u64>,
+    /// whether the plugin was approved when it was started, and its apps' ids
+    /// (what `note_badge` goes by; the trust file and the record are not read per result)
+    approved: bool,
+    apps: Vec<String>,
 }
 
 impl Runtime {
     fn new() -> Self {
-        Runtime { state: "stopped", code: None, message: String::new(), generation: 0, conn: None, tools: Vec::new(), instructions: String::new(), restarts: Vec::new(), timer: None, next_delay: None }
+        Runtime { state: "stopped", code: None, message: String::new(), generation: 0, conn: None, tools: Vec::new(), instructions: String::new(), restarts: Vec::new(), timer: None, next_delay: None, approved: false, apps: Vec::new() }
     }
 }
 
@@ -382,6 +388,11 @@ pub struct Host {
     runtimes: Mutex<HashMap<String, Runtime>>,
     locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     events: broadcast::Sender<Value>,
+    /// badge changes (`badges.rs`)
+    badge_events: broadcast::Sender<Value>,
+    badge_gates: Mutex<HashMap<(String, String, String), badges::Gate>>,
+    /// the highest badge `rev` issued
+    last_rev: AtomicI64,
     /// orders snapshots: a newer one replaces an older one in Node's view
     seq: AtomicU64,
     closers: Mutex<Vec<Closer>>,
@@ -405,8 +416,12 @@ impl Host {
             }
         }
         db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(badges::SCHEMA).map_err(|e| e.to_string())?;
         accounts::migrate(&db).map_err(|e| e.to_string())?;
         let (events, _) = broadcast::channel(1024);
+        let (badge_events, _) = broadcast::channel(1024);
+        // the highest rev a stored badge has: what comes next is above it, whatever the clock says
+        let seeded: i64 = db.query_row("SELECT coalesce(max(updated_at), 0) FROM v1_badges", [], |r| r.get(0)).unwrap_or(0);
         Ok(Arc::new_cyclic(|me| Host {
             db: Mutex::new(db),
             keys: o.keys,
@@ -417,6 +432,9 @@ impl Host {
             runtimes: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
             events,
+            badge_events,
+            badge_gates: Mutex::new(HashMap::new()),
+            last_rev: AtomicI64::new(seeded),
             seq: AtomicU64::new(1),
             closers: Mutex::new(Vec::new()),
             apps_dir: o.apps_dir,
@@ -796,7 +814,11 @@ impl Host {
     }
 
     fn adopt(&self, id: &str, g: Gate) {
+        let approved = self.row(id).is_some_and(|r| self.trust().is_approved(id, &r.publisher_key_id));
+        let apps: Vec<String> = get(&g.manifest, "apps").and_then(Value::as_array).into_iter().flatten().filter_map(|a| get(a, "id").and_then(Value::as_str).map(str::to_owned)).collect();
         self.with_rt(id, |rt| {
+            rt.approved = approved;
+            rt.apps = apps;
             rt.conn = Some(g.conn);
             rt.tools = g.tools;
             rt.instructions = g.instructions;
@@ -1087,6 +1109,9 @@ impl Host {
         })?;
         // an install at or above the update that was waiting: it is no news now
         self.prune_update(&s("id"));
+        // a badge of an app the manifest no longer has goes with it
+        let apps: Vec<String> = get(m, "apps").and_then(Value::as_array).into_iter().flatten().filter_map(|a| get(a, "id").and_then(Value::as_str).map(str::to_owned)).collect();
+        self.drop_badges(&s("id"), Some(&apps));
         Ok(())
     }
 
@@ -1342,6 +1367,7 @@ impl Host {
         }
         self.sql(|db| db.execute("DELETE FROM v1_plugins WHERE id=?", [id]))?;
         let _ = self.sql(|db| db.execute("DELETE FROM v1_updates WHERE plugin=?", [id]));
+        self.drop_badges(id, None);
         let generation = self.runtimes.lock().unwrap_or_else(|e| e.into_inner()).remove(id).map_or(0, |rt| rt.generation);
         let gone = json!({
             "id": id, "seq": self.seq.fetch_add(1, Ordering::SeqCst), "state": "uninstalled", "code": null, "message": "",
@@ -1389,7 +1415,11 @@ impl Host {
         let conn = self.running_conn(id)?;
         let timeout = timeout.unwrap_or(self.timeouts.call);
         match conn.call_tool(name, args, meta, timeout).await {
-            Ok(r) => Ok(r),
+            Ok(r) => {
+                // the one place a plugin's tool result is read for its badge, whoever called
+                self.note_badge(id, &r);
+                Ok(r)
+            }
             Err(e) if e.code == mcp::REQUEST_TIMEOUT => {
                 self.hang_check(id, conn);
                 let s = (timeout.as_millis() as f64 / 1000.0 + 0.5).floor();

@@ -514,6 +514,10 @@ pub struct PluginEntry {
     pub scopes: Vec<Value>,
     pub apps: Vec<Value>,
     pub commands: Vec<Value>,
+    /// The badges its pins show (`GET /v1/host/plugins`, then `badge` events).
+    pub badges: Vec<super::badge::Badge>,
+    /// The highest badge `rev` the broker had issued when it made the list.
+    pub badges_at: i64,
 }
 
 impl PluginEntry {
@@ -532,6 +536,8 @@ impl PluginEntry {
             scopes: list("scopes"),
             apps: list("apps"),
             commands: list("commands"),
+            badges: super::badge::from_list(v.get("badges")),
+            badges_at: v.get("badges_rev").and_then(Value::as_i64).unwrap_or(0),
         })
     }
 

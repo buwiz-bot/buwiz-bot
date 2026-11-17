@@ -240,6 +240,8 @@ mod sidebar_ui_tests;
 #[cfg(test)]
 mod mini_ui_tests;
 #[cfg(test)]
+mod pin_badge_ui_tests;
+#[cfg(test)]
 mod update_ui_tests;
 #[cfg(test)]
 mod connect_updates_ui_tests;

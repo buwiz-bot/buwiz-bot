@@ -362,6 +362,14 @@ pub fn set_event_listener(f: Arc<dyn Fn(&Value) + Send + Sync>) {
     *LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
 }
 
+/// Who hears the broker's `badge` events (a plugin's badge on its pins changed).
+static BADGE_LISTENER: Mutex<Option<EventListener>> = Mutex::new(None);
+
+/// Sets who hears the broker's `badge` events.
+pub fn set_badge_listener(f: Arc<dyn Fn(&Value) + Send + Sync>) {
+    *BADGE_LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
 /// Follows the broker's events on a thread of its own, once per process,
 /// reconnecting after a pause when the stream ends.
 pub fn listen_for_generations() {
@@ -378,6 +386,19 @@ pub fn listen_for_generations() {
                         {
                             on_plugin_event(&v);
                             let f = LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            if let Some(f) = f {
+                                f(&v);
+                            }
+                        }
+                        // `resync`: this reader missed events, so the list is read again
+                        // `resync`: this reader missed events; `open`: the stream is up (again), and
+                        // what changed while it was down is read again
+                        let resync = name == "resync" || name == "open";
+                        if (name == "badge" || resync)
+                            && let Ok(v) = serde_json::from_str::<Value>(data)
+                        {
+                            let v = if resync { serde_json::json!({"resync": true}) } else { v };
+                            let f = BADGE_LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             if let Some(f) = f {
                                 f(&v);
                             }
