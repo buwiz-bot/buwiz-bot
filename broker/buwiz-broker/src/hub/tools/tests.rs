@@ -106,6 +106,10 @@ impl Fake {
         Arc::new(Fake { rows: Mutex::new(vec![fx, gws]), approved: Mutex::new(true), instructions: instructions.into(), calls: Mutex::new(Vec::new()), setup: Mutex::new(json!([])) })
     }
 
+    fn set_enabled(&self, on: bool) {
+        self.rows.lock().unwrap().iter_mut().find(|r| r.id == FX).unwrap().enabled = on;
+    }
+
     fn set_tool(&self, name: &str, off: bool) {
         let mut rows = self.rows.lock().unwrap();
         let r = rows.iter_mut().find(|r| r.id == FX).unwrap();
@@ -283,6 +287,20 @@ async fn agt_02_a_disabled_tool_is_absent_and_refused() {
     assert_eq!(call(&run, "fx_big", json!({"bytes": 1})).await.is_error, Some(true), "AGT-02");
     fake.set_tool("fx_big", false);
     assert!(names(&run).await.contains(&"fx_big".to_owned()), "AGT-02");
+}
+
+#[tokio::test]
+async fn agt_10_a_disabled_plugin_offers_the_model_no_tools_and_gets_them_back_when_enabled() {
+    let fake = Fake::new("");
+    let ctx = with_plugins("agt10", &fake);
+    let run = run_in(&ctx, TurnCtx::default());
+    assert!(names(&run).await.contains(&"fx_echo".to_owned()), "AGT-10");
+    fake.set_enabled(false);
+    let off = names(&run).await;
+    assert!(!off.iter().any(|n| n.starts_with("fx_")) && off.iter().any(|n| n.starts_with("gws_")), "AGT-10: the disabled plugin's tools go, the other's stay: {off:?}");
+    assert_eq!(call(&run, "fx_echo", json!({})).await.is_error, Some(true), "AGT-10: and a call to one is refused");
+    fake.set_enabled(true);
+    assert!(names(&run).await.contains(&"fx_echo".to_owned()), "AGT-10");
 }
 
 #[test]

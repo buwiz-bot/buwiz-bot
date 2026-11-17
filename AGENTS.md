@@ -62,9 +62,10 @@ are lost at the next rebuild.
   default) with a temp data dir, from a clean environment. Only the office
   group (`office.test.mjs`) needs packages: `npm ci` in `office/` first, or
   `run.sh <bin> --core` runs everything else without it (`--office` runs only
-  the office group). CI's broker job runs them all. After the manifest, office
-  and rich avatar tests moved (#262), `server/test/` keeps only the in-process
-  plugin host suites; `cd server && npm test` (after `npm ci`) runs those.
+  the office group). CI's broker job runs them all. The plugin host's own are
+  `v1-plugins`, `v1-sessions` and `v1-names`, which speak to `/v1/host/*` as
+  the app does. No test is left in `server/test/` (#262): only helper files
+  that step 6 deletes with `server/`; `cd server && npm test` runs no tests.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.

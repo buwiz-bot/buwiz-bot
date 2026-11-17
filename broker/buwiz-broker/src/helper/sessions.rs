@@ -825,7 +825,19 @@ mod tests {
         assert_eq!(press_of(None, Some(&press)), Some(press.clone()), "no actor is the agent's");
         assert_eq!(press_of(Some(&json!("person")), Some(&press)), None, "the person's call has no press");
         assert_eq!(press_of(Some(&agent), None), None);
-        let bad = [json!({"by": "person", "who": "person.owner"}), json!({"by": "routine", "who": "routine.x"}), json!({"by": "person"}), json!("ai"), json!({"by": "ai", "who": "agent.broker", "extra": 1}), json!({"by": "ai", "who": "Not An Id"}), Value::Null];
+        let bad = [
+            json!({"by": "person", "who": "person.owner"}),
+            json!({"by": "routine", "who": "routine.x"}),
+            json!({"by": "person"}),
+            json!({"by": "ai"}),
+            json!("ai"),
+            json!(["ai"]),
+            json!({"by": "ai", "who": "agent.broker", "extra": 1}),
+            json!({"by": "ai", "who": "Not An Id"}),
+            json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner"}),
+            json!({"by": "ai_approved", "who": "agent.broker", "approved_by": "person.owner", "once": "short"}),
+            Value::Null,
+        ];
         for bad in bad {
             assert_eq!(press_of(Some(&agent), Some(&bad)), None, "{bad}");
         }
