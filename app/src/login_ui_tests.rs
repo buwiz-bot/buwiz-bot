@@ -830,11 +830,7 @@ fn files_holding(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf>
         let path = entry.path();
         match entry.file_type() {
             Ok(t) if t.is_dir() => found.extend(files_holding(&path, needle)),
-            Ok(t) if t.is_file() => {
-                if std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes())) {
-                    found.push(path);
-                }
-            }
+            Ok(t) if t.is_file() && std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes())) => found.push(path),
             _ => {}
         }
     }
@@ -865,7 +861,7 @@ fn a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file() {
     let mut on_screen = false;
     for _ in 0..250 {
         app.pump(Duration::from_millis(20));
-        if app.texts().iter().any(|t| *t == MARK) {
+        if app.texts().contains(&MARK) {
             on_screen = true;
             break;
         }
