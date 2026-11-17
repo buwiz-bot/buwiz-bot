@@ -1,7 +1,7 @@
 //! `buwiz-broker manifest <op>`: the manifest checks on JSON in, JSON out,
-//! one request on stdin. `server/test/v1-rust.mjs` runs every v1-manifest
-//! case through it beside Node's `v1/manifest.mjs`; a plugin author can
-//! use `verify` to see what Rox will say about a manifest.
+//! one request on stdin. `tests/manifest_pins.rs` runs every manifest case
+//! through it against the answers Node gave; a plugin author can use
+//! `verify` to see what Buwiz Bot will say about a manifest.
 //!
 //! | op | stdin | `value` |
 //! |---|---|---|
