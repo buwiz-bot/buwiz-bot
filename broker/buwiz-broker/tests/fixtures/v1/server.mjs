@@ -35,9 +35,14 @@
 //
 // fx_echo and fx_search answer `args.result_meta` as the result's `_meta`.
 // fx_badge answers `_meta["buwiz/badge"]` = `args.badge` (and fails when `args.fail`), with
-// `query` set so a routine may use it as its query tool.
+// `query` and `items` set so a routine may use it as its query tool.
+// fx_echo with `reload: true` first sends resources/list_changed.
+//
+// FX_STATS_FILE names a file the fixture rewrites with what fx_stats answers
+// (and its process id) at initialize, before each tool call it serves, and at
+// each cancellation: a test reads what the plugin saw without calling a tool.
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -78,6 +83,23 @@ const accountPushes = []; // {push, label, accounts?}, in the order they came
 const origins = {}; // tool → the last caller's origin (16.1)
 let cancelled = 0;
 let served = 0;
+let inflight = 0; // tool calls running now
+let maxInflight = 0; // the most at once
+
+// what fx_stats answers; the same snapshot goes to FX_STATS_FILE
+const stats = () => ({ pid: process.pid, calls, origins, cancelled, inflight, max_inflight: maxInflight, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts), account_pushes: accountPushes, client: server.getClientCapabilities() ?? null });
+
+function writeStats() {
+  const file = process.env.FX_STATS_FILE;
+
+  if (!file) return;
+  // a name of its own per process: every process of a bed shares the file
+  const tmp = `${file}.${process.pid}.tmp`;
+
+  // the seed it was given is for a test to look for in the logs (a throwaway key)
+  writeFileSync(tmp, JSON.stringify({ ...stats(), seed: key?.seed ?? null }));
+  renameSync(tmp, file);
+}
 
 const manifest = () => parseIJson(readFileSync(MANIFEST, "utf8"));
 
@@ -208,6 +230,7 @@ const sleep = (ms, signal) =>
     signal?.addEventListener("abort", () => {
       clearTimeout(t);
       cancelled++;
+      writeStats();
       resolve();
     });
   });
@@ -257,7 +280,7 @@ function resolveScope(args) {
 const withMeta = (r, args) => (isObject(args.result_meta) ? { ...r, _meta: args.result_meta } : r);
 
 const TOOLS = [
-  { name: "fx_echo", description: "Echo the arguments and the caller.", inputSchema: { type: "object" }, run: (args, meta) => withMeta(ok({ args, caller: meta?.["buwiz/caller"] ?? null }), args) },
+  { name: "fx_echo", description: "Echo the arguments and the caller.", inputSchema: { type: "object" }, run: async (args, meta) => (args.reload && (await server.sendResourceListChanged()), withMeta(ok({ args, caller: meta?.["buwiz/caller"] ?? null }), args)) },
   {
     name: "fx_slow", description: "Sleep for ms milliseconds, then answer.", inputSchema: { type: "object", properties: { ms: { type: "integer" } } },
     run: async (args, _meta, extra) => (await sleep(Number(args.ms) || 0, extra.signal), ok({ slept: Number(args.ms) || 0 })),
@@ -316,7 +339,7 @@ const TOOLS = [
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
   { name: "fx_app_only", description: "A tool for apps only (16.4 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
-  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok({ calls, origins, cancelled, sessions: sessions.size, tickets: tickets.size, accounts: Object.fromEntries(accounts), account_pushes: accountPushes, client: server.getClientCapabilities() ?? null }) },
+  { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok(stats()) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },
     run: async () => (await server.sendResourceListChanged(), ok({ ok: true })),
@@ -337,6 +360,7 @@ function mcpServer(serverInfo, { capabilities, instructions }) {
 
   handlers.set("initialize", (req) => {
     clientCapabilities = req.params.capabilities;
+    queueMicrotask(() => writeStats());
 
     return {
       protocolVersion: SUPPORTED.includes(req.params.protocolVersion) ? req.params.protocolVersion : SUPPORTED[0],
@@ -428,7 +452,13 @@ server.setRequestHandler("tools/call", async (req, extra) => {
     throw new McpError(ErrorCode.InvalidRequest, "rox.provision must come first");
   }
 
-  if (Object.hasOwn(RESERVED, name)) return RESERVED[name](args);
+  if (Object.hasOwn(RESERVED, name)) {
+    const result = RESERVED[name](args);
+
+    writeStats();
+
+    return result;
+  }
 
   if (isReservedTool(name)) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
 
@@ -441,10 +471,16 @@ server.setRequestHandler("tools/call", async (req, extra) => {
   calls[name] = (calls[name] || 0) + 1;
   origins[name] = meta?.["buwiz/caller"]?.origin ?? null;
   served++;
+  maxInflight = Math.max(maxInflight, ++inflight);
+  writeStats();
 
   if (crashAfter && served > crashAfter) process.exit(3);
 
-  return tool.run(isObject(args) ? args : {}, meta, extra);
+  try {
+    return await tool.run(isObject(args) ? args : {}, meta, extra);
+  } finally {
+    inflight--;
+  }
 });
 
 const APPS = { board: "board.tsx", card: "card.tsx" };
