@@ -1,13 +1,11 @@
 # Buwiz Bot
 
-A native macOS chat client — the desktop app formerly called Grok Shell,
-ported from TSX to Rust. The UI is NSH (`nsh/`, AppKit backend); live
+A native macOS chat client written in Rust. The UI is NSH (`nsh/`, AppKit backend); live
 patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
 (`blaze/`); the backend is the Rust broker in `broker/`.
 
-- Bundle id: `com.buwiz.bot` (`dev.goldcoders.rox` before the rename; see
-  [Identity and data](#identity-and-data))
-- App crate: `app/` (`buwiz-bot`; `rox` before the rename)
+- Bundle id: `com.buwiz.bot` (see [Identity and data](#identity-and-data))
+- App crate: `app/` (`buwiz-bot`)
 
 ## Prerequisites
 
@@ -27,10 +25,12 @@ patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
 - `cargo-watch` (`cargo install cargo-watch`).
 - The backend: the Rust broker (`broker/`, `buwiz-broker`) listening on
   `http://127.0.0.1:8787` — `cd broker && cargo build -p buwiz-broker`, then
-  `target/debug/buwiz-broker --data <dir> --assets <dir>` (`--assets` is a
-  bundle's `broker/server`; `app/bundle-dev.sh` makes one). Its HTTP tests:
-  `broker/buwiz-broker/tests/http/run.sh <buwiz-broker binary>`; only the
-  office group needs `npm ci` in `office/` (`--core` leaves it out).
+  `target/debug/buwiz-broker --data <dir> --assets <dir>` (`--assets` is the
+  `server` folder of a bundle's `Contents/Resources/broker/`;
+  `app/bundle-dev.sh` makes one). Its tests: `cd broker && cargo test
+  --locked`, and the HTTP tests, plain `node` scripts that drive a built
+  broker: `broker/buwiz-broker/tests/http/run.sh <buwiz-broker binary>`; only
+  the office group needs `npm ci` in `office/` (`--core` leaves it out).
 
 ## Getting started
 
@@ -103,11 +103,9 @@ scripts/buwiz-drive snapshot          # click, type, screenshot, invoke …
 ```
 
 The dev launcher makes a new random token at every launch and keeps it in
-`$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token`, readable only by you
-(and, for now, under its old name `rox-gpui-agent-token` too);
+`$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token`, readable only by you;
 `scripts/buwiz-drive` passes it to `gpui-agent` through the environment, never
-on a command line; `scripts/rox-agent`, its old name, still works. To run
-a bare build with automation, do the same:
+on a command line. To run a bare build with automation, do the same:
 `GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=<random>
 GPUI_AGENT_ADDR=127.0.0.1:<port> ./target/debug/buwiz-bot`.
 
@@ -166,19 +164,15 @@ logging to `~/Library/Logs/Buwiz Bot/broker.log` (`app/src/broker.rs`).
 
 ### Environment variables
 
-Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …).
-The names from before, `ROX_*` and the three `GROK_*` ones, still work: a
-variable set only by its old name is read, and the program says once on
-stderr `<old> is an old name; use <new>`. The table is in
-`broker/buwiz-protocol/src/env.rs`. A test
-instance is one that sets `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or
-`BUWIZ_DATA_DIR`, or any of them by its old name.
+Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …); the
+table, with the other names each one is also read by, is in
+`broker/buwiz-protocol/src/env.rs`. A test instance is one that sets
+`BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR`.
 
 The broker gets `NSH`, `NSH_HOST` and `NSH_CHUNK_DIR` (`<data>/chunks`)
 from Buwiz Bot: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
 `Contents/Resources/broker/bin/`, from `NSH_BIN`/`NSH_HOST_BIN`, else the
-nsh submodule's release build (`nsh/target/release`), else the old Grok Shell
-app's `Grok Shell.app/Contents/Resources/server/`.
+nsh submodule's release build (`nsh/target/release`).
 
 ```sh
 app/bundle-dev.sh                       # once
@@ -188,55 +182,42 @@ open "buwiz://chat/t1?m=10"             # thread t1, turn 10
 
 ### Identity and data
 
-Buwiz Bot was Rox (`dev.goldcoders.rox`, `~/Applications/Rox.app`, whose
-releases were withdrawn). What a Rox install kept is moved over once, and
-nothing of Rox's is kept for compatibility:
-
 - Data: `~/Library/Application Support/Buwiz Bot` (`BUWIZ_DATA_DIR`
-  overrides). On the first launch, when it is missing and Rox's `…/Rox`
-  exists, Rox's folder is renamed to it (copied, then removed, when the
-  rename fails) and `.migrated-from-rox` is written in it. When both exist
-  neither is touched (`app/src/identity.rs`).
-- Keychain: `com.buwiz.bot.site-login` and `com.buwiz.bot.plugin-key`. The
-  secrets under Rox's `dev.goldcoders.rox.*` services are moved once (read,
+  overrides). On the first launch, when it is missing and an earlier
+  install's folder exists, that folder is renamed to it (copied, then
+  removed, when the rename fails) and a marker is written in it. When both
+  exist neither is touched (`app/src/identity.rs`).
+- Keychain: `com.buwiz.bot.site-login` and `com.buwiz.bot.plugin-key`. Secrets
+  an earlier install kept under other service names are moved once (read,
   written to the new service, deleted from the old); a marker says it is
-  done (`.keychain-moved-from-rox` in the data dir,
-  `.plugin-keys-moved-from-rox` beside the broker's `app.db`).
-- Broker data: `~/Library/Application Support/Buwiz Broker`, called
-  `Grok Shell` before. It moves once, by a rename, just before a broker
+  done (in the data dir, and beside the broker's `app.db`).
+- Broker data: `~/Library/Application Support/Buwiz Broker`. An earlier
+  folder of the broker's moves there once, by a rename, just before a broker
   starts on it: Buwiz Bot moves it before it starts its bundled broker,
-  and a `buwiz-broker` started on the owner's folder by either name
-  (`scripts/broker-live`) moves it after binding its port. First the
-  database is backed up (`VACUUM INTO`) to
-  `Grok Shell/backups/<UTC time>-pre-move/app.db`, then the folder is
-  renamed. Right after, in one transaction, every text value in the
-  database holding a path under the old folder (plugin commands and env,
-  icons, attachments, MCP servers' env and auth) is rewritten to the new
-  one; if that fails the folder is renamed back. `Grok Shell` is then left
-  as a symlink to `Buwiz Broker`, so paths stored outside the database keep
-  resolving (it can be removed in a later release), and
-  `.moved-from-grok-shell` is written in the new folder. Nothing moves
+  and a `buwiz-broker` started on the owner's folder (`scripts/broker-live`)
+  moves it after binding its port. First the database is backed up
+  (`VACUUM INTO`) to `backups/<UTC time>-pre-move/app.db` in the old folder,
+  then the folder is renamed. Right after, in one transaction, every text
+  value in the database holding a path under the old folder (plugin commands
+  and env, icons, attachments, MCP servers' env and auth) is rewritten to the
+  new one; if that fails the folder is renamed back. The old name is then
+  left as a symlink to `Buwiz Broker`, so paths stored outside the database
+  keep resolving, and a marker is written in the new folder. Nothing moves
   while a broker answers on 8787, when `Buwiz Broker` exists already (the
   old folder is then left alone), or for any other data dir (tests,
-  benches). A rename that fails is not replaced by a copy: `Grok Shell`
-  stays in use and the move is tried at the next start. Until it moves,
-  the host token, `scripts/broker-live` and `scripts/live-copy` read
-  `Grok Shell` (`broker/buwiz-protocol/src/broker_dir.rs`).
-- Logs: `~/Library/Logs/Buwiz Bot`; caches: `~/Library/Caches/Buwiz Bot`
-  (the icon font Rox cached in `…/Rox` is used until then).
-- `bundle-dev.sh` unregisters `~/Applications/Rox.app` from LaunchServices;
-  delete it yourself.
-- Crates and binaries: the app crate is `buwiz-bot` (was `rox`), the
-  broker `broker/buwiz-broker` (was `rox-broker`), its MCP client
-  `broker/buwiz-mcp` (`rox-mcp`) and the protocol pieces
-  `broker/buwiz-protocol` (`rox-v1`). For one release the dev bundle keeps
-  `Resources/broker/rox-broker` as a link to `buwiz-broker` (an app binary
-  built before looks for it), the app and `scripts/broker-live` take a
-  broker by either name. The broker's subcommands keep their names.
+  benches). A rename that fails is not replaced by a copy: the old folder
+  stays in use and the move is tried at the next start. Until it moves, the
+  host token, `scripts/broker-live` and `scripts/live-copy` read the old
+  folder (`broker/buwiz-protocol/src/broker_dir.rs`).
+- Logs: `~/Library/Logs/Buwiz Bot`; caches: `~/Library/Caches/Buwiz Bot`.
+- Crates and binaries: the app crate is `buwiz-bot`, the broker
+  `broker/buwiz-broker`, its MCP client `broker/buwiz-mcp` and the protocol
+  pieces `broker/buwiz-protocol`. The broker's subcommands are
+  `buwiz-broker <subcommand>`.
 
 ### Switching the live broker to Buwiz Bot.app's
 
-`scripts/broker-live use-bundled` (`use-rox`, its old name, still works) stops whatever broker holds port 8787 and
+`scripts/broker-live use-bundled` stops whatever broker holds port 8787 and
 starts Buwiz Bot.app's own `buwiz-broker` with the same command line Buwiz Bot uses.
 Buwiz Bot then finds it answering, and later launches start the same broker if
 it is not running.
@@ -312,10 +293,10 @@ nsh itself, delete the block. For a fair comparison with other apps, use
 
 ## Mermaid diagrams (Pele)
 
-```` ```mermaid ```` fences render natively: Pele ported to Rust
+```` ```mermaid ```` fences render natively: Pele, in Rust
 ([hexuria/pele-rs](https://github.com/hexuria/pele-rs), MIT) lays the
 diagram out, and nsh's canvas draws the scene in Buwiz Bot's palette
-(`app/src/mermaid/`) — no Node, no web view. A diagram Pele does not draw
+(`app/src/mermaid/`) — no web view. A diagram Pele does not draw
 shows Pele's message and line in its place.
 
 ## Smoke build without ra-jit
@@ -328,7 +309,7 @@ cd app && cargo build --target aarch64-apple-darwin
 
 ```
 app/           the Buwiz Bot application (dev.sh / ios.sh / ios-dev.sh inside)
-broker/        the broker Buwiz Bot talks to (Rust): chats, models, routines, plugins, agent messaging; its HTTP tests are in broker/buwiz-broker/tests/http/
+broker/        the broker Buwiz Bot talks to (Rust workspace: buwiz-broker, buwiz-protocol, buwiz-mcp, buwiz-computer, ...): chats, models, routines, plugins, agent messaging; its HTTP tests (node scripts) are in broker/buwiz-broker/tests/http/
 bridge/        buwiz-bridge, the MCP server an outside coding agent uses to talk with a Buwiz Bot agent (npm ci here)
 office/        the office editor page and viewer, seeds, and the BetterOffice packages and fonts (npm ci here, then npm run build:office-editor)
 broker/buwiz-broker/assets/  what the Rust broker compiles in or ships: templates, plugins, trust.json
@@ -349,5 +330,5 @@ Buwiz Bot is free and open source under the [Apache License 2.0](LICENSE)
 Apache-2.0 too. The plugin catalog is fetched at runtime from
 [buwiz-app/catalog](https://github.com/buwiz-app/catalog); the plugins it
 lists carry their own licenses. They speak mini app protocol 1.0
-([the spec](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md); 2.0 and 2.1 were its pre-release numbers). See `NOTICE` for third-party code in this
+([the spec](https://github.com/buwiz-app/buwiz-sdk/blob/main/docs/protocol-1.0.md)). See `NOTICE` for third-party code in this
 repository.

@@ -165,7 +165,7 @@ Left out on purpose, after inspecting the bundle:
   the bundle JITs. nsh's QuickJS (`quickjs-jit`) is the interpreter (no
   `MAP_JIT` or executable mappings in it); WKWebView's JIT runs in
   WebKit's own processes, which carry Apple's entitlements; the bundled
-  broker has no Node to spawn. ra-jit-live (live
+  broker is native code. ra-jit-live (live
   patching) is linked in but only started in dev builds
   (`app/src/live.rs`), so a release reserves no patch area and writes no
   `~/.cache/ra-jit`.
