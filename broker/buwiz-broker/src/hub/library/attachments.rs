@@ -189,7 +189,7 @@ fn enabled_server(conn: &Connection, id: &str) -> rusqlite::Result<Option<(Strin
 }
 
 /// `POST /mcp/attach {server, token, thread | bot}`: `{attachment, existing}`.
-pub async fn attach(ctx: &HubCtx, body: &Value) -> Result<Value, String> {
+pub async fn attach(ctx: &std::sync::Arc<HubCtx>, body: &Value) -> Result<Value, String> {
     let Some(mcp) = ctx.mcp.clone() else { return Err("the MCP servers are not hosted here".into()) };
     let thread = body.get("thread").filter(|v| !v.is_null());
     let bot = body.get("bot").filter(|v| js::truthy(v));
@@ -227,7 +227,7 @@ pub async fn attach(ctx: &HubCtx, body: &Value) -> Result<Value, String> {
     let manifest = mcp.manifest(&server).await;
     let scope = scopes_of(&manifest).into_iter().find(|s| s.get("name").and_then(Value::as_str) == Some(scope_name.as_str()));
     let Some(scope) = scope.filter(|s| s.get("attach").is_some_and(js::truthy)) else { return Err(format!("@{server}:{scope_name} tokens can't be attached")) };
-    let routes = McpRoutes::new(mcp.clone(), Vec::new());
+    let routes = McpRoutes::new(mcp.clone(), Vec::new(), ctx.clone());
     let r = routes.resolve(&json!({"server": server, "name": scope_name, "args": value, "thread": found})).await;
     if !r.get("ok").is_some_and(js::truthy) {
         let e = r.get("error").filter(|e| js::truthy(e)).map(js::string_of).unwrap_or_else(|| "couldn't resolve the token".into());

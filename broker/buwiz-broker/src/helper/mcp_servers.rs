@@ -117,7 +117,7 @@ pub struct McpHost {
     /// A connection that failed, kept until the row changes (Node's
     /// cached attempt): its error.
     failed: Mutex<HashMap<String, RpcError>>,
-    /// Each server's status as it changes (the line's `mcp` events).
+    /// Each server's status as it changes (`mcp` events).
     events: tokio::sync::broadcast::Sender<Value>,
     /// Each connection's `buwiz://manifest`, read once (Node's rec.manifest).
     manifests: Mutex<HashMap<String, Value>>,
@@ -422,15 +422,6 @@ impl McpHost {
             Some(e) => json!({"status": "error", "tools": 0, "err": e.message}),
             None => json!({"status": "idle", "tools": 0}),
         }
-    }
-
-    /// Every server's status this host knows, for a new listener.
-    pub fn statuses(&self) -> Vec<Value> {
-        let mut ids: Vec<String> = self.live.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
-        ids.extend(self.failed.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned());
-        ids.sort();
-        ids.dedup();
-        ids.iter().map(|id| self.status_event(id)).collect()
     }
 
     fn status_event(&self, id: &str) -> Value {

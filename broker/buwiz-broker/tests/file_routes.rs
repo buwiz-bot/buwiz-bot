@@ -29,11 +29,10 @@ fn start() -> Broker {
     write(&data.join("generated/files/m1/page.html"), "<script>x</script>");
     write(&data.join("generated/files/m1/a.js"), "x");
     let child = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"))
-        .args(["--port", &port.to_string(), "--no-node", "--assets"])
+        .args(["--port", &port.to_string(), "--assets"])
         .arg(&assets)
         .arg("--data")
         .arg(&data)
-        .env("BUWIZ_BROKER_HUB", "1")
         .env("BUWIZ_BROKER_DATA_DIR", &data)
         .env("BUWIZ_NO_KEYCHAIN", "1")
         .env("OPENCODEX_URL", "http://127.0.0.1:9")

@@ -1,5 +1,5 @@
-//! The hub (plan phase 5): the brain's routes answered in Rust behind
-//! `BUWIZ_BROKER_HUB=1` (D30). `routes` says which routes are the hub's; the
+//! The hub (plan phase 5): the brain's routes answered in Rust, always on
+//! (D30). `routes` says which routes are the hub's; the
 //! `Registry` maps method and path to the handler a track ported; a hub
 //! route with no handler answers 501 `not_ported`.
 //!

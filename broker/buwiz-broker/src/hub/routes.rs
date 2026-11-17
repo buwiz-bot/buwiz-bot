@@ -1,5 +1,5 @@
 //! Every route of the Node broker (drafted from `server/tools/route-inventory.mjs`),
-//! by who answers it with the hub on (`BUWIZ_BROKER_HUB=1`, plan D30):
+//! by who answers it (the hub is always on; plan D30):
 //!
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
@@ -9,8 +9,8 @@
 //!   (`Hub(Files)`): no route is Node's any more, and the broker forwards
 //!   nothing to Node (its forwarding is gone). `/highlight` is deleted
 //!   (6.2: no caller), and `/mermaid*` too (Rox draws every diagram natively).
-//! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
-//!   with that part switched off, the hub answers 501.
+//! - `Rust`: already answered by the front door (leaf, `/mcp/*`);
+//!   with no MCP host (it could not start), the hub answers 501.
 //!
 //! A path in no entry gets the hub's 404 (a copy of Node's last resort); an
 //! OPTIONS preflight is answered by the hub (204).
@@ -63,7 +63,7 @@ pub enum Track {
     Routines,
     /// 5.5h, track D: the Rox-facing plugin host routes and the host token
     Host,
-    /// 5.6, track E: agent messaging and rox-bridge
+    /// 5.6, track E: agent messaging and buwiz-bridge
     Agents,
     /// the skeleton's `/v1/hooks/` dispatcher (`ah_` → Agents, else Routines)
     Hooks,
@@ -100,10 +100,9 @@ use Owner::{Hub, Rust};
 use Track::*;
 
 pub const ROUTES: &[Entry] = &[
-    // the front door itself and the line
+    // the front door itself
     e(Get, X("/health"), Rust),
     e(Get, X("/meta"), Rust),
-    e(Any, P("/v1/line/"), Rust),
     // 5.2 chats
     e(Post, X("/chat"), Hub(Chat)),
     e(Get, P("/status"), Hub(Chat)),
@@ -351,7 +350,7 @@ mod tests {
             let (m, url) = (method(r.verb), sample(r.pattern));
             // the leaf matches /file/versions only with its query
             let url = if url == "/file/versions" { format!("{url}?path=x") } else { url };
-            let served = crate::leaf::route(&m, &url).is_some() || crate::leaf::mcp::route(&m, &url) || ["/health", "/meta"].contains(&url.as_str()) || url.starts_with("/v1/line/");
+            let served = crate::leaf::route(&m, &url).is_some() || crate::leaf::mcp::route(&m, &url) || ["/health", "/meta"].contains(&url.as_str());
             assert_eq!(served, r.owner == Rust, "{:?} {url}", r.verb);
             assert_eq!(classify(&m, &url), Some(r), "{url} reaches its own entry first");
         }
@@ -361,6 +360,6 @@ mod tests {
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
         assert_eq!(count(&|o| matches!(o, Hub(_))), 124);
-        assert_eq!(count(&|o| o == Rust), 30);
+        assert_eq!(count(&|o| o == Rust), 29);
     }
 }

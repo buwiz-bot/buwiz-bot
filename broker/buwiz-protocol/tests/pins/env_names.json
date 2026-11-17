@@ -108,26 +108,6 @@
     "ROX_OVERLAY"
   ],
   [
-    "BUWIZ_BROKER_HUB",
-    "ROX_BROKER_HUB"
-  ],
-  [
-    "BUWIZ_BROKER_V1_HOST",
-    "ROX_BROKER_V1_HOST"
-  ],
-  [
-    "BUWIZ_BROKER_MCP_HOST",
-    "ROX_BROKER_MCP_HOST"
-  ],
-  [
-    "BUWIZ_BROKER_NO_NODE",
-    "ROX_BROKER_NO_NODE"
-  ],
-  [
-    "BUWIZ_BROKER_FORWARD_ALL",
-    "ROX_BROKER_FORWARD_ALL"
-  ],
-  [
     "BUWIZ_BROKER_DATA_DIR",
     "GROK_DATA_DIR"
   ],
@@ -144,36 +124,12 @@
     "ROX_PUBLIC_PORT"
   ],
   [
-    "BUWIZ_NODE_ROLE",
-    "ROX_NODE_ROLE"
-  ],
-  [
     "BUWIZ_PLUGIN_CATALOG",
     "ROX_PLUGIN_CATALOG"
   ],
   [
-    "BUWIZ_V1_LINE",
-    "ROX_V1_LINE"
-  ],
-  [
-    "BUWIZ_V1_LINE_TOKEN",
-    "ROX_V1_LINE_TOKEN"
-  ],
-  [
-    "BUWIZ_LINE_HOSTS",
-    "ROX_LINE_HOSTS"
-  ],
-  [
-    "BUWIZ_LINE_TOKEN",
-    "ROX_LINE_TOKEN"
-  ],
-  [
     "BUWIZ_V1_CALL_TIMEOUT_MS",
     "ROX_V1_CALL_TIMEOUT_MS"
-  ],
-  [
-    "BUWIZ_V1_MANUAL_CLOCK",
-    "ROX_V1_MANUAL_CLOCK"
   ],
   [
     "BUWIZ_BRIDGE_URL",
@@ -186,10 +142,6 @@
   [
     "BUWIZ_STUB_LOG",
     "ROX_STUB_LOG"
-  ],
-  [
-    "BUWIZ_DEFS_WRITE",
-    "ROX_DEFS_WRITE"
   ],
   [
     "BUWIZ_APP",

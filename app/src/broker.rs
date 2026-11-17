@@ -311,7 +311,9 @@ pub fn move_data_dir(home: &Path, busy: &dyn Fn() -> bool) -> buwiz_protocol::br
 
 /// The command line for `broker` (the bundle's `buwiz-broker`): the default
 /// origin's port, the data dir ([`data_dir`]), the static files beside it
-/// (`broker/server`), no Node; the hub on, hosting v1 plugins and MCP.
+/// (`broker/server`). The broker's hub, plugin host and MCP host are always
+/// on: it needs no flag and no switch (`--no-node` and `BUWIZ_BROKER_HUB` and
+/// the like are still accepted by it, and no longer passed).
 /// `nsh` and `nsh-macos-host` are the bundle's (`broker/bin/`, as Grok
 /// Shell.app set them): a Finder-launched Rox has no nsh on PATH. The
 /// widget pipeline runs `nsh build`/`check`, pop-outs `nsh-macos-host`,
@@ -327,15 +329,11 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
         data.clone().into(),
         "--assets".into(),
         assets.into(),
-        "--no-node".into(),
     ];
     // by the Buwiz names and the old ones: the bundle's broker may be an
     // older build that reads only the old names
     let both = |k: &'static str, v: OsString| buwiz_protocol::env::with_old(k).map(move |n| (n, v.clone()));
-    let env = both("BUWIZ_BROKER_HUB", "1".into())
-        .chain(both("BUWIZ_BROKER_V1_HOST", "1".into()))
-        .chain(both("BUWIZ_BROKER_MCP_HOST", "1".into()))
-        .chain(both("BUWIZ_BROKER_DATA_DIR", data.clone().into()))
+    let env = both("BUWIZ_BROKER_DATA_DIR", data.clone().into())
         .chain([
             ("NSH", dir.join("bin").join("nsh").into()),
             ("NSH_HOST", dir.join("bin").join("nsh-macos-host").into()),
@@ -696,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_line_runs_the_hub_without_node_on_the_owners_data_dir() {
+    fn the_command_line_names_the_owners_data_dir_and_no_switches() {
         let b = Path::new("/A/Rox.app/Contents/Resources/broker/buwiz-broker");
         let l = launch(b, Path::new("/Users/u"), 8787);
         let data = "/Users/u/Library/Application Support/Buwiz Broker";
@@ -710,20 +708,13 @@ mod tests {
                 "--data",
                 data,
                 "--assets",
-                "/A/Rox.app/Contents/Resources/broker/server",
-                "--no-node"
+                "/A/Rox.app/Contents/Resources/broker/server"
             ]
         );
         let env: Vec<(&str, &str)> = l.env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
         assert_eq!(
             env,
             [
-                ("BUWIZ_BROKER_HUB", "1"),
-                ("ROX_BROKER_HUB", "1"),
-                ("BUWIZ_BROKER_V1_HOST", "1"),
-                ("ROX_BROKER_V1_HOST", "1"),
-                ("BUWIZ_BROKER_MCP_HOST", "1"),
-                ("ROX_BROKER_MCP_HOST", "1"),
                 ("BUWIZ_BROKER_DATA_DIR", data),
                 ("GROK_DATA_DIR", data),
                 ("NSH", "/A/Rox.app/Contents/Resources/broker/bin/nsh"),

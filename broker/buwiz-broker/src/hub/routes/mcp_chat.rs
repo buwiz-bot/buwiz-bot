@@ -1,8 +1,8 @@
 //! The chat's MCP routes (5.2): `POST /mcp/servers` (routes/market.mjs and
 //! tools.mjs `mcpUpsertServer`), `POST /mcp/attach` and `GET
 //! /mcp/attachments` (attachments.mjs). The servers are McpHost's
-//! (`ctx.mcp`, `BUWIZ_BROKER_MCP_HOST=1`); without it the two that need a
-//! server answer 501.
+//! (`ctx.mcp`); when the host could not start the two that need a server
+//! answer 501.
 
 use std::sync::Arc;
 

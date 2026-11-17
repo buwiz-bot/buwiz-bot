@@ -39,12 +39,14 @@ fn spawn(port: u16, args: &[&str], env: &[(&str, &str)], err: &PathBuf) -> Child
     Command::new(env!("CARGO_BIN_EXE_buwiz-broker"))
         .args(["--port", &port.to_string()])
         .args(args)
-        .env_remove("BUWIZ_BROKER_HUB")
-        .env_remove("ROX_BROKER_HUB")
         .env_remove("BUWIZ_TRUST_FILE")
         .env_remove("ROX_TRUST_FILE")
-        .env_remove("BUWIZ_BROKER_V1_HOST")
-        .env_remove("BUWIZ_BROKER_MCP_HOST")
+        // the hub's /models and image routes call the model gateway: at a
+        // closed port, never a real one
+        .env("OPENCODEX_URL", "http://127.0.0.1:9")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+        .env("GEN_BASE_URL", "http://127.0.0.1:9")
+        .env_remove("ANTHROPIC_API_KEY")
         .envs(env.iter().copied())
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(err).unwrap())
@@ -65,7 +67,9 @@ fn start_env(name: &str, args: &[&str], env: &[(&str, &str)]) -> Broker {
     let err = std::env::temp_dir().join(format!("buwiz-broker-test-{name}-{}-{port}.err", std::process::id()));
     let data = std::env::temp_dir().join(format!("buwiz-broker-test-{name}-{}-{port}.data", std::process::id()));
     let args: Vec<&str> = ["--data", data.to_str().unwrap()].into_iter().chain(args.iter().copied()).collect();
-    let broker = Broker { child: spawn(port, &args, env, &err), port, err };
+    let home = data.to_str().unwrap();
+    let env: Vec<(&str, &str)> = env.iter().copied().chain([("HOME", home)]).collect();
+    let broker = Broker { child: spawn(port, &args, &env, &err), port, err };
     wait_healthy(broker.port, Duration::from_secs(15));
     broker
 }
@@ -132,18 +136,16 @@ fn it_answers_health_and_meta_itself() {
     assert!(meta.get("node_version").is_none(), "{body}");
 }
 
-/// Without the hub nothing answers a path the front door has no entry for:
-/// its own 404 (a preflight too); a ported route (`/prefs`) is still the leaf's.
+/// A path nothing else answers is the hub's own 404 (a preflight its 204); a
+/// ported route (`/prefs`) is still the leaf's.
 #[test]
-fn without_the_hub_a_path_nothing_answers_is_a_404() {
+fn a_path_nothing_answers_is_the_hubs_404() {
     let b = start("no-route");
-    let (status, body) = get(b.port, "/nothing-here").unwrap();
-    assert_eq!(status, 404);
-    assert!(body.contains("no such route"), "{body}");
-    assert_eq!(request(b.port, "OPTIONS", "/threads", &[], b"").unwrap().0, 404);
+    assert_eq!(get(b.port, "/nothing-here").unwrap(), (404, "not found".to_owned()));
+    assert_eq!(request(b.port, "OPTIONS", "/threads", &[], b"").unwrap().0, 204);
     // a ported route reaches the leaf, whatever it answers for a data dir with nothing in it
     let (_, body) = get(b.port, "/prefs").unwrap();
-    assert!(!body.contains("no such route"), "{body}");
+    assert!(!body.contains("not found"), "{body}");
 }
 
 #[test]
@@ -188,7 +190,7 @@ fn assets_with_no_trust_list_say_so_once() {
     assert_eq!(log.matches(line).count(), 1, "{log}");
     assert!(!log.contains("without --assets"), "{log}");
     assert_eq!(get(b.port, "/health").unwrap().0, 200);
-    // a named trust file is the environment's: no line
+    // a named trust file is the environment's: nothing is off for it
     let trust = assets.join("named.json");
     let named = start_env("assets-named-trust", &["--assets", assets.to_str().unwrap()], &[("BUWIZ_TRUST_FILE", trust.to_str().unwrap())]);
     assert!(!named.stderr().contains("so off"), "{}", named.stderr());

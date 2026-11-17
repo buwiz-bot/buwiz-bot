@@ -7,7 +7,7 @@
 //!   what the agent sends back goes to its `url` when it has one (signed
 //!   with `out_secret`, retried on 5xx for 24 h on the clock's timers,
 //!   dropped on 4xx with a notice), else it is held for nobody to read.
-//! - kind "bridge": a Claude Code session through rox-bridge, with the
+//! - kind "bridge": a Claude Code session through buwiz-bridge, with the
 //!   endpoint's secret as its bearer token; what the agent sends back is
 //!   held until the bridge receives it (a long poll of at most 30 s).
 //!

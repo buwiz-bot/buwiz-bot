@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn every_ttf_of_the_manifest_is_there_and_registers() {
-        let dir = dir().expect("the office fonts (npm ci in server/, or BUWIZ_OFFICE_FONTS)");
+        let dir = dir().expect("the office fonts (npm ci in office/, or BUWIZ_OFFICE_FONTS)");
         for face in BUNDLED.iter().filter(|f| f.file.ends_with(".ttf")) {
             assert!(dir.join(face.file).is_file(), "{}", face.file);
         }
