@@ -1,6 +1,6 @@
 //! The Word view's title bar as the web editor draws it (DR `Lte`, the
 //! title bar of `Uh`): the document icon (`Mte`), the document's name
-//! (`Ate`) and the menu bar (`ez`): File, Format, Insert and Help, item for
+//! (`Ate`) and the menu bar (`ez`): File, Format, Insert, View and Help, item for
 //! item with their icons and shortcuts. Under Rox's own viewer header.
 //!
 //! The name is the file's, as Rox's host passes it (`documentName`, the
@@ -153,7 +153,7 @@ fn insert(what: Insert) {
 /// `showFileOpen: false`), Help with Report issue (`showHelpMenu`'s
 /// default).
 fn menus() -> Vec<BarMenu> {
-    vec![bar_menu("File", file_menu), bar_menu("Format", format_menu), bar_menu("Insert", insert_menu), bar_menu("Help", help_menu)]
+    vec![bar_menu("File", file_menu), bar_menu("Format", format_menu), bar_menu("Insert", insert_menu), bar_menu("View", view_menu), bar_menu("Help", help_menu)]
 }
 
 pub fn file_menu() -> Vec<Entry> {
@@ -195,6 +195,13 @@ pub fn insert_menu() -> Vec<Entry> {
         Entry::Item(item(Some("format_list_numbered"), "Table of contents", || {}).disabled(Some(TOC_REFUSAL))),
         Entry::Item(item(Some("branding_watermark"), "Watermark", dialogs::open_watermark)),
     ]
+}
+
+/// View: the page thumbnails' strip (not in the web editor's menus; the
+/// strip is this view's own).
+pub fn view_menu() -> Vec<Entry> {
+    let on = untracked(|| super::strip::shown(ui()));
+    vec![Entry::Item(item(None, "Page thumbnails", act(super::strip::toggle)).checked(on))]
 }
 
 pub fn help_menu() -> Vec<Entry> {

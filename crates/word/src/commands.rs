@@ -131,6 +131,7 @@ impl Word {
             outs.push(Out::Note(format!("Couldn't lay the document out: {e}")));
         }
         self.rev += 1;
+        self.thumbs_changed();
         self.edited = true;
         self.index = None;
         self.review = None;

@@ -531,10 +531,15 @@ pub fn num(p: &HashMap<String, String>, k: &str) -> f32 {
 
 /// Waits for the probe to satisfy `ok`.
 pub fn until(app: &mut Headless, what: &str, ok: impl Fn(&HashMap<String, String>) -> bool) -> HashMap<String, String> {
+    until_with(app, what, |_, p| ok(p))
+}
+
+/// [`until`] with the engine at hand, for conditions on its views.
+pub fn until_with(app: &mut Headless, what: &str, ok: impl Fn(&Headless, &HashMap<String, String>) -> bool) -> HashMap<String, String> {
     let end = Instant::now() + WAIT;
     loop {
         let p = read(app);
-        if !p.is_empty() && ok(&p) {
+        if !p.is_empty() && ok(app, &p) {
             return p;
         }
         assert!(Instant::now() < end, "{what}: never happened\nprobe: {p:?}");
