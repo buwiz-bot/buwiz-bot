@@ -1,70 +1,58 @@
-// Office (Rust broker plan 6.1): the BetterOffice `office_*` tools, office_create,
-// the /office/* routes and /file/render for office files, pinned on Node so the
-// Rust port (buwiz-broker's `office` module) can be held to the same answers.
+// Office: the BetterOffice `office_*` tools, office_create,
+// the /office/* routes and /file/render for office files, held to what the old
+// Node broker answered (recorded once into fixtures/office-golden.json).
 //
 // The tools are driven through the office MCP server as the hub calls it:
-// Node's child (`node mcp-main.ts --root <dir>`, what office.mjs and
-// helper/office.rs spawn) or, with BUWIZ_BROKER_CMD set, buwiz-broker's own
-// (`buwiz-broker office-mcp --root <dir>`, the same in-process code the hub's
-// office tools call). OFF-30 then runs office tools through a chat turn of the
-// broker itself, with the fake opencodex scripting the calls, and checks the
-// process tree: Node's broker runs the MCP child, buwiz-broker runs none.
+// `buwiz-broker office-mcp --root <dir>` (the same in-process code the hub's
+// office tools call), over stdio with mcp-client.mjs. OFF-30 then runs office
+// tools through a chat turn of the broker itself, with the fake opencodex
+// scripting the calls, and checks that the broker runs no office child.
 //
 // What is pinned, and why: each scripted call's answer (`structuredContent`,
 // `isError`, and for an image its PNG header) goes through `norm()` and is
-// compared with fixtures/office-golden.json, recorded from Node with
-// OFFICE_GOLDEN=write. norm() replaces only what is random per run: the
-// session prefix of cell/match/cursor handles (a UUID), and the opaque version
-// tokens of xlsx/pptx (a random nonce plus a counter), each renamed by first
-// appearance so "the same version" and "a new version" still show. Files with
-// bytes (export, create) are pinned by what they hold, not their bytes: the
-// file is reopened through the same tools and every paragraph (with its runs'
-// formatting), cell and slide paragraph is listed. Byte or XML hashes would pin
-// the zip container, part order and serializer whitespace of one engine build,
-// which a correct port on BetterOffice's Rust crates (newer than the npm wasm
-// builds Node uses) does not reproduce; the text and structure are what the
-// file means. A render is pinned by its metadata and the PNG's IHDR (width,
-// height), not its pixels, for the same reason.
+// compared with fixtures/office-golden.json. norm() replaces only what is
+// random per run: the session prefix of cell/match/cursor handles (a UUID),
+// and the opaque version tokens of xlsx/pptx (a random nonce plus a counter),
+// each renamed by first appearance so "the same version" and "a new version"
+// still show. Files with bytes (export, create) are pinned by what they hold,
+// not their bytes: the file is reopened through the same tools and every
+// paragraph (with its runs' formatting), cell and slide paragraph is listed.
+// Byte or XML hashes would pin the zip container, part order and serializer
+// whitespace of one engine build, which a correct port on BetterOffice's Rust
+// crates (newer than the npm wasm builds Node used) does not reproduce; the
+// text and structure are what the file means. A render is pinned by its
+// metadata and the PNG's IHDR (width, height), not its pixels, for the same
+// reason.
 //
-// DIFF: where buwiz-broker answers differently from Node on purpose, the case
-// says so in a `// DIFF:` comment and pins both answers.
+// DIFF: where buwiz-broker answers differently from what Node recorded, on
+// purpose, `expected()` says so and why.
+//
+// The routes (OFF-20, OFF-21) need the office pages and the BetterOffice
+// packages: office-assets.mjs lays them out as the release bundle does, from
+// office/ after `npm ci` there. No test needs the built editor: the routes
+// serve its bundle as a static file, so a stand-in file in its place is enough.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { after, before, test } from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
-import { ROOT, modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { fileURLToPath } from "node:url";
+import { say, startFakeOpencodex, use } from "../fixtures/fake-opencodex.mjs";
+import { BROKER, modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { McpClient } from "./mcp-client.mjs";
+import { OFFICE, PACKAGES, officeAssets } from "./office-assets.mjs";
 
-const SEEDS = join(ROOT, "..", "office", "seeds");
-const GOLDEN = join(ROOT, "test", "fixtures", "office-golden.json");
-const TOOLS_JSON = join(ROOT, "..", "broker", "buwiz-broker", "src", "office", "tools.json");
-const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
-const WRITE = process.env.OFFICE_GOLDEN === "write";
-const golden = !WRITE && existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, "utf8")) : {};
-const recorded = {};
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SEEDS = join(OFFICE, "seeds");
+const GOLDEN = join(HERE, "fixtures", "office-golden.json");
+const TOOLS_JSON = join(HERE, "..", "..", "src", "office", "tools.json");
+const golden = JSON.parse(readFileSync(GOLDEN, "utf8"));
 
-/** The office MCP server for workspace `root`: Node's child, or buwiz-broker's. */
-function officeCommand(root) {
-  if (RUST) {
-    const [bin] = process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/);
-
-    return [bin, ["office-mcp", "--root", root]];
-  }
-
-  return [process.execPath, ["--experimental-transform-types", join(ROOT, "src", "office", "mcp-main.ts"), "--root", root]];
-}
-
+/** The office MCP server of buwiz-broker for workspace `root`. */
 async function connect(root) {
-  const [command, args] = officeCommand(root);
-  const transport = new StdioClientTransport({ command, args, stderr: "ignore", cwd: ROOT });
-  const client = new Client({ name: "office-test", version: "1.0.0" });
+  const client = await McpClient.connect(BROKER, ["office-mcp", "--root", root], { cwd: root });
 
-  await client.connect(transport);
-
-  return { client, pid: transport.pid };
+  return { client, pid: client.pid };
 }
 
 /** A workspace holding the seeds. */
@@ -127,7 +115,7 @@ function session(client, root) {
   const norm = normalizer(root);
   const log = [];
   const call = async (name, args) => {
-    const r = await client.callTool({ name, arguments: args });
+    const r = await client.callTool(name, args);
     const image = (r.content || []).find((c) => c.type === "image");
     const out = { call: [name, norm(args)], isError: !!r.isError, result: norm(r.structuredContent ?? null) };
 
@@ -142,10 +130,10 @@ function session(client, root) {
   return { call, log };
 }
 
-/** What buwiz-broker answers for a pinned Node step, where it differs on
+/** What buwiz-broker answers for a step Node recorded, where it differs on
  *  purpose; each difference says why. */
 function expected(step, actual) {
-  if (!RUST || !step) return step;
+  if (!step) return step;
   const r = step.result;
   const receipt = r?.receipt?.calculation && actual?.result?.receipt?.calculation;
 
@@ -175,28 +163,11 @@ function expected(step, actual) {
   return step;
 }
 
-/** Compares (or records) one transcript against the golden file. */
+/** Compares one transcript with the golden file. */
 function pin(key, log) {
-  if (WRITE) {
-    recorded[key] = log;
-
-    return;
-  }
-  assert.ok(golden[key], `no golden for ${key}: record it on Node with OFFICE_GOLDEN=write`);
-  // OFFICE_GOLDEN=diff lists every step that differs instead of stopping at the first
-  if (process.env.OFFICE_GOLDEN === "diff") {
-    const differ = [];
-
-    for (let i = 0; i < Math.max(log.length, golden[key].length); i++) {
-      try {
-        assert.deepEqual(log[i], expected(golden[key][i], log[i]));
-      } catch {
-        differ.push({ step: i, actual: log[i], expected: expected(golden[key][i], log[i]) });
-      }
-    }
-    assert.deepEqual(differ, [], `${key}: ${differ.length} steps differ`);
-  }
-  for (let i = 0; i < Math.max(log.length, golden[key].length); i++) {
+  assert.ok(golden[key], `no golden for ${key}`);
+  assert.equal(log.length, golden[key].length, `${key}: the number of steps`);
+  for (let i = 0; i < log.length; i++) {
     assert.deepEqual(log[i], expected(golden[key][i], log[i]), `${key} step ${i}: ${JSON.stringify(golden[key][i]?.call ?? log[i]?.call)}`);
   }
 }
@@ -233,7 +204,6 @@ before(async () => {
 after(async () => {
   await server?.stop();
   await fake?.close();
-  if (WRITE) writeFileSync(GOLDEN, `${JSON.stringify(recorded, null, 1)}\n`);
 });
 
 test("OFF-01 tools/list and the server's instructions are the pinned definitions (tools.json)", async () => {
@@ -242,14 +212,11 @@ test("OFF-01 tools/list and the server's instructions are the pinned definitions
 
   try {
     const { tools } = await client.listTools();
-    if (WRITE) writeFileSync(TOOLS_JSON, `${JSON.stringify({ instructions: client.getInstructions(), serverInfo: client.getServerVersion(), tools }, null, 1)}\n`);
-    else {
-      const pinned = JSON.parse(readFileSync(TOOLS_JSON, "utf8"));
+    const pinned = JSON.parse(readFileSync(TOOLS_JSON, "utf8"));
 
-      assert.deepEqual(tools, pinned.tools);
-      assert.equal(client.getInstructions(), pinned.instructions);
-      assert.deepEqual(client.getServerVersion(), pinned.serverInfo);
-    }
+    assert.deepEqual(tools, pinned.tools);
+    assert.equal(client.instructions, pinned.instructions);
+    assert.deepEqual(client.serverInfo, pinned.serverInfo);
     assert.deepEqual(tools.map((t) => t.name), [
       "office_files", "office_open", "office_outline", "office_grep", "office_read", "office_cells", "office_render", "office_verify", "office_close",
       "office_propose", "office_propose_cells", "office_review", "office_accept", "office_reject", "office_export", "office_create",
@@ -476,17 +443,16 @@ test("OFF-06 office_create makes each kind, never overwrites, and checks its pay
   pin("create", log);
 });
 
-test("OFF-07 the office MCP server is no Node process when buwiz-broker serves it", async () => {
+test("OFF-07 the office MCP server is buwiz-broker's own, no Node process", async () => {
   const root = workspace("proc");
   const { client, pid } = await connect(root);
 
   try {
+    const exe = execFileSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" }).trim();
     const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).trim();
 
-    if (RUST) {
-      assert.match(command, /office-mcp/);
-      assert.doesNotMatch(command, /\bnode\b/);
-    } else assert.match(command, /mcp-main\.ts/);
+    assert.equal(basename(exe), basename(BROKER), "the process is the broker binary");
+    assert.match(command, /office-mcp --root /);
   } finally {
     await client.close();
   }
@@ -498,12 +464,16 @@ const dir = tempDir("office-http");
 const files = join(dir, "generated", "files");
 let server;
 
-const hubEnv = () => modelEnv(fake, join(dir, "stubs.log"), RUST ? { BUWIZ_BROKER_HUB: "1", BUWIZ_BROKER_MCP_HOST: "1", BUWIZ_BROKER_V1_HOST: "1" } : {});
+const start = async (assets) => {
+  await server?.stop();
+  server = await startServer(dir, { env: modelEnv(fake, join(dir, "stubs.log")), args: ["--assets", assets] });
+};
 
 test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async () => {
   mkdirSync(files, { recursive: true });
   cpSync(SEEDS, join(files, "seeds"), { recursive: true });
-  server = await startServer(dir, { env: hubEnv() });
+  // the editor is not built in this bundle: its page is stamped v=0 and its bundle is not served
+  await start(officeAssets("pages").assets);
 
   const caps = await request("GET", "/office/caps");
 
@@ -515,21 +485,21 @@ test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async (
   assert.equal(viewer.status, 200);
   assert.equal(viewer.headers["content-type"], "text/html; charset=utf-8");
   assert.equal(viewer.headers["cache-control"], "no-cache");
-  assert.equal(viewer.text, readFileSync(join(ROOT, "..", "office", "viewer.html"), "utf8"));
+  assert.equal(viewer.text, readFileSync(join(OFFICE, "viewer.html"), "utf8"));
   assert.equal((await request("GET", "/office/")).text, viewer.text);
+  const editorHtml = readFileSync(join(OFFICE, "editor", "editor.html"), "utf8");
   const editor = await request("GET", "/office/editor/?path=seeds/blank.pptx&kind=pptx");
-  const bundle = join(ROOT, "..", "office", "editor", "dist", "editor.js");
-  const v = existsSync(bundle) ? Math.floor(statSync(bundle).mtimeMs) : 0;
 
   assert.equal(editor.status, 200);
   assert.equal(editor.headers["content-type"], "text/html; charset=utf-8");
-  assert.equal(editor.text, readFileSync(join(ROOT, "..", "office", "editor", "editor.html"), "utf8").replaceAll("/office/dist/editor.js", `/office/dist/editor.js?v=${v}`));
+  assert.equal(editor.text, editorHtml.replaceAll("/office/dist/editor.js", "/office/dist/editor.js?v=0"));
+  assert.equal((await request("GET", "/office/dist/editor.js")).status, 404, "no bundle, none served");
   const pkg = await request("GET", "/office/vendor/docx/package.json?x=1");
 
   assert.equal(pkg.status, 200);
   assert.equal(pkg.headers["content-type"], "application/json");
   assert.equal(pkg.headers["cache-control"], "no-cache");
-  assert.equal(pkg.text, readFileSync(join(ROOT, "node_modules", "@betteroffice", "docx", "package.json"), "utf8"));
+  assert.equal(pkg.text, readFileSync(join(PACKAGES, "docx", "package.json"), "utf8"));
   const wasm = await request("GET", "/office/vendor/xlsx/dist/generated/xlsx_wasm_bg.wasm");
 
   assert.equal(wasm.status, 200);
@@ -540,16 +510,36 @@ test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async (
     assert.equal(r.status, 404, path);
     assert.equal(r.text, "", path);
   }
-  // DIFF: Node logs which side served nothing; buwiz-broker's front door logs `hub` for these
-  if (RUST) assert.match(server.log(), /GET \/office\/caps 200 \d+ms hub/);
+  // the front door's log: these are the hub's
+  assert.match(server.log(), /GET \/office\/caps 200 \d+ms hub/);
+  // with the editor bundle in place (a stand-in file: the route serves it as it is)
+  const built = officeAssets("built", { bundle: true });
+  const v = Math.floor(statSync(built.bundle).mtimeMs);
+
+  await start(built.assets);
+  const stamped = await request("GET", "/office/editor/?path=seeds/blank.pptx&kind=pptx");
+
+  assert.equal(stamped.text, editorHtml.replaceAll("/office/dist/editor.js", `/office/dist/editor.js?v=${v}`));
+  const js = await request("GET", "/office/dist/editor.js?v=1");
+
+  assert.equal(js.status, 200);
+  assert.equal(js.headers["content-type"], "text/javascript");
+  assert.equal(js.headers["cache-control"], "no-cache");
+  assert.equal(js.text, "export {};\n");
+  assert.equal((await request("GET", "/office/dist/../editor.html")).status, 404);
+  // a broker whose bundle has no packages beside it: every kind unavailable, no vendor files
+  await start(officeAssets("bare", { packages: false }).assets);
+  assert.equal((await request("GET", "/office/caps")).text, '{"docx":false,"xlsx":false,"pptx":false}');
+  assert.equal((await request("GET", "/office/vendor/docx/package.json")).status, 404);
 });
 
 test("OFF-21 /file/render for docx, xlsx and pptx files: the viewer's payload and the office URL", async () => {
+  const built = officeAssets("render", { bundle: true });
+  const v = Math.floor(statSync(built.bundle).mtimeMs);
+
+  await start(built.assets);
   const render = async (path) => (await request("GET", `/file/render?path=${encodeURIComponent(path)}`)).json;
-  const bundle = join(ROOT, "..", "office", "editor", "dist", "editor.js");
-  const office = (path, kind) => existsSync(bundle)
-    ? `/office/editor/?path=${path}&kind=${kind}&v=${Math.floor(statSync(bundle).mtimeMs)}`
-    : `/office/?path=${path}&kind=${kind}`;
+  const office = (path, kind) => `/office/editor/?path=${path}&kind=${kind}&v=${v}`;
   const size = (path) => statSync(join(files, path)).size;
   const pptx = await render("seeds/presentation.pptx");
 
@@ -564,9 +554,8 @@ test("OFF-21 /file/render for docx, xlsx and pptx files: the viewer's payload an
     assert.equal(s.rows.length, s.bold.length);
     assert.ok(s.rows.every((r) => r.length === s.widths.length), `${s.name}: every row spans the columns`);
   }
-  // the cells as ExcelJS reads them: a formula's cached result, numbers as JavaScript prints them
-  assert.deepEqual(xlsx.sheets[0].rows.slice(0, 2).map((r) => r.slice(0, 3)), golden.renderXlsx ?? xlsx.sheets[0].rows.slice(0, 2).map((r) => r.slice(0, 3)));
-  if (WRITE) recorded.renderXlsx = xlsx.sheets[0].rows.slice(0, 2).map((r) => r.slice(0, 3));
+  // the cells as ExcelJS read them: a formula's cached result, numbers as JavaScript prints them
+  assert.deepEqual(xlsx.sheets[0].rows.slice(0, 2).map((r) => r.slice(0, 3)), golden.renderXlsx);
   assert.equal(xlsx.sheets[0].rows[0][0], "Q3 Sales Dashboard");
   assert.equal(xlsx.sheets[0].bold[0][0], true);
   const docx = await render("seeds/betteroffice-demo.docx");
@@ -575,22 +564,23 @@ test("OFF-21 /file/render for docx, xlsx and pptx files: the viewer's payload an
   assert.deepEqual([docx.name, docx.kind, docx.variant, docx.office], ["betteroffice-demo.docx", "docx", "docx", office("seeds/betteroffice-demo.docx", "docx")]);
   // mammoth's HTML through htmlToMd: headings by their Word style, bold and
   // italic runs, lists, and a table as a Markdown table
-  assert.equal(docx.text, golden.renderDocx ?? docx.text);
-  if (WRITE) recorded.renderDocx = docx.text;
+  assert.equal(docx.text, golden.renderDocx);
   // missing and outside paths
   assert.deepEqual(await render("seeds/gone.docx"), { name: "gone.docx", ext: "docx", size: 0, kind: "docx", variant: "docx", error: "missing" });
   assert.deepEqual(await render("../x.docx"), { error: "bad path" });
-  // other kinds stay Node's (the office role) until 6.2
   const md = join(files, "note.md");
 
   writeFileSync(md, "# hi\n");
   assert.deepEqual(await render("note.md"), { name: "note.md", ext: "md", size: 5, kind: "markdown", variant: "generic", text: "# hi\n" });
-  // the front door's log (queries redacted): every kind in Rust, the
-  // markdown file too since phase 7 (render.test)
-  if (RUST) assert.deepEqual(server.log().match(/GET \/file\/render 200 \d+ms \w+/g).map((l) => l.split(" ").at(-1)), ["hub", "hub", "hub", "hub", "hub", "hub"]);
+  // the front door's log (queries redacted): every kind is the hub's
+  assert.deepEqual(server.log().match(/GET \/file\/render 200 \d+ms \w+/g).map((l) => l.split(" ").at(-1)), ["hub", "hub", "hub", "hub", "hub", "hub"]);
+  // without a built editor the office URL is the viewer's
+  await start(officeAssets("render-plain").assets);
+  assert.equal((await render("seeds/presentation.pptx")).office, "/office/?path=seeds/presentation.pptx&kind=pptx");
 });
 
 test("OFF-30 a chat turn's office tools run in the broker: open, cells, propose, accept, export (a card), create (a card); buwiz-broker runs no office child", async () => {
+  await start(officeAssets("chat").assets);
   const thread = (await postJson("/thread/new", {})).json.id;
 
   fake.script("office", [
@@ -638,15 +628,14 @@ test("OFF-30 a chat turn's office tools run in the broker: open, cells, propose,
   const cards = turns.filter((t) => t.label === "office").map((t) => t.files?.map((f) => f.name));
 
   assert.deepEqual(cards, [["copy.xlsx"], ["memo.docx"]]);
-  // the process tree: Node's broker spawns the office MCP child; buwiz-broker none
+  // the process tree: the office tools run in the broker, no `office-mcp` child
   const tree = execFileSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
-  const office = tree.split("\n").filter((l) => /mcp-main\.(ts|js)/.test(l) && l.includes(`--root ${files}`));
+  const child = tree.split("\n").filter((l) => /office-mcp/.test(l) && l.includes(`--root ${files}`));
 
-  if (RUST) assert.deepEqual(office, [], "no office child");
-  else assert.ok(office.length >= 1, "Node's office child");
+  assert.deepEqual(child, [], "no office child");
 });
 
-test("OFF-31 a docx, xlsx and pptx round trip in the broker (open, propose, accept, export, render) holds what Node's does", async () => {
+test("OFF-31 a docx, xlsx and pptx round trip in the broker (open, propose, accept, export, render) holds what Node's did", async () => {
   // the transcripts of OFF-02, OFF-04 and OFF-05 are this round trip; here it
   // runs once more on one workspace as the broker's tools see it, and the
   // exported files are compared by contents across the three kinds

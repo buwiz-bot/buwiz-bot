@@ -1,0 +1,5 @@
+{
+  "MAN-03 text \"\"": "manifest: is not I-JSON: EOF while parsing a value at line 1 column 0",
+  "MAN-03 text \"{\"": "manifest: is not I-JSON: EOF while parsing an object at line 1 column 1",
+  "MAN-03 text \"{\\\"a\\\":1,\\\"a\\\":2}\"": "manifest: is not I-JSON: duplicate key \"a\" at line 1 column 13"
+}

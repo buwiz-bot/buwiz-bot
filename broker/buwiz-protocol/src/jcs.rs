@@ -202,6 +202,9 @@ mod tests {
             let out = super::canonical(&parsed);
             if v["signable"] == true {
                 assert_eq!(out.as_deref(), Ok(v["jcs"].as_str().unwrap()), "{name}");
+                // the canonical text is a fixed point
+                let again = super::canonical(&serde_json::from_str(v["jcs"].as_str().unwrap()).unwrap());
+                assert_eq!(again.as_deref(), Ok(v["jcs"].as_str().unwrap()), "{name} is a fixed point");
             } else {
                 assert!(out.is_err(), "{name}: signed a non-integer: {out:?}");
             }
