@@ -139,6 +139,70 @@ impl Settle {
     }
 }
 
+/// Where a card's hold is, as the card draws it: nothing over the held
+/// app at first, the placeholder once the hold is long enough to see, its
+/// fade once the app shows, then nothing again. Inline cards and generated
+/// widget cards share it (`mini::hold_card`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hold {
+    Quiet,
+    Placeholder,
+    Fading,
+    Done,
+}
+
+impl Hold {
+    /// A card's hold at its mount. `held` is whether it holds at all (a
+    /// widget already shown once does not); `wait_ready` puts the
+    /// placeholder up from the mount.
+    pub fn start(held: bool, wait_ready: bool) -> Hold {
+        match (held, wait_ready) {
+            (false, _) => Hold::Done,
+            (true, true) => Hold::Placeholder,
+            (true, false) => Hold::Quiet,
+        }
+    }
+
+    /// The hold after the card's `placeholder` or `settled` event, `None`
+    /// when it stays. `Fading` is followed by `Done` after [`FADE_MS`].
+    pub fn hear(self, event: &str, reduce_motion: bool) -> Option<Hold> {
+        match (event, self) {
+            ("placeholder", Hold::Quiet) => Some(Hold::Placeholder),
+            // settled before the placeholder was due: nothing to take down
+            ("settled", Hold::Quiet) => Some(Hold::Done),
+            ("settled", Hold::Placeholder) => Some(match reveal(reduce_motion) {
+                Reveal::Swap => Hold::Done,
+                Reveal::Fade => Hold::Fading,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the placeholder is over the app.
+    pub fn covers(self) -> bool {
+        matches!(self, Hold::Placeholder | Hold::Fading)
+    }
+}
+
+/// The generated widgets (by module name) that have been shown once. A
+/// widget card leaves its chat's screen when the chat is switched away
+/// from and is mounted again on the way back: that is a remount, which
+/// would hold again. A widget in this set does not.
+#[derive(Debug, Default)]
+pub struct Shown(std::collections::HashSet<String>);
+
+impl Shown {
+    /// `app` showed: its card's hold is over.
+    pub fn mark(&mut self, app: &str) {
+        self.0.insert(app.to_owned());
+    }
+
+    /// Whether a card mounting `app` holds it.
+    pub fn holds(&self, app: &str) -> bool {
+        !self.0.contains(app)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +402,92 @@ mod tests {
         assert_eq!(s.tick(t0 + ms(66), Some(1)), None, "the old app's count is gone");
         assert_eq!(s.tick(t0 + ms(99), Some(1)), None);
         assert_eq!(s.tick(t0 + ms(132), Some(1)), Some(Phase::Settled));
+    }
+
+    #[test]
+    fn a_widget_card_starts_held_and_reveals_when_settled() {
+        let shown = Shown::default();
+        let mut hold = Hold::start(shown.holds("R1"), false);
+        assert_eq!(hold, Hold::Quiet);
+        assert!(!hold.covers());
+        // drive the settle machine as the card does
+        let t0 = Instant::now();
+        let mut s = Settle::new(t0);
+        let seen = run(&mut s, t0, ms(0), &(0..10).map(Some).chain([Some(9); 12]).collect::<Vec<_>>());
+        for (_, phase) in seen {
+            let event = match phase {
+                Some(Phase::Placeholder) => "placeholder",
+                Some(Phase::Settled) => "settled",
+                None => continue,
+            };
+            if let Some(next) = hold.hear(event, false) {
+                hold = next;
+            }
+            if event == "placeholder" {
+                assert!(hold.covers());
+            }
+        }
+        assert_eq!(hold, Hold::Fading, "settled over a shown placeholder fades");
+        assert!(hold.covers());
+        assert!(!s.holding());
+    }
+
+    #[test]
+    fn the_placeholder_does_not_show_under_100_ms_for_a_widget() {
+        let t0 = Instant::now();
+        let mut s = Settle::new(t0);
+        let mut hold = Hold::start(true, false);
+        for (_, phase) in run(&mut s, t0, ms(0), &[Some(1); 4]) {
+            assert_ne!(phase, Some(Phase::Placeholder));
+        }
+        // settled before it was due: straight to Done, never covered
+        assert_eq!(hold.hear("settled", false), Some(Hold::Done));
+        hold = Hold::Done;
+        assert!(!hold.covers());
+    }
+
+    #[test]
+    fn reduce_motion_swaps_a_held_card() {
+        assert_eq!(Hold::Placeholder.hear("settled", true), Some(Hold::Done));
+        assert_eq!(Hold::Placeholder.hear("settled", false), Some(Hold::Fading));
+    }
+
+    #[test]
+    fn events_after_the_reveal_change_nothing() {
+        for h in [Hold::Fading, Hold::Done] {
+            assert_eq!(h.hear("settled", false), None);
+            assert_eq!(h.hear("placeholder", false), None);
+        }
+        assert_eq!(Hold::Placeholder.hear("placeholder", false), None);
+    }
+
+    #[test]
+    fn a_wait_ready_inline_card_starts_with_its_placeholder() {
+        assert_eq!(Hold::start(true, true), Hold::Placeholder);
+        assert_eq!(Hold::start(true, false), Hold::Quiet);
+    }
+
+    #[test]
+    fn a_reload_of_a_widget_does_not_rearm_and_a_remount_does() {
+        let t0 = Instant::now();
+        let mut s = Settle::new(t0);
+        run(&mut s, t0, ms(0), &[Some(1), Some(1), Some(1)]);
+        // the widget's source changed (a revise): the same card, still shown
+        s.loaded(false);
+        assert!(!s.holding());
+        // a real remount of a widget never shown holds again
+        assert!(Shown::default().holds("R2"));
+    }
+
+    #[test]
+    fn switching_chats_away_and_back_does_not_rearm_a_shown_widget() {
+        let mut shown = Shown::default();
+        assert!(shown.holds("R1"), "first mount holds");
+        shown.mark("R1");
+        // away (unmounted) and back (mounted again)
+        assert_eq!(Hold::start(shown.holds("R1"), false), Hold::Done);
+        assert!(shown.holds("R2"), "another widget still holds");
+        // a widget left before it settled holds again on the way back
+        assert_eq!(Hold::start(shown.holds("R2"), false), Hold::Quiet);
     }
 }

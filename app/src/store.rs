@@ -3266,6 +3266,9 @@ pub struct Store {
     /// key: its simulated progress counts from there, so a re-rendered
     /// row picks up where it was.
     pub art_started: std::cell::RefCell<std::collections::HashMap<String, std::time::Instant>>,
+    /// The generated widgets whose card has been revealed once: switching
+    /// back to their chat mounts the card again without holding it.
+    pub shown_widgets: std::cell::RefCell<crate::mini_v1::settle::Shown>,
 
     /// The owner the store was made under (the anchor's — it outlives
     /// remounts). Lazily-made signals must live under it, not under
@@ -3538,6 +3541,7 @@ impl Store {
             mini_errs: std::cell::RefCell::new(std::collections::HashMap::new()),
             mini_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
             art_started: std::cell::RefCell::new(std::collections::HashMap::new()),
+            shown_widgets: std::cell::RefCell::new(Default::default()),
             owner: Owner::current(),
         }
     }
