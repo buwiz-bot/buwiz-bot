@@ -36,10 +36,8 @@ are lost at the next rebuild.
   keystrokes. Buwiz Bot's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)buwiz-agent-menu`,
   or its old name `rox-agent-menu`, read by `app/src/hot.rs`) runs
   commands: `cmd <command-id>`.
-- Start a test instance with `scripts/buwiz-test` (`scripts/test-rox` is
-  its old name). Environment variables have Buwiz names (`BUWIZ_*`); the
-  old `ROX_*`/`GROK_*` names still work, with a warning
-  (`broker/buwiz-protocol/src/env.rs` has the table).
+- Start a test instance with `scripts/buwiz-test`. Environment variables
+  have Buwiz names (`BUWIZ_*`).
 - Point `gpui-agent` at your own instance by address: `--addr
   127.0.0.1:<your agent port>` (or `GPUI_AGENT_ADDR`), never `--connect`
   (by bundle id or `last`). `--connect` finds whichever Buwiz Bot is

@@ -106,7 +106,7 @@ The dev launcher makes a new random token at every launch and keeps it in
 `$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token`, readable only by you
 (and, for now, under its old name `rox-gpui-agent-token` too);
 `scripts/buwiz-drive` passes it to `gpui-agent` through the environment, never
-on a command line; `scripts/rox-agent`, its old name, still works. To run
+on a command line. To run
 a bare build with automation, do the same:
 `GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 GPUI_AGENT_TOKEN=<random>
 GPUI_AGENT_ADDR=127.0.0.1:<port> ./target/debug/buwiz-bot`.
@@ -167,12 +167,9 @@ logging to `~/Library/Logs/Buwiz Bot/broker.log` (`app/src/broker.rs`).
 ### Environment variables
 
 Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …).
-The names from before, `ROX_*` and the three `GROK_*` ones, still work: a
-variable set only by its old name is read, and the program says once on
-stderr `<old> is an old name; use <new>`. The table is in
-`broker/buwiz-protocol/src/env.rs`. A test
+A test
 instance is one that sets `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or
-`BUWIZ_DATA_DIR`, or any of them by its old name.
+`BUWIZ_DATA_DIR`.
 
 The broker gets `NSH`, `NSH_HOST` and `NSH_CHUNK_DIR` (`<data>/chunks`)
 from Buwiz Bot: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
