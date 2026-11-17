@@ -1,24 +1,21 @@
-//! Office in Rust (plan 6.1, D3): the BetterOffice agent layer Node runs
-//! as an MCP child (`server/src/office/agents/*.ts`, `mcp.ts`,
-//! `create.ts`), ported onto BetterOffice's own crates — `betteroffice-
+//! Office in Rust: the BetterOffice agent layer (agents, MCP tools and
+//! document creation) on BetterOffice's own crates — `betteroffice-
 //! docx-edit` (the editing core the npm `YrsSession` wraps), `-xlsx` and
 //! `-pptx-edit` — so the hub's `office_*` tools run in this process.
 //!
 //! - [`Office`]: a workspace on its own thread (the engines' sessions are
-//!   not `Send`; Node serializes calls through one queue too), answering a
-//!   tool call as mcp.ts does: arguments checked as zod checks them, then
+//!   not `Send`; calls go through one queue), answering a
+//!   tool call: arguments checked as zod checks them, then
 //!   `{content, structuredContent, isError?}`.
 //! - `mcp`: the same server over stdio (`buwiz-broker office-mcp --root <dir>`),
-//!   Node's `mcp-main` command line, for tests and any MCP client.
+//!   for tests and any MCP client.
 //! - `routes`: `/office/*` (viewer, editor bundle, vendor files, caps) and
 //!   `/file/render` for office files.
 //!
-//! What no crate here does: DOCX page rendering. Node draws pages with
-//! render.ts (the docx package's JS layout and display list, painted by
-//! `@napi-rs/canvas` with `@betteroffice/fonts`); the crate's PNG path is
+//! What no crate here does: DOCX page rendering. The crate's PNG path is
 //! its `raster` feature, which needs `betteroffice-docx-raster` 0.5.1 (not
 //! fetched, D26) and a measured layout input. So `office_render` on a DOCX
-//! answers as Node does when render.ts cannot load: `UNSUPPORTED`, and
+//! answers `UNSUPPORTED`, and
 //! `capabilities.render` is false.
 
 pub mod args;
@@ -41,9 +38,8 @@ use serde_json::{json, Value};
 use proto::{Res, ToolError};
 use workspace::{Doc, Workspace};
 
-/// The tools' definitions and the server's instructions as Node's MCP
-/// server lists them (recorded from it; tests/http/office.test.mjs OFF-01 holds both
-/// to it).
+/// The tools' definitions and the server's instructions as the MCP
+/// server lists them (tests/http/office.test.mjs OFF-01 holds both to it).
 pub fn defs() -> &'static Value {
     static DEFS: OnceLock<Value> = OnceLock::new();
     DEFS.get_or_init(|| serde_json::from_str(include_str!("tools.json")).unwrap_or(Value::Null))
@@ -68,7 +64,7 @@ impl Reply {
         Self { value: e.body(), is_error: true, image: None }
     }
 
-    /// The `CallToolResult` Node's server answers.
+    /// The `CallToolResult` the server answers.
     pub fn mcp(&self) -> Value {
         let mut content = vec![json!({ "type": "text", "text": crate::js::stringify(&self.value) })];
         if let Some(png) = &self.image {
@@ -81,7 +77,7 @@ impl Reply {
         out
     }
 
-    /// office.mjs's `callOfficeTool` result: the blocks folded to one string.
+    /// A tool's result: the blocks folded to one string.
     pub fn fold(&self) -> String {
         crate::hub::tools::mcp::fold(&self.mcp())
     }
@@ -249,7 +245,7 @@ pub fn install(routes: &mut crate::hub::Registry, ctx: &mut crate::hub::ctx::Hub
 type Job = Box<dyn FnOnce(&mut Server) + Send>;
 
 /// The hub's office: the tool server on its own thread, started on first
-/// use (Node starts its child once and keeps a failed start for good).
+/// use (a failed start is kept for good).
 pub struct Office {
     root: PathBuf,
     started: Mutex<Option<Result<mpsc::Sender<Job>, String>>>,
@@ -335,7 +331,7 @@ impl Office {
         }
     }
 
-    /// office.mjs's `officeCreateBytes(format, {[format]: payload})`.
+    /// The bytes of a new document of `format`.
     pub async fn create_bytes(format: &str, payload: &Value) -> Result<Vec<u8>, String> {
         let (format, mut input) = (format.to_owned(), serde_json::Map::new());
         input.insert(format.clone(), payload.clone());
@@ -347,7 +343,7 @@ impl Office {
 mod tests {
     use super::*;
 
-    /// A workspace holding Node's seed files.
+    /// A workspace holding the seed files.
     fn workspace() -> PathBuf {
         let seeds = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../office/seeds");
         let dir = std::env::temp_dir().join(format!("rox-office-test-{}", proto::uuid()));

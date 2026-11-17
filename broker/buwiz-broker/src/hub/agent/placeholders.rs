@@ -1,4 +1,4 @@
-//! The cards drawn while a tool's input streams (agent.mjs's
+//! The cards drawn while a tool's input streams (the
 //! `streamEvent` handler, `appPlaceholderFrom`, `dropPendingApp`): a
 //! generate_app gets its placeholder at once, titled and sized as its
 //! layout streams; an office_create's is shaped by its path's extension; a

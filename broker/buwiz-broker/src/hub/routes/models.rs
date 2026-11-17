@@ -132,7 +132,7 @@ fn effort_label(e: &Value) -> String {
     }
 }
 
-/// The catalog, or `None` where Node's chain throws.
+/// The catalog, or `None` where the chain throws.
 fn fold(j: &Value, draws: &HashMap<String, bool>, conns: &Conns) -> Option<Vec<Value>> {
     let data = j.get("data")?.as_array()?;
     let mut ids = std::collections::HashSet::new();
@@ -191,7 +191,7 @@ pub async fn models_json(settings: &Settings, home: &Path) -> Value {
 /// `GET /models`.
 pub async fn handle(settings: &Settings, req: &HubRequest) -> HubResponse {
     if req.url != "/models" {
-        // Node matches the whole url: with a query, no route answers
+        // the whole url matches: with a query, no route answers
         use http_body_util::BodyExt;
         let mut res = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from_static(b"not found")).map_err(|never| match never {}).boxed());
         *res.status_mut() = StatusCode::NOT_FOUND;

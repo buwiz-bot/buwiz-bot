@@ -1,9 +1,9 @@
-//! The v0 MCP servers on the model's surface (tools.mjs `mcpSurface`,
+//! The v0 MCP servers on the model's surface (`mcpSurface`,
 //! `appToolsLoad`, `toolAppToolsLoad`, `toolMcpAdmin`, `noteAppOpen`, the
-//! MCP branch of `execTool`; mcp.mjs `anthropicTools`, `parseMcpName`,
+//! MCP branch of `execTool`; `anthropicTools`, `parseMcpName`,
 //! `callTool`). The clients are McpHost's (`ctx.mcp`); an app with more
 //! than 80 tools waits behind `app_tools_load`, loaded per thread for 15
-//! minutes (`loadedApps`, process-wide as in Node).
+//! minutes (`loadedApps`, process-wide).
 
 use std::collections::HashMap;
 use std::sync::Mutex;

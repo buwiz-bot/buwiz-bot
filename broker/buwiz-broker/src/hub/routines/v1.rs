@@ -1,5 +1,5 @@
-//! v1 plugin routines (`v1/routines.mjs`, spec 19.1 "A run",
-//! 19.2 "params"; `v1/broker.mjs`'s `routineTurn`).
+//! v1 plugin routines (spec 19.1 "A run",
+//! 19.2 "params").
 //!
 //! A routine is declared in a plugin's manifest; what runs is an instance
 //! of it (`v1_instances`): plugin, routine, instance id, the chat it

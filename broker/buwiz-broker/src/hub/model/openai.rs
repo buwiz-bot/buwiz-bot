@@ -1,4 +1,4 @@
-//! The OpenAI-compatible path (`GEN_PROVIDER=openai`): Node's plain
+//! The OpenAI-compatible path (`GEN_PROVIDER=openai`): a plain
 //! `fetch` to `${GEN_BASE_URL}/chat/completions` with
 //! `Authorization: Bearer ${OPENROUTER_API_KEY}` (`Bearer undefined` when
 //! unset, as the template literal writes it). No retries.

@@ -109,7 +109,7 @@ fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     // track A first: it loads the store the others' starts read
     routes::chat::install(routes, ctx);
     pipeline::install(ctx);
-    // 5.7b: after the store's start, as app-server.mjs runs its migration
+    // after the store's start (the migration of the pre-versioning files)
     routes::apps::install(routes, ctx);
     model::install(routes, ctx);
     agent::install(routes, ctx);
@@ -168,15 +168,15 @@ impl Hub {
         self.answer(HubRequest { method: parts.method, url, headers: parts.headers, body, params: Vec::new() }).await
     }
 
-    /// The guard Node runs before any route, then the route's handler, the
-    /// webhook dispatcher, or 501; with Node's CORS headers on the answer.
+    /// The guard that runs before any route, then the route's handler, the
+    /// webhook dispatcher, or 501; with the CORS headers on the answer.
     pub async fn answer(&self, mut req: HubRequest) -> HubResponse {
         if let Some((status, error)) = crate::guard::refusal(&req.method, &req.headers, &self.allowed) {
             return types::json(status, &json!({ "ok": false, "error": error }));
         }
         let origin = req.headers.get(ORIGIN).cloned();
         let path = req.path().to_owned();
-        // a preflight: Node's 204 (only with no Node; else Node answers it)
+        // a preflight answers 204
         let mut res = if routes::host::locked_out(&req.method, &path, &req.headers) {
             // what widens a Bot's reach answers only the app (the host token)
             routes::host::unauthorized()
@@ -192,7 +192,7 @@ impl Hub {
                     req.params = params;
                     h(self.ctx.clone(), req).await
                 }
-                // no route of Node's either: its last resort
+                // no route either: the last resort
                 None if routes::classify(&req.method, &req.url).is_none() => {
                     let mut res = hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from_static(b"not found")).map_err(|never| match never {}).boxed());
                     *res.status_mut() = StatusCode::NOT_FOUND;
@@ -212,7 +212,7 @@ impl Hub {
 
     /// `/v1/hooks/<id>/<secret>`: an `ah_` id
     /// is an agent's webhook, any other a routine instance's. A path of
-    /// another shape, or not a POST, is Node's 404.
+    /// another shape, or not a POST, is a 404.
     async fn hook(&self, mut req: HubRequest) -> HubResponse {
         let Some(params) = Pattern::Segments("/v1/hooks/*/*").matches(req.path()).filter(|_| req.method == Method::POST) else {
             return types::json(StatusCode::NOT_FOUND, &json!({ "ok": false, "code": "not_found", "message": "no such hook", "retryable": false }));
@@ -262,8 +262,8 @@ mod tests {
         for (m, url) in [(Method::GET, "/turns"), (Method::POST, "/v1/host/plugins/acme/disable")] {
             assert_eq!(text(hub.answer(req(m, url)).await).await, (501, r#"{"ok":false,"code":"not_ported"}"#.to_owned()));
         }
-        // a route Node has neither (POST /threads, a path no table entry
-        // names): Node's last resort
+        // a route with no entry (POST /threads, a path no table entry
+        // names): the last resort
         for (m, url) in [(Method::POST, "/threads"), (Method::GET, "/files/other/a.png")] {
             assert_eq!(text(hub.answer(req(m, url)).await).await, (404, "not found".to_owned()));
         }

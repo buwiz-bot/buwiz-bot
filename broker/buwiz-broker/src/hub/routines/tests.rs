@@ -1,14 +1,11 @@
-//! Rust ports of the module-level routine tests, by ID, on a manual
-//! clock, a stub turn runner (the JS tests' recorded `runTurn`), the
-//! in-memory store and fake plugin and MCP hosts standing in for the
-//! fixture plugin, the google-workspace plugin over its fake upstream, and
-//! mcp-agent's apps server:
-//! RTN-01…16 (v1-routines.test.mjs; RTN-06 and RTN-14 test the tool
-//! loop's surface filter, 5.4, and are checked here only as far as the
-//! surface the runner hands it), INS-01…05 (v1-instances.test.mjs),
-//! routine-threads.test.mjs (threads.rs), mcp-agent.test.mjs's v0 check
-//! (MAGT-03), and the v0 HTTP cases (routines-v0.test.mjs RV0-*) at module
-//! level.
+//! The module-level routine tests, by ID, on a manual clock, a stub turn
+//! runner, the in-memory store and fake plugin and MCP hosts standing in for
+//! the fixture plugin, the google-workspace plugin over its fake upstream,
+//! and the MCP apps server:
+//! RTN-01…16 (RTN-06 and RTN-14 test the tool loop's surface filter and are
+//! checked here only as far as the surface the runner hands it),
+//! INS-01…05, the routine threads (threads.rs), the v0 check (MAGT-03), and
+//! the v0 HTTP cases (RV0-*) at module level.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -353,7 +350,7 @@ fn code<T: std::fmt::Debug>(r: Result<T, V1Error>) -> String {
     }
 }
 
-// ── RTN (v1-routines.test.mjs) ───────────────────────────────────────────
+// ── RTN ───────────────────────────────────────────
 
 fn rtn_routines() -> Value {
     let reads = json!([{"plugin": GWS, "tools": ["gws_search_mail", "gws_read_mail"]}]);
@@ -634,7 +631,7 @@ async fn rtn_v1_routines_in_order() {
     assert_eq!(n, 0, "RTN-08");
 }
 
-// ── INS (v1-instances.test.mjs) ──────────────────────────────────────────
+// ── INS ──────────────────────────────────────────
 
 fn ins_routines() -> Value {
     let reads = json!([{"plugin": GWS, "tools": ["gws_search_mail", "gws_read_mail"]}]);
@@ -1012,7 +1009,7 @@ async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── v0 (routines.mjs; mcp-agent.test.mjs; routines-v0.test.mjs) ─────────
+// ── v0 ─────────
 
 /// A stdio MCP server's answers: tools and their results, a manifest.
 struct FakeMcp {
@@ -1099,7 +1096,7 @@ fn text_result(t: &str) -> Value {
     json!({"content": [{"type": "text", "text": t}]})
 }
 
-/// mcp-agent.test.mjs "a routine's check calls the server; nothing new
+/// "a routine's check calls the server; nothing new
 /// means no turn" (MAGT-03).
 #[tokio::test]
 async fn magt_03_a_routines_check_calls_the_server_and_nothing_new_is_no_turn() {

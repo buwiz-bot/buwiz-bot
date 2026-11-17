@@ -137,8 +137,7 @@ fn emit_office(src: Option<&Path>, dir: &Path, ext: &str, paths: &mut Vec<std::p
     }
     match ext {
         "docx" => paths.push(mock_docx(dir).map_err(|e| e.to_string())?),
-        // BUG: agent.mjs calls mockXlsx and mockPptx without importing them,
-        // so a missing seed crashes the job
+        // BUG: there is no mock xlsx or pptx, so the job fails
         "xlsx" => return Err("mockXlsx is not defined".into()),
         _ => return Err("mockPptx is not defined".into()),
     }

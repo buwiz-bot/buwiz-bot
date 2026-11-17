@@ -38,8 +38,7 @@ pub fn get(leaf: &Leaf) -> Answer {
 }
 
 pub fn post(leaf: &Leaf, body: &str) -> Answer {
-    // Node parses outside any try: a body that isn't JSON, or null, throws
-    // and takes Node down (decision D8). Here it is refused instead.
+    // a body that isn't JSON, or null, is refused
     let parsed = match super::parse_body(body) {
         Ok(Value::Null) => return Answer::refused(400, true, "Cannot destructure 'JSON.parse(...)' as it is null."),
         Ok(v) => v,

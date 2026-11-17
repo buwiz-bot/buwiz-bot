@@ -1,11 +1,10 @@
-//! The store's JSON as Node writes it: turns and bots read from objects
+//! The store's JSON: turns and bots read from objects
 //! (a loaded row, the legacy JSON, a `meta` column), `turns.meta`'s fixed
-//! key order, `/threads` and `/turns`' bodies (state.mjs `turnsJson`,
-//! routes/chat.mjs), drive.mjs's `driveType`, and the JavaScript string
-//! and number rules they lean on.
+//! key order, `/threads` and `/turns`' bodies (`turnsJson`), `driveType`, and the
+//! JavaScript string and number rules they lean on.
 //!
-//! Lone UTF-16 halves: `s.slice(0, n)` can cut an emoji in two, and Node
-//! keeps the high half in memory (`/threads` shows `"\ud83d"`) while SQLite
+//! Lone UTF-16 halves: `s.slice(0, n)` can cut an emoji in two, and the high
+//! half stays in memory (`/threads` shows `"\ud83d"`) while SQLite
 //! stores U+FFFD. [`js_slice`] keeps such a half as a character of
 //! U+10F800..U+10FFFF (private use), [`out`] writes it back as `\udXXX`,
 //! and [`sql_text`] stores it as U+FFFD.
@@ -50,7 +49,7 @@ fn is_lone(c: char) -> bool {
     (LONE..=0x10FFFF).contains(&(c as u32))
 }
 
-/// A string as SQLite stores it from Node: a lone half becomes U+FFFD.
+/// A string as SQLite stores it: a lone half becomes U+FFFD.
 pub fn sql_text(s: &str) -> String {
     if !s.chars().any(is_lone) {
         return s.to_owned();
@@ -483,7 +482,7 @@ fn derived_origins(t: &Turn, l: &Lookups) -> HashMap<usize, Value> {
 
 /// The turns as the app renders them. It
 /// may fill an old image card's `art` from its module (persisted with the
-/// next write, as in Node).
+/// next write).
 pub fn turns_json(thread: &mut Thread, l: &Lookups, gen_dir: &Path) -> Value {
     // an image card made before cards carried their file
     for t in thread.turns.iter_mut() {

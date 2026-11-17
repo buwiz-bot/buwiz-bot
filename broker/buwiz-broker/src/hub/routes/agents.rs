@@ -4,7 +4,7 @@
 //!   `/v1/host/agents/endpoints/create|list|rotate|delete`: the host
 //!   token first, then a JSON object body, then `{ok: true, …}` or the
 //!   refusal with the host routes' status map. Other methods on them fall
-//!   through to `host.rs`'s catch-all (Node's 405).
+//!   through to `host.rs`'s catch-all (405).
 //! - `POST /v1/hooks/ah_<id>/<secret>`: a signed message from outside, read
 //!   as its raw bytes (past 512 KB, a string one byte too long); 202.
 //! - `/v1/bridge/*`: buwiz-bridge, a Claude Code session's way in, with its

@@ -14,7 +14,7 @@ use crate::hub::store::{now_ms, uuidv7, Turn};
 use crate::js;
 use crate::leaf::mcp::McpRoutes;
 
-/// `@<server>:<scope>:<value>` → its parts.
+/// A token `@<server>:<scope>:<value>` → its parts.
 pub fn parse_token(s: &str) -> Option<(String, String, String)> {
     let s = s.trim_matches(|c: char| js::is_space(c) || matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
     let rest = s.strip_prefix('@')?;

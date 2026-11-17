@@ -1,5 +1,5 @@
 //! Agent messaging: the user's agents
-//! messaging each other and the world outside Rox. The v1 envelope,
+//! messaging each other and the world outside Buwiz Bot. The v1 envelope,
 //! agents' threads (a thread marked `agents: {conversation, participants,
 //! subject, created_by, created_at}`, read-only and never a sidebar row),
 //! one notice per conversation in each participant's chat, who may message
@@ -18,10 +18,9 @@
 //! - `hub/routes/agents.rs`: `/v1/host/agents/*`, `/v1/hooks/ah_*`,
 //!   `/v1/bridge/*`.
 //!
-//! Turns run through `ctx.turns` (a reply's wake-up, Node's
-//! `backgroundTurn`) and the [`run::AgentRequestTurn`] seam (a request's
-//! answer, Node's `agentTurn` on a stand-in thread), which the tool loop
-//! (5.4) fills; until it does, MOCK answers as Node's `chatReply` does.
+//! Turns run through `ctx.turns` (a reply's wake-up, `backgroundTurn`) and
+//! the [`run::AgentRequestTurn`] seam (a request's answer, `agentTurn` on a
+//! stand-in thread), which the tool loop fills.
 
 pub mod external;
 pub mod run;
@@ -43,7 +42,7 @@ use crate::js;
 
 pub use run::AgentsHub;
 
-/// agents.mjs `LIMITS`.
+/// The messaging limits.
 pub const RECIPIENTS: usize = 8;
 pub const TEXT: usize = 16 * 1024;
 pub const DATA: usize = 64 * 1024;
@@ -57,7 +56,7 @@ pub const PER_HOUR: usize = 20;
 pub const MERGE_MS: f64 = 10.0 * 60_000.0;
 
 /// A refusal (`AgentError`): its code and message. `internal` is the
-/// store failing to write, Node's `persist()` throwing.
+/// store failing to write.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentError {
     pub code: String,
@@ -421,7 +420,7 @@ pub fn conversation_index(s: &State, conv: &str) -> Option<usize> {
     s.list.iter().position(|t| mark(t).and_then(|m| m.get("conversation")).and_then(Value::as_str) == Some(conv))
 }
 
-/// `findThread(key)` as agents.mjs's `thread`.
+/// `findThread(key)`.
 fn thread_index(s: &State, key: Option<&str>) -> Option<usize> {
     let key = key?;
     s.list.iter().position(|t| t.id == key || t.uid.as_deref() == Some(key))

@@ -1,6 +1,6 @@
 //! `buwiz-broker manifest <op>`: the manifest checks on JSON in, JSON out,
 //! one request on stdin. `tests/manifest_pins.rs` runs every manifest case
-//! through it against the answers Node gave; a plugin author can use
+//! through it against the pinned answers; a plugin author can use
 //! `verify` to see what Buwiz Bot will say about a manifest.
 //!
 //! | op | stdin | `value` |

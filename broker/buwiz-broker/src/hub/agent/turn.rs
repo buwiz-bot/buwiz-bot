@@ -75,7 +75,7 @@ fn unheard(run: &Run) -> bool {
 }
 
 /// `agentTurn(job, prompt, thread)`: the reply's text ("" when the model
-/// answered only with tools). `Err` is Node's thrown `llm-api …`.
+/// answered only with tools). `Err` is the `llm-api …` text.
 pub async fn agent_turn(run: &Run, prompt: &str, extra: &Value, ctx_blocks: &[Value]) -> Result<String, String> {
     let ctx = &run.ctx;
     let (mut messages, refused) = ctx.store.read(|s| (history(s.thread(&run.turn.thread)), refused_before(s.thread(&run.turn.thread))));

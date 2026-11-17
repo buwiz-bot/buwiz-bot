@@ -1,10 +1,8 @@
-//! What routines need from the store (track A's `hub/store`), as one
-//! narrow trait: Node's routines read and change `store.list` (threads and
-//! their turns) and `store.bots` through `state.mjs`, and save with
-//! `writeIndex()`. Each method says which Node code it stands for.
+//! What routines need from the store (`hub/store`), as one narrow trait:
+//! routines read and change `store.list` (threads and their turns) and
+//! `store.bots`, and save with `writeIndex()`.
 //! `store_host::StoreHost` implements it on the store; [`MemoryHost`] is
-//! the store's shape in memory (the JS tests hand `routine-threads.mjs` a
-//! plain object), and [`Unstored`] has no chat at all, so nothing that
+//! the store's shape in memory, and [`Unstored`] has no chat at all, so nothing that
 //! needs one runs.
 
 use std::sync::Mutex;
@@ -30,11 +28,10 @@ pub trait RoutineHost: Send + Sync {
     /// (none for "").
     fn thread(&self, key: &str) -> Option<Thread>;
 
-    /// The threads that carry a `routine` mark, in `store.list` order
-    ///.
+    /// The threads that carry a `routine` mark, in `store.list` order.
     fn routine_threads(&self) -> Vec<Thread>;
 
-    /// routine-threads.mjs `ensure`, the new thread: `{id: "t" +
+    /// The new thread: `{id: "t" +
     /// nextThreadSeq(), uid: uuidv7(), title, turns: [], routine: mark}`
     /// pushed onto `store.list`, then `writeIndex()`.
     fn add_routine_thread(&self, title: &str, mark: &Value) -> Thread;
@@ -43,33 +40,30 @@ pub trait RoutineHost: Send + Sync {
     /// `writeIndex()`.
     fn set_routine_mark(&self, id: &str, mark: &Value, title: Option<&str>);
 
-    /// `{id: uuidv7(), role: "notice", text,
-    /// notice}` pushed onto the turns of the thread whose id or uid is
+    /// A notice, `{id: uuidv7(), role: "notice", text,
+    /// notice}`, pushed onto the turns of the thread whose id or uid is
     /// `chat`, then `writeIndex()`; `false` when there is no such thread.
     fn push_notice(&self, chat: &str, text: &str, notice: &Value) -> bool;
 
-    /// In the thread whose id or uid is
-    /// `chat`, every turn whose `notice` has kind `routine_consent`, this
+    /// In the thread whose id or uid is `chat`, every turn whose `notice` has kind `routine_consent`, this
     /// `instance` and state `pending` gets `notice = {...notice, state}`
     /// (the key keeps its place); `writeIndex()` when one changed.
     fn settle_consent(&self, chat: &str, instance: &str, state: &str);
 
-    /// `store.bots.find((b) => b.threadId === thread)?.name` (routines.mjs
-    /// `routineJson`'s `botName`).
+    /// `store.bots.find((b) => b.threadId === thread)?.name` (a routine's
+    /// `botName`).
     fn bot_name(&self, thread: &str) -> Option<String>;
 
-    /// `threadBot(id)?.threadId`: the chat of the bot the
-    /// thread answers as: its own bot's, else, for a routine's thread, the
+    /// The chat of the bot the thread answers as: its own bot's, else, for a routine's thread, the
     /// bot of the chat it reports to.
     fn bot_chat(&self, thread: &str) -> Option<String>;
 
-    /// routines.mjs `googleEmail`'s `linked()`: over `store.list` in order,
+    /// The linked Google account: over `store.list` in order,
     /// each thread's turns newest first, each turn's `links[].account`:
     /// the first one `is_email` accepts.
     fn linked_account(&self, is_email: &dyn Fn(&str) -> bool) -> Option<String>;
 
-    /// Whether the job `job` is done:
-    /// routines.mjs `afterJob` waits for it.
+    /// Whether the job `job` is done (a routine's `afterJob` waits for it).
     fn job_done(&self, job: JobId) -> bool;
 }
 
@@ -105,7 +99,7 @@ impl RoutineHost for Unstored {
     }
 }
 
-/// One thread of [`MemoryHost`]: its turns as JSON, Node's shape.
+/// One thread of [`MemoryHost`]: its turns as JSON, in the store's shape.
 #[derive(Clone, Debug)]
 pub struct MemThread {
     pub id: String,
@@ -131,7 +125,7 @@ pub struct MemState {
     pub next: u64,
 }
 
-/// The store's shape in memory, as the JS tests build it.
+/// The store's shape in memory.
 #[derive(Default)]
 pub struct MemoryHost {
     pub state: Mutex<MemState>,

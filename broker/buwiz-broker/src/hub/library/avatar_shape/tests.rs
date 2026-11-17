@@ -1,5 +1,4 @@
-//! The avatar checks against pins recorded from the old Node implementation
-//!: the same outlines, recipes and replies give the same
+//! The avatar checks against recorded pins: the same outlines, recipes and replies give the same
 //! errors and candidates, and one system prompt. The pins are under
 //! `tests/pins/avatar_shape/` (see `test-support/pins.rs`).
 
@@ -240,7 +239,7 @@ fn avatar_design_candidates_match_the_pin() {
             |msgs: Vec<Value>| {
                 let mut calls = calls.lock().unwrap();
                 calls.push(json!(msgs));
-                // a call past the script answers nothing, as Node's undefined reply parses
+                // a call past the script answers nothing, as an undefined reply parses
                 let r = replies.get(calls.len() - 1).cloned().unwrap_or_default();
                 async move { Ok::<_, String>(r) }
             },
@@ -324,7 +323,7 @@ fn avatar_to_fixed_rounds_ties_up() {
     assert_eq!(to_fixed2(f64::INFINITY), "Infinity");
 }
 
-/// Solids: the same checks and words as the Node implementation had (AVD-21).
+/// Solids: the pinned checks and words (AVD-21).
 #[test]
 fn solids_are_checked_like_node() {
     let lathe = json!({"kind": "lathe", "color": "#F2C062", "at": [50, 40, 0], "tilt": [-7, 0, 3], "oval": 0.9, "teeth": [6, 0.5],

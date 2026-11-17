@@ -1,14 +1,14 @@
-//! The model client (plan 5.3; model.mjs, the provider settings of
-//! config.mjs, the image side of avatars.mjs): Anthropic Messages through
+//! The model client (the provider settings, the image side of
+//! avatars): Anthropic Messages through
 //! opencodex, routed per thread (`choice`), streamed or not, with the SDK's
 //! retries, headers and error texts (`anthropic`, `sse`); the
 //! OpenAI-compatible path (`openai`); the legacy generator's calls
 //! (`ask_model`, `classify_intent`, `chat_reply`, `extract_code`); image
 //! generation (`images`); and `GET /models` (`hub/routes/models.rs`).
 //!
-//! `ModelClient` is the hub's `ModelApi`: its errors read as Node's job
+//! `ModelClient` is the hub's `ModelApi`: its errors read as a job's
 //! details do, `llm-api <status>: <SDK message>` (`anthropic::parse_llm`
-//! splits them). The tool loop (5.4) streams through it and folds the
+//! splits them). The tool loop streams through it and folds the
 //! events with `sse::collect`, whose callback sees each event and the
 //! message so far (the placeholders' `streamEvent`).
 
@@ -118,8 +118,8 @@ impl Settings {
 }
 
 // BUG: a 5xx on the first streamed round reads as "streaming unavailable":
-// streaming stays off for the process from then on (MODEL-05). Node's
-// `agentStream`: the tool loop turns it off when a stream
+// streaming stays off for the process from then on (MODEL-05). `agentStream`:
+// the tool loop turns it off when a stream
 // fails before its first event, and never back on.
 static AGENT_STREAM: AtomicBool = AtomicBool::new(true);
 

@@ -1,8 +1,8 @@
-//! The text helpers routines share with Node: `approvedText`,
+//! The text helpers routines share: `approvedText`,
 //! `paramsProblem` and `paramsSummary`, JavaScript's
 //! `String(v)`, `Number(v)` and template-literal forms, `isEmail`, and the
-//! v0 tool name (`mcpName`). Lengths and cuts count UTF-16 units where
-//! Node's do.
+//! v0 tool name (`mcpName`). Lengths and cuts count UTF-16 units, as
+//! JavaScript's do.
 
 use serde_json::Value;
 
@@ -114,7 +114,7 @@ pub fn number(v: Option<&Value>) -> f64 {
 }
 
 /// A number as JSON carries it: an integral one as an integer (so values
-/// compare as Node's do), else a float.
+/// compare as JavaScript's do), else a float.
 pub fn num(x: f64) -> Value {
     if x.is_finite() && x.fract() == 0.0 && x.abs() < 9_007_199_254_740_992.0 {
         Value::from(x as i64)

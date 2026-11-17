@@ -21,7 +21,7 @@ use tokio::sync::Notify;
 
 use super::store::Store;
 
-/// A job's id (Node's `nextJobId`, counting from 1).
+/// A job's id (counting from 1).
 pub type JobId = u64;
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1,11 +1,10 @@
-//! The `/mcp/*` routes Rox calls (plan 4.3), answered here when this broker
-//! hosts the MCP servers, as routes/market.mjs answered them: the same shapes, status codes and texts. Three stay
-//! Node's until the chats move (phase 5), since they touch its in-memory
-//! chats: `POST /mcp/attach`, `GET /mcp/attachments` and `POST
-//! /mcp/servers`.
+//! The `/mcp/*` routes Rox calls, answered here when this broker
+//! hosts the MCP servers. `POST /mcp/attach`, `GET /mcp/attachments` and
+//! `POST /mcp/servers` touch the chats and are the hub's
+//! (`hub/routes/mcp_chat.rs`).
 //!
 //! The servers themselves are McpHost's (helper/mcp_servers.rs); its status
-//! is what `/mcp/servers` shows and Node mirrors. `/mcp/open` hands only
+//! is what `/mcp/servers` shows. `/mcp/open` hands only
 //! Rox links to the system (`open`, from PATH), an app link with a one-time
 //! pass that `/mcp/open/pass` redeems. `/oauth/callback/`
 //! also finishes a mini app account's sign-in (§20.2) when the plugin
@@ -33,7 +32,7 @@ const APP_MIME: &str = "text/x-nsh-tsx";
 /// `callToolJson`'s timeout (a mini app's call).
 const APP_CALL: Duration = Duration::from_secs(120);
 
-/// The routes this module answers, as market.mjs matched them.
+/// The routes this module answers.
 pub fn route(method: &Method, url: &str) -> bool {
     let path = url.split('?').next().unwrap_or(url);
     let get = method == Method::GET;
@@ -77,7 +76,7 @@ fn out(status: u16, v: &Value) -> Answer {
     Answer::json(status, js::stringify(v))
 }
 
-/// routes/market.mjs's done page.
+/// The OAuth done page.
 fn done_page(title: &str) -> String {
     format!(
         "<body style=\"background:#1f1f1f;color:#f5f5f5;font:15px -apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\"><div style=\"text-align:center\"><div style=\"font-size:22px;font-weight:600\">{title}</div><div style=\"color:#f5f5f58f;margin-top:8px\">You can close this window.</div></div></body>"

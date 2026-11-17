@@ -1,4 +1,4 @@
-//! The artifact tools (tools.mjs `toolGenerateApp`, `toolGenerateImage`,
+//! The artifact tools (`toolGenerateApp`, `toolGenerateImage`,
 //! `toolArtifact`, `app_icon`, `app_details_update`, `artOf`,
 //! `imageFileOf`, `imageModule`): a card checked by nsh and written as a
 //! version through the pipeline (5.7a, `hub/pipeline`), its placeholder
@@ -22,7 +22,7 @@ use crate::hub::store::{uuidv7, Turn};
 use crate::hub::types::BoxFuture;
 use crate::js;
 
-/// appmeta.mjs's icon and details (plan 5.7b).
+/// The app's icon and details.
 pub trait AppMeta: Send + Sync {
     /// `genAppIcon(name, prompt, model)`: the icon drawn; the backend's name.
     fn gen_icon(&self, ctx: Arc<HubCtx>, name: String, prompt: String, model: String) -> BoxFuture<'static, Result<String, String>>;
@@ -253,8 +253,7 @@ pub async fn generate_app(run: &Run, input: &Value) -> Result<Out, String> {
         }
     }
     let nsh = ctx.nsh.clone().unwrap_or_else(|| Arc::new(pipeline::nsh::NshCli::from_env()));
-    // a missing nsh answers "": that is no pass (Node's `if (err)` took it
-    // for one and saved modules nothing had compiled), so nothing is saved
+    // a missing nsh answers "": that is no pass, so nothing is saved
     if let Err(e) = pipeline::nsh::check_candidate(nsh.as_ref(), &dirs.stage, &name).await {
         drop_turn(run, &id);
         if e.is_empty() {

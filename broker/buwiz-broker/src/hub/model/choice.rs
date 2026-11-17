@@ -1,4 +1,4 @@
-//! A thread's model choice and where its calls go (model.mjs `choiceFor`,
+//! A thread's model choice and where its calls go (`choiceFor`,
 //! `labelOf`, `routed`, `withEffort`).
 
 use serde_json::Value;
@@ -8,8 +8,8 @@ use super::Settings;
 use crate::hub::ctx::Db;
 use crate::hub::types::ModelChoice;
 
-/// What `choiceFor` reads of the bot whose thread it is (Node's
-/// `threadBot`: the acting bot, the thread's own, or the one a routine
+/// What `choiceFor` reads of the bot whose thread it is (`threadBot`:
+/// the acting bot, the thread's own, or the one a routine
 /// thread reports to; the store finds it).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BotModel {
@@ -60,7 +60,7 @@ pub fn choice_for_db(db: &Db, bot: Option<&BotModel>) -> Option<ModelChoice> {
 }
 
 // BUG: /retry runs outside the thread's model choice (no modelCtx.run in
-// routes/chat.mjs), so a bot's retry goes to the default model and route
+// the chat routes), so a bot's retry goes to the default model and route
 // (MODEL-01). The route's turn takes this choice, not `choice_for`'s.
 pub fn retry_choice() -> Option<ModelChoice> {
     None

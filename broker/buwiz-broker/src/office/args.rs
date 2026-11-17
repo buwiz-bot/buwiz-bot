@@ -1,6 +1,6 @@
 //! The tools' input checks (mcp.ts's `z.object(shape).strict().parse`),
 //! driven by the JSON Schema zod made of each shape (tools.json), with
-//! zod's issue messages, so an invalid call answers as Node's does.
+//! zod's issue messages, so an invalid call answers with zod's text.
 
 use serde_json::{json, Map, Value};
 

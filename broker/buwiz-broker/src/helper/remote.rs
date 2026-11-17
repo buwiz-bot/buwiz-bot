@@ -1,4 +1,4 @@
-//! A remote MCP server's client (plan 4.2), as the broker's Node SDK (1.32)
+//! A remote MCP server's client as the MCP SDK (1.32)
 //! runs one: streamable HTTP (client/streamableHttp.js), or the legacy SSE
 //! transport (client/sse.js) for a row whose `transport` is "sse".
 //!
@@ -10,8 +10,8 @@
 //! stream. With stored tokens the bearer goes on every request, and a 401
 //! runs OAuth (oauth.rs) in the background (a refresh; a sign-in only
 //! records its URL) then sends once more; a second 401 right after is the
-//! SDK's circuit breaker. Without tokens there is no auth at all, as Node
-//! gave the transport no provider then.
+//! SDK's circuit breaker. Without tokens there is no auth at all (the
+//! transport has no provider).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

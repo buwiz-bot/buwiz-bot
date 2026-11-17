@@ -1,5 +1,4 @@
-//! The chat's MCP routes (5.2): `POST /mcp/servers` (routes/market.mjs and
-//! tools.mjs `mcpUpsertServer`), `POST /mcp/attach` and `GET
+//! The chat's MCP routes: `POST /mcp/servers`, `POST /mcp/attach` and `GET
 //! /mcp/attachments`. The servers are McpHost's
 //! (`ctx.mcp`); when the host could not start the two that need a server
 //! answer 501.
@@ -78,7 +77,7 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// grammar.mjs `isServerId`.
+/// Whether a string is a server id.
 pub fn is_server_id(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }

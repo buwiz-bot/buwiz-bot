@@ -1,17 +1,17 @@
-//! OAuth for remote MCP servers (plan 4.2), as the broker's Node did it:
-//! the SDK's `auth()` (client/auth.js, 1.32.1) driving mcp.mjs's provider.
+//! OAuth for remote MCP servers (plan 4.2), by the MCP
+//! SDK's `auth()` (client/auth.js, 1.32.1) driving the broker's provider.
 //! The MCP Authorization spec: RFC 9728 resource metadata, RFC 8414 (or
 //! OpenID) server metadata, RFC 7591 registration, PKCE S256, the browser,
 //! the callback, the code exchange, refresh. Storage is the row's `auth`
-//! JSON column, read and written whole on every step as Node did
+//! JSON column, read and written whole on every step
 //! (`client_info`, `tokens`, `state`, `verifier`, `no_dcr`), with the SDK's
-//! `issuer` stamp, so either broker reads what the other wrote.
+//! `issuer` stamp.
 //!
 //! The redirect is the front door's fixed route,
 //! `http://127.0.0.1:<port>/oauth/callback/<id>`; a pre-registered client
 //! (`oauth_client`: id, secret, scope, extra authorize parameters) is the
 //! user's own app and never registers. A flow the user starts opens the
-//! browser (`open`, from PATH, as Node's execFile did) unless asked for the
+//! browser (`open`, from PATH) unless asked for the
 //! URL; a transport's own re-auth on a 401 only records the URL.
 
 use std::collections::{HashMap, HashSet};
@@ -42,7 +42,7 @@ pub struct Row {
     pub url: String,
     /// `oauth_client` when it names a `client_id`.
     pub fixed: Option<Map<String, Value>>,
-    /// `auth` as read with the row (Node's `storedAuth(row)`).
+    /// `auth` as read with the row.
     pub auth: Value,
 }
 
@@ -85,7 +85,7 @@ pub enum Verdict {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthError {
-    /// `name`: the SDK's class (`InvalidGrantError`), what Node printed
+    /// `name`: the SDK's class (`InvalidGrantError`), what is printed
     /// when the server gave no description.
     OAuth { kind: Kind, name: String, message: String },
     /// Not an OAuth error (metadata, schema, local setup).
@@ -125,7 +125,7 @@ pub enum Outcome {
     Redirect,
 }
 
-/// The state Node kept in module maps: flows waiting for their callback,
+/// The state kept in module maps: flows waiting for their callback,
 /// the last authorize URL, rows asked not to open a tab, discovery caches.
 #[derive(Default)]
 pub struct OAuthState {
@@ -136,7 +136,7 @@ pub struct OAuthState {
     prm_cache: tokio::sync::Mutex<HashMap<String, bool>>,
 }
 
-/// mcp.mjs's provider for one row.
+/// The provider for one row.
 pub struct Provider<'a> {
     pub state: &'a OAuthState,
     pub store: &'a dyn AuthStore,
@@ -256,8 +256,8 @@ impl Provider<'_> {
     }
 }
 
-/// The system's way to open a URL (`open` on macOS, as Node's execFile ran
-/// it: looked up on PATH).
+/// The system's way to open a URL (`open` on macOS, looked up
+/// on PATH).
 pub(crate) fn open_url(u: &str) {
     let cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     if let Ok(mut child) = std::process::Command::new(cmd).arg(u).stdin(std::process::Stdio::null()).spawn() {
@@ -853,7 +853,7 @@ async fn auth_internal(p: &Provider<'_>, o: &AuthOpts) -> Result<Outcome, AuthEr
     Ok(Outcome::Redirect)
 }
 
-// ── the flows mcp.mjs ran ────────────────────────────────────────────────
+// ── the flows ────────────────────────────────────────────────
 
 impl OAuthState {
     /// `offlineScope`: the resource's scopes plus offline_access when its

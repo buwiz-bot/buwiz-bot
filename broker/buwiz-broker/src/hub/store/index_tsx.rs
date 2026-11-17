@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-/// The Mini Apps tab's shelf, the very file Node copies.
+/// The Mini Apps tab's shelf, the file as copied.
 pub const SHELF: &str = include_str!("../../../assets/templates/shelf.tsx");
 
 /// `R<n>.tsx` names (without ".tsx") in directory order (readdirSync's:

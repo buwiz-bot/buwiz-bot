@@ -1,7 +1,7 @@
 //! `FileWorkspace` (agents/workspace.ts): the open documents, the files
 //! under the root, and exports and creates that stay inside it and never
-//! overwrite. File-system errors read as Node's (`ENOENT: no such file or
-//! directory, realpath '…'`), since the tools pass them on.
+//! overwrite. File-system errors read like `ENOENT: no such file or
+//! directory, realpath '…'`, since the tools pass them on.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -55,7 +55,7 @@ impl Doc {
     }
 }
 
-/// A Node `fs` error: its code and `uv`'s message.
+/// A file-system error: its code and `uv`'s message.
 pub fn fs_error(e: &std::io::Error, syscall: &str, path: &Path) -> ToolError {
     let (code, text) = match e.raw_os_error() {
         Some(libc::ENOENT) => ("ENOENT", "no such file or directory"),

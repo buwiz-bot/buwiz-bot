@@ -2,7 +2,7 @@
 //! designer's candidate logic. A body is a kit shape (the app's mark engine
 //! draws 13 of them) or "custom": an SVG outline in a 0 0 100 100 box, y
 //! down, drawn with M/L/C/Q/Z only. The checks, their error texts and the
-//! retry → drop → top-up → kit fallback rules are Node's, step for step.
+//! retry → drop → top-up → kit fallback rules are in this file.
 
 use std::future::Future;
 
@@ -28,13 +28,13 @@ pub const KIT: [(&str, &str); 13] = [
 ];
 pub const OUTLINE_MAX: usize = 4000;
 
-/// The designer's system prompt: the file Node's `DESIGN_SYSTEM` reads.
+/// The designer's system prompt: the file `assets/templates/avatar-design-system.txt`.
 pub fn design_system() -> &'static str {
     const TEXT: &str = include_str!("../../../assets/templates/avatar-design-system.txt");
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
 }
 
-/// The rich designer's extra instructions (Node's `RICH_SYSTEM`).
+/// The rich designer's extra instructions (`assets/templates/avatar-rich-system.txt`).
 pub fn rich_system() -> &'static str {
     const TEXT: &str = include_str!("../../../assets/templates/avatar-rich-system.txt");
     TEXT.strip_suffix('\n').unwrap_or(TEXT)

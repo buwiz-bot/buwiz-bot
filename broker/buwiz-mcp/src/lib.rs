@@ -1,15 +1,15 @@
-//! An MCP client over stdio, as the broker's Node SDK (1.32) runs one: the
+//! An MCP client over stdio, as the MCP SDK (1.32) runs one: the
 //! child gets HOME, LOGNAME, PATH, SHELL, TERM and USER from its parent's
 //! environment plus its own (PATH with the usual tool folders added, see
 //! [`child_env`]), newline-delimited JSON-RPC on stdin and
 //! stdout, stderr handed to the owner, `initialize` then
 //! `notifications/initialized`. A request past its timeout is cancelled
 //! (`notifications/cancelled`) and fails -32001; a line that is not JSON-RPC
-//! closes the connection, as the SDK's error handler does in plugins.mjs.
+//! closes the connection, as the SDK's error handler does.
 //! Closing ends stdin, then SIGTERM after 2 s, then SIGKILL after 2 more.
 //!
-//! Results come back as the plugin wrote them. Node's side of the line
-//! runs them through the SDK's schemas, so callers see what they saw before.
+//! Results come back as the plugin wrote them; the caller applies its own
+//! schemas.
 //!
 //! buwiz-broker hosts v1 plugins and v0 MCP servers with it (`helper::mcp`);
 //! buwiz-gws (buwiz-app/google-workspace) keeps a copy, `src/mcp.rs`, for
@@ -44,8 +44,7 @@ pub struct Spec {
     /// In the order given.
     pub env: Vec<(String, String)>,
     /// The environment under `env`: the SDK's six inherited names (v1
-    /// plugins), or all of this process's (v0 MCP servers, as mcp.mjs gives
-    /// them Node's).
+    /// plugins), or all of this process's (v0 MCP servers).
     pub inherit_all: bool,
     /// `clientInfo.name` in the handshake.
     pub client: &'static str,
@@ -56,7 +55,7 @@ pub struct Spec {
 
 /// A failed request: a JSON-RPC error, a timeout, a closed connection, or
 /// a process that would not start (`code` 0). `message` reads as the
-/// SDK's `McpError` (`MCP error <code>: <message>`) or Node's spawn error.
+/// SDK's `McpError` (`MCP error <code>: <message>`) or the spawn error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
     pub code: i64,
@@ -143,7 +142,7 @@ pub fn child_env_from(spec: &Spec, mut env: Vec<(String, String)>) -> Vec<(Strin
     env
 }
 
-/// Node's text for a spawn that failed (`spawn <cmd> ENOENT`).
+/// The text for a spawn that failed (`spawn <cmd> ENOENT`).
 fn spawn_error(command: &str, e: &std::io::Error) -> String {
     let code = match e.raw_os_error() {
         Some(libc::ENOENT) => "ENOENT",

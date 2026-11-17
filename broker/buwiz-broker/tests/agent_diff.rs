@@ -1,6 +1,6 @@
-//! The tool loop's pinned test (plan 5.4): the `/chat` turns Node's agent.mjs
-//! ran against one scripted fake opencodex (tests/fixtures/fake-opencodex.mjs,
-//! served by tests/fixtures/fake-opencodex-driver.mjs) are pinned under
+//! The tool loop's pinned test: the `/chat` turns run against one
+//! scripted fake opencodex (tests/fixtures/fake-opencodex.mjs, served by
+//! tests/fixtures/fake-opencodex-driver.mjs) are pinned under
 //! tests/pins/agent_diff/, one file per run: the model requests it sent
 //! (method, path, the headers opencodex reads, the body: system prompt,
 //! tools, messages with tool results), the job's phases and detail, and the
@@ -125,7 +125,7 @@ async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
     let fake: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("the fake said {line:?}: {e}"));
     let mut driver = Driver { child, stdin, stdout };
 
-    // this process is the hub: the same environment Node ran in
+    // this process is the hub: the same environment as the pinned runs
     let bin = fixtures().join("bin");
     let rust_data = temp("rust");
     for k in [
@@ -156,7 +156,7 @@ async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
         buwiz_broker::hub::agent::install(routes, ctx);
     });
     let hub = Arc::new(hub);
-    // Node has no Ask: the Chats profile's shell on, as every plain chat's was before it
+    // the Chats profile's shell on, as every plain chat's
     buwiz_broker::hub::policy::host_set(hub.ctx(), &json!({"bot": "chats", "key": "shell", "state": "on"})).unwrap();
 
     let mut read = Vec::new();
@@ -172,8 +172,8 @@ async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let got = driver.take();
-        // the bot controls are Rust's own tools (Node's path is not live), and so are a plain
-        // chat's memory and agent tools: not in Node's list
+        // the bot controls, a plain chat's memory tools and its agent tools are
+        // not part of the pinned tool list
         let calls: Vec<Value> = got
             .as_array()
             .unwrap()
@@ -191,7 +191,7 @@ async fn agent_diff_the_hub_sends_the_pinned_model_requests() {
             .collect();
         let phases: Vec<Value> = st["events"].as_array().unwrap().iter().map(|e| e["phase"].clone()).collect();
         let thread = thread.as_str().unwrap().to_owned();
-        // a failed run's notice is Rust's own: Node's chat stays silent
+        // a failed run's notice is not part of the pinned turns
         let turns: Vec<Value> = hub.ctx().store.read(|s| s.thread(&thread).unwrap().turns.iter().filter(|u| u.notice.as_ref().is_none_or(|n| n["reason"] != "failed")).map(|u| json!([u.role, u.text, u.label, u.name, u.v, u.reaction])).collect());
         read.push(format!("agent_diff/run_{i}"));
         pins::check(&format!("agent_diff/run_{i}"), &json!({"calls": calls, "phases": phases, "detail": st["detail"], "turns": turns}));

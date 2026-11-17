@@ -1,5 +1,4 @@
-//! Google Drive files the AI made or changed, as Library artifacts
-//!. A successful google-workspace write leaves a link on the AI
+//! Google Drive files the AI made or changed, as Library artifacts. A successful google-workspace write leaves a link on the AI
 //! turn that made it:
 //!   turn.links = [{provider: "gdrive", id, name, mime, link, action, at, account?}]
 //! one per file id, action "created" | "edited" | "renamed". `artifacts`
@@ -231,7 +230,7 @@ fn prior_link(thread: Option<&Thread>, id: &str) -> Option<Value> {
     thread?.turns.iter().rev().find_map(|t| t.links.as_ref().and_then(Value::as_array).and_then(|ls| ls.iter().find(|x| x.get("id").and_then(Value::as_str) == Some(id)).cloned()))
 }
 
-/// A job's Drive bookkeeping (Node's `job.driveSeen` and `job.linkTurn`).
+/// A job's Drive bookkeeping (`driveSeen` and `linkTurn`).
 #[derive(Clone, Debug, Default)]
 pub struct DriveNotes {
     pub seen: HashMap<String, Value>,

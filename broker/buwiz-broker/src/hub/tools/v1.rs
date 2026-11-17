@@ -318,7 +318,7 @@ pub fn account_card(plugin: &str, title: &str, a: &crate::v1::package::Account, 
     n
 }
 
-/// `@short:scope:value` tokens a message types (grammar.mjs `typedToken`,
+/// `@short:scope:value` tokens a message types (`typedToken`,
 /// global): (short, scope) of each.
 pub fn typed_tokens(text: &str) -> Vec<(String, String)> {
     let cs: Vec<char> = text.chars().collect();

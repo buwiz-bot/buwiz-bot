@@ -1,4 +1,4 @@
-//! The store read from app.db as state.mjs's `loadStore` reads it, the
+//! The store read from app.db (`loadStore`), the
 //! first boot's legacy import (generated/threads.json, turns.json), the
 //! counters (`seq` against the `R<n>.tsx` files on disk, `threadSeq`), and
 //! `backfillIds`' time rule for rows written before uids.
@@ -29,7 +29,7 @@ fn parse(text: &Value, what: &str) -> Option<Value> {
     }
 }
 
-/// The store as Node loads it at start.
+/// The store as loaded at start.
 pub fn load(conn: &Connection, gen: &Path) -> Result<State, String> {
     load_rows(conn, gen).map_err(|e| e.to_string())
 }

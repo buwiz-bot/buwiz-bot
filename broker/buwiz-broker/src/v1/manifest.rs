@@ -8,7 +8,7 @@
 //! install review lines (6.10), the permissions digest and the props
 //! check of 11.5.
 //!
-//! Where Node would throw a TypeError on a malformed manifest (a tool name
+//! Where a JavaScript reader would throw a TypeError on a malformed manifest (a tool name
 //! that is a list, say), this refuses it as `manifest_invalid` instead.
 
 use serde_json::{json, Map, Value};
@@ -72,7 +72,7 @@ pub mod limits {
 
 use limits as L;
 
-/// The limits as Node's `LIMITS` object names them.
+/// The limits as the `LIMITS` object names them.
 pub fn limits_json() -> Value {
     json!({
         "manifestBytes": L::MANIFEST_BYTES, "pluginId": L::PLUGIN_ID, "version": L::VERSION, "title": L::TITLE,
@@ -925,7 +925,7 @@ fn some(v: Option<&Value>) -> bool {
 }
 
 /// A scope's noun: its description's first word without trailing
-/// punctuation ("Return:" → "Return"), else its name. (Node strips
+/// punctuation ("Return:" → "Return"), else its name. (the rule is
 /// `[^\p{L}\p{N}]`; `char::is_alphanumeric` also keeps the few combining
 /// marks Unicode calls alphabetic.)
 fn noun(s: Option<&Value>) -> Value {

@@ -1,11 +1,10 @@
-//! The model's tools (plan 5.4; tools.mjs's tool-loop half, v1/agent.mjs,
-//! drive.mjs): the surface a turn offers (`tool_list`, Node's `toolList`)
-//! and the dispatcher (`exec_tool`, `execTool`). The schemas and the system
-//! prompt are Node's, dumped (`defs`). The bot, skill, routine and agent
-//! tools are other tracks' handlers in `ctx.tools`; this module owns only
+//! The model's tools the surface a turn offers (`tool_list`)
+//! and the dispatcher (`exec_tool`). The schemas and the system prompt are
+//! in `defs`. The bot, skill, routine and agent
+//! tools are handlers in `ctx.tools`; this module owns only
 //! their dispatch.
 //!
-//! A turn's run is a [`Run`]: what Node keeps on the job object and in
+//! A turn's run is a [`Run`]: what the job object and
 //! AsyncLocalStorage (`modelCtx`, `actingBot`), passed explicitly: the
 //! thread, the job, the acting bot, the model choice, a routine's surface
 //! (`TurnCtx`), and the run's own state (`pendingApp`, `pendingOffice`,
@@ -40,7 +39,7 @@ use crate::hub::types::TurnCtx;
 use crate::js;
 
 /// A tool's answer as the model gets it: `content`, then `is_error` only
-/// where Node's result object has the key (`{content}` vs
+/// where the result object has the key (`{content}` vs
 /// `{content, is_error: false}` are different bytes on the wire).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Out {
@@ -77,7 +76,7 @@ pub struct LinkTurn {
     pub suggest: Option<Vec<Value>>,
 }
 
-/// The run's own fields of Node's job object.
+/// The run's own fields of the job.
 #[derive(Default)]
 pub struct RunState {
     /// the generate_app placeholder drawn while its input streams (a turn id)
@@ -112,7 +111,7 @@ pub struct RunState {
     pub yes_in_hand: Option<crate::hub::policy::ask::Yes>,
 }
 
-/// One turn's run (Node's job, `modelCtx` and `actingBot`).
+/// One turn's run (the job, `modelCtx` and `actingBot`).
 pub struct Run {
     pub ctx: Arc<HubCtx>,
     /// the thread, the job, the acting bot, the model, a routine's surface
@@ -138,7 +137,7 @@ impl Run {
         self.ctx.jobs.set(&self.ctx.store, self.job, phase, detail);
     }
 
-    /// The id of the thread Node's turn holds (`thread.id`): the run's own,
+    /// The id of the thread the turn holds (`thread.id`): the run's own,
     /// or, on a stand-in (an agent's request), its conversation's.
     pub fn thread_id(&self) -> String {
         self.ctx.store.read(|s| s.thread(&self.turn.thread).map(|t| t.id.clone())).unwrap_or_else(|| self.turn.thread.clone())

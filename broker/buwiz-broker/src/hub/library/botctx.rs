@@ -18,7 +18,7 @@ use crate::hub::store::{now_ms, uuidv7, Bot, State};
 use crate::hub::types::{ToolResult, TurnCtx};
 use crate::js;
 
-/// plugins.mjs's `entryOf`, as the catalog (track C) answers it.
+/// The catalog entry of a plugin, as the market answers it.
 pub trait PluginCatalog: Send + Sync {
     /// The catalog entry for a key (`{key, name, displayName, description, …}`).
     fn entry(&self, key: &str) -> Option<Value>;
@@ -175,7 +175,7 @@ pub fn lookup(ctx: &HubCtx, conn: &Connection, kind: &str, id: &str) -> Option<V
     }
 }
 
-/// `kind:id` or `{kind, id}`: (kind, id) as botctx.mjs reads a spec.
+/// `kind:id` or `{kind, id}`: (kind, id) as a spec reads.
 fn spec_parts(spec: Option<&Value>) -> (Option<Value>, Value) {
     match spec {
         Some(Value::Object(o)) => (o.get("kind").cloned().filter(|k| !k.is_null()), o.get("id").cloned().unwrap_or(Value::Null)),

@@ -1,6 +1,6 @@
 //! The market's 11 routes: `/plugins/catalog`,
 //! `/plugins/detail`, `/plugins/skill`,
-//! `/plugins/inspect` (the review, no Node twin), `/plugins/install`,
+//! `/plugins/inspect` (the review), `/plugins/install`,
 //! `/plugins/uninstall`, `/plugins/settings`,
 //! `/plugins/connect`, and the private skills' `POST /skills`,
 //! `/skills/state`, `/skills/delete`.
@@ -663,9 +663,8 @@ fn skills_state(ctx: &HubCtx, req: HubRequest) -> HubResponse {
     }
 }
 
-/// `POST /skills/delete`. A body that isn't JSON (or is null) takes Node
-/// down with no answer (its parse is outside any try); Rust answers 400
-/// `{"ok":false}` instead (D8).
+/// `POST /skills/delete`. A body that isn't JSON (or is null) answers 400
+/// `{"ok":false}`.
 fn skills_delete(ctx: &HubCtx, req: HubRequest) -> HubResponse {
     if !crate::hub::routes::host::authorized(&req.headers) {
         return locked();

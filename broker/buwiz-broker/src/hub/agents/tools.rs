@@ -1,9 +1,8 @@
 //! The agent tools: in an
 //! agent's chat and in its delivery turns, never in a routine's run. The
-//! caller is the bot the turn answers as (`turn.acting_bot`, Node's
-//! `job.agentBot`), else the thread's own; in a chat without a Bot, the user
+//! caller is the bot the turn answers as (`turn.acting_bot`), else the thread's own; in a chat without a Bot, the user
 //! from that chat (`Party::user`), who lists, sends and reads but makes no
-//! agents. `turn.agent_hop` counts relays (§3). Their schemas (`AGENT_TOOLS`, `tools.json`, dumped from Node) are
+//! agents. `turn.agent_hop` counts relays (§3). Their schemas (`AGENT_TOOLS`, `tools.json`) are
 //! the tool loop's to offer, with [`offered`] saying when.
 
 use std::sync::{Arc, OnceLock};
@@ -18,7 +17,7 @@ use crate::js;
 
 pub const NAMES: [&str; 6] = ["agents_list", "agent_send", "agent_conversations", "agent_read", "agent_create", "agent_remove"];
 
-/// `AGENT_TOOLS`: the six tools' definitions, as Node sends them.
+/// `AGENT_TOOLS`: the six tools' definitions, as sent to the model.
 pub fn defs() -> &'static Value {
     static DEFS: OnceLock<Value> = OnceLock::new();
     DEFS.get_or_init(|| serde_json::from_str(include_str!("tools.json")).expect("the agent tools' definitions"))

@@ -1,7 +1,7 @@
 //! Permanent ids: UUID v7 (RFC 9562), a 48-bit unix-ms
 //! timestamp, version 7, variant 10, the rest random. rand_a (12 bits)
 //! counts up within one millisecond so ids minted back to back stay
-//! monotonic, one counter for the whole process as Node keeps it.
+//! monotonic, one counter for the whole process.
 
 use std::sync::Mutex;
 

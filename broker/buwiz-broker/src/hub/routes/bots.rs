@@ -95,7 +95,7 @@ impl Avatar {
     }
 }
 
-/// routes/bots.mjs `applyAvatar(bot, {shape, color, outline, layers,
+/// `applyAvatar(bot, {shape, color, outline, layers,
 /// eyes})`: the avatar a request leaves a bot with (`cur` its own), or the
 /// errors joined. A kit shape clears the outline and layers, an outline
 /// without a shape makes it "custom", a new outline brings its own layers
@@ -463,7 +463,7 @@ async fn osa(ctx: &HubCtx, script: &str) -> Result<String, String> {
     exec(ctx, LocalCommand { program: "osascript".into(), args: vec!["-e".into(), script.into()], ..Default::default() }).await.map(|o| o.trim().to_owned())
 }
 
-/// `{width, height}`, or `{}`.
+/// An image's size: `{width, height}`, or `{}`.
 async fn image_size(ctx: &HubCtx, path: &Path) -> Value {
     let p = path.to_string_lossy().into_owned();
     if p.to_ascii_lowercase().ends_with(".svg") {
@@ -495,7 +495,7 @@ fn sips_value(out: &str, key: &str) -> u64 {
     out.find(&format!("{key}: ")).map(|i| out[i + key.len() + 2..].chars().take_while(char::is_ascii_digit).collect::<String>()).and_then(|d| d.parse().ok()).unwrap_or(0)
 }
 
-/// files.mjs `isAnimated(path, ext)`.
+/// Whether an image file is animated.
 fn is_animated(path: &Path, ext: &str) -> bool {
     if ext == "gif" {
         return true;
@@ -898,7 +898,7 @@ async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> 
     Ok(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": base64::engine::general_purpose::STANDARD.encode(&bytes)}}))
 }
 
-/// The
+/// Asks the designer model and returns the
 /// reply's text. The picker's model ("gpt-5.5", "claude-haiku-5-5--fast")
 /// routes through opencodex as a bot's chosen model does; "" is
 /// [`avatar_model`].

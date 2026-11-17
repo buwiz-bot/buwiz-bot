@@ -1,5 +1,5 @@
 //! `GET /skills`: the user's own skills.
-//! Node still writes them; this reads the rows as they stand.
+//! The hub writes them; this reads the rows as they stand.
 
 use serde_json::{Map, Value};
 
@@ -7,8 +7,7 @@ use super::{sql_json, Answer, Leaf};
 use crate::js;
 
 pub fn get(leaf: &Leaf) -> Answer {
-    // `SELECT *` as Node runs it, so rows with the same created_at keep
-    // Node's order
+    // `SELECT *`, so rows with the same created_at keep the table's order
     let rows = leaf.db(|db| {
         let mut stmt = db.prepare("SELECT * FROM skills ORDER BY created_at")?;
         let names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();

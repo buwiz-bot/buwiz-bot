@@ -1,16 +1,16 @@
 //! The user's v0 MCP servers (`mcp_servers`), hosted here (plan
 //! 4.1, 4.2, D12): one client per server, made on first use and shared, with
-//! the server's tools, capabilities and resources. Node keeps the table's
-//! config columns, the `/mcp/*` routes and what the model sees, and reaches
-//! these clients over the line; `mcp.mjs` folds their answers as before.
+//! the server's tools, capabilities and resources. The table's config
+//! columns, the `/mcp/*` routes and what the model sees are the hub's, which
+//! reaches these clients through this host.
 //!
-//! A stdio server starts the way mcp.mjs starts it: this process's whole
+//! A stdio server starts with this process's whole
 //! environment, `PATH` with the folders npx/uvx/bunx live in, then the
 //! row's `env`. A remote (`url`) server is streamable HTTP, or legacy SSE
 //! when its `transport` says so, with the row's `headers`; once it has
 //! OAuth tokens (oauth.rs) they sign every request, and its `Authorization`
 //! header goes. A server whose process or stream died is started again on
-//! its next use (Node kept a dead client until the row changed).
+//! its next use (a dead client is not kept).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -78,13 +78,13 @@ struct Live {
     client: Client,
     tools: Vec<Value>,
     /// A remote server that answers without a token but publishes OAuth
-    /// metadata, or whose call failed as signed out (Node's `rec.needsAuth`).
+    /// metadata, or whose call failed as signed out.
     needs_auth: Option<String>,
-    /// Google's preview gate (Node's `rec.unavailable`).
+    /// Google's preview gate.
     unavailable: Option<String>,
 }
 
-/// mcp.mjs's AUTH_ERR: a failure that reads as a sign-in problem.
+/// A failure that reads as a sign-in problem.
 pub fn auth_error(text: &str) -> bool {
     let t = text.to_lowercase();
     let b = t.as_bytes();
@@ -98,7 +98,7 @@ pub fn auth_error(text: &str) -> bool {
 
 pub const MANIFEST_URI: &str = "buwiz://manifest";
 
-/// `[A-Za-z0-9_-]+`.
+/// Whether a server name is valid: `[A-Za-z0-9_-]+`.
 pub fn is_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
@@ -114,12 +114,12 @@ pub struct McpHost {
     /// The front door's port: the OAuth redirect's.
     port: u16,
     me: Weak<McpHost>,
-    /// A connection that failed, kept until the row changes (Node's
-    /// cached attempt): its error.
+    /// A connection that failed, kept until the row changes:
+    /// its error.
     failed: Mutex<HashMap<String, RpcError>>,
     /// Each server's status as it changes (`mcp` events).
     events: tokio::sync::broadcast::Sender<Value>,
-    /// Each connection's `buwiz://manifest`, read once (Node's rec.manifest).
+    /// Each connection's `buwiz://manifest`, read once.
     manifests: Mutex<HashMap<String, Value>>,
 }
 
@@ -178,7 +178,7 @@ fn google_api_off(row: &Row, e: &RpcError) -> Option<String> {
     ))
 }
 
-/// Logs a server's stderr as mcp.mjs does: `  mcp <id>: <chunk>`, Node's
+/// Logs a server's stderr: `  mcp <id>: <chunk>`, the runtime's
 /// own warnings left out.
 struct LogHooks {
     id: String,

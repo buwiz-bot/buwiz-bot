@@ -1,4 +1,4 @@
-//! A `/chat` or `/retry` job to its end (agent.mjs `generate(job, prompt)`)
+//! A `/chat` or `/retry` job to its end
 //! and a turn nobody typed (`backgroundTurn`): the slash commands, the
 //! tool loop, the chat reply, and the legacy one-shot generator (a card
 //! from `askModel`, checked by nsh, fixed up to three times, else the

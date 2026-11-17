@@ -17,7 +17,7 @@ use crate::hub::store::{now_ms, State};
 use crate::hub::types::BoxFuture;
 use crate::js;
 
-/// For each `(id, thread)`
+/// For each `(id, thread)`,
 /// its Library record (with `title` and `origin.thread`), or `None`.
 pub type RecordsFn = dyn Fn(Arc<HubCtx>, Vec<(String, Option<String>)>, String) -> BoxFuture<'static, Vec<Option<Value>>> + Send + Sync;
 

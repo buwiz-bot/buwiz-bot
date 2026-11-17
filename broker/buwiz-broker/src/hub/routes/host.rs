@@ -1,5 +1,4 @@
-//! The host-internal API Rox calls (`/v1/host/*`, v1/routes.mjs; plan
-//! 5.5h). Every request carries `X-Buwiz-Host: <token>`; the token is 32
+//! The host-internal API Rox calls (`/v1/host/*`). Every request carries `X-Buwiz-Host: <token>`; the token is 32
 //! random bytes written to `<data dir>/host-token` (0600) when the hub
 //! starts, after the port is ours, and a request without it is answered
 //! 401 before anything else. The Origin and JSON guard has run already.
@@ -348,7 +347,7 @@ fn scope_gate(ctx: &HubCtx, b: &Value) -> Result<(), V1Error> {
     }
 }
 
-/// v1/routes.mjs's `POSTS` and `ACTIONS`.
+/// The POST routes and their actions.
 enum Route {
     Post(&'static str),
     Action(String, &'static str),

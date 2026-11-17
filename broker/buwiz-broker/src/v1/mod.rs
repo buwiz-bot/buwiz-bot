@@ -1,8 +1,7 @@
-//! Mini App Protocol v1 hosting (plan phase 3), ported from
-//! `server/src/v1`: manifests and trust so far. Values arrive as JSON and
-//! are judged as Node's v1 code judges them, down to the message text, so
-//! a plugin author sees the same refusal from either broker
-//! (`tests/manifest_pins.rs` holds Node's answers for every case).
+//! Mini App Protocol 1.0 hosting: manifests and trust. Values arrive as
+//! JSON and are judged down to the message text, so a plugin author sees the
+//! same refusal every time (`tests/manifest_pins.rs` holds the answers for
+//! every case).
 
 pub mod cli;
 pub mod manifest;
@@ -55,8 +54,7 @@ impl V1Error {
 }
 
 
-/// Whether `s` is a whole `kind` name of the v1 grammar table
-///.
+/// Whether `s` is a whole `kind` name of the v1 grammar table (spec 4).
 pub fn grammar_ok(kind: &str, s: &str) -> bool {
     let tail = |s: &str, first: fn(char) -> bool, rest: fn(char) -> bool, max: usize| {
         let mut cs = s.chars();
@@ -86,7 +84,7 @@ pub fn grammar_ok(kind: &str, s: &str) -> bool {
     }
 }
 
-/// `isV1(kind, v)`: the grammar over `String(v ?? "")`, as Node checks it.
+/// `isV1(kind, v)`: the grammar over `String(v ?? "")`, as checked.
 pub fn is_v1(kind: &str, v: Option<&Value>) -> bool {
     let s = match v {
         None | Some(Value::Null) => String::new(),
@@ -165,7 +163,7 @@ pub fn canonicalize(v: &Value) -> String {
 }
 
 /// `signedBytes(v)`: JCS bytes of a value holding safe
-/// integers only, refused with Node's message at the first other number.
+/// integers only, refused with the message at the first other number.
 pub fn signed_bytes(v: &Value) -> Result<Vec<u8>, String> {
     fn first_unsafe(v: &Value) -> Option<f64> {
         match v {
@@ -202,7 +200,7 @@ pub fn ed_verify(public: &str, bytes: &[u8], sig: &str) -> bool {
 mod tests {
     use super::*;
 
-    // grammar.mjs's table: one good and one bad value per kind (MAN-07)
+    // the table: one good and one bad value per kind (MAN-07)
     #[test]
     fn every_grammar_takes_its_good_value_and_refuses_its_bad_one() {
         for (kind, good, bad) in [

@@ -1,7 +1,5 @@
-//! Routes answered in Rust (plan phase 2): leaves that hold nothing in
-//! memory on either side, so Node and Rust can share their tables row by
-//! row (decision D7). Each one answers as Node's handler does, byte for
-//! byte where a client could tell (server/test/leaf-routes.test.mjs).
+//! Leaf routes: they hold nothing in memory and read and write their
+//! tables row by row.
 
 mod files;
 mod keymap;
@@ -41,8 +39,8 @@ pub enum Route {
     Asset,
 }
 
-/// The route a request takes here, matched as Node matches it (`req.url`,
-/// query included); `None` goes to Node. OPTIONS always goes to Node, which
+/// The route a request takes here, matched on `req.url`,
+/// query included); `None` goes on. OPTIONS always goes on, to the hub, which
 /// answers it before any route.
 pub fn route(method: &Method, url: &str) -> Option<Route> {
     let (get, post) = (method == Method::GET, method == Method::POST);
@@ -62,7 +60,7 @@ pub fn route(method: &Method, url: &str) -> Option<Route> {
     }
 }
 
-/// An answer before CORS: status, whether Node set `content-type:
+/// An answer before CORS: status, whether `content-type:
 /// application/json` on it, any other headers, and the body.
 pub struct Answer {
     status: u16,
@@ -76,7 +74,7 @@ impl Answer {
         Self { status, json: true, headers: Vec::new(), body: body.into().into_bytes() }
     }
 
-    /// A body Node sends without setting a content type.
+    /// A body sent without a content type.
     fn bare(status: u16, body: impl Into<Vec<u8>>) -> Self {
         Self { status, json: false, headers: Vec::new(), body: body.into() }
     }
@@ -96,7 +94,7 @@ impl Answer {
         self
     }
 
-    /// What Node's dispatcher sends when a route throws.
+    /// What a throw answers.
     fn thrown(error: &str) -> Self {
         Self::json(500, format!("{{\"error\":{}}}", crate::js::quote(error)))
     }
@@ -117,7 +115,7 @@ pub struct Leaf {
 }
 
 impl Leaf {
-    /// `data` is Node's data dir (`BUWIZ_BROKER_DATA_DIR`); `allowed` the origins
+    /// `data` is the data dir (`BUWIZ_BROKER_DATA_DIR`); `allowed` the origins
     /// the guard lets through.
     pub fn new(data: PathBuf, allowed: Vec<String>) -> Self {
         Self { data, allowed, db: Mutex::new(None), waiting: Mutex::new(state::Waiting::default()) }
@@ -156,14 +154,14 @@ impl Leaf {
         }
     }
 
-    /// app.db, opened on first use: Node's file, journal mode left as Node
-    /// set it, and a busy timeout so neither side fails on the other's lock.
+    /// app.db, opened on first use, with a busy timeout so
+    /// it does not fail on another connection's lock.
     fn db<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
         let mut slot = self.db.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             let conn = Connection::open(self.data.join("generated").join("app.db")).map_err(|e| e.to_string())?;
             conn.busy_timeout(Duration::from_secs(5)).map_err(|e| e.to_string())?;
-            // the tables Rust writes, as Node creates them
+            // the tables Rust writes
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS kv(name TEXT PRIMARY KEY, data TEXT);
                  CREATE TABLE IF NOT EXISTS timeclock(
@@ -177,7 +175,7 @@ impl Leaf {
     }
 }
 
-/// The answer as Node sends it, with Node's CORS headers when the request
+/// The answer, with the CORS headers when the request
 /// had an (allowed) Origin.
 fn respond(answer: Answer, origin: Option<HeaderValue>) -> Response<Body> {
     let mut res = Response::new(Full::new(Bytes::from(answer.body)).map_err(|never| match never {}).boxed());
@@ -212,7 +210,7 @@ fn sql_json(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
     }
 }
 
-/// A JSON body as Node's handlers parse it: `JSON.parse(body || "{}")`.
+/// A JSON body as the handlers parse it: `JSON.parse(body || "{}")`.
 fn parse_body(body: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(if body.is_empty() { "{}" } else { body }).map_err(|e| e.to_string())
 }

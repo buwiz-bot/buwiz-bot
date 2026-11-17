@@ -1,6 +1,6 @@
 //! The seams between the hub's tracks: each is a trait here so a track can
 //! build and test against a stub before the one implementing it lands (as
-//! the JS tests stub `runTurn`). The clock is the plugin host's `Clock`
+//! tests stub `runTurn`). The clock is the plugin host's `Clock`
 //! (`Clock::manual()` in tests). Tools register by name in a
 //! `ToolRegistry`, each track from its own files; the tool loop (track B)
 //! owns only the dispatch.
@@ -18,8 +18,8 @@ pub use crate::helper::plugins::Clock;
 use super::ctx::HubCtx;
 use super::types::{BoxFuture, ToolResult, TurnCtx};
 
-/// A turn to run in a thread, for routines (5.5) and agents (5.6); the
-/// tool loop (5.4) implements it. Node's `routineTurn` / `backgroundTurn`.
+/// A turn to run in a thread, for routines and agents; the
+/// tool loop implements it.
 #[derive(Clone, Debug, Default)]
 pub struct TurnRequest {
     pub turn: TurnCtx,
@@ -30,7 +30,7 @@ pub struct TurnRequest {
     /// backgroundTurn's `extra`: an object whose fields are spread onto
     /// the shown turn as they are. The caller names the field, the runner
     /// never wraps it: a v1 routine passes `{routine: mark}`, an agent's
-    /// reply `{agent: mark}`, a v0 routine `None` (Node's `{}`).
+    /// reply `{agent: mark}`, a v0 routine `None`.
     pub mark: Option<Value>,
 }
 
@@ -42,14 +42,14 @@ pub struct TurnDone {
     pub turn: String,
 }
 
-/// A `/chat` or `/retry` job (agent.mjs `generate(job, prompt)`): its job
+/// A `/chat` or `/retry` job (`generate(job, prompt)`): its job
 /// is queued and answered already; `generate` runs it to its end through
-/// `ctx.jobs` (`finish`). An `Err` ends the job as Node's crash does
+/// `ctx.jobs` (`finish`). An `Err` ends the job
 /// ("generator error — <e>").
 #[derive(Clone, Debug, Default)]
 pub struct ChatTurn {
     /// the thread and the job (`turn.job`); `turn.model` is `None`: `/chat`
-    /// runs under the thread's `choiceFor`, `/retry` under none (Node runs
+    /// runs under the thread's `choiceFor`, `/retry` under none (it runs
     /// a retry outside `modelCtx`)
     pub turn: TurnCtx,
     /// the user's message

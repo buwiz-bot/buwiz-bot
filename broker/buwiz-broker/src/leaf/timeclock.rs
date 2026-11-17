@@ -1,6 +1,6 @@
-//! The `timeclock` source: clock-in and clock-out rows in `timeclock`
-//!. Times are `toISOString()` strings; minutes
-//! and "today" are counted as Node counts them, in local time.
+//! The `timeclock` source: clock-in and clock-out rows in `timeclock`.
+//! Times are `toISOString()` strings; minutes
+//! and "today" are counted in local time.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

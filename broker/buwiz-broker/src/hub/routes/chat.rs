@@ -7,9 +7,9 @@
 //! `/thread/apps`' body is the Library's (5.7b): the [`LibraryOf`] seam in
 //! `ctx.ext`; without it the route answers 501.
 //!
-//! `ctx.turns` defaults to [`MockTurns`], which the tool loop (5.4,
-//! `agent::install`) replaces on the hub: a hub built without it (a test)
-//! answers under MOCK what Node answers without a model or a pipeline
+//! `ctx.turns` defaults to [`MockTurns`], which the tool loop
+//! (`agent::install`) replaces on the hub: a hub built without it (a test)
+//! answers under MOCK without a model or a pipeline
 //! (`/upload` with no files, `/mock <word>` for an unknown word, a chat
 //! reply when files ride the message, `backgroundTurn`'s mock reply);
 //! every other `/chat` ends its job "generator error — not ported".
@@ -35,9 +35,9 @@ use crate::hub::types::{not_ported, BoxFuture, HubRequest, HubResponse, Pattern:
 use crate::hub::Registry;
 use crate::js;
 
-// ————— answers as Node writes them —————
+// ————— answers —————
 
-/// A body with or without `content-type: application/json` (Node sets it
+/// A body with or without `content-type: application/json` (set
 /// on some answers only).
 pub fn answer(status: u16, body: String, ct: bool) -> HubResponse {
     let mut res = Response::new(Full::new(Bytes::from(body)).map_err(|never| match never {}).boxed());
@@ -58,7 +58,7 @@ pub fn refused(e: &str, ct: bool) -> HubResponse {
     answer(400, out(&json!({"ok": false, "error": e})), ct)
 }
 
-/// Node's dispatcher answering a route that threw: 500 `{error}`.
+/// A route that threw: 500 `{error}`.
 pub fn thrown(e: &str) -> HubResponse {
     answer(500, out(&json!({"error": e})), false)
 }
@@ -76,18 +76,18 @@ pub fn parse(body: &Bytes) -> Result<Value, String> {
     })
 }
 
-/// `MOCK ? "mock" : MODEL`.
+/// The model name: `MOCK ? "mock" : MODEL`.
 pub fn mock() -> bool {
     std::env::var_os("MOCK").is_some_and(|v| !v.is_empty())
 }
 
-/// config.mjs `MODEL`.
+/// The configured model.
 pub fn model() -> String {
     let provider = std::env::var("GEN_PROVIDER").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "anthropic".into());
     std::env::var("GEN_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| if provider == "anthropic" { "claude-haiku-5-5".into() } else { "openai/gpt-4o-mini".into() })
 }
 
-/// appmeta.mjs `originOf(req)`.
+/// The request's origin.
 pub fn origin_of(req: &HubRequest) -> String {
     match req.headers.get(hyper::header::HOST).and_then(|h| h.to_str().ok()).filter(|h| !h.is_empty()) {
         Some(h) => format!("http://{h}"),
@@ -105,7 +105,7 @@ pub fn trimmed(b: &Value, k: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// The store must have loaded; else Node would not be up.
+/// The store must have loaded; else the broker would not be up.
 pub(crate) fn unready(ctx: &HubCtx) -> Option<HubResponse> {
     ctx.store.read(|s| s.list.is_empty()).then(|| thrown("the store did not load"))
 }
@@ -119,7 +119,7 @@ macro_rules! ready {
 }
 pub(crate) use ready;
 
-/// A write's failure as Node's dispatcher answers a throw.
+/// A write's failure answers as a thrown route does.
 macro_rules! wrote {
     ($e:expr) => {
         match $e {
@@ -186,7 +186,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
 
 // ————— the routes —————
 
-/// Runs a queued job's turn; a failure ends the job as Node's crash does, and the chat says so.
+/// Runs a queued job's turn; a failure ends the job, and the chat says so.
 fn start(ctx: Arc<HubCtx>, id: JobId, chat_turn: ChatTurn) {
     tokio::spawn(async move {
         let runner = ctx.turns.clone();
@@ -668,7 +668,7 @@ async fn thread_apps(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 
 // ————— the MOCK turns of a hub without the tool loop —————
 
-/// What MOCK Node answers with no model and no pipeline (see the module's
+/// What MOCK answers with no model and no pipeline (see the module's
 /// docs); everything else is not ported.
 pub struct MockTurns;
 

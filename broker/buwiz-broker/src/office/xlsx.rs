@@ -2,7 +2,7 @@
 //! workbook's JSON batch API (`read_cells_json`, `find_text_json`,
 //! `validate_edits_json`, `apply_edits_json`) is the contract the wasm
 //! binding exposes as `readCells`, `findText`, `validateEdits` and
-//! `applyEdits`, so requests and answers pass through as Node's do.
+//! `applyEdits`, so requests and answers pass through the same.
 
 use betteroffice_xlsx::{CalculationOptions, CellInput, CellRef, RenderOptions, SheetId, Workbook};
 use serde_json::{json, Map, Value};
@@ -159,7 +159,7 @@ impl Xlsx {
                 return Err(ToolError::new("UNKNOWN_STORY", "Use a sheetId from outline."));
             }
         }
-        // the sheet entries as the engine Node runs (xlsx 0.3) gives them:
+        // the sheet entries as the xlsx 0.3 engine gives them:
         // 0.5 adds `visibility`
         let sheets: Vec<Value> = all
             .into_iter()
