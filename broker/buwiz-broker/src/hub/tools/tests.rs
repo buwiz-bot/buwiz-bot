@@ -520,6 +520,31 @@ async fn rtn_06_a_routines_v1_tools_are_its_own_plus_only_the_listed_reads() {
 }
 
 #[tokio::test]
+async fn an_audience_that_is_not_an_array_keeps_the_tool_off_the_models_list_and_out_of_its_calls() {
+    let fake = Fake::new("");
+    {
+        let mut rows = fake.rows.lock().unwrap();
+        let r = rows.iter_mut().find(|r| r.id == FX).unwrap();
+        let mut tools: Vec<Value> = serde_json::from_str(&r.tools).unwrap();
+        for (name, audience) in [("fx_aud_string", json!("app")), ("fx_aud_object", json!({"app": true})), ("fx_aud_number", json!(1)), ("fx_aud_null", Value::Null), ("fx_aud_array", json!(["app", "agent"])), ("fx_aud_app", json!(["app"]))] {
+            tools.push(tool(name, "x", json!({"_meta": {"buwiz/audience": audience}})));
+        }
+        r.tools = json!(tools).to_string();
+    }
+    let listed: Vec<String> = v1::v1_tools(&fake, &[], None).into_iter().map(|(_, t)| t["name"].as_str().unwrap().to_owned()).collect();
+    for name in ["fx_aud_string", "fx_aud_object", "fx_aud_number", "fx_aud_null", "fx_aud_app"] {
+        assert!(!listed.contains(&name.to_owned()), "{name} is off the list");
+        assert_eq!(v1::tool_plugin(&fake, name, None), None, "{name} can't be called by the model");
+    }
+    assert!(listed.contains(&"fx_aud_array".to_owned()) && listed.contains(&"fx_echo".to_owned()), "an array with agent, and no audience, stay");
+    let ctx = with_plugins("aud-nonarray", &fake);
+    let run = run_in(&ctx, TurnCtx::default());
+    let r = v1::call(&run, "fx_aud_string", &json!({})).await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(fake.calls.lock().unwrap().is_empty(), "the plugin never ran it");
+}
+
+#[tokio::test]
 async fn rtn_14_a_routines_turn_writes_only_what_its_writes_list() {
     let fake = Fake::new("");
     let ctx = with_plugins("rtn14", &fake);
