@@ -201,24 +201,36 @@ pub fn strip_meta(r: &Value) -> Value {
 /// active account: `{account, label}`.
 const ACCOUNT_USE: &str = "buwiz/account_use";
 
+/// The `_meta` key that takes the place of [`ACCOUNT_USE`] when the caller may not switch
+/// accounts: the tool ran and its result stands, and this tells the Bot that the switch did not
+/// happen. Between the broker and the Bot's own app only.
+pub const ACCOUNT_USE_REFUSED: &str = "buwiz/account_use_refused";
+
 /// A tool result as the Bot gets it from an app's call: stripped, but for
 /// `_meta["buwiz/document"]`, `buwiz/open_with`, `buwiz/save` and
 /// [`ACCOUNT_USE`], the keys the Bot itself acts on. The Bot is the host's
 /// other half and judges them (`mini_v1::document`, `mini_v1::system_open`,
 /// `mini_v1::bridge`); the app and the model still never see them (16.5).
-pub fn host_result(r: &Value) -> Value {
+/// When `may_switch` is false a [`ACCOUNT_USE`] in `r` is not passed on: [`ACCOUNT_USE_REFUSED`]
+/// stands in its place, and the answer's second part is `true` (for the log).
+pub fn host_result(r: &Value, may_switch: bool) -> (Value, bool) {
     let mut out = strip_meta(r);
-    let kept: serde_json::Map<String, Value> = ["buwiz/document", "buwiz/open_with", "buwiz/save", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    let mut kept: serde_json::Map<String, Value> = ["buwiz/document", "buwiz/open_with", "buwiz/save", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    let dropped = !may_switch && kept.remove(ACCOUNT_USE).is_some();
+    if dropped {
+        kept.insert(ACCOUNT_USE_REFUSED.to_owned(), json!(true));
+    }
     if let (false, Some(o)) = (kept.is_empty(), out.as_object_mut()) {
         o.insert("_meta".to_owned(), Value::Object(kept));
     }
-    out
+    (out, dropped)
 }
 
 /// Whether a result asking for an account switch may stand: only on the
-/// person's own signed call to a first-party plugin. An agent's press, a
-/// routine or anything else the Bot might sign is refused, whatever the tool
-/// declares, so a plugin's own opt-in can't bring a switch in.
+/// person's own signed call to a first-party plugin. For an agent's press, a
+/// routine or anything else the Bot might sign, whatever the tool declares,
+/// the switch is dropped and the result goes on without it ([`host_result`]),
+/// so a plugin's own opt-in can't bring a switch in.
 fn may_use_account(actor: Option<&Value>, first_party: bool) -> bool {
     first_party && actor == Some(&json!("person"))
 }
@@ -585,10 +597,13 @@ impl Sessions {
             let limit = if preview { format!("{} MiB", js::number(((max / 1_048_576.0) * 10.0).round() / 10.0)) } else { "1 MiB".to_owned() };
             return V1Error::err("result_too_large", format!("{tool}'s result is over {limit}"));
         }
-        if r.get("_meta").and_then(|m| get(m, ACCOUNT_USE)).is_some() && !may_use_account(get(envelope, "actor"), self.host.row(&plugin).is_some_and(|row| self.host.first_party(&row))) {
-            return V1Error::err("permission_denied", "only a person's own press in a first-party plugin switches accounts");
+        // the tool has run and its result stands; a caller that may not switch accounts gets it without the switch
+        let may_switch = get(&r, "_meta").and_then(|m| get(m, ACCOUNT_USE)).is_none() || may_use_account(get(envelope, "actor"), self.host.row(&plugin).is_some_and(|row| self.host.first_party(&row)));
+        let (result, dropped) = host_result(&r, may_switch);
+        if dropped {
+            eprintln!("  v1 {plugin}: {tool} asked to switch accounts: dropped, the caller may not");
         }
-        Ok(json!({"ok": true, "result": host_result(&r)}))
+        Ok(json!({"ok": true, "result": result}))
     }
 
     // ── tickets, resolve, app source ─────────────────────────────────────
@@ -922,11 +937,15 @@ mod tests {
     fn only_the_bots_own_keys_of_meta_reach_it() {
         let document = json!({"path": "/a/b.docx", "name": "b.docx", "mime": "x"});
         let r = json!({"content": [], "_meta": {"buwiz/document": document, "buwiz/open": {"app": "x"}, "buwiz/suggest": []}});
-        assert_eq!(host_result(&r), json!({"content": [], "_meta": {"buwiz/document": document}}));
+        assert_eq!(host_result(&r, true), (json!({"content": [], "_meta": {"buwiz/document": document}}), false));
         let switch = json!({"account": "google", "label": "work"});
-        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}})), json!({"content": [], "_meta": {"buwiz/account_use": switch}}));
-        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}})), json!({"content": []}));
-        assert_eq!(host_result(&json!({"content": []})), json!({"content": []}));
+        let asks = json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}});
+        assert_eq!(host_result(&asks, true), (json!({"content": [], "_meta": {"buwiz/account_use": switch}}), false));
+        assert_eq!(host_result(&asks, false), (json!({"content": [], "_meta": {"buwiz/account_use_refused": true}}), true), "the marker stands in for the switch");
+        let with_save = json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/save": {"a": 1}}});
+        assert_eq!(host_result(&with_save, false), (json!({"content": [], "_meta": {"buwiz/save": {"a": 1}, "buwiz/account_use_refused": true}}), true), "only the switch goes");
+        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}}), false), (json!({"content": []}), false), "no switch asked, no marker");
+        assert_eq!(host_result(&json!({"content": []}), false), (json!({"content": []}), false));
     }
 
     #[test]
@@ -934,7 +953,7 @@ mod tests {
         let open = json!({"path": "/a/IMG_1.png"});
         let save = json!({"path": "/a/IMG_1.png", "name": "IMG_1.png"});
         let r = json!({"content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": true}, "_meta": {"buwiz/open_with": open, "buwiz/save": save, "buwiz/open": {}, "buwiz/suggest": []}});
-        let out = host_result(&r);
+        let out = host_result(&r, true).0;
         assert_eq!(out["_meta"], json!({"buwiz/open_with": open, "buwiz/save": save}));
         assert_eq!(strip_meta(&out), json!({"content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": true}}), "the rest is the result as it was");
     }

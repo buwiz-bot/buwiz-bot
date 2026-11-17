@@ -507,7 +507,7 @@ pub async fn generate_image(run: &Run, input: &Value) -> Result<Out, String> {
 
 /// A POST to this broker's front door (its public port, D34).
 pub(crate) async fn self_post(path: &str, body: &Value) -> Value {
-    let port = crate::hub::market::node_paths().1;
+    let port = crate::hub::market::own_port();
     let Ok(url) = url::Url::parse(&format!("http://127.0.0.1:{port}{path}")) else { return json!({}) };
     let req = crate::helper::http::Req::post(url, js::stringify(body).into_bytes()).header("Content-Type", "application/json");
     match crate::helper::http::send(&req).await {

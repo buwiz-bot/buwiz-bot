@@ -27,7 +27,7 @@ use super::{parse_body, respond, Answer};
 use crate::helper::mcp_servers::McpHost;
 use crate::helper::plugins::Host;
 use crate::js;
-use crate::proxy::Body;
+use crate::front_door::Body;
 
 const PASS_FOR: Duration = Duration::from_millis(15_000);
 const APP_MIME: &str = "text/x-nsh-tsx";

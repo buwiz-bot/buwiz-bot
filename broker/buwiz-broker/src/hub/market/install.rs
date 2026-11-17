@@ -193,7 +193,10 @@ pub async fn install_legacy(m: &Market, p: &Value, base: &Path) -> Result<PathBu
     let path = at(src, "path");
     if super::text(at(src, "type")) == Some("local") || (truthy(path) && !truthy(at(src, "url"))) {
         let rel = js::string_of(path.unwrap_or(&Value::Null));
-        let root = super::join(&m.server.join("plugins"), rel.strip_prefix("./").unwrap_or(&rel));
+        let Some(server) = &m.server else {
+            return Err(format!("no bundled plugins for {name}: this broker started without --assets"));
+        };
+        let root = super::join(&server.join("plugins"), rel.strip_prefix("./").unwrap_or(&rel));
         if !root.exists() {
             return Err(format!("vendored source missing for {name}"));
         }
@@ -509,5 +512,15 @@ mod tests {
         assert_eq!(front_desc("---\ndescription: >-\n  A helper that\n  spans lines\n---\n"), "A helper that spans lines");
         assert_eq!(front_desc("---\ndescription: |\n  Render docs.\n---\n"), "Render docs.");
         assert_eq!(front_desc("no front matter"), "");
+    }
+
+    #[tokio::test]
+    async fn mkt_a_vendored_plugin_is_refused_without_assets() {
+        let dir = std::env::temp_dir().join(format!("buwiz-market-install-{}", std::process::id()));
+        let m = Market::without_assets(&dir, 9);
+        let p = json!({ "name": "vendored", "source": { "type": "local", "path": "./external_plugins/vendored" } });
+        let err = install_legacy(&m, &p, &dir.join("stage")).await.unwrap_err();
+        assert_eq!(err, "no bundled plugins for vendored: this broker started without --assets");
+        assert!(!dir.exists(), "nothing was made");
     }
 }
