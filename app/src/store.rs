@@ -2772,6 +2772,13 @@ pub struct Store {
     pub mcp_loaded: std::cell::Cell<bool>,
     /// Stale `@` value completions are dropped by generation.
     pub complete_seq: std::cell::Cell<u64>,
+    /// The plugins and MCP servers (`v1:<id>`, `mcp:<id>`) the broker said are off for the Bot of
+    /// a chat (that chat's id with them); the `@` menu leaves them out (slash.rs).
+    pub at_off: std::cell::RefCell<Option<(String, std::collections::HashSet<String>)>>,
+    /// Goes up each time the `@` menu opens: an older answer is dropped.
+    pub at_off_seq: std::cell::Cell<u64>,
+    /// An answer is on its way.
+    pub at_off_asking: std::cell::Cell<bool>,
     /// A picked `@` token's label (its chip shows it).
     pub token_labels: std::cell::RefCell<std::collections::HashMap<String, String>>,
 
@@ -3308,6 +3315,9 @@ impl Store {
             mcp_asked: std::cell::Cell::new(None),
             mcp_loaded: std::cell::Cell::new(false),
             complete_seq: std::cell::Cell::new(0),
+            at_off: std::cell::RefCell::new(None),
+            at_off_seq: std::cell::Cell::new(0),
+            at_off_asking: std::cell::Cell::new(false),
             token_labels: std::cell::RefCell::new(std::collections::HashMap::new()),
             at_open: signal(false),
             sending: signal(std::collections::BTreeSet::new()),
@@ -8936,8 +8946,9 @@ impl Store {
         if title.is_empty()
             && let Some((server, scope, value)) = crate::slash::token(token)
         {
+            let thread = self.active_id.get_untracked();
             spawn_detached(async move {
-                let body = serde_json::json!({ "server": server, "name": scope, "args": value, "complete": false });
+                let body = serde_json::json!({ "server": server, "name": scope, "args": value, "complete": false, "thread": thread });
                 let Some(v) = client::post("/mcp/resolve", body).await else { return };
                 let t = v.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_owned();
                 if v.get("ok").and_then(|x| x.as_bool()) == Some(true) && !t.is_empty() {

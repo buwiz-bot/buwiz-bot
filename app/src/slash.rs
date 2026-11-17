@@ -17,6 +17,8 @@
 //! the composer, or the full-screen app's Attach. The server posts the
 //! token's card there and scopes its tools to it.
 
+use std::collections::HashSet;
+
 use nsh_core::prelude::*;
 
 use crate::client;
@@ -707,12 +709,76 @@ pub(crate) fn slash_menu(t: &str) -> bool {
     true
 }
 
-/// `@<q>` (no `:` yet): the servers with `@` scopes that match.
+/// The `@` menu opened: asks the broker again which plugins and MCP servers are off for the Bot
+/// of the chat in front. What was switched off while the menu was closed is left out from here
+/// on; until the answer lands the menu lists none (the broker refuses them anyway).
+pub(crate) fn at_opened() {
+    let st = store();
+    st.at_off_seq.set(st.at_off_seq.get() + 1);
+    st.at_off.replace(None);
+    ask_off();
+}
+
+/// `GET /v1/host/tools/off?thread=`: the broker's own switches for the chat's Bot are the one
+/// source; the app keeps the last answer for the chat it was asked for and nothing else.
+fn ask_off() {
+    let st = store();
+    let thread = st.active_id.get_untracked();
+    if thread.is_empty() {
+        return;
+    }
+    st.at_off_asking.set(true);
+    let n = st.at_off_seq.get();
+    let path = format!("/v1/host/tools/off?thread={}", client::urlenc(&thread));
+    Owner::detached().run(|| {
+        spawn(async move {
+            let got = client::get_any(&path).await;
+            let st = store();
+            if st.at_off_seq.get() != n {
+                return;
+            }
+            st.at_off_asking.set(false);
+            let Some(v) = got.filter(|v| v.get("ok").and_then(|x| x.as_bool()) == Some(true)) else { return };
+            let off = v.get("off").and_then(|x| x.as_array()).map(|l| l.iter().filter_map(|k| k.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+            st.at_off.replace(Some((thread.clone(), off)));
+            // the popup follows the answer in
+            let t = st.draft.get_untracked();
+            if st.active_id.get_untracked() == thread && t.contains('@') {
+                crate::composer::draft_changed(&t);
+            }
+        })
+    });
+}
+
+/// The keys switched off for the Bot of the chat in front, as last answered for that chat; None
+/// when not known yet (asked for, if nothing is on its way).
+fn off_now() -> Option<HashSet<String>> {
+    let st = store();
+    let thread = st.active_id.get_untracked();
+    let known = st.at_off.borrow().as_ref().filter(|(t, _)| *t == thread).map(|(_, off)| off.clone());
+    if known.is_none() && !st.at_off_asking.get() {
+        ask_off();
+    }
+    known
+}
+
+/// What the `@` menu may list: the servers and plugins not in `off`.
+fn on_for_chat(off: &HashSet<String>, ms: &[Manifest], plugins: &[crate::mini_v1::load::PluginEntry]) -> (Vec<Manifest>, Vec<crate::mini_v1::load::PluginEntry>) {
+    let ms = ms.iter().filter(|m| !off.contains(&format!("mcp:{}", m.id))).cloned().collect();
+    let plugins = plugins.iter().filter(|p| !off.contains(&format!("v1:{}", p.id))).cloned().collect();
+    (ms, plugins)
+}
+
+/// `@<q>` (no `:` yet): the servers with `@` scopes that match, of those the chat's Bot has on.
 pub(crate) fn server_menu(q: &str) {
     refresh();
+    let Some(off) = off_now() else { return show(Vec::new(), String::new()) };
     let plugins = store().v1.entries.get_untracked();
     let accounts: Vec<String> = store().v1.listed.with_untracked(|l| l.iter().filter(|p| !p.account_commands.is_empty()).map(|p| p.short.clone()).collect());
-    let rows = store().mcp_manifest.with_untracked(|ms| server_rows(q, ms, &plugins, &accounts));
+    let rows = store().mcp_manifest.with_untracked(|ms| {
+        let (ms, plugins) = on_for_chat(&off, ms, &plugins);
+        server_rows(q, &ms, &plugins, &accounts)
+    });
     show(rows, String::new());
 }
 
@@ -755,8 +821,12 @@ fn server_rows(q: &str, ms: &[Manifest], plugins: &[crate::mini_v1::load::Plugin
 /// typed (`complete: true`). False without a `:` (the server list then).
 pub(crate) fn token_menu(tail: &str) -> bool {
     let Some((server, rest)) = tail.split_once(':') else { return false };
-    // a v1 plugin's scopes and the choices its resolve offers (9.3)
-    if let Some(p) = store().v1.by_short(server) {
+    let Some(off) = off_now() else {
+        show(Vec::new(), String::new());
+        return true;
+    };
+    // a v1 plugin's scopes and the choices its resolve offers (9.3), when the chat's Bot has it on
+    if let Some(p) = store().v1.by_short(server).filter(|p| !off.contains(&format!("v1:{}", p.id))) {
         match rest.split_once(':') {
             Some((scope, value)) => {
                 store().v1_complete(server, scope, value);
@@ -771,7 +841,7 @@ pub(crate) fn token_menu(tail: &str) -> bool {
         return true;
     }
     refresh();
-    let Some(m) = store().mcp_manifest.with_untracked(|ms| ms.iter().find(|m| m.id == server).cloned()) else {
+    let Some(m) = store().mcp_manifest.with_untracked(|ms| ms.iter().find(|m| m.id == server && !off.contains(&format!("mcp:{}", m.id))).cloned()) else {
         show(Vec::new(), String::new());
         return true;
     };
@@ -1189,6 +1259,23 @@ mod tests {
         let rows = server_rows("bir", &ms, &ps, &[]);
         assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@ebirforms"]);
         assert!(server_rows("zzz", &ms, &ps, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_at_menu_leaves_out_what_the_chats_bot_has_off() {
+        let ms = [manifest("bir", &["taxpayer"], &[]), manifest("gallery", &["photo"], &[])];
+        let ps = [plugin("ebirforms", "eBIR Forms", true, &["taxprofile"]), plugin("books", "Books", true, &["person"])];
+        let off: super::HashSet<String> = ["mcp:gallery".to_owned(), "v1:app.buwiz.books".to_owned()].into();
+        let (ms2, ps2) = super::on_for_chat(&off, &ms, &ps);
+        let rows = server_rows("", &ms2, &ps2, &[]);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@bir", "@ebirforms"]);
+        let (ms3, ps3) = super::on_for_chat(&Default::default(), &ms, &ps);
+        assert_eq!(server_rows("", &ms3, &ps3, &[]).len(), 4, "nothing off: every row");
+        // a v1 plugin off lets its MCP namesake show: the namesake is a different switch
+        let namesake = [manifest("books", &["legacy"], &[])];
+        let (ms4, ps4) = super::on_for_chat(&["v1:app.buwiz.books".to_owned()].into(), &namesake, &ps);
+        assert_eq!(server_rows("bo", &ms4, &ps4, &[]).iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["@books"]);
+        assert_eq!(server_rows("bo", &ms4, &ps4, &[])[0].detail, "legacy");
     }
 
     #[test]

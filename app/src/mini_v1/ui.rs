@@ -255,6 +255,11 @@ static ENTRIES: Mutex<Vec<PluginEntry>> = Mutex::new(Vec::new());
 /// Records are changed under this lock (the bridge and the main thread).
 static RECORDS: Mutex<()> = Mutex::new(());
 
+/// The open chat, for a bridge thread: what a resolve is for.
+pub(super) fn active_chat() -> String {
+    ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Answers ask `id` once (later answers are dropped).
 fn answer(id: u64, yes: bool) {
     let f = {
@@ -1082,6 +1087,7 @@ impl Store {
             spawn(async move {
                 let entries2 = entries.clone();
                 let text2 = text.clone();
+                let thread2 = thread.clone();
                 let rewrite = crate::vault::off_main(move || {
                     let plugin_of = |s: &str| entries2.iter().find(|p| p.short == s && p.enabled).map(|p| p.id.clone());
                     let b = broker();
@@ -1093,6 +1099,7 @@ impl Store {
                             value: value.to_owned(),
                             complete: false,
                             context: json!({"attached": attached.iter().filter(|a| a["plugin"] == plugin).collect::<Vec<_>>()}),
+                            thread: thread2.clone(),
                         };
                         match host_api::resolve(&b, &ask).map(|v| tokens::answer(&v)) {
                             Ok(tokens::Answer::Token { ticket, title }) => Ok((ticket, title)),
@@ -1143,6 +1150,7 @@ impl Store {
             return crate::toast::show("Open a chat to attach to");
         }
         let entries = self.v1.entries.get_untracked();
+        let chat = thread.clone();
         Owner::detached().run(|| {
             spawn(async move {
                 let got = crate::vault::off_main(move || {
@@ -1162,6 +1170,7 @@ impl Store {
                             value: t.value.to_owned(),
                             complete: false,
                             context: json!({"attached": []}),
+                            thread: chat.clone(),
                         };
                         out.push(match host_api::resolve(&b, &ask).map(|v| tokens::answer(&v)) {
                             Ok(tokens::Answer::Token { ticket, title }) => {
@@ -1224,6 +1233,7 @@ impl Store {
                     value: value.clone(),
                     complete: false,
                     context: json!({"attached": attached.into_iter().filter(|a| a["plugin"] == plugin.as_str()).collect::<Vec<_>>()}),
+                    thread,
                 };
                 let got = crate::vault::off_main(move || host_api::resolve(&broker(), &ask)).await;
                 let v = match got {
@@ -1328,6 +1338,7 @@ impl Store {
             value: value.to_owned(),
             complete: true,
             context: json!({"attached": []}),
+            thread: self.active_id.get_untracked(),
         };
         let n = crate::slash::next_ask();
         let query = self.draft.get_untracked();

@@ -106,13 +106,15 @@ pub struct ResolveAsk {
     pub value: String,
     pub complete: bool,
     pub context: Value,
+    /// The chat this is for: the broker answers for the plugin only when the chat's Bot has it on.
+    pub thread: String,
 }
 
 /// `POST /v1/host/resolve`: the spec 9.2 result.
 pub fn resolve(b: &dyn Broker, ask: &ResolveAsk) -> Result<Value, RoxError> {
     let body = json!({
         "plugin": ask.plugin, "kind": ask.kind, "name": ask.name,
-        "value": ask.value, "complete": ask.complete, "context": ask.context,
+        "value": ask.value, "complete": ask.complete, "context": ask.context, "thread": ask.thread,
     });
     post(b, "/v1/host/resolve", body, SHORT_TIMEOUT)
 }
@@ -575,6 +577,25 @@ mod tests {
         assert_eq!(super::answer(401, b"").unwrap_err().code, "internal");
         assert_eq!(super::answer(502, b"<html>").unwrap_err().code, "internal");
         assert!(super::parse_response(b"garbage").is_err());
+    }
+
+    /// The broker answers a resolve for a chat's Bot: the chat rides along, and a refusal for a
+    /// plugin switched off comes back as its code and words.
+    #[test]
+    fn a_resolve_names_its_chat_and_a_refusal_keeps_its_words() {
+        struct Says(std::sync::Mutex<Vec<serde_json::Value>>);
+        impl super::Broker for Says {
+            fn request(&self, _: &str, route: &str, body: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::RoxError> {
+                assert_eq!(route, "/v1/host/resolve");
+                self.0.lock().unwrap().push(body.unwrap());
+                Err(super::RoxError::new("disabled", "Books is switched off for this Bot."))
+            }
+        }
+        let says = Says(Default::default());
+        let ask = super::ResolveAsk { plugin: "app.buwiz.books".into(), kind: "scope", name: "person".into(), value: "x".into(), complete: true, context: json!({"attached": []}), thread: "t7".into() };
+        let e = super::resolve(&says, &ask).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("disabled", "Books is switched off for this Bot."));
+        assert_eq!(says.0.lock().unwrap()[0]["thread"], "t7");
     }
 
     #[test]
