@@ -105,8 +105,7 @@ impl Default for Timeouts {
 pub type Timer = Box<dyn FnOnce() + Send>;
 
 /// Time for records and the restart policy. `Manual` (tests) keeps the
-/// time it is told and fires timers only when asked, oldest first, as
-/// v1-plugins.test.mjs's fake clock does.
+/// time it is told and fires timers only when asked, oldest first.
 pub enum Clock {
     System(Arc<Mutex<HashMap<u64, tokio::task::AbortHandle>>>, AtomicU64),
     Manual(Mutex<Manual>),
@@ -1765,6 +1764,11 @@ mod tests {
 
         /// With nothing installed.
         fn empty(label: &str) -> Self {
+            Self::empty_on(label, Clock::system())
+        }
+
+        /// With nothing installed, on `clock`.
+        fn empty_on(label: &str, clock: Clock) -> Self {
             let root = std::env::temp_dir().join(format!("buwiz-plugin-update-{label}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
@@ -1778,7 +1782,7 @@ mod tests {
                 keys: Keystore::from_spec(&format!("file:{}", root.join("keys").display())).unwrap(),
                 trust_file: Some(root.join("trust.json")),
                 log_dir: None,
-                clock: Clock::system(),
+                clock,
                 timeouts: Timeouts::default(),
                 apps_dir: None,
             })
@@ -1828,6 +1832,55 @@ mod tests {
             self.host.stop_all().await;
             let _ = std::fs::remove_dir_all(self.root);
         }
+    }
+
+    /// Waits until the plugin is in `state`.
+    async fn in_state(host: &Host, state: &str) {
+        for _ in 0..1000 {
+            if host.runtime_of(FX).0 == state {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the plugin never reached {state}: it is {}", host.runtime_of(FX).0);
+    }
+
+    fn kill(host: &Host) {
+        let pid = host.snapshot(FX)["pid"].as_u64().expect("a running plugin has a process id");
+        assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
+    }
+
+    /// The restart policy on a clock the test moves: each restart waits its backoff (1, 2, 4, 8,
+    /// 16, 32 s), a restart is a new generation, the seventh in 10 minutes is refused (`failed`,
+    /// no timer left), and past the window a person's Retry starts the count over.
+    #[tokio::test]
+    async fn a_killed_plugin_restarts_with_backoff_and_the_seventh_restart_in_ten_minutes_is_refused() {
+        let b = UpdateBed::empty_on("backoff", Clock::manual());
+        let first = b.reviewed("1.0.0").await;
+        b.host.install(&first).await.unwrap();
+        let mut events = b.host.events();
+        for (n, secs) in BACKOFF_S.iter().take(MAX_RESTARTS).enumerate() {
+            let generation = b.host.runtime_of(FX).1;
+            kill(&b.host);
+            in_state(&b.host, "restarting").await;
+            assert_eq!(b.host.clock.manual_wait(), Some(secs * 1000), "restart {} waits {secs} s", n + 1);
+            assert!(b.host.clock.manual_step(Some(b.host.clock.now() + (secs * 1000) as f64), true));
+            in_state(&b.host, "running").await;
+            assert_eq!(b.host.runtime_of(FX).1, generation + 1, "each restart is a new generation");
+        }
+        kill(&b.host);
+        in_state(&b.host, "failed").await;
+        assert_eq!(b.host.runtime_view(FX).code.as_deref(), Some("failed"));
+        assert_eq!(b.host.clock.manual_wait(), None, "no seventh restart is scheduled");
+        let mut seen = Vec::new();
+        while let Ok(e) = events.try_recv() {
+            seen.push(e["state"].as_str().unwrap_or_default().to_owned());
+        }
+        assert!(seen.iter().any(|s| s == "restarting") && seen.last().map(String::as_str) == Some("failed"), "{seen:?}");
+        // past the 10-minute window the count starts over (after a Retry)
+        b.host.clock.manual_step(Some(b.host.clock.now() + 11.0 * 60_000.0), false);
+        assert_eq!(b.host.enable(FX).await.unwrap()["state"], "running");
+        b.done().await;
     }
 
     #[tokio::test]
