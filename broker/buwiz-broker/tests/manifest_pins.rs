@@ -32,7 +32,10 @@
 //! verified (the hash is of the canonical form, so it also proves the
 //! signature bytes), `{ok: true, value}` for the other ops, `{ok: false,
 //! code, message}` for a refusal, `{signError}` for a manifest Node could not
-//! sign. To change a case on purpose, edit the pin; `BUWIZ_REFRESH_PINS=1`
+//! sign. For the cases Node refused as not I-JSON, only the code and the
+//! prefix `manifest: is not I-JSON: ` are Node's (the two parsers word the rest
+//! differently); this broker's own full message for each is pinned apart, in
+//! `v1_manifest/parse_messages.json`. To change a case on purpose, edit the pin; `BUWIZ_REFRESH_PINS=1`
 //! rewrites the whole file from the Rust answers and fails (review `git diff`).
 
 #[path = "../../test-support/pins.rs"]
@@ -191,6 +194,7 @@ fn signed(case: &Value) -> Result<Value, String> {
     if let Some(size) = case["size"].as_u64() {
         m["x_pad"] = json!("");
         let base = js::stringify(&sign_manifest(&m, &seed, &sources)?).len();
+        assert!(size as usize >= base, "{}: size {size} is under the {base} bytes of the unpadded manifest", case["id"]);
         m["x_pad"] = json!("x".repeat(size as usize - base));
     }
     sign_manifest(&m, &seed, &sources)
@@ -251,6 +255,13 @@ fn pinned_form(answer: Value, op: &str) -> Value {
     out
 }
 
+/// This broker's own full message for a case Node refused as not I-JSON.
+fn parse_message(case: &Value) -> String {
+    let text = text_of(case).unwrap();
+    let a = cli::run("verify", &json!({"text": text, "trust": trust("default")})).unwrap();
+    a["message"].as_str().unwrap().to_owned()
+}
+
 fn answer(case: &Value) -> Value {
     let op = case["op"].as_str().unwrap();
     let ask = |op: &str, input: Value| cli::run(op, &input).unwrap_or_else(|| panic!("no op {op}"));
@@ -306,7 +317,12 @@ fn every_manifest_case_answers_as_node_did() {
         }
         case["expect"] = got;
     }
+    // the two parsers word a parse error differently: for those refusals only the code and the
+    // prefix are compared with Node, and the full wording of this broker is pinned on its own
+    let parse: Map<String, Value> = ours["cases"].as_array().unwrap().iter().filter(|c| c["expect"]["message"] == PARSE).map(|c| (c["id"].as_str().unwrap().to_owned(), json!(parse_message(c)))).collect();
+    assert!(!parse.is_empty());
     assert!(ours["cases"].as_array().unwrap().len() >= 200, "the pin holds {} cases", ours["cases"].as_array().unwrap().len());
+    pins::check("v1_manifest/parse_messages", &Value::Object(parse));
     if pins::refreshing() {
         if differ.is_empty() {
             return;
@@ -365,8 +381,15 @@ fn the_grammars_accept_and_refuse_as_node_did() {
 #[test]
 fn sign_manifest_writes_the_bytes_node_wrote() {
     use std::os::unix::fs::PermissionsExt;
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
     let dir = std::env::temp_dir().join(format!("buwiz-sign-pin-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    let _cleanup = Cleanup(dir.clone());
     let mut m: Value = serde_json::from_str(&std::fs::read_to_string(fixtures().join("manifest.json")).unwrap()).unwrap();
     m["publisher"]["key_id"] = json!("test-key");
     // what a serializer could get wrong: integer-like keys, -0, 1e3, U+2028, control characters
@@ -401,5 +424,4 @@ fn sign_manifest_writes_the_bytes_node_wrote() {
     assert_eq!(signed["apps"][1]["fingerprint"], format!("sha256:{digest}"));
     let verified = cli::run("verify", &json!({"text": written, "trust": trust("default")})).unwrap();
     assert_eq!(verified["ok"], true, "{verified}");
-    std::fs::remove_dir_all(&dir).ok();
 }

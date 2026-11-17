@@ -1,6 +1,7 @@
 #!/bin/sh
 # The HTTP tests: each starts the given buwiz-broker on its own data dir and
-# speaks HTTP to it. Plain `node` (24 or later), no packages.
+# speaks HTTP to it. Plain `node` (24 or later); only office.test.mjs needs
+# packages (see below).
 #
 #   tests/http/run.sh <buwiz-broker binary> [--core | --office] [test file ...]
 #
@@ -37,6 +38,12 @@ fi
 cd "$HERE" || exit 2
 GROUP=all
 case "${1:-}" in --core) GROUP=core; shift ;; --office) GROUP=office; shift ;; esac
+# the office group needs office/'s packages: say so at once, not in a test
+if [ "$GROUP" != core ] && { [ $# -eq 0 ] || printf '%s\n' "$@" | grep -q 'office\.test\.mjs'; } \
+  && [ ! -f "$HERE/../../../../office/node_modules/@betteroffice/docx/package.json" ]; then
+  echo "run.sh: the office tests need the BetterOffice packages: run npm ci in office/ (or run.sh <bin> --core to leave them out)" >&2
+  exit 2
+fi
 if [ $# -eq 0 ]; then
   case "$GROUP" in
     office) set -- ./office.test.mjs ;;

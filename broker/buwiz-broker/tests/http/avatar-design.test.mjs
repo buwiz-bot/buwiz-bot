@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { PNG_B64, say, startFakeOpencodex } from "../fixtures/fake-opencodex.mjs";
-import { PORT as TEST_PORT, modelEnv, postJson, request, startServer, tempDir } from "./helpers.mjs";
+import { PORT as TEST_PORT, modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 // what the avatar checks pinned (src/hub/library/avatar_shape/tests.rs): the design prompt the broker
 // sends, and the three rich mock designs
@@ -520,16 +520,16 @@ test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, stored and carri
   assert.ok(!("parts" in (b = await botOf(id))) && b.shape === "hex");
 });
 
-// One POST, timed: when the status line arrived, when the body ended.
+// One POST, with the order of what arrived: the status line, each body chunk, the end.
 function timedPost(path, obj) {
   return new Promise((resolve, reject) => {
-    const t0 = Date.now();
+    const events = [];
     const req = httpRequest({ host: "127.0.0.1", port: TEST_PORT, method: "POST", path, headers: { "content-type": "application/json" } }, (res) => {
-      const head = Date.now() - t0;
+      events.push("head");
       let text = "";
       res.setEncoding("utf8");
-      res.on("data", (c) => (text += c));
-      res.on("end", () => resolve({ status: res.statusCode, type: res.headers["content-type"], head, end: Date.now() - t0, text }));
+      res.on("data", (c) => (events.push(c.trim() === "" ? "space" : "json"), (text += c)));
+      res.on("end", () => (events.push("end"), resolve({ status: res.statusCode, type: res.headers["content-type"], events, text })));
     });
     req.on("error", reject);
     req.end(JSON.stringify(obj));
@@ -539,20 +539,23 @@ function timedPost(path, obj) {
 test("AVD-22 slow designs and pictures keep the answer alive: a 200 at once, spaces, then the JSON (a late error too); fast ones answer as before", async () => {
   await server.stop();
   server = await startServer(dir, { env: env({ MOCK: undefined, GEN_AVATAR_KEEPALIVE_MS: "200,100", GEN_AVATAR_SELFCHECK: "0" }) });
-  const slow = (text, wait = 900) => ({ ...say(text), wait });
+  const slow = (text, wait = 2500) => ({ ...say(text), wait });
   fake.reset();
   fake.script("slow-rich", [slow(JSON.stringify({ candidates: MOCK_RICH }))]);
   const r = await timedPost("/avatar/design", { prompt: "[[script:slow-rich]] a hero", style: "rich" });
   assert.equal(r.status, 200);
   assert.equal(r.type, "application/json");
-  assert.ok(r.head < 700 && r.end >= 900, `the status line came first (${r.head}ms), the body when the work was done (${r.end}ms)`);
+  // the keep-alive: the status line and spaces arrive while the model is still answering, the JSON last
+  assert.equal(r.events[0], "head");
+  assert.ok(r.events.indexOf("space") > 0 && r.events.indexOf("space") < r.events.indexOf("json"), `spaces before the JSON: ${r.events}`);
+  assert.deepEqual(r.events.slice(-2), ["json", "end"]);
   assert.match(r.text, /^ {3,}\{/, "spaces, then the JSON");
   const j = JSON.parse(r.text);
   assert.equal(j.ok, true);
   assert.deepEqual(j.candidates.map((c) => c.name), MOCK_RICH.map((c) => c.name));
   // a late error: still a 200, its body {ok:false, error}
   fake.reset();
-  fake.script("slow-none", [slow("no json", 400), slow("still none", 400)]);
+  fake.script("slow-none", [slow("no json", 1500), slow("still none", 1500)]);
   const e = await timedPost("/avatar/design", { prompt: "[[script:slow-none]] a hero", style: "rich" });
   assert.equal(e.status, 200);
   assert.match(e.text, /^ +\{/);
@@ -575,7 +578,7 @@ test("AVD-22 slow designs and pictures keep the answer alive: a 200 at once, spa
   assert.deepEqual([pic400.status, pic400.text], [400, JSON.stringify({ ok: false, error: "add a picture or describe the character" })]);
   // a client that hangs up mid-wait: the broker carries on
   fake.reset();
-  fake.script("slow-gone", [slow(JSON.stringify({ candidates: MOCK_RICH }), 500)]);
+  fake.script("slow-gone", [slow(JSON.stringify({ candidates: MOCK_RICH }), 1500)]);
   await new Promise((done) => {
     const req = httpRequest({ host: "127.0.0.1", port: TEST_PORT, method: "POST", path: "/avatar/design", headers: { "content-type": "application/json" } }, (res) => {
       res.once("data", () => (req.destroy(), done()));
@@ -583,7 +586,8 @@ test("AVD-22 slow designs and pictures keep the answer alive: a 200 at once, spa
     req.on("error", () => {});
     req.end(JSON.stringify({ prompt: "[[script:slow-gone]] x", style: "rich" }));
   });
-  await new Promise((ok) => setTimeout(ok, 700));
+  // the first heartbeat arrived and the client left; the broker's job goes on to the end and it stays up
+  await waitFor(async () => fake.calls().length === 1, 20000);
   assert.equal((await request("GET", "/health")).status, 200, "still up");
 });
 
