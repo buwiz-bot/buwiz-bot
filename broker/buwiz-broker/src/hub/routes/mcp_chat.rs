@@ -79,7 +79,7 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 }
 
 /// grammar.mjs `isServerId`.
-fn is_server_id(s: &str) -> bool {
+pub fn is_server_id(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
@@ -268,6 +268,14 @@ pub async fn upsert_server(ctx: &HubCtx, b: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_ids_are_lowercase_letters_digits_and_dashes() {
+        assert!(is_server_id("bir-2"));
+        for bad in ["Bir", "a b", "", "a_b", "a.b"] {
+            assert!(!is_server_id(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn mcp_chat_names_and_slugs() {

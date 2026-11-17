@@ -624,6 +624,27 @@ fn first_truthy(r: &Value, keys: &[&str]) -> String {
 mod tests {
     use super::*;
 
+    /// A one-time pass for an app link: a link with a query gets `&buwiz_pass=`, one without
+    /// `?buwiz_pass=`; a pass works once, only while fresh, and an unknown one never.
+    #[test]
+    fn an_app_links_pass_works_once_while_fresh() {
+        let dir = std::env::temp_dir().join(format!("buwiz-open-pass-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let routes = McpRoutes::new(McpHost::new(&dir.join("app.db"), 8798).unwrap(), Vec::new());
+        let url = routes.with_pass("buwiz://app/bir/forms?props=%7B%7D");
+        let pass = url.rsplit_once("&buwiz_pass=").map(|(_, p)| p.to_owned()).unwrap_or_default();
+        assert!(url.starts_with("buwiz://app/bir/forms?props=%7B%7D&buwiz_pass=") && pass.len() == 22, "{url}");
+        assert!(routes.redeem(&pass));
+        assert!(!routes.redeem(&pass), "a pass is used up");
+        assert!(routes.with_pass("buwiz://app/bir/calendar").starts_with("buwiz://app/bir/calendar?buwiz_pass="));
+        let stale = routes.with_pass("buwiz://app/bir/forms");
+        let stale = stale.rsplit_once("?buwiz_pass=").map(|(_, p)| p.to_owned()).unwrap_or_default();
+        routes.passes.lock().unwrap().insert(stale.clone(), Instant::now() - Duration::from_secs(1));
+        assert!(!routes.redeem(&stale), "older than 15 s");
+        assert!(!routes.redeem("not-a-pass") && !routes.redeem(""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_switch_routes_are_locked_without_the_host_token() {
         let mut h = hyper::HeaderMap::new();
