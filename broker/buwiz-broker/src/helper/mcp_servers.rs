@@ -117,8 +117,6 @@ pub struct McpHost {
     /// A connection that failed, kept until the row changes:
     /// its error.
     failed: Mutex<HashMap<String, RpcError>>,
-    /// Each server's status as it changes (`mcp` events).
-    events: tokio::sync::broadcast::Sender<Value>,
     /// Each connection's `buwiz://manifest`, read once.
     manifests: Mutex<HashMap<String, Value>>,
 }
@@ -235,7 +233,6 @@ impl McpHost {
             port,
             me: me.clone(),
             failed: Mutex::new(HashMap::new()),
-            events: tokio::sync::broadcast::channel(256).0,
             manifests: Mutex::new(HashMap::new()),
         }))
     }
@@ -292,7 +289,6 @@ impl McpHost {
                 self.failed.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), e.clone());
             }
         }
-        self.changed(id);
         made
     }
 
@@ -424,20 +420,6 @@ impl McpHost {
         }
     }
 
-    fn status_event(&self, id: &str) -> Value {
-        let mut v = self.status(id);
-        v["id"] = json!(id);
-        v
-    }
-
-    fn changed(&self, id: &str) {
-        let _ = self.events.send(self.status_event(id));
-    }
-
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
-        self.events.subscribe()
-    }
-
     /// A remote server's call that reads as signed out, or as Google's
     /// preview gate, marks it (callTool's checks, now for every caller).
     fn flag(&self, id: &str, client: &Client, answer: &Result<Value, RpcError>) {
@@ -469,7 +451,6 @@ impl McpHost {
                 l.unavailable = Some(PREVIEW.to_owned());
             }
         }
-        self.changed(id);
     }
 
     /// `{ok, tools, capabilities, needsAuth?}` or
@@ -520,13 +501,10 @@ impl McpHost {
     /// in); the next use connects again.
     pub async fn invalidate(&self, id: &str) {
         let gone = self.live.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        let failed = self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id).is_some();
+        self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         self.manifests.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         if let Some(l) = &gone {
             l.client.close().await;
-        }
-        if gone.is_some() || failed {
-            self.changed(id);
         }
     }
 
