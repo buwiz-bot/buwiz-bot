@@ -602,6 +602,40 @@ async fn magt_02_the_agents_call_reaches_the_server_and_comes_back_as_text() {
     ctx.mcp.as_ref().unwrap().stop_all().await;
 }
 
+/// A server the agent installs is stored off and waiting for the user: nothing
+/// spawns, the agent cannot switch it on, and a call to it is refused.
+#[tokio::test]
+async fn magt_05_an_agent_installed_server_stays_off_unspawned_and_the_agent_cannot_enable_it() {
+    let (ctx, dir) = mcp_ctx("05").await;
+    let mark = dir.join("agent-spawned");
+    let run = run_in(&ctx, TurnCtx::default());
+    let made = call(
+        &run,
+        "mcp_install",
+        json!({"name": "Agent Fixture", "command": node(), "args": [fixture("mcp-apps-server.mjs")], "env": {"FIXTURE_MARK": mark.display().to_string()}}),
+    )
+    .await;
+    assert_ne!(made.is_error, Some(true), "MAGT-05: {:?}", made.content);
+    assert!(made.content.as_str().unwrap().contains("server agent-fixture, switched off"), "MAGT-05");
+    let row = ctx
+        .db
+        .with(|c| c.query_row("SELECT enabled, agent_pending FROM mcp_servers WHERE id='agent-fixture'", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))))
+        .unwrap();
+    assert_eq!(row, (0, Some(1)), "MAGT-05: off and waiting for the user");
+    assert!(!mark.exists(), "MAGT-05: the command was never spawned");
+    let refused = call(&run, "mcp_enable", json!({"id": "agent-fixture"})).await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(refused.content.as_str().unwrap().contains("Plugins"), "MAGT-05: {:?}", refused.content);
+    let still = ctx.db.with(|c| c.query_row("SELECT enabled FROM mcp_servers WHERE id='agent-fixture'", [], |r| r.get::<_, i64>(0))).unwrap();
+    assert_eq!(still, 0, "MAGT-05");
+    // a call the model makes to it anyway never starts the command (asking whether the
+    // call only reads must not connect to a server that is off)
+    let off = call(&run, "mcp_agent-fixture_echo", json!({})).await;
+    assert_eq!(off.is_error, Some(true), "MAGT-05: {:?}", off.content);
+    assert!(!mark.exists(), "MAGT-05: a call to a switched-off server started it");
+    ctx.mcp.as_ref().unwrap().stop_all().await;
+}
+
 #[tokio::test]
 async fn magt_04_a_remote_answer_that_reads_signed_out_marks_it_and_the_next_call_asks_for_sign_in() {
     use std::io::BufRead;

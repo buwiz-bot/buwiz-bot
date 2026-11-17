@@ -492,8 +492,8 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     // compile the wrapper once per key (the wrapper, the module it mounts,
     // both binaries), then a bare host on the bundle
     let (nsh, host) = nsh_bins();
-    let key = build_key(&format!("{wrapper}\n{helper}"), &src_bytes, &bin_identity(&nsh), &bin_identity(&host));
-    let build_dir = win_dir.join(format!(".pop-{name}{}-{key}", suffix("-")));
+    let built = build_key(&format!("{wrapper}\n{helper}"), &src_bytes, &bin_identity(&nsh), &bin_identity(&host));
+    let build_dir = win_dir.join(format!(".pop-{name}{}-{built}", suffix("-")));
     let bundle = build_dir.join("bundle.nshc");
     if !bundle.exists() {
         let _ = std::fs::create_dir_all(&build_dir);
