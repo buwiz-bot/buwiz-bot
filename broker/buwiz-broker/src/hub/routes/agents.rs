@@ -7,7 +7,7 @@
 //!   through to `host.rs`'s catch-all (Node's 405).
 //! - `POST /v1/hooks/ah_<id>/<secret>`: a signed message from outside, read
 //!   as its raw bytes (past 512 KB, a string one byte too long); 202.
-//! - `/v1/bridge/*`: rox-bridge, a Claude Code session's way in, with its
+//! - `/v1/bridge/*`: buwiz-bridge, a Claude Code session's way in, with its
 //!   endpoint's token as `Authorization: Bearer`.
 
 use std::sync::Arc;

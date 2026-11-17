@@ -1,17 +1,18 @@
 #!/usr/bin/env node
-// rox-bridge — a Claude Code session talking with a Rox agent
-// (drafts/agent-messaging.md §10.3). An MCP server on stdio that calls the
-// Rox broker's /v1/bridge/* routes with a bridge endpoint's token. Make the
-// endpoint in Rox (POST /v1/host/agents/endpoints/create {bot, kind:
-// "bridge", name}), run `npm ci` once in this folder, then add this server to
-// Claude Code:
+// buwiz-bridge: lets a coding agent outside Buwiz Bot (Claude Code, say) talk
+// with a Buwiz Bot agent. An MCP server on stdio that calls the broker's
+// /v1/bridge/* routes with a bridge endpoint's token. Make the endpoint in
+// Buwiz Bot (POST /v1/host/agents/endpoints/create {bot, kind: "bridge",
+// name}), run `npm ci` once in this folder, then add this server to the
+// outside agent, for Claude Code:
 //
-//   claude mcp add rox -e BUWIZ_BRIDGE_TOKEN=<token> -- node <checkout>/bridge/rox-bridge.mjs
+//   claude mcp add buwiz -e BUWIZ_BRIDGE_TOKEN=<token> -- node <checkout>/bridge/buwiz-bridge.mjs
 //
-// BUWIZ_BRIDGE_URL is the broker (default http://127.0.0.1:8787); ROX_BRIDGE_URL
-// and ROX_BRIDGE_TOKEN, the old names, still work. The bridge
-// is one participant ("Claude Code · <its endpoint name>") in the agent's
-// conversations, which Rox shows read-only with a notice in the agent's chat.
+// BUWIZ_BRIDGE_URL is the broker (default http://127.0.0.1:8787);
+// ROX_BRIDGE_URL and ROX_BRIDGE_TOKEN, the old names, still work. The bridge is
+// one participant ("Claude Code · <its endpoint name>") in the agent's
+// conversations, which Buwiz Bot shows read-only with a notice in the agent's
+// chat.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -56,15 +57,15 @@ const TOOLS = [
   },
 ];
 
-const ROUTES = {
+const ROUTES = new Map(Object.entries({
   rox_agents_list: ["GET", "/v1/bridge/agents"],
   rox_send: ["POST", "/v1/bridge/send"],
   rox_receive: ["POST", "/v1/bridge/receive"],
   rox_conversations: ["GET", "/v1/bridge/conversations"],
-};
+}));
 
 async function call(name, args) {
-  const [method, path] = ROUTES[name] || [];
+  const [method, path] = ROUTES.get(name) || [];
 
   if (!method) return { content: [{ type: "text", text: `unknown tool ${name}` }], isError: true };
 
@@ -77,7 +78,7 @@ async function call(name, args) {
       ...(method === "POST" ? { body: JSON.stringify(args || {}) } : {}),
       signal: AbortSignal.timeout(40_000),
     });
-    const body = await res.json().catch(() => ({}));
+    const body = (await res.json().catch(() => null)) ?? {};
 
     if (!res.ok || body.ok === false) return { content: [{ type: "text", text: `${body.code || res.status}: ${body.message || "refused"}` }], isError: true };
     delete body.ok;

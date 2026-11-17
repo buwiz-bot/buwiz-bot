@@ -63,7 +63,7 @@ pub enum Track {
     Routines,
     /// 5.5h, track D: the Rox-facing plugin host routes and the host token
     Host,
-    /// 5.6, track E: agent messaging and rox-bridge
+    /// 5.6, track E: agent messaging and buwiz-bridge
     Agents,
     /// the skeleton's `/v1/hooks/` dispatcher (`ah_` → Agents, else Routines)
     Hooks,

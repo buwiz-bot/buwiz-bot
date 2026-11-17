@@ -6,7 +6,7 @@ A native chat app in Rust on Native Shell (nsh). `app/` is the app,
 helpers. `office/` holds the office editor and viewer pages, seeds and the
 BetterOffice packages (`npm ci` there; `npm run build:office-editor` builds the
 editor the bundles ship); `broker/buwiz-broker/assets/` the templates, bundled
-plugins and trust list; `bridge/` is rox-bridge, the MCP server an outside
+plugins and trust list; `bridge/` is buwiz-bridge, the MCP server an outside
 coding agent runs to talk with a Buwiz Bot agent (`npm ci` there). `README.md`
 explains the build and the live loop.
 
@@ -72,8 +72,8 @@ are lost at the next rebuild.
   `v1-plugins`, `v1-sessions` and `v1-names`, which speak to `/v1/host/*` as
   the app does. The fake model, stub commands and plugin and MCP fixtures
   they and the Rust tests start are under `broker/buwiz-broker/tests/`.
-- `bridge/rox-bridge.mjs` talks to the broker's `/v1/bridge/*` routes; its
-  setup is in the file's header.
+- `bridge/buwiz-bridge.mjs` talks to the broker's `/v1/bridge/*` routes; its
+  setup is in the file's header, its tests are `cd bridge && npm ci && npm test`.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.

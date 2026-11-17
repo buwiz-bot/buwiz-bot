@@ -329,7 +329,7 @@ cd app && cargo build --target aarch64-apple-darwin
 ```
 app/           the Buwiz Bot application (dev.sh / ios.sh / ios-dev.sh inside)
 broker/        the broker Buwiz Bot talks to (Rust): chats, models, routines, plugins, agent messaging; its HTTP tests are in broker/buwiz-broker/tests/http/
-bridge/        rox-bridge, the MCP server an outside coding agent uses to talk with a Buwiz Bot agent (npm ci here)
+bridge/        buwiz-bridge, the MCP server an outside coding agent uses to talk with a Buwiz Bot agent (npm ci here)
 office/        the office editor page and viewer, seeds, and the BetterOffice packages and fonts (npm ci here, then npm run build:office-editor)
 broker/buwiz-broker/assets/  what the Rust broker compiles in or ships: templates, plugins, trust.json
 app/src/hot.rs the patchable UI root

@@ -50,7 +50,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("BUWIZ_PUBLIC_PORT", "ROX_PUBLIC_PORT"),
     ("BUWIZ_PLUGIN_CATALOG", "ROX_PLUGIN_CATALOG"),
     ("BUWIZ_V1_CALL_TIMEOUT_MS", "ROX_V1_CALL_TIMEOUT_MS"),
-    // read by bridge/rox-bridge.mjs, which keeps its own copy of the read rule
+    // read by bridge/buwiz-bridge.mjs, which keeps its own copy of the read rule
     ("BUWIZ_BRIDGE_URL", "ROX_BRIDGE_URL"),
     ("BUWIZ_BRIDGE_TOKEN", "ROX_BRIDGE_TOKEN"),
     // tests
