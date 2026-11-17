@@ -61,15 +61,17 @@ fn in_surface(surface: Option<&Value>, plugin: &str, name: &str) -> bool {
 }
 
 /// 16.4: a tool whose `buwiz/audience` leaves out "agent" serves apps only, and so does one whose
-/// audience is present but not an array: that is a mistake, and the safe side is off the list.
-fn for_agent(plugin: &str, t: &Value) -> bool {
-    match t.pointer("/_meta/buwiz~1audience") {
-        Some(Value::Array(a)) => a.iter().any(|x| x.as_str() == Some("agent")),
-        Some(_) => {
-            eprintln!("  v1 {plugin}: tool {} has a buwiz/audience that is not an array: kept off the model's list", js::slice_utf16(&t.get("name").map(js::string_of).unwrap_or_default(), 80));
+/// audience is present but not an array: that is a mistake, and the safe side is off the list. No
+/// audience at all leaves the tool on it. The mistake is logged once per tool.
+fn for_agent(plugin: &str, name: &str, t: &Value) -> bool {
+    use crate::helper::sessions::{audience_names, log_once, Audience};
+    match audience_names(t, "agent") {
+        Audience::Absent => true,
+        Audience::Array(named) => named,
+        Audience::NotAnArray => {
+            log_once(format!("audience\0{plugin}\0{name}"), || format!("  v1 {plugin}: tool {} has a buwiz/audience that is not an array: kept off the model's list", js::slice_utf16(name, 80)));
             false
         }
-        None => true,
     }
 }
 
@@ -83,7 +85,7 @@ pub fn v1_tools(p: &dyn PluginView, taken: &[String], surface: Option<&Value>) -
             if crate::v1::is_v1("reservedTool", t.get("name")) || off.contains(&name) || taken.contains(&name) || builtin_prefix(&name) || !name.starts_with(&format!("{}_", row.short)) {
                 continue;
             }
-            if !in_surface(surface, &row.id, &name) || !for_agent(&row.id, &t) {
+            if !in_surface(surface, &row.id, &name) || !for_agent(&row.id, &name, &t) {
                 continue;
             }
             let desc = t.get("description").filter(|d| js::truthy(d)).map(js::string_of).unwrap_or_else(|| name.clone());

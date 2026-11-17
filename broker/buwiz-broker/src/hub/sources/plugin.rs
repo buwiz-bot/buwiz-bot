@@ -23,7 +23,7 @@ const ARGS_SHOWN: usize = 12;
 
 /// Whether plugin tool `t` offers itself to widgets.
 pub fn for_widget(t: &Value) -> bool {
-    t.pointer("/_meta/buwiz~1audience").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some("widget")))
+    crate::helper::sessions::audience_names(t, "widget") == crate::helper::sessions::Audience::Array(true)
 }
 
 /// Whether plugin tool `t` also offers itself to the model (`"agent"`).

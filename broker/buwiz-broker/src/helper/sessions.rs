@@ -66,29 +66,74 @@ fn press_of(actor: Option<&Value>, press: Option<&Value>) -> Option<Value> {
     matches!(serde_json::from_value(press.clone()), Ok(Ai { .. } | AiApproved { .. })).then(|| press.clone())
 }
 
+/// What a tool's `_meta["buwiz/audience"]` says about one word.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// No audience at all.
+    Absent,
+    /// An audience that is not an array: a mistake, read by no word.
+    NotAnArray,
+    /// An array, with or without the word.
+    Array(bool),
+}
+
+/// How tool `t`'s audience stands toward `word`; each reader says what it does for [`Audience::Absent`].
+pub fn audience_names(t: &Value, word: &str) -> Audience {
+    match t.pointer("/_meta/buwiz~1audience") {
+        None => Audience::Absent,
+        Some(Value::Array(a)) => Audience::Array(a.iter().any(|x| x.as_str() == Some(word))),
+        Some(_) => Audience::NotAnArray,
+    }
+}
+
 /// Whether plugin tool `t` says it is open to agents: the Hub's rule, the reverse of the model's
 /// list, so a missing or unknown audience is no.
 pub fn open_to_agents(t: &Value) -> bool {
-    t.pointer("/_meta/buwiz~1audience").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some("agent")))
+    audience_names(t, "agent") == Audience::Array(true)
+}
+
+/// Writes `line` to the log once per `key` for the life of the process.
+pub fn log_once(key: String, line: impl FnOnce() -> String) {
+    static SEEN: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    if SEEN.get_or_init(Default::default).lock().is_ok_and(|mut seen| seen.insert(key)) {
+        eprintln!("{}", line());
+    }
 }
 
 /// What a tool may declare it does, to take the AI's press (D1). Filing never (O4), and neither
 /// voiding nor reopening.
 const PRESS_EFFECTS: [&str; 2] = ["post", "close"];
-/// Letter sequences that keep a tool out when its lowercased name has one anywhere, whatever the
-/// tool declares: a declaration is the plugin's own word, and these are the tools it must not be
-/// able to bring in by mistake or on purpose. Strict on purpose: `profile_update` has `file`.
+/// Letter sequences that keep a tool out when its lowercased name has one anywhere after the
+/// plugin's `<short>_` prefix, whatever the tool declares: a declaration is the plugin's own word,
+/// and these are the tools it must not be able to bring in by mistake or on purpose. Strict on
+/// purpose: `profile_update` has `file`.
 const NEVER_PRESSED: [&str; 10] = ["file", "filing", "submit", "send", "sent", "queue", "pay", "paid", "void", "reopen"];
+
+/// Whether a tool's name keeps it from opting in: a character outside `a-z A-Z 0-9 _ . -` (a
+/// lookalike letter or an invisible one would hide a word), or a [`NEVER_PRESSED`] sequence in the
+/// part after the first `_` (the plugin's short name has no `_`; a name with none is read whole).
+fn name_never_pressed(name: &str) -> bool {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    let tool_part = lower.split_once('_').map_or(lower.as_str(), |(_, rest)| rest);
+    NEVER_PRESSED.iter().any(|w| tool_part.contains(w))
+}
 
 /// Whether plugin tool `t` lets the AI press it once a person allowed that one press (O3): the
 /// plugin's own opt-in, `_meta["buwiz/press"]`, with a clear `approved: true` and an `effect` of
-/// [`PRESS_EFFECTS`], on a tool whose name has none of [`NEVER_PRESSED`] in it.
+/// [`PRESS_EFFECTS`], on a tool whose name passes [`name_never_pressed`]. A tool that declares
+/// `approved: true` and is refused by its name is logged once, so its author can see why.
 pub fn press_opted_in(t: &Value) -> bool {
     let effect = t.pointer("/_meta/buwiz~1press/effect").and_then(Value::as_str);
-    let name = t.get("name").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
-    t.pointer("/_meta/buwiz~1press/approved") == Some(&json!(true))
-        && effect.is_some_and(|e| PRESS_EFFECTS.contains(&e))
-        && !NEVER_PRESSED.iter().any(|w| name.contains(w))
+    let name = t.get("name").and_then(Value::as_str).unwrap_or_default();
+    let declared = t.pointer("/_meta/buwiz~1press/approved") == Some(&json!(true));
+    if declared && name_never_pressed(name) {
+        log_once(format!("press\0{name}"), || format!("  v1 tool {}: buwiz/press refused: the name has a character outside a-z, 0-9, _ . - or a word the AI never presses", cap(name, 80)));
+        return false;
+    }
+    declared && effect.is_some_and(|e| PRESS_EFFECTS.contains(&e))
 }
 
 /// The read plugin tool `t` names to put a held call in plain words, if any.
@@ -787,11 +832,27 @@ mod tests {
         for name in ["ebirforms_return_file", "fx_file_return", "fx_submit", "fx_send_form", "fx_queue", "fx_pay", "fx_void_entry", "fx_month_reopen", "FX_FILE"] {
             assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: its own word doesn't bring it in");
         }
-        for name in ["ledger_payment_create", "filed_report", "submitted_form", "sends_reminder", "mail_resend", "job_enqueue", "sendmail", "fx_sent_note", "fx_profile_post", "fx_avoid_x", "fx_Payment", "fx_reopened", "fx_filings"] {
+        for name in ["ledger_payment_create", "fx_filed_report", "fx_submitted_form", "fx_sends_reminder", "mail_resend", "job_enqueue", "fx_sendmail", "fx_sent_note", "fx_profile_post", "fx_avoid_x", "fx_Payment", "fx_reopened", "fx_filings"] {
             assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: the letters anywhere in the name keep it out");
         }
-        for name in ["books_entry_draft", "fx_post_entry", "fx_batch", "fx_month_close"] {
+        for name in ["books_entry_draft", "fx_post_entry", "fx_batch", "fx_month_close", "sentry_post_note", "payroll_note_post", "files_note_post", "Fx.Post-Note"] {
             assert!(press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}");
+        }
+        for name in ["sentry_send_note", "notes_payment_create", "payroll_pay_run", "files_file_note", "fx_sendmail", "sendmail", "fx_\u{0456}file_x", "fx_f\u{0456}le_return", "fx_fi\u{200B}le_post", "fx_post note", "fx_pöst"] {
+            assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}");
+        }
+    }
+
+    #[test]
+    fn audience_names_tells_absent_from_a_mistake_from_an_array() {
+        use super::{audience_names, Audience};
+        let of = |a: Value| json!({"_meta": {"buwiz/audience": a}});
+        assert_eq!(audience_names(&json!({}), "agent"), Audience::Absent);
+        assert_eq!(audience_names(&of(json!(["app", "agent"])), "agent"), Audience::Array(true));
+        assert_eq!(audience_names(&of(json!(["app"])), "agent"), Audience::Array(false));
+        assert_eq!(audience_names(&of(json!(["widget"])), "widget"), Audience::Array(true));
+        for a in [json!("agent"), json!({}), json!(1), Value::Null] {
+            assert_eq!(audience_names(&of(a.clone()), "agent"), Audience::NotAnArray, "{a}");
         }
     }
 
