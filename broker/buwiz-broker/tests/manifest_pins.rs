@@ -1,4 +1,4 @@
-//! The manifest verifier against pinned answers (Appendix C.1), in
+//! The manifest verifier against pinned answers, in
 //! `tests/pins/v1_manifest/cases.json`.
 //!
 //! A case is small: the fixture `tests/fixtures/v1/manifest.json` (with

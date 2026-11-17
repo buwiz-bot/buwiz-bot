@@ -12,8 +12,10 @@
 //! OPTIONS preflight is answered by the hub (204).
 //! The first matching entry wins: specific paths before the prefixes.
 //!
-//! `POST /highlight` and `GET /plugins/icon/<key>` have no entry and get the
-//! hub's 404.
+//! `POST /highlight`, `GET /plugins/icon/<key>` and `/mermaid*` are not
+//! served: they have no entry and get the ordinary 404 (pinned by
+//! `tests/hub.rs` `the_hub_answers_every_route_and_unknown_paths_404` and
+//! tests/http/market.test.mjs MKT-08).
 
 /// the agents' host routes, `ah_` webhooks and the bridge (5.6, track E)
 pub mod agents;

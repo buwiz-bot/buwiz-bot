@@ -650,8 +650,9 @@ async fn reuse(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let r = (|| -> Result<_, String> {
         let j = body(&req)?;
         let raw = get(&j, "name");
-        // BUG: no name reaches SQLite unchecked;
-        // the refusal carries node:sqlite's own message (ART-08)
+        // a name that is not null, a string or a number is refused with
+        // "Provided value cannot be bound to SQLite parameter 1." (the
+        // wording is fixed; tests/http/artifacts.test.mjs ART-08)
         let bound = bind(raw)?;
         let name = template(raw);
         if !widget_row(&ctx, &bound)? || !ctx.data.join("widgets").join(format!("{name}.tsx")).exists() {

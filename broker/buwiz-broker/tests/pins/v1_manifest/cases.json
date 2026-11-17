@@ -1,5 +1,5 @@
 {
-  "about": "The pinned answers for the manifest cases (Appendix C.1). A case is the fixture tests/fixtures/v1/manifest.json (publisher.key_id test-key) with its edits applied, signed with the seed of 32 bytes of 3 (the board and card fingerprints filled), then verified; see tests/manifest_pins.rs for the edit, macro and post-processing forms.",
+  "about": "The pinned answers for the manifest cases A case is the fixture tests/fixtures/v1/manifest.json (publisher.key_id test-key) with its edits applied, signed with the seed of 32 bytes of 3 (the board and card fingerprints filled), then verified; see tests/manifest_pins.rs for the edit, macro and post-processing forms.",
   "cases": [
     {"id":"MAN-01 the fixture","op":"verify","expect":{"ok":true,"sha256":"c11e9660fd61aa992331c4457c54b0387c6320e8cf5ca251ecad2a5dcca831e5"}},
     {"id":"MAN-01 keys reversed, whitespace changed","op":"verify","layout":"reversed3","expect":{"ok":true,"sha256":"c11e9660fd61aa992331c4457c54b0387c6320e8cf5ca251ecad2a5dcca831e5"}},

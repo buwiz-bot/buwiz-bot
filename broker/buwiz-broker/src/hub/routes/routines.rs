@@ -1,4 +1,4 @@
-//! The v0 routines Rox shows in a chat's Details pane:
+//! The v0 routines Buwiz Bot shows in a chat's Details pane:
 //! the list, the on/off switch and interval, Delete, Run now, and the
 //! templates connected servers suggest. Routes match `req.url` exactly, so
 //! a query string makes any of them the final 404 ("not found").

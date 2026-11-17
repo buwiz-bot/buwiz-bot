@@ -1,4 +1,4 @@
-//! OAuth for remote MCP servers (plan 4.2), by the MCP
+//! OAuth for remote MCP servers, by the MCP
 //! SDK's `auth()` (client/auth.js, 1.32.1) driving the broker's provider.
 //! The MCP Authorization spec: RFC 9728 resource metadata, RFC 8414 (or
 //! OpenID) server metadata, RFC 7591 registration, PKCE S256, the browser,

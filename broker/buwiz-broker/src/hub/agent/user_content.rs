@@ -3,7 +3,7 @@
 //! images as image blocks, documents inlined, a `module://` card's source
 //! (or its image).
 //!
-//! Plan D31: a workbook's or a Word file's text comes from the office
+//! A workbook's or a Word file's text comes from the office
 //! routes (`GET /file/render`, through the front door), which reads only the
 //! files dir; a deck's markdown export (`officeMarkdown`) has no route
 //! there, so a deck, and a workbook or Word file outside the files dir,
@@ -70,7 +70,7 @@ pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
     rows
 }
 
-/// The office routes' `GET /file/render?path=<rel>` (D31).
+/// The office routes' `GET /file/render?path=<rel>`.
 async fn render(ctx: &HubCtx, p: &Path) -> Option<Value> {
     let files = ctx.store.gen_dir().join("files");
     let rel = p.strip_prefix(&files).ok()?.to_string_lossy().into_owned();

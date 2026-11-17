@@ -118,7 +118,7 @@ impl Settings {
 }
 
 // BUG: a 5xx on the first streamed round reads as "streaming unavailable":
-// streaming stays off for the process from then on (MODEL-05). `agentStream`:
+// streaming stays off for the process from then on (tests/http/model.test.mjs MODEL-05). `agentStream`:
 // the tool loop turns it off when a stream
 // fails before its first event, and never back on.
 static AGENT_STREAM: AtomicBool = AtomicBool::new(true);

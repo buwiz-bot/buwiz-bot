@@ -12,9 +12,10 @@ explains the build and the live loop.
 
 ## Private files
 
-This repo is public. Plans, specs, briefs and status notes are kept private
-and never tracked here. Keep machine paths, client data and secrets out of
-tracked files.
+This repo is public. Plans, specs, briefs and status notes go under
+`drafts/`, which git ignores (so does `.stow/`, where the private stow
+repo lives; `stow add <path>` tracks a file there in place, then `stow push`).
+Keep machine paths, client data and secrets out of tracked files.
 
 ## Changing nsh
 

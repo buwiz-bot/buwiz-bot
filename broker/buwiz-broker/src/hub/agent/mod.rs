@@ -7,7 +7,7 @@
 //!
 //! What a turn runs under is explicit: the model choice (`modelCtx`) is
 //! `TurnCtx::model`, picked by this runner (`/chat` and background turns
-//! under `choiceFor(thread)`, `/retry` under none, MODEL-01), and the acting
+//! under `choiceFor(thread)`, `/retry` under none; tests/http/model.test.mjs MODEL-01), and the acting
 //! bot is `TurnCtx::acting_bot`.
 
 pub mod files;

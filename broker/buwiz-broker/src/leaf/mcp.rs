@@ -1,11 +1,11 @@
-//! The `/mcp/*` routes Rox calls, answered here when this broker
+//! The `/mcp/*` routes Buwiz Bot calls, answered here when this broker
 //! hosts the MCP servers. `POST /mcp/attach`, `GET /mcp/attachments` and
 //! `POST /mcp/servers` touch the chats and are the hub's
 //! (`hub/routes/mcp_chat.rs`).
 //!
 //! The servers themselves are McpHost's (helper/mcp_servers.rs); its status
 //! is what `/mcp/servers` shows. `/mcp/open` hands only
-//! Rox links to the system (`open`, from PATH), an app link with a one-time
+//! Buwiz Bot links to the system (`open`, from PATH), an app link with a one-time
 //! pass that `/mcp/open/pass` redeems. `/oauth/callback/`
 //! also finishes a mini app account's sign-in (§20.2) when the plugin
 //! host started it.
