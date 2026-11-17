@@ -22,7 +22,7 @@ use hyper::header::{HeaderValue, CONTENT_TYPE, ORIGIN, VARY};
 use hyper::{Method, Request, Response, StatusCode};
 use rusqlite::Connection;
 
-use crate::proxy::Body;
+use crate::front_door::Body;
 
 /// The route groups `/meta` lists as ported.
 pub const PORTED: &[&str] = &["state", "prefs", "keymap", "skills", "files"];

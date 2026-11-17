@@ -525,7 +525,7 @@ mod tests {
         let approved: Vec<Value> = t.approved.iter().map(|(id, k)| json!({"id": id, "publisher_key_id": k})).collect();
         std::fs::write(&trust_file, json!({"v": 1, "publishers": pubs, "approved_plugins": approved}).to_string()).unwrap();
         let db = dir.join("plugins.db");
-        let host = Host::new(Options { db: db.clone(), keys: Keystore::from_spec(&format!("file:{}", dir.join("keys").display())).unwrap(), trust_file, log_dir: None, clock, timeouts: Timeouts::default(), apps_dir: Some(dir.join("v1/apps")) }).unwrap();
+        let host = Host::new(Options { db: db.clone(), keys: Keystore::from_spec(&format!("file:{}", dir.join("keys").display())).unwrap(), trust_file: Some(trust_file), log_dir: None, clock, timeouts: Timeouts::default(), apps_dir: Some(dir.join("v1/apps")) }).unwrap();
         // an installed plugin whose settings the new one may reuse
         let c = rusqlite::Connection::open(&db).unwrap();
         c.execute(
@@ -835,7 +835,7 @@ mod tests {
         assert!(!b.dir.join("v1/apps").join(FX).join("1.1.0").exists(), "and downloads no binary");
 
         // a restart reads it from disk
-        let again = Host::new(Options { db: b.db.clone(), keys: Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap(), trust_file: b.dir.join("trust.json"), log_dir: None, clock: HostClock::system(), timeouts: Timeouts::default(), apps_dir: None }).unwrap();
+        let again = Host::new(Options { db: b.db.clone(), keys: Keystore::from_spec(&format!("file:{}", b.dir.join("keys").display())).unwrap(), trust_file: Some(b.dir.join("trust.json")), log_dir: None, clock: HostClock::system(), timeouts: Timeouts::default(), apps_dir: None }).unwrap();
         assert_eq!(again.update_of(FX).unwrap()["version"], "1.1.0");
 
         // Review update: the install card, in that chat, once

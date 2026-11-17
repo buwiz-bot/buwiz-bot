@@ -6,15 +6,14 @@
 //!   `/office/*` and `/file/render` for office files are the hub's since
 //!   6.1 (`Hub(OfficeFiles)`), `/popout` (6.3) too,
 //!   and `GET /` and `/file/render` for every other kind since phase 7
-//!   (`Hub(Files)`): no route is Node's office role's any more, so the hub
-//!   runs without Node (`BUWIZ_BROKER_NO_NODE=1`). `/highlight` is deleted
+//!   (`Hub(Files)`): no route is Node's any more, and the broker forwards
+//!   nothing to Node (its forwarding is gone). `/highlight` is deleted
 //!   (6.2: no caller), and `/mermaid*` too (Rox draws every diagram natively).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`, the line);
-//!   with that part switched off, the hub answers 501 instead of Node.
+//!   with that part switched off, the hub answers 501.
 //!
-//! A path in no entry gets the hub's copy of Node's last resort (404); an
-//! OPTIONS preflight goes to Node, or with no Node the hub answers it as
-//! Node does (204).
+//! A path in no entry gets the hub's 404 (a copy of Node's last resort); an
+//! OPTIONS preflight is answered by the hub (204).
 //! The first matching entry wins: specific paths before the prefixes.
 //!
 //! Deleted in 6.2 (no caller; drafts' route inventory has the evidence):
@@ -273,7 +272,7 @@ pub const ROUTES: &[Entry] = &[
 ];
 
 /// The entry a request falls under, or `None` (the hub's 404 with the hub
-/// on; Node's, as today, with it off).
+/// on; the front door's own with it off).
 pub fn classify(method: &Method, url: &str) -> Option<&'static Entry> {
     if method == Method::OPTIONS {
         return None;

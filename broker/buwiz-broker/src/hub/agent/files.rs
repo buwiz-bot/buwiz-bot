@@ -563,7 +563,7 @@ pub fn mock_images(dir: &Path, n: usize, ar: Option<(f64, f64)>) -> std::io::Res
 }
 
 /// `mockFiles(dir, only)`: one file of every kind (`only`: those exts).
-pub async fn mock_files(ctx: &HubCtx, src: &Path, dir: &Path, only: Option<&[String]>) -> Vec<PathBuf> {
+pub async fn mock_files(ctx: &HubCtx, src: Option<&Path>, dir: &Path, only: Option<&[String]>) -> Vec<PathBuf> {
     let _ = std::fs::create_dir_all(dir);
     let want = |e: &str| only.is_none_or(|o| o.iter().any(|x| x == e));
     let mut out: Vec<PathBuf> = Vec::new();
@@ -641,7 +641,7 @@ pub async fn mock_files(ctx: &HubCtx, src: &Path, dir: &Path, only: Option<&[Str
             out.push(chip);
         }
     }
-    if want("md") && std::fs::copy(src.join("fixtures").join("README.md"), at("README.md")).is_ok() {
+    if want("md") && src.is_some_and(|src| std::fs::copy(src.join("fixtures").join("README.md"), at("README.md")).is_ok()) {
         out.push(at("README.md"));
     }
     put(&mut out, "main.rs", "use std::collections::HashMap;\n\n/// Counts words in a sentence.\nfn count_words(text: &str) -> HashMap<&str, usize> {\n    let mut counts = HashMap::new();\n    for word in text.split_whitespace() {\n        *counts.entry(word).or_insert(0) += 1;\n    }\n    counts\n}\n\nfn main() {\n    let counts = count_words(\"the quick brown fox jumps over the lazy dog the end\");\n    let mut pairs: Vec<_> = counts.into_iter().collect();\n    pairs.sort_by(|a, b| b.1.cmp(&a.1));\n    for (word, n) in pairs.iter().take(3) {\n        println!(\"{word}: {n}\");\n    }\n}\n");
@@ -649,7 +649,7 @@ pub async fn mock_files(ctx: &HubCtx, src: &Path, dir: &Path, only: Option<&[Str
     put(&mut out, "data.json", r#"{"bot":"Kiffy","model":{"id":"gpt-6-luna","effort":"max","fast":false},"tags":["native","nsh"],"count":3,"ok":true}"#);
     put(&mut out, "budget.csv", "Category,Q1,Q2,Q3,Q4\nRent,3000,3000,3100,3100\nSoftware,420,460,510,505\nTravel,1200,300,900,1500\nMeals,260,310,280,330\n");
     put(&mut out, "notes.txt", "Meeting notes — Oct 19\n\n1. Ship file viewers\n2. Verify parity with Grok Bot\n3. Mock responses so tests cost nothing\n");
-    if want("html") && std::fs::copy(src.join("fixtures").join("page.html"), at("page.html")).is_ok() {
+    if want("html") && src.is_some_and(|src| std::fs::copy(src.join("fixtures").join("page.html"), at("page.html")).is_ok()) {
         out.push(at("page.html"));
     }
     if want("pdf") {
@@ -658,7 +658,7 @@ pub async fn mock_files(ctx: &HubCtx, src: &Path, dir: &Path, only: Option<&[Str
         if want("html") {
             let _ = std::fs::write(at(".memo-src.html"), "<h1>Quarterly memo</h1><p>Revenue grew <b>18%</b> quarter over quarter.</p><ul><li>Launch the viewer</li><li>Hire two engineers</li></ul><table border=1><tr><th>Region</th><th>Sales</th></tr><tr><td>APAC</td><td>1.2M</td></tr><tr><td>EMEA</td><td>0.9M</td></tr></table>");
         }
-        if std::fs::copy(src.join("fixtures").join("PDF_Elements_Showcase.pdf"), at("PDF_Elements_Showcase.pdf")).is_ok() {
+        if src.is_some_and(|src| std::fs::copy(src.join("fixtures").join("PDF_Elements_Showcase.pdf"), at("PDF_Elements_Showcase.pdf")).is_ok()) {
             out.push(at("PDF_Elements_Showcase.pdf"));
         }
     }

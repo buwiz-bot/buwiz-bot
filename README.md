@@ -241,10 +241,10 @@ it is not running.
 
 1. `app/bundle-dev.sh`, then `ls ~/Applications/Buwiz\ Bot.app/Contents/Resources/broker/{buwiz-broker,bin/nsh,bin/nsh-macos-host}`.
 2. `scripts/broker-live backup`. Check that it prints a
-   `backups/<time>/` dir holding `app.db`, `server/` and `buwiz-broker/`.
+   `backups/<time>/` dir holding `app.db` and `buwiz-broker/`.
 3. `scripts/broker-live use-bundled`. Check that it ends with
    `Buwiz Bot.app's buwiz-broker on 8787`. If the broker doesn't come up, the
-   script starts Node again and exits 1.
+   script stops the broker it started, says so and exits 1; nothing holds the port then.
 4. `scripts/broker-live status`. Check:
    - `health: 200` and `mode: bundled`;
    - every `plugin:` line is running;
@@ -252,12 +252,9 @@ it is not running.
    - `keychain dialog: none`.
    Then build a widget in Buwiz Bot, and watch `~/Library/Logs/Buwiz\ Bot/broker.log`.
 
-Rollback: `scripts/broker-live use-node` brings back the Node broker, and
-`use-rust` brings back the Rust broker in `Grok Shell.app` (`buwiz-broker`,
-or `rox-broker` packaged before the rename) with Node behind
-it. Both need `Grok Shell.app`'s `Resources/server/` (`RES`). After either, run
-`status` again and check that `mode:` reads `node` or `rust`, then make the
-same checks as in step 4.
+Rollback: the script keeps no other broker to go back to. Restore the
+database and the bundle from the `backups/<time>/` folder `backup` made, and
+run `use-bundled` again.
 
 Links reach the running Buwiz Bot only when it was launched through the bundle. A
 bare `./target/debug/buwiz-bot` is a different app to macOS, so a link would start

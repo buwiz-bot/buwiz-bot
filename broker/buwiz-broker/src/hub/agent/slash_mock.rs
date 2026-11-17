@@ -126,10 +126,10 @@ fn office_seed(ext: &str) -> Option<&'static str> {
 
 /// `emitOffice(ext, paths)`: the BetterOffice demo file, else the
 /// generated fallback.
-fn emit_office(src: &Path, dir: &Path, ext: &str, paths: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+fn emit_office(src: Option<&Path>, dir: &Path, ext: &str, paths: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
     let seed = office_seed(ext).expect("an office ext");
-    let s = src.join("office").join("seeds").join(seed);
-    if s.exists() {
+    let s = src.map(|src| src.join("office").join("seeds").join(seed));
+    if let Some(s) = s.filter(|s| s.exists()) {
         let p = dir.join(seed);
         std::fs::copy(&s, &p).map_err(|e| e.to_string())?;
         paths.push(p);
@@ -213,7 +213,8 @@ pub async fn mock(run: &Run, prompt: &str, extra: &Value) -> Result<(), String> 
     let rel = format!("m{}", crate::hub::library::groups::now36());
     let files_dir = ctx.store.gen_dir().join("files");
     let dir = files_dir.join(&rel);
-    let (src, port) = crate::hub::market::node_paths();
+    let (src, port) = (crate::hub::market::assets_dir(), crate::hub::market::own_port());
+    let src = src.as_deref();
     let user = || Turn::user(prompt).with_extra(extra);
     let record = |p: std::path::PathBuf| {
         let rel = rel.clone();
@@ -265,13 +266,13 @@ pub async fn mock(run: &Run, prompt: &str, extra: &Value) -> Result<(), String> 
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             for e in &exts {
                 if office_seed(e).is_some() {
-                    emit_office(&src, &dir, e, &mut paths)?;
+                    emit_office(src, &dir, e, &mut paths)?;
                 } else if e == "mov" {
                     emit_movs(&attach, &dir, &mut paths)?;
                 }
             }
             let rest: Vec<String> = exts.iter().filter(|e| office_seed(e).is_none() && *e != "mov").cloned().collect();
-            paths.extend(mock_files(ctx, &src, &dir, Some(&rest)).await);
+            paths.extend(mock_files(ctx, src, &dir, Some(&rest)).await);
             if paths.is_empty() {
                 format!("Couldn't produce a {word} mock here — the tools that kind needs aren't on this machine.")
             } else {
@@ -286,9 +287,9 @@ pub async fn mock(run: &Run, prompt: &str, extra: &Value) -> Result<(), String> 
         let ai = Turn { files: Some(Value::Array(files)), ..Turn::ai(&text, "mock") };
         return land(run, Some("Mock files"), user(), ai, "replied");
     }
-    let mut paths = mock_files(ctx, &src, &dir, None).await;
+    let mut paths = mock_files(ctx, src, &dir, None).await;
     for ext in ["docx", "xlsx", "pptx"] {
-        emit_office(&src, &dir, ext, &mut paths)?;
+        emit_office(src, &dir, ext, &mut paths)?;
     }
     emit_movs(&attach, &dir, &mut paths)?;
     let mut files = Vec::new();

@@ -470,7 +470,7 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         Ok(c) => c,
         Err(e) => return reply(&json!({"ok": false, "error": format!("widget ticket: {e}")})),
     };
-    let helper = fill(SOURCE_HELPER, &[("url", js::stringify(&Value::String(format!("http://127.0.0.1:{}{call}", crate::hub::market::node_paths().1))))]);
+    let helper = fill(SOURCE_HELPER, &[("url", js::stringify(&Value::String(format!("http://127.0.0.1:{}{call}", crate::hub::market::own_port()))))]);
     let source_file = format!("pop-{name}-source");
     let _ = std::fs::write(win_dir.join(format!("{source_file}.tsx")), &helper);
     let wrapper = fill(
@@ -522,7 +522,7 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         }
     }
     // after the build: `nsh build` removes a capabilities.json its app does not declare
-    if let Err(e) = std::fs::write(build_dir.join("capabilities.json"), js::stringify(&capabilities(&name, &call, crate::hub::market::node_paths().1))) {
+    if let Err(e) = std::fs::write(build_dir.join("capabilities.json"), js::stringify(&capabilities(&name, &call, crate::hub::market::own_port()))) {
         return reply(&json!({"ok": false, "error": format!("capabilities.json: {e}")}));
     }
     let shown_name = if shown_v != 0.0 { format!("{app_title} · v{}", tpl(shown_v)) } else { app_title };
