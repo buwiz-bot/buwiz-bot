@@ -84,7 +84,7 @@ test("host token: 0600 file, required on every /v1/host route (401), guard still
 });
 
 test("host token: a second server that cannot bind the port leaves the running server's token", async () => {
-  const second = spawn(BROKER, ["--no-node", "--assets", ASSETS], {
+  const second = spawn(BROKER, ["--assets", ASSETS], {
     env: serverEnv(dataDir, { BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile }),
     stdio: "ignore",
   });

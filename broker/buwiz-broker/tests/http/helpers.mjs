@@ -155,7 +155,7 @@ export async function startServer(dataDir, { env, args = [] } = {}) {
   mkdirSync(join(dataDir, "widgets"), { recursive: true });
 
   // its own process group, so stop() also ends the MCP children it spawned
-  const child = spawn(BROKER, ["--no-node", "--assets", ASSETS, ...args], {
+  const child = spawn(BROKER, ["--assets", ASSETS, ...args], {
     cwd: dataDir,
     env: serverEnv(dataDir, env),
     stdio: ["ignore", "pipe", "pipe"],

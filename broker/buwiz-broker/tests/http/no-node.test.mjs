@@ -38,7 +38,7 @@ test("NONODE-01 no Node process runs, and the front door says it is up", async (
   const meta = await request("GET", "/meta");
 
   assert.equal(meta.json.broker, "buwiz-broker");
-  assert.equal(meta.json.node_version, "");
+  assert.equal(meta.json.node_version, undefined, "the broker has no Node to report");
   // a few routes, and one that no longer exists
   assert.match((await request("GET", "/")).text, /^app-server ok — \d+ threads, model=mock\n$/);
   assert.equal((await request("GET", "/threads")).status, 200);
