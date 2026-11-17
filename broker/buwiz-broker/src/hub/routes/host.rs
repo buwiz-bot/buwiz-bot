@@ -223,13 +223,7 @@ pub fn read_body(body: &[u8]) -> Option<Value> {
 /// A route's answer: 200 with it, or its refusal with the status map.
 fn sent(path: &str, out: Result<Value, V1Error>) -> HubResponse {
     match out {
-        Ok(mut v) => {
-            // the plugin host's answers carry the line's snapshot
-            if let Some(o) = v.as_object_mut() {
-                o.remove("runtime");
-            }
-            types::json(StatusCode::OK, &v)
-        }
+        Ok(v) => types::json(StatusCode::OK, &v),
         Err(e) => {
             if e.code == "internal" {
                 eprintln!("  v1 {path}: {}", js::slice_utf16(&e.message, 200));

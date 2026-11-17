@@ -1,4 +1,4 @@
-//! The broker as the app carries it: `--no-node` with the hub on, its static
+//! The broker as the app carries it: its static
 //! files from `--assets` (the bundle's `broker/server`, `node_modules` beside
 //! it).
 
@@ -45,15 +45,10 @@ fn a_bundled_broker_serves_its_assets() {
     write(&assets.join("office/viewer.html"), "<!doctype html><title>viewer fixture</title>");
     std::fs::create_dir_all(&data).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"))
-        .args(["--port", &PORT.to_string(), "--no-node", "--assets"])
+        .args(["--port", &PORT.to_string(), "--assets"])
         .arg(&assets)
         .arg("--data")
         .arg(&data)
-        .env("BUWIZ_BROKER_HUB", "1")
-        .env_remove("BUWIZ_BROKER_V1_HOST")
-        .env_remove("ROX_BROKER_V1_HOST")
-        .env_remove("BUWIZ_BROKER_MCP_HOST")
-        .env_remove("ROX_BROKER_MCP_HOST")
         // the model gateway at a closed port, never the real opencodex
         .env("OPENCODEX_URL", "http://127.0.0.1:9")
         .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")

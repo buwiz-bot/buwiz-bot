@@ -147,7 +147,7 @@ impl Bed {
 
     /// `/mcp/resolve` for the fixture server's scope, as the route's handler takes it.
     async fn resolve_mcp(&self, thread: Option<&str>, complete: bool) -> Value {
-        let routes = McpRoutes::new(self.hub.ctx().mcp.clone().unwrap(), Vec::new()).with_gate(self.hub.ctx().clone());
+        let routes = McpRoutes::new(self.hub.ctx().mcp.clone().unwrap(), Vec::new(), self.hub.ctx().clone());
         let mut b = json!({"server": "apps", "name": "item", "args": "x", "complete": complete});
         if let Some(t) = thread {
             b["thread"] = json!(t);

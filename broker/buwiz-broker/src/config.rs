@@ -7,6 +7,11 @@
 //! run the old Node broker behind it, and the app (and other repos' test
 //! scripts) still pass the flag. It goes in a later release. `--node` and
 //! `--node-script` are gone and are unknown arguments.
+//! The same goes for the variables `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST`
+//! and `BUWIZ_BROKER_MCP_HOST` (and their `ROX_` names): each once chose
+//! between this broker and Node for a part of it. Nothing reads them now: the
+//! hub, the plugin host and the MCP host are always on. Other repos' test
+//! scripts still set them.
 //! `--assets` is the folder of the static files the broker serves and
 //! reads (office pages and seeds, the plugin catalog and its plugins,
 //! trust.json; `node_modules` beside it). Only the flag names it: without

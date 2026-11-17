@@ -8,7 +8,6 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use buwiz_broker::config::Config;
-use buwiz_broker::helper::line::Line;
 use buwiz_broker::helper::mcp_servers::McpHost;
 use buwiz_broker::helper::plugins::{Clock, Host, Options, Timeouts};
 use buwiz_broker::hub::{ctx::HubCtx, Hub};
@@ -28,7 +27,6 @@ async fn main() {
             }
         }),
         Some("manifest") => std::process::exit(manifest_op(&args[1..])),
-        Some("helper") => std::process::exit(helper(&args[1..]).await),
         Some("office-mcp") => std::process::exit(buwiz_broker::office::mcp::cli(&args[1..])),
         _ => {}
     }
@@ -52,7 +50,6 @@ async fn main() {
     // read once: the plugin trust list the broker's plugin hosts use
     let trust_env = std::env::var("BUWIZ_TRUST_FILE").ok();
     let trust = config.trust_file(trust_env.as_deref());
-    let hub_on = buwiz_protocol::env::var("BUWIZ_BROKER_HUB").as_deref() == Some("1");
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", config.port)).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -81,89 +78,45 @@ async fn main() {
         }
         Some(m) => eprintln!("buwiz-broker: {} not moved to {} this time ({m:?}); using it", buwiz_protocol::broker_dir::OLD_DIR_NAME, buwiz_protocol::broker_dir::DIR_NAME),
     }
-    // what this broker hosts behind the line: v1 plugins and v0 MCP
-    // servers, each switched on
-    let hosts: Vec<&str> = [("v1", "BUWIZ_BROKER_V1_HOST"), ("mcp", "BUWIZ_BROKER_MCP_HOST")]
-        .into_iter()
-        .filter(|(_, var)| buwiz_protocol::env::var(var).as_deref() == Some("1"))
-        .map(|(name, _)| name)
-        .collect();
-    let line = if hosts.is_empty() {
-        None
-    } else {
-        let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
-        let db = data.join("generated").join("app.db");
-        match (plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust.clone(), false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
-            (Ok(host), Ok(mcp)) => {
-                // nothing receives this token now that Node is gone; the line is a leftover that goes with the Node code
-                let token = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
-                Some(Arc::new(Line::new(host, mcp, token)))
-            }
-            (Err(e), _) | (_, Err(e)) => {
-                eprintln!("buwiz-broker: the line: {e}; it hosts nothing");
-                None
-            }
-        }
-    };
     let allowed = buwiz_broker::guard::allowed_origins(config.port, buwiz_protocol::env::var("BUWIZ_ALLOWED_ORIGINS").as_deref());
-    // the hub: the brain's routes answered here, hosting the v1 plugins and
-    // MCP servers the brain calls, the line's when it has them, else its own
-    let hub = hub_on.then(|| {
-        let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
-        let db = data.join("generated").join("app.db");
-        let mut ctx = HubCtx::new(data.clone(), Clock::system());
-        if let Some(line) = &line {
-            if hosts.contains(&"v1") {
-                ctx.plugins = Some(line.host().clone());
-                ctx.sessions = Some(line.sessions().clone());
-            }
-            ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
+    // The hub is always on. BUWIZ_BROKER_HUB, BUWIZ_BROKER_V1_HOST and
+    // BUWIZ_BROKER_MCP_HOST (and `--no-node`) once chose between this broker
+    // and Node for a part of it; they are accepted, never read, and do nothing.
+    // The hub hosts the v1 plugins and the MCP servers its routes call.
+    let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
+    let db = data.join("generated").join("app.db");
+    let mut ctx = HubCtx::new(data.clone(), Clock::system());
+    match plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust, Some(data.join("v1").join("apps")), accounts) {
+        Ok(host) => {
+            ctx.sessions = Some(buwiz_broker::helper::sessions::Sessions::new(host.clone()));
+            ctx.plugins = Some(host);
         }
-        if ctx.plugins.is_none() {
-            match plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust.clone(), false, Some(data.join("v1").join("apps")), accounts.clone()) {
-                Ok(host) => {
-                    ctx.sessions = Some(buwiz_broker::helper::sessions::Sessions::new(host.clone()));
-                    ctx.plugins = Some(host);
-                }
-                Err(e) => eprintln!("buwiz-broker: the hub's plugin host: {e}"),
-            }
-        }
-        if ctx.mcp.is_none() {
-            match McpHost::new(&db, config.port) {
-                Ok(mcp) => ctx.mcp = Some(mcp),
-                Err(e) => eprintln!("buwiz-broker: the hub's MCP host: {e}"),
-            }
-        }
-        let hub = Arc::new(Hub::new(ctx, allowed.clone()));
-        hub.start();
-        hub
-    });
-    let door = FrontDoor::new(Leaf::new(config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref()), allowed.clone()));
-    let door = match &line {
-        // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
-        Some(line) if hosts.contains(&"mcp") => {
-            let routes = buwiz_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone());
-            let routes = match &hub {
-                Some(hub) => routes.with_gate(hub.ctx().clone()),
+        Err(e) => eprintln!("buwiz-broker: the hub's plugin host: {e}"),
+    }
+    match McpHost::new(&db, config.port) {
+        Ok(mcp) => ctx.mcp = Some(mcp),
+        Err(e) => eprintln!("buwiz-broker: the hub's MCP host: {e}"),
+    }
+    let hub = Arc::new(Hub::new(ctx, allowed.clone()));
+    hub.start();
+    let hub_ctx = hub.ctx().clone();
+    let door = FrontDoor::new(Leaf::new(data, allowed.clone()), hub);
+    // the /mcp routes, answered for the Bot of the chat they are for
+    let door = match hub_ctx.mcp.clone() {
+        Some(mcp) => {
+            let routes = buwiz_broker::leaf::mcp::McpRoutes::new(mcp, allowed.clone(), hub_ctx.clone());
+            // a mini app account's sign-in comes back on the same callback route
+            let routes = match hub_ctx.plugins.clone() {
+                Some(host) => routes.with_plugins(host),
                 None => routes,
             };
-            // a mini app account's sign-in comes back on the same callback route
-            let routes = if hosts.contains(&"v1") { routes.with_plugins(line.host().clone()) } else { routes };
-            door.with_line(line.clone()).with_mcp(routes)
+            door.with_mcp(routes)
         }
-        Some(line) => door.with_line(line.clone()),
         None => door,
     };
-    let hub_ctx = hub.as_ref().map(|h| h.ctx().clone());
-    // a mini app account's sign-in callback reaches whichever plugin host
-    // there is (the line's, else the hub's own), MCP host or not
-    let accounts = line.as_ref().filter(|_| hosts.contains(&"v1")).map(|l| l.host().clone()).or_else(|| hub_ctx.as_ref().and_then(|c| c.plugins.clone()));
-    let door = match accounts {
+    // a mini app account's sign-in callback reaches the plugin host, MCP host or not
+    let door = Arc::new(match hub_ctx.plugins.clone() {
         Some(host) => door.with_accounts(host),
-        None => door,
-    };
-    let door = Arc::new(match hub {
-        Some(hub) => door.with_hub(hub),
         None => door,
     });
     eprintln!("buwiz-broker on http://127.0.0.1:{}", config.port);
@@ -194,20 +147,14 @@ async fn main() {
         }
     }
     drop(listener);
-    if let Some(line) = &line {
-        line.host().stop_all().await;
-        line.mcp().stop_all().await;
+    if let Some(computers) = buwiz_broker::hub::computer::Computers::of(&hub_ctx) {
+        computers.let_the_mac_sleep();
     }
-    if let Some(ctx) = &hub_ctx {
-        if let Some(computers) = buwiz_broker::hub::computer::Computers::of(ctx) {
-            computers.let_the_mac_sleep();
-        }
-        if let Some(host) = &ctx.plugins {
-            host.stop_all().await;
-        }
-        if let Some(mcp) = &ctx.mcp {
-            mcp.stop_all().await;
-        }
+    if let Some(host) = &hub_ctx.plugins {
+        host.stop_all().await;
+    }
+    if let Some(mcp) = &hub_ctx.mcp {
+        mcp.stop_all().await;
     }
     eprintln!("buwiz-broker: stopped");
 }
@@ -307,15 +254,14 @@ fn data_keystore(data: &std::path::Path) -> Result<buwiz_broker::helper::keystor
 
 /// The v1 plugin host on `db`, its keystore that of data dir `data`;
 /// `accounts` where its sign-ins go.
-fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: Option<std::path::PathBuf>, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
+fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: Option<std::path::PathBuf>, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
     let keys = data_keystore(data)?;
     let mut timeouts = Timeouts::default();
     // BUWIZ_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
     if let Some(ms) = buwiz_protocol::env::var("BUWIZ_V1_CALL_TIMEOUT_MS").and_then(|v| v.parse::<u64>().ok()).filter(|ms| *ms > 0) {
         timeouts.call = Duration::from_millis(ms);
     }
-    let clock = if manual_clock { Clock::manual() } else { Clock::system() };
-    let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock, timeouts, apps_dir })?;
+    let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock: Clock::system(), timeouts, apps_dir })?;
     host.set_accounts_config(accounts);
     // Rox's plugin keys, under the new Keychain service before any plugin starts
     let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
@@ -325,93 +271,4 @@ fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std
         Err(e) => eprintln!("  keystore: plugin keys not moved from {} yet: {e}", buwiz_broker::helper::keystore::OLD_KEYCHAIN_SERVICE),
     }
     Ok(host)
-}
-
-/// `buwiz-broker helper --db FILE [--data DIR] [--log-dir DIR] [--port P]`: the v1
-/// plugin host alone, its line on 127.0.0.1 (port 0 picks one; the first
-/// line of stdout names it). `BUWIZ_LINE_TOKEN` is the line's token,
-/// `BUWIZ_TRUST_FILE` the trust store, `BUWIZ_V1_MANUAL_CLOCK=1` a clock the
-/// line moves (tests).
-async fn helper(args: &[String]) -> i32 {
-    let usage = "usage: buwiz-broker helper --db FILE [--data DIR] [--log-dir DIR] [--port P]";
-    let (mut db, mut data, mut log_dir, mut port) = (None, None, None, 0u16);
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match (a.as_str(), it.next()) {
-            ("--db", Some(v)) => db = Some(std::path::PathBuf::from(v)),
-            ("--data", Some(v)) => data = Some(std::path::PathBuf::from(v)),
-            ("--log-dir", Some(v)) => log_dir = Some(std::path::PathBuf::from(v)),
-            ("--port", Some(v)) if v.parse::<u16>().is_ok() => port = v.parse().unwrap_or(0),
-            _ => {
-                eprintln!("{usage}");
-                return 2;
-            }
-        }
-    }
-    let (Some(db), Some(token)) = (db, buwiz_protocol::env::var("BUWIZ_LINE_TOKEN")) else {
-        eprintln!("{usage} (with BUWIZ_LINE_TOKEN set)");
-        return 2;
-    };
-    let trust = std::env::var("BUWIZ_TRUST_FILE").ok().filter(|f| !f.is_empty()).map(std::path::PathBuf::from);
-    // the redirect OAuth flows name: the front door's
-    let public = ["BUWIZ_PUBLIC_PORT", "PORT"].iter().find_map(|k| buwiz_protocol::env::var(k)?.parse::<u16>().ok()).unwrap_or(8787);
-    let accounts = match buwiz_broker::helper::plugins::AccountsConfig::from_env(public) {
-        Ok(accounts) => accounts,
-        Err(e) => {
-            eprintln!("buwiz-broker: {e}");
-            return 2;
-        }
-    };
-    // `--db` is any file: its data dir, when not named, is its own folder;
-    // `app.db` and `./app.db` name none, and keys never land in the working folder
-    let named = |p: &&std::path::Path| p.components().any(|c| c != std::path::Component::CurDir);
-    let Some(data) = data.or_else(|| db.parent().filter(named).map(std::path::PathBuf::from)) else {
-        eprintln!("buwiz-broker helper: --db {} needs --data DIR: it names no folder to keep plugin keys in", db.display());
-        return 2;
-    };
-    let host = match plugin_host(&data, &db, log_dir, trust, buwiz_protocol::env::var("BUWIZ_V1_MANUAL_CLOCK").as_deref() == Some("1"), None, accounts) {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("buwiz-broker helper: {e}");
-            return 1;
-        }
-    };
-    let mcp = match McpHost::new(&db, public) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("buwiz-broker helper: {e}");
-            return 1;
-        }
-    };
-    let line = Arc::new(Line::new(host.clone(), mcp.clone(), token));
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("buwiz-broker helper: port {port}: {e}");
-            return 1;
-        }
-    };
-    println!("buwiz-broker helper on 127.0.0.1:{}", listener.local_addr().map(|a| a.port()).unwrap_or(port));
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-    let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT handler");
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
-                let line = line.clone();
-                tokio::spawn(async move {
-                    let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                        let line = line.clone();
-                        async move { Ok::<_, std::convert::Infallible>(line.serve(req).await) }
-                    });
-                    let _ = http1::Builder::new().keep_alive(true).serve_connection(TokioIo::new(stream), service).await;
-                });
-            }
-            _ = term.recv() => break,
-            _ = int.recv() => break,
-        }
-    }
-    host.stop_all().await;
-    mcp.stop_all().await;
-    0
 }

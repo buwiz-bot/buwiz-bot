@@ -11,9 +11,8 @@
 //! `v1_plugins`; keys live in the keystore and reach the plugin only on its
 //! stdin.
 //!
-//! Node keeps the views (the plugin list, routines) and reaches this
-//! host and its sessions (`sessions.rs`) over the line (`helper::line`); each change of a
-//! plugin's state goes out as a snapshot on [`Host::events`].
+//! Each change of a plugin's state goes out as a snapshot on
+//! [`Host::events`]; the sessions are `sessions.rs`.
 //!
 //! A package (§7) installs from its folder
 //! (`package`): plugin.json verified and every file checked at install,
@@ -482,12 +481,6 @@ impl Host {
         })
     }
 
-    /// The snapshot of a plugin this host knows (a runtime), else `None`.
-    pub fn snapshot_if(&self, id: &str) -> Option<Value> {
-        let known = self.runtimes.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id);
-        known.then(|| self.snapshot(id))
-    }
-
     /// Registers what ends a plugin's opens.
     pub fn on_close(&self, f: Closer) {
         self.closers.lock().unwrap_or_else(|e| e.into_inner()).push(f);
@@ -517,17 +510,6 @@ impl Host {
 
     pub fn runtime_of(&self, id: &str) -> (&'static str, u64, Vec<Value>) {
         self.with_rt(id, |rt| (rt.state, rt.generation, rt.tools.clone()))
-    }
-
-    /// Every plugin with a runtime or a record.
-    pub fn snapshots(&self) -> Vec<Value> {
-        let mut ids: Vec<String> = self.rows().into_iter().map(|r| r.id).collect();
-        for id in self.runtimes.lock().unwrap_or_else(|e| e.into_inner()).keys() {
-            if !ids.contains(id) {
-                ids.push(id.clone());
-            }
-        }
-        ids.iter().map(|id| self.snapshot(id)).collect()
     }
 
     fn emit(&self, id: &str) {
@@ -1347,9 +1329,8 @@ impl Host {
             "id": id, "seq": self.seq.fetch_add(1, Ordering::SeqCst), "state": "uninstalled", "code": null, "message": "",
             "generation": generation, "enabled": false, "tools": [], "instructions": "", "pid": null, "timer": null, "next_delay_ms": null,
         });
-        let _ = self.events.send(gone.clone());
-        // the answer's snapshot is this one (a fresh one would read `stopped`)
-        Ok(json!({"ok": true, "runtime": gone}))
+        let _ = self.events.send(gone);
+        Ok(json!({"ok": true}))
     }
 
     /// 14.5: the per-tool switch.

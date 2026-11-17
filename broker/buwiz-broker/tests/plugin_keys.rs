@@ -58,10 +58,8 @@ impl Broker {
             .env("HOME", root)
             .env("BUWIZ_KEYSTORE", format!("file:{}", keys.display()))
             .env("BUWIZ_TRUST_FILE", root.join("trust.json"))
-            .env("BUWIZ_BROKER_HUB", "1")
-            .env("BUWIZ_BROKER_V1_HOST", "1")
             .env("MOCK", "1")
-            .args(["--port", &port.to_string(), "--no-node", "--assets"])
+            .args(["--port", &port.to_string(), "--assets"])
             .arg(root)
             .arg("--data")
             .arg(&data)
@@ -352,38 +350,6 @@ fn keystore_check_keeps_to_no_keychain() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// `helper` with a bare `--db` name and no `--data` has no folder for its
-/// keys: it refuses, and the working folder stays empty.
-#[test]
-fn a_helper_with_a_bare_db_name_needs_its_data_dir() {
-    let root = std::env::temp_dir().join(format!("buwiz-plugin-bare-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let port = free_port();
-    let log = std::env::temp_dir().join(format!("buwiz-plugin-bare-{}.log", std::process::id()));
-    let mut helper = bare(&root, &["helper", "--db", "app.db", "--port", &port], &[("BUWIZ_LINE_TOKEN", "t")])
-        .current_dir(&root)
-        .stdout(std::process::Stdio::null())
-        .stderr(file_for(&log))
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    let status = loop {
-        match helper.try_wait().unwrap() {
-            Some(status) => break Some(status),
-            None if start.elapsed() > Duration::from_secs(20) => break None,
-            None => std::thread::sleep(Duration::from_millis(50)),
-        }
-    };
-    let _ = helper.kill();
-    let _ = helper.wait();
-    assert_eq!(status.and_then(|s| s.code()), Some(2), "it refuses: {}", said(&log));
-    assert!(said(&log).contains("needs --data"), "for this reason: {}", said(&log));
-    let _ = std::fs::remove_file(&log);
-    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0, "nothing lands in the working folder");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
 /// Whether `broker`, listening on `port`, took the Keychain: it leaves the
 /// marker of its one-time key move beside the database, and with no plugin
 /// installed that move reads nothing from the Keychain.
@@ -424,81 +390,9 @@ fn a_broker_on_its_own_data_dir_stays_off_the_keychain() {
     let data = root.join("data");
     std::fs::create_dir_all(&data).unwrap();
     let port = free_port();
-    let args = ["--port", &port, "--no-node", "--assets", root.to_str().unwrap(), "--data", data.to_str().unwrap()];
+    let args = ["--port", &port, "--assets", root.to_str().unwrap(), "--data", data.to_str().unwrap()];
     let db = data.join("generated/app.db");
-    assert!(!took_the_keychain(&db, &port, bare(&root, &args, &[("BUWIZ_BROKER_HUB", "1"), ("MOCK", "1")])));
+    assert!(!took_the_keychain(&db, &port, bare(&root, &args, &[("MOCK", "1")])));
     assert!(db.exists(), "its plugin host ran");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// `helper --db` takes any file, so one that merely sits at the owner's
-/// path says nothing about whose broker this is: only `--data` does.
-#[test]
-fn a_helper_goes_by_its_data_dir_not_the_shape_of_its_db_path() {
-    let root = std::env::temp_dir().join(format!("buwiz-plugin-helper-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let owners = buwiz_protocol::broker_dir::new_dir(&root);
-    let db = owners.join("generated/app.db");
-    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-    let env = [("BUWIZ_LINE_TOKEN", "t")];
-    let port = free_port();
-    let args = ["helper", "--db", db.to_str().unwrap(), "--port", &port];
-    assert!(!took_the_keychain(&db, &port, bare(&root, &args, &env)));
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-fn helper(root: &Path, cwd: &Path, args: &[&str]) -> Child {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"));
-    c.env_clear();
-    stub_sign_in(&mut c);
-    c.env("PATH", std::env::var_os("PATH").unwrap())
-        .env("HOME", root)
-        .env("BUWIZ_LINE_TOKEN", "test")
-        .env("BUWIZ_NO_KEYCHAIN", "1")
-        .env("BUWIZ_KEYSTORE", format!("file:{}", root.join("keys").display()))
-        .env("BUWIZ_TRUST_FILE", root.join("trust.json"))
-        .arg("helper")
-        .args(args)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(file_for(&root.join("helper.log")))
-        .spawn()
-        .unwrap()
-}
-
-/// Keys never land in the working folder: a `--db` that names no folder is
-/// refused, with what to pass instead, and passing it works.
-#[test]
-fn a_helper_db_that_names_no_folder_needs_data() {
-    let root = std::env::temp_dir().join(format!("buwiz-helper-db-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let (cwd, data) = (root.join("cwd"), root.join("data"));
-    std::fs::create_dir_all(&cwd).unwrap();
-    std::fs::create_dir_all(&data).unwrap();
-    for db in ["app.db", "./app.db", "././app.db"] {
-        let mut child = helper(&root, &cwd, &["--db", db]);
-        let start = Instant::now();
-        let code = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status.code();
-            }
-            if start.elapsed() > Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("{db}: the helper started");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        assert_eq!(code, Some(2), "{db}");
-        let log = said(&root.join("helper.log"));
-        assert!(log.contains("needs --data DIR"), "{db}: {log}");
-        assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0, "{db}: it wrote to the working folder");
-    }
-    let mut child = helper(&root, &cwd, &["--db", "./app.db", "--data", data.to_str().unwrap()]);
-    let mut first = String::new();
-    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut first).unwrap();
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(first.starts_with("buwiz-broker helper on"), "{first:?}: {}", said(&root.join("helper.log")));
     let _ = std::fs::remove_dir_all(&root);
 }
