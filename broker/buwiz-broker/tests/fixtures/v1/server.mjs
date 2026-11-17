@@ -21,10 +21,8 @@
 // per run and may change it); the app sources sit beside this file.
 // `--misbehave=<mode>[,<mode>]` breaks one rule on purpose for negative
 // tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>,
-// old-cert (a protocol 1.x `rox-session` certificate), no-accounts (no
-// buwiz.account.set/clear: -32601), rox (a plugin built for Rox: rox.*
-// reserved tools and rox://manifest; any other call is "rox.provision must
-// come first", or -32601 with rox:quiet). strict-host breaks none: it refuses to
+// old-cert (a certificate of another type), no-accounts (no
+// buwiz.account.set/clear: -32601). strict-host breaks none: it refuses to
 // be provisioned by a host that does not run protocol 1.0.
 //
 // buwiz.account.set/clear keep the pushed accounts in
@@ -158,7 +156,7 @@ function sessionOpen(args) {
   if (!Number.isSafeInteger(args.not_after) || args.not_after > Date.now() + EIGHT_HOURS) return fail("invalid_args", "not_after must be within 8 h");
 
   const cert = {
-    v: 1, typ: misbehave("old-cert") ? "rox-session" : "buwiz-session", plugin: manifest().id, app: app.id, open_id: args.open_id, ks_pub: args.ks_pub,
+    v: 1, typ: misbehave("old-cert") ? "other-session" : "buwiz-session", plugin: manifest().id, app: app.id, open_id: args.open_id, ks_pub: args.ks_pub,
     perms_sha256: misbehave("wrong-perms") ? sha256hex("not the permissions") : args.perms_sha256, not_after: args.not_after,
   };
 
@@ -242,7 +240,7 @@ function resolveCommand(value) {
 
   if (value === "bad-props") return { result: "open", app: "card", props: { label: "no ticket" }, title: "Fixture Card" };
 
-  // starter flows (15.2): text for the composer, never sent by Rox
+  // starter flows (15.2): text for the composer, never sent by Buwiz Bot
   if (value === "prompt") return { result: "prompt", text: "Draft this month's board update:\n- what shipped\n- what is next" };
 
   if (value === "prompt-long") return { result: "prompt", text: "x".repeat(4001) };
@@ -431,26 +429,19 @@ function mcpServer(serverInfo, { capabilities, instructions }) {
 
 // ── the MCP server ───────────────────────────────────────────────────────
 const instructions = process.env.FX_INSTRUCTIONS ?? "## Fixture\nUse fx_search to find items; fx_echo answers with what it was sent.";
-const server = mcpServer({ name: "rox-fixture", version: "1.0.0" }, { capabilities: { tools: {}, resources: { listChanged: true } }, instructions });
+const server = mcpServer({ name: "buwiz-fixture", version: "1.0.0" }, { capabilities: { tools: {}, resources: { listChanged: true } }, instructions });
 
-const ROX = misbehave("rox");
-const reservedName = (name) => (ROX ? name.replace(/^buwiz\./, "rox.") : name);
-const manifestUri = ROX ? "rox://manifest" : "buwiz://manifest";
+const manifestUri = "buwiz://manifest";
 
 server.setRequestHandler("tools/list", () => ({
   tools: [
-    ...Object.keys(RESERVED).map((name) => ({ name: reservedName(name), description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
+    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
     ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations, ...(t.meta && { _meta: t.meta }) })),
   ],
 }));
 
 server.setRequestHandler("tools/call", async (req, extra) => {
   const { name, arguments: args = {}, _meta: meta } = req.params;
-
-  if (ROX && name !== "rox.provision") {
-    if (misbehave("rox:quiet")) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
-    throw new McpError(ErrorCode.InvalidRequest, "rox.provision must come first");
-  }
 
   if (Object.hasOwn(RESERVED, name)) {
     const result = RESERVED[name](args);

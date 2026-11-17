@@ -20,14 +20,10 @@ use crate::js;
 
 // 1.0: the buwiz names (buwiz.* reserved tools, buwiz:// resources,
 // buwiz-call/buwiz-session, buwiz/<key> _meta), packages (plugin.json's
-// signed buwiz block) and accounts (buwiz.account.set/clear). 2.0 and 2.1
-// were its pre-release numbers: a mini app naming one is told to install
-// its 1.0 version.
+// signed buwiz block) and accounts (buwiz.account.set/clear).
 pub const HOST_PROTOCOL: &str = "1.0.0";
 pub const APP_MIME: &str = "text/x-nsh-tsx";
 pub const MANIFEST_URI: &str = "buwiz://manifest";
-/// The manifest a plugin built for Rox serves instead.
-pub const ROX_MANIFEST_URI: &str = "rox://manifest";
 
 /// Section 24, the limits a manifest is held to.
 pub mod limits {
@@ -603,23 +599,6 @@ fn fields(m: &Map<String, Value>) -> Res {
 
 // ── verification (6.2) ───────────────────────────────────────────────────
 
-/// 2.0.x and 2.1.x: the pre-release numbers of protocol 1.0.
-pub fn pre_release(protocol: &str) -> bool {
-    let mut parts = protocol.split('.');
-    parts.next() == Some("2") && matches!(parts.next(), Some("0" | "1"))
-}
-
-/// Why a mini app that names a pre-release protocol is refused.
-pub fn pre_release_message(title: &str, protocol: &str) -> String {
-    format!("{title} uses the pre-release mini app protocol {protocol}; install its 1.0 version")
-}
-
-/// Why a plugin built for Rox is refused (its `rox.*` tools, its
-/// rox://manifest, its asking for rox.provision).
-pub fn rox_message(title: &str) -> String {
-    format!("{title} was made for Rox, an older protocol; install its 1.0 version")
-}
-
 fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
     let Some(protocol) = m.get("protocol").and_then(Value::as_str).filter(|p| semver(p).is_some()) else {
         return Err(invalid("protocol", "must be a semver string"));
@@ -629,19 +608,9 @@ fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
         (parts.next().unwrap_or(f64::NAN), parts.next().unwrap_or(f64::NAN))
     };
     let ((maj, min), (hmaj, hmin)) = (two(protocol), two(host));
-    if pre_release(protocol) {
-        let title = m.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).map(|t| js::slice_utf16(t, 80)).unwrap_or_else(|| "this mini app".into());
-        return Err(V1Error::new("protocol_unsupported", pre_release_message(&title, protocol)));
-    }
-    if maj < hmaj {
-        return Err(V1Error::new("protocol_unsupported", format!("the plugin implements protocol {protocol}: this plugin is built for an older protocol; update it")));
-    }
-    if maj != hmaj || min > hmin {
+    if maj != hmaj || min != hmin {
         let n = js::number;
-        return Err(V1Error::new(
-            "protocol_unsupported",
-            format!("the plugin implements protocol {protocol}; this Buwiz Bot supports {}.{}, so it needs a Buwiz Bot that supports {}.{}", n(hmaj), n(hmin), n(maj), n(min)),
-        ));
+        return Err(V1Error::new("protocol_unsupported", format!("the plugin implements protocol {protocol}; this Buwiz Bot supports {}.{}", n(hmaj), n(hmin))));
     }
     let version_ok = m.get("version").and_then(Value::as_str).is_some_and(|v| semver(v).is_some() && v.encode_utf16().count() <= L::VERSION);
     if !version_ok {
@@ -720,7 +689,7 @@ pub fn verify(text: &str, trust: &Trust, host: &str) -> Res<Verified> {
 // ── checks against the running plugin ────────────────────────────────────
 
 /// The plugin's tools/list against its manifest: every tool but the
-/// reserved `rox.*` follows the grammar and starts with `<short>_`
+/// reserved `buwiz.*` follows the grammar and starts with `<short>_`
 /// (MAN-10), every tool the manifest names exists, and a routine's writes
 /// are tools that change data (6.7).
 pub fn check_tools(m: &Value, tools: &[Value]) -> Res {
@@ -1167,26 +1136,15 @@ mod tests {
             assert!(verify(&text, &trust, HOST_PROTOCOL).is_ok(), "{p}");
         }
         assert_eq!(HOST_PROTOCOL, "1.0.0");
-        // 1.1 and 3.0: a newer Buwiz Bot
-        for (p, want) in [("1.1.0", "1.1"), ("3.0.0", "3.0"), ("2.2.0", "2.2")] {
+        // any other number gets the one refusal: newer, older, and the
+        // numbers 1.0 was prepared under
+        for p in ["1.1.0", "3.0.0", "2.0.0", "2.1.0", "2.1.4", "2.2.0", "0.9.0"] {
             let e = refused(|m| m["protocol"] = json!(p));
             assert_eq!(
                 (e.code.as_str(), e.message),
-                ("protocol_unsupported", format!("the plugin implements protocol {p}; this Buwiz Bot supports 1.0, so it needs a Buwiz Bot that supports {want}"))
+                ("protocol_unsupported", format!("the plugin implements protocol {p}; this Buwiz Bot supports 1.0"))
             );
         }
-        // 2.0 and 2.1 were 1.0's pre-release numbers
-        for p in ["2.0.0", "2.1.0", "2.1.4"] {
-            let e = refused(|m| m["protocol"] = json!(p));
-            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("Fixture uses the pre-release mini app protocol {p}; install its 1.0 version")));
-        }
-        let e = refused(|m| {
-            m["protocol"] = json!("2.0.0");
-            m.as_object_mut().unwrap().remove("title");
-        });
-        assert_eq!(e.message, "this mini app uses the pre-release mini app protocol 2.0.0; install its 1.0 version");
-        let old = refused(|m| m["protocol"] = json!("0.9.0"));
-        assert_eq!((old.code.as_str(), old.message.as_str()), ("protocol_unsupported", "the plugin implements protocol 0.9.0: this plugin is built for an older protocol; update it"));
         assert_eq!(refused(|m| m["short"] = json!("buwiz")).message, "short: buwiz is reserved");
         // the agent surface hides the built-in prefixes: such a short would lose its tools
         for s in ["office", "skill", "routine", "bot"] {

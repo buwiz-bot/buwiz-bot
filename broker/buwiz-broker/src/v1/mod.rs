@@ -215,7 +215,7 @@ mod tests {
             ("tool", "bir_resolve", "bir-resolve"),
             ("propKey", "ticket", "_x"),
             ("ticket", "tkt_0123456789ABCDEFGHJKMNPQRS", "tkt_0123456789ABCDEFGHIJKLMN"),
-            ("reservedTool", "buwiz.session.open", "rox_session"),
+            ("reservedTool", "buwiz.session.open", "other_session"),
             ("publisherId", "app.buwiz", "Dev"),
             ("keyId", "gc-2026-01", "-gc"),
         ] {
@@ -225,7 +225,7 @@ mod tests {
         assert!(grammar_ok("publisherId", "ab.c"));
         assert!(!grammar_ok("publisherId", "a.cd"));
         assert!(grammar_ok("keyId", &"k".repeat(64)) && !grammar_ok("keyId", &"k".repeat(65)));
-        assert!(!grammar_ok("reservedTool", "buwiz.") && !grammar_ok("reservedTool", "rox.session.open"));
+        assert!(!grammar_ok("reservedTool", "buwiz.") && !grammar_ok("reservedTool", "other.session.open"));
     }
 
     #[test]

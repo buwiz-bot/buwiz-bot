@@ -822,7 +822,7 @@ fn events(ctx: &HubCtx) -> HubResponse {
     let sub = ctx.plugins.as_ref().map(|h| h.events());
     let badges = ctx.plugins.as_ref().map(|h| h.badge_events());
     tokio::spawn(async move {
-        if tx.send(Bytes::from_static(b": rox broker events\n\n")).await.is_err() {
+        if tx.send(Bytes::from_static(b": buwiz broker events\n\n")).await.is_err() {
             return;
         }
         let mut beat = tokio::time::interval(Duration::from_secs(25));

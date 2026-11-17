@@ -216,14 +216,13 @@
     {"kind":"propKey","values":[["ticket",true],["_x",false]]},
     {"kind":"ticket","values":[["tkt_0123456789ABCDEFGHJKMNPQRS",true],["tkt_0123456789ABCDEFGHIJKLMN",false]]},
     {"kind":"canonicalToken","values":[["@bir:taxprofile:tkt_0123456789ABCDEFGHJKMNPQRS",true],["@bir:taxprofile:123456789",false]]},
-    {"kind":"reservedTool","values":[["buwiz.session.open",true],["rox_session",false]]},
+    {"kind":"reservedTool","values":[["buwiz.session.open",true],["other_session",false]]},
     {"kind":"publisherId","values":[["app.buwiz",true],["Dev",false]]},
     {"kind":"keyId","values":[["gc-2026-01",true],["-gc",false]]}
   ],
   "grammar_other": {
     "typed": [["see @bir:taxprofile:123-456 now",[{"short":"bir","scope":"taxprofile","value":"123-456"}]],["mail a@bir:taxprofile:1",[]]],
     "slash": [["/bir:taxform 1601C 2026-09",["bir","taxform","1601C 2026-09"]],["/Tax",null]],
-    "rox_provision_is_a_reserved_tool": false,
     "canonical": {"short":"fx","scope":"item","ticket":"tkt_0123456789ABCDEFGHJKMNPQRS"}
   }
 }
