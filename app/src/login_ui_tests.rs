@@ -806,6 +806,20 @@ fn the_logins_page_adds_edits_shares_and_deletes_and_never_shows_a_secret() {
     no_mark(&app);
 }
 
+/// What a shown password's element says in its place.
+const SHOWN_LABEL: &str = "Saved password is shown on screen";
+
+/// Waits until the password text is drawn.
+fn shown_on_screen(app: &mut Headless) {
+    for _ in 0..250 {
+        app.pump(Duration::from_millis(20));
+        if app.texts().contains(&MARK) {
+            return;
+        }
+    }
+    panic!("the password never showed: {:?}", app.texts());
+}
+
 /// What the `log` crate was given, for the test of what a shown password reaches.
 struct Lines(Mutex<Vec<String>>);
 
@@ -838,12 +852,14 @@ fn files_holding(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf>
 }
 
 /// Show, through the page's own button and the test owner in place of Touch ID: the password is
-/// on screen but out of the accessibility tree (what a program with the access right, and the dev
-/// agent's snapshot, read), and it is in no log, no debug print of what holds it, no request to the
-/// broker and no file in the test's home. Hide takes it off the screen.
+/// on screen, the page marks its text hidden from accessibility and gives the element a fixed
+/// label (nsh's `spec_for` prefers a label to the text, and its static-text value is the label),
+/// and it is in no log, no debug print of what holds it, no request to the broker and no file in
+/// the test's home. This pins what the page sets; what a live macOS element then answers is nsh's
+/// (not run here). Hide takes it off the screen.
 #[test]
-fn a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file() {
-    if !in_child("a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file") {
+fn a_shown_password_is_marked_hidden_from_accessibility_and_reaches_no_log_request_or_file() {
+    if !in_child("a_shown_password_is_marked_hidden_from_accessibility_and_reaches_no_log_request_or_file") {
         return;
     }
     assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
@@ -855,25 +871,19 @@ fn a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file() {
     typed(&mut app, "/vault");
     app.wait_for("Show");
     no_mark(&app);
+    assert!(!app.has(SHOWN_LABEL), "{:?}", app.texts());
     let asks = crate::vault::owner_asks();
 
     app.press("Show");
-    let mut on_screen = false;
-    for _ in 0..250 {
-        app.pump(Duration::from_millis(20));
-        if app.texts().contains(&MARK) {
-            on_screen = true;
-            break;
-        }
-    }
-    assert!(on_screen, "the password never showed: {:?}", app.texts());
+    shown_on_screen(&mut app);
     settle(&mut app);
     assert_eq!(crate::vault::owner_asks(), asks + 1, "one confirmation, from the test owner");
     assert!(app.has("Hide"), "{:?}", app.texts());
 
-    // out of the accessibility tree while it's on screen
+    // marked hidden, and its element's label is the fixed phrase
     assert!(app.texts().contains(&MARK), "the screen shows it");
-    assert!(!app.readable_texts().iter().any(|t| t.contains(MARK)), "a program reading the tree gets the password: {:?}", app.readable_texts());
+    assert!(!app.readable_texts().iter().any(|t| t.contains(MARK)), "the page left it readable: {:?}", app.readable_texts());
+    assert!(app.has(SHOWN_LABEL), "its element has the fixed label: {:?}", app.labels);
     assert!(!app.labels.iter().any(|(_, l)| l.contains(MARK)) && !app.has(MARK));
 
     // in no log, and in nothing that prints the state holding it
@@ -903,6 +913,44 @@ fn a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file() {
     assert!(!app.texts().iter().any(|t| t.contains(MARK)), "Hide leaves it on screen: {:?}", app.texts());
     assert!(app.has("Show"));
     assert!(!LOGGED.0.lock().unwrap().join("\n").contains(MARK));
+}
+
+/// A shown password goes when Settings closes: opening the page again within the time shows
+/// dots and asks nothing, and Show asks the owner again. The first show's timer doesn't end a
+/// later one early.
+#[test]
+fn a_shown_password_goes_with_the_page_and_the_next_show_asks_again() {
+    if !in_child("a_shown_password_goes_with_the_page_and_the_next_show_asks_again") {
+        return;
+    }
+    assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+    crate::vault::SHOWN_MS.store(2500, std::sync::atomic::Ordering::SeqCst);
+    let (mut app, _seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    typed(&mut app, "/vault");
+    app.wait_for("Show");
+    let asks = crate::vault::owner_asks();
+
+    app.press("Show");
+    shown_on_screen(&mut app);
+    assert_eq!(crate::vault::owner_asks(), asks + 1);
+
+    on(&mut app, || store().settings_open.set(false));
+    settle(&mut app);
+    typed(&mut app, "/vault");
+    app.wait_for("Show");
+    no_mark(&app);
+    assert_eq!(crate::vault::owner_asks(), asks + 1, "reopening asks nothing and shows nothing");
+    assert!(!app.has("Hide"), "{:?}", app.texts());
+
+    app.press("Show");
+    shown_on_screen(&mut app);
+    assert_eq!(crate::vault::owner_asks(), asks + 2, "the owner is asked again");
+    // the first show's 2.5 s are up now; the second's are not
+    app.pump(Duration::from_millis(1800));
+    assert!(app.texts().contains(&MARK), "the first show's timer ended the second early: {:?}", app.texts());
+    app.pump(Duration::from_millis(1500));
+    no_mark(&app);
 }
 
 /// Each `/vault` line, typed: the page, share and unshare with a Bot, asking which of two logins,

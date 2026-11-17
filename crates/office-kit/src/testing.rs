@@ -203,24 +203,26 @@ impl Headless {
     }
 
     pub fn texts(&self) -> Vec<&str> {
-        self.texts.iter().filter(|(id, _)| self.live.contains(id)).map(|(_, t)| t.as_str()).collect()
+        self.live_texts(|_| true)
+    }
+
+    /// The live texts whose view `keep` says yes to.
+    fn live_texts(&self, keep: impl Fn(NodeId) -> bool) -> Vec<&str> {
+        self.texts.iter().filter(|(id, _)| self.live.contains(id) && keep(**id)).map(|(_, t)| t.as_str()).collect()
     }
 
     /// [`Headless::texts`], less every text that hides itself, or sits in a view that hides, from
-    /// assistive technologies: what a program reading the accessibility tree is given.
+    /// assistive technologies: the views the page marked hidden, by the prop it sent.
     pub fn readable_texts(&self) -> Vec<&str> {
-        let hidden = |mut id: NodeId| {
-            loop {
-                if self.hidden.contains(&id) {
-                    return true;
-                }
-                match self.parents.get(&id) {
-                    Some(parent) => id = *parent,
-                    None => return false,
-                }
+        self.live_texts(|mut id| loop {
+            if self.hidden.contains(&id) {
+                return false;
             }
-        };
-        self.texts.iter().filter(|(id, _)| self.live.contains(id) && !hidden(**id)).map(|(_, t)| t.as_str()).collect()
+            match self.parents.get(&id) {
+                Some(parent) => id = *parent,
+                None => return true,
+            }
+        })
     }
 
     /// The live text view showing `text`, whole, and its content as the engine sent it (its line

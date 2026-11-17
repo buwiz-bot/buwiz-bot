@@ -57,7 +57,7 @@ use keychain::SecretStore;
 pub(crate) use origin::{SiteMatch, plausible_site, site_match, site_origin};
 pub(crate) use page::{SHARE_ALL_MEANS, open_add, open_page, settings_page};
 #[cfg(test)]
-pub(crate) use page::{SITE_CHANGE_UNSHARES, shown_debug};
+pub(crate) use page::{SHOWN_MS, SITE_CHANGE_UNSHARES, shown_debug};
 #[cfg(test)]
 pub(crate) use touch_id::owner_asks;
 use touch_id::{AuthOutcome, OwnerGate};
