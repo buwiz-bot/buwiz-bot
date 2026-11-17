@@ -1,12 +1,14 @@
 # Buwiz Bot
 
 A native chat app in Rust on Native Shell (nsh). `app/` is the app,
-`server/` the broker it talks to (Node), `nsh/` the nsh fork it builds on
+`broker/` the broker it talks to (Rust), `nsh/` the nsh fork it builds on
 (a submodule), `connectors/` and `blaze/` (ra-jit, a submodule) its
 helpers. `office/` holds the office editor and viewer pages, seeds and the
 BetterOffice packages (`npm ci` there; `npm run build:office-editor` builds the
 editor the bundles ship); `broker/buwiz-broker/assets/` the templates, bundled
-plugins and trust list. `README.md` explains the build and the live loop.
+plugins and trust list; `bridge/` is rox-bridge, the MCP server an outside
+coding agent runs to talk with a Buwiz Bot agent (`npm ci` there). `README.md`
+explains the build and the live loop.
 
 ## Private files
 
@@ -52,10 +54,14 @@ are lost at the next rebuild.
   rebuild with `RUSTC_WRAPPER=` set empty, and check the version a binary
   reports before you install it.
 
-## Working on the broker (`server/`)
+## Working on the broker (`broker/`)
 
 - The broker holds chats, model calls, routines, v1 plugin hosting and
-  agent messaging. Code is in `server/src/`.
+  agent messaging. It is the Rust workspace in `broker/` (`buwiz-broker` is
+  the binary); build and test with `cd broker && cargo test --locked`. Its
+  hub, plugin host and MCP host are always on: `--no-node`,
+  `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST` and `BUWIZ_BROKER_MCP_HOST` are
+  accepted and do nothing.
 - The broker's HTTP tests are in `broker/buwiz-broker/tests/http/` (plain
   `node`). Run them with `broker/buwiz-broker/tests/http/run.sh
   <built buwiz-broker>`; each test starts the broker on `TEST_PORT` (8797 by
@@ -64,10 +70,10 @@ are lost at the next rebuild.
   `run.sh <bin> --core` runs everything else without it (`--office` runs only
   the office group). CI's broker job runs them all. The plugin host's own are
   `v1-plugins`, `v1-sessions` and `v1-names`, which speak to `/v1/host/*` as
-  the app does. No test is left in `server/test/` (#262): only helper files
-  that step 6 deletes with `server/`; `cd server && npm test` runs no tests.
+  the app does. The fake model, stub commands and plugin and MCP fixtures
+  they and the Rust tests start are under `broker/buwiz-broker/tests/`.
+- `bridge/rox-bridge.mjs` talks to the broker's `/v1/bridge/*` routes; its
+  setup is in the file's header.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.
-- A plugin's `BUWIZ_BROKER_DIR` is this `server/` directory (BIR's manifest
-  signing and broker tests read `src/v1/` from it).

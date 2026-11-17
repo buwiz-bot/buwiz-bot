@@ -177,7 +177,7 @@ Left out on purpose, after inspecting the bundle:
 
 ```sh
 export CARGO_TARGET_DIR=...   # optional; and BROKER_TARGET_DIR, NSH_TARGET_DIR
-(cd server && npm ci && npm run build:office-editor)
+(cd office && npm ci && npm run build:office-editor)
 scripts/release/build.sh
 
 # a dry run, signed ad hoc
@@ -210,9 +210,8 @@ publishes nothing.
 
 `.github/workflows/ci.yml` runs, on every PR, `cargo test -p buwiz-bot -p
 buwiz-office-kit -p buwiz-word -p buwiz-spreadsheet` (the app workspace;
-the office crates take their fonts from `server/`'s `npm ci`) and the
-broker workspace's `cargo test` (whose diff tests run `server/`'s Node
-code).
+the office crates take their fonts from `office/`'s `npm ci`) and the
+broker workspace's `cargo test` and HTTP tests.
 
 GitHub Actions has been blocked on billing on these accounts before; a red
 or never-started run may be that and not the code. The scripts run the

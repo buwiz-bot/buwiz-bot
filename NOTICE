@@ -34,10 +34,6 @@ broker/buwiz-broker/src/hub/policy/gate.rs and policy/tests.rs port parts
 of its src/local_exec.rs and their tests, Copyright (c) the opengrok-server
 authors, used under the MIT License (text below).
 
-server/tools/oxlint/anti-slop/ is vendored from
-https://github.com/dmmulroy/anti-slop (commit 13909c9), Copyright (c) 2026
-Dillon Mulroy, under the MIT License (server/tools/oxlint/anti-slop/LICENSE).
-
 MIT License
 
 Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.

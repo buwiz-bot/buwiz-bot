@@ -3,7 +3,7 @@
 A native macOS chat client — the desktop app formerly called Grok Shell,
 ported from TSX to Rust. The UI is NSH (`nsh/`, AppKit backend); live
 patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
-(`blaze/`); the backend is the unchanged app server.
+(`blaze/`); the backend is the Rust broker in `broker/`.
 
 - Bundle id: `com.buwiz.bot` (`dev.goldcoders.rox` before the rename; see
   [Identity and data](#identity-and-data))
@@ -25,9 +25,12 @@ patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
   ```
 
 - `cargo-watch` (`cargo install cargo-watch`).
-- The backend: `grok-shell/server/app-server.mjs` listening on
-  `http://127.0.0.1:8787` — start it the usual way (`node
-  server/app-server.mjs` in the grok-shell checkout).
+- The backend: the Rust broker (`broker/`, `buwiz-broker`) listening on
+  `http://127.0.0.1:8787` — `cd broker && cargo build -p buwiz-broker`, then
+  `target/debug/buwiz-broker --data <dir> --assets <dir>` (`--assets` is a
+  bundle's `broker/server`; `app/bundle-dev.sh` makes one). Its HTTP tests:
+  `broker/buwiz-broker/tests/http/run.sh <buwiz-broker binary>`; only the
+  office group needs `npm ci` in `office/` (`--core` leaves it out).
 
 ## Getting started
 
@@ -167,8 +170,7 @@ Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …).
 The names from before, `ROX_*` and the three `GROK_*` ones, still work: a
 variable set only by its old name is read, and the program says once on
 stderr `<old> is an old name; use <new>`. The table is in
-`broker/buwiz-protocol/src/env.rs` (and `server/src/env.mjs`, the same);
-`server/sdk/mini-app/docs/migrating-to-buwiz-names.md` lists it. A test
+`broker/buwiz-protocol/src/env.rs`. A test
 instance is one that sets `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or
 `BUWIZ_DATA_DIR`, or any of them by its old name.
 
@@ -326,7 +328,8 @@ cd app && cargo build --target aarch64-apple-darwin
 
 ```
 app/           the Buwiz Bot application (dev.sh / ios.sh / ios-dev.sh inside)
-server/        the broker Buwiz Bot talks to (Node): chats, models, routines, plugins, agent messaging
+broker/        the broker Buwiz Bot talks to (Rust): chats, models, routines, plugins, agent messaging; its HTTP tests are in broker/buwiz-broker/tests/http/
+bridge/        rox-bridge, the MCP server an outside coding agent uses to talk with a Buwiz Bot agent (npm ci here)
 office/        the office editor page and viewer, seeds, and the BetterOffice packages and fonts (npm ci here, then npm run build:office-editor)
 broker/buwiz-broker/assets/  what the Rust broker compiles in or ships: templates, plugins, trust.json
 app/src/hot.rs the patchable UI root
