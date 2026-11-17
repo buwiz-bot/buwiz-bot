@@ -142,7 +142,9 @@ impl Settle {
 /// Where a card's hold is, as the card draws it: nothing over the held
 /// app at first, the placeholder once the hold is long enough to see, its
 /// fade once the app shows, then nothing again. Inline cards and generated
-/// widget cards share it (`mini::hold_card`).
+/// widget cards share it (`mini::hold_heard`, `hold_cleanup` and
+/// `hold_overlay`; the widget's start and marking are `Shown::start` and
+/// `Hold::revealed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hold {
     Quiet,
@@ -178,6 +180,20 @@ impl Hold {
         }
     }
 
+    /// Whether the app has been unhidden: it fades in or is shown. This is
+    /// the moment a widget counts as seen, not when the fade ends.
+    pub fn revealed(self) -> bool {
+        matches!(self, Hold::Fading | Hold::Done)
+    }
+
+    /// Whether the grid's progress (`Store::art_started`) is dropped on
+    /// the move from `prev` to `now`: once, when the card is revealed. A
+    /// card that is left held keeps it, so coming back goes on from there;
+    /// one mounted already revealed never had it.
+    pub fn drops_progress(prev: Option<Hold>, now: Hold) -> bool {
+        now.revealed() && prev.is_some_and(|p| !p.revealed())
+    }
+
     /// Whether the placeholder is over the app.
     pub fn covers(self) -> bool {
         matches!(self, Hold::Placeholder | Hold::Fading)
@@ -195,6 +211,18 @@ impl Shown {
     /// `app` showed: its card's hold is over.
     pub fn mark(&mut self, app: &str) {
         self.0.insert(app.to_owned());
+    }
+
+    /// The hold a card mounting the widget `app` starts in.
+    pub fn start(&self, app: &str) -> Hold {
+        Hold::start(self.holds(app), false)
+    }
+
+    /// `app`'s card is now in `hold`: it counts as shown once revealed.
+    pub fn note(&mut self, app: &str, hold: Hold) {
+        if hold.revealed() {
+            self.mark(app);
+        }
     }
 
     /// Whether a card mounting `app` holds it.
@@ -468,15 +496,46 @@ mod tests {
     }
 
     #[test]
-    fn a_reload_of_a_widget_does_not_rearm_and_a_remount_does() {
+    fn a_reload_of_a_widget_does_not_rearm() {
         let t0 = Instant::now();
         let mut s = Settle::new(t0);
         run(&mut s, t0, ms(0), &[Some(1), Some(1), Some(1)]);
         // the widget's source changed (a revise): the same card, still shown
         s.loaded(false);
         assert!(!s.holding());
-        // a real remount of a widget never shown holds again
-        assert!(Shown::default().holds("R2"));
+    }
+
+    #[test]
+    fn a_widgets_start_and_marking_follow_the_set() {
+        let mut shown = Shown::default();
+        // first mount holds
+        assert_eq!(shown.start("R1"), Hold::Quiet);
+        // not marked while covered or quiet
+        for h in [Hold::Quiet, Hold::Placeholder] {
+            shown.note("R1", h);
+            assert_eq!(shown.start("R1"), Hold::Quiet, "{h:?}: a remount before the reveal holds again");
+        }
+        // marked the moment it is revealed, fade still pending
+        shown.note("R1", Hold::Fading);
+        assert_eq!(shown.start("R1"), Hold::Done, "a remount after it starts revealed");
+        // another widget is unaffected
+        assert_eq!(shown.start("R2"), Hold::Quiet);
+        // a direct reveal (settled before the placeholder) marks too
+        shown.note("R3", Hold::Done);
+        assert_eq!(shown.start("R3"), Hold::Done);
+    }
+
+    #[test]
+    fn the_grids_progress_is_kept_until_the_reveal() {
+        // held, covered, left and remounted: never dropped
+        assert!(!Hold::drops_progress(None, Hold::Quiet));
+        assert!(!Hold::drops_progress(Some(Hold::Quiet), Hold::Placeholder));
+        // dropped once, at the reveal
+        assert!(Hold::drops_progress(Some(Hold::Placeholder), Hold::Fading));
+        assert!(Hold::drops_progress(Some(Hold::Quiet), Hold::Done));
+        assert!(!Hold::drops_progress(Some(Hold::Fading), Hold::Done));
+        // a card mounted already revealed has nothing to drop
+        assert!(!Hold::drops_progress(None, Hold::Done));
     }
 
     #[test]

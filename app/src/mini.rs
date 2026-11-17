@@ -73,6 +73,7 @@ fn mini_app_with(
     let owns = use_context::<OwnsKeys>();
     native("rox/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
+        .when(heard.is_some(), |n| n.prop("hold", move || JsonValue::Bool(held)))
         .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
         .prop("host_keys", || serde_json::json!(crate::keys::host_keys()))
         .prop("design", move || match &design {
@@ -82,7 +83,6 @@ fn mini_app_with(
             }
             None => JsonValue::Null,
         })
-        .prop("hold", move || JsonValue::Bool(held))
         .on_native_event(move |e: &NativeEvent| {
             if &*e.name == "natural"
                 && let (Some(f), Some(h)) = (&on_natural, e.data.as_f64()) {
@@ -123,13 +123,10 @@ pub(crate) fn mini_app_widget(
     design: Option<std::rc::Rc<dyn Fn() -> (f32, f32)>>,
     on_natural: Option<std::rc::Rc<dyn Fn(f32)>>,
 ) -> impl IntoElement {
-    let hold = signal(Hold::start(store().shown_widgets.borrow().holds(app), false));
+    let hold = signal(store().shown_widgets.borrow().start(app));
     let name = app.to_owned();
-    effect(move || {
-        if hold.get() == Hold::Done {
-            store().shown_widgets.borrow_mut().mark(&name);
-        }
-    });
+    // seen from the moment it is unhidden, not when its fade ends
+    effect(move || store().shown_widgets.borrow_mut().note(&name, hold.get()));
     hold_cleanup(hold, id.clone());
     view()
         .w_full()
@@ -153,16 +150,15 @@ fn hold_heard(hold: Signal<Hold>) -> impl Fn(&NativeEvent) + 'static {
     }
 }
 
-/// The grid's progress counts from this hold, not from one before.
+/// The grid's progress (`Store::art_started`) is dropped once, when the
+/// card is revealed: a card left while held picks up where it was.
 fn hold_cleanup(hold: Signal<Hold>, key: String) {
-    let (k1, k2) = (key.clone(), key);
+    let prev = std::cell::Cell::new(None);
     effect(move || {
-        if hold.get() == Hold::Done {
-            store().art_started.borrow_mut().remove(&k1);
+        let now = hold.get();
+        if Hold::drops_progress(prev.replace(Some(now)), now) {
+            store().art_started.borrow_mut().remove(&key);
         }
-    });
-    cleanup(move || {
-        store().art_started.borrow_mut().remove(&k2);
     });
 }
 
@@ -179,13 +175,7 @@ fn hold_overlay(hold: Signal<Hold>, key: String, cover: impl Fn(View) -> View + 
             } else {
                 crate::dotgrid::dot_grid(key.clone(), crate::dotgrid::TAU_APP).into_element()
             };
-            cover(view().flex_1().child(grid))
-                .absolute()
-                .top(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .bg(crate::theme::CARD)
+            crate::dotgrid::cover(cover(view().flex_1().child(grid)))
                 .pointer_events(PointerEvents::None)
                 .opacity(move || if hold.get() == Hold::Fading { 0.0f32 } else { 1.0 })
                 .transition_opacity()
