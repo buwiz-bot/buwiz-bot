@@ -126,7 +126,7 @@ pub fn home(ctx: &HubCtx, base: &str) -> Home {
     ctx.store.read(|s| {
         let holder = s.list.iter().find(|t| t.turns.iter().any(|u| u.name.as_deref().and_then(base_of) == Some(base)));
         match holder {
-            Some(t) => Home { owner: s.thread_bot(&t.id).map(|b| b.id.clone()).unwrap_or_else(|| CHATS.to_owned()), thread: Some(t.id.clone()) },
+            Some(t) => Home { owner: policy::owner_in(s, &t.id), thread: Some(t.id.clone()) },
             None => Home { owner: CHATS.to_owned(), thread: None },
         }
     })

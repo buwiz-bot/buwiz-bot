@@ -175,6 +175,41 @@ pub fn off_keys(ctx: &HubCtx, owner: &str) -> HashSet<String> {
     rows.into_iter().filter(|r| r.1 == Pos::Off).map(|r| r.0).chain(off).collect()
 }
 
+/// The profile whose switches apply to the chat `thread` in state `s`: its Bot's id, else
+/// [`CHATS`] (a chat no Bot owns, or one this broker has not heard of yet).
+pub fn owner_in(s: &crate::hub::store::State, thread: &str) -> String {
+    s.thread_bot(thread).map(|b| b.id.clone()).unwrap_or_else(|| CHATS.to_owned())
+}
+
+/// What an `@` scope's resolve and complete ask first: the plugin or MCP server `key` (`v1:<plugin id>`,
+/// `mcp:<server id>`) must be on for the Bot of the chat `thread`. → the plain sentence when it is
+/// not, or when no chat is named (the switches are a Bot's, so there is no answer without one).
+pub fn scope_refusal(ctx: &HubCtx, thread: &str, key: &str) -> Option<(&'static str, String)> {
+    if thread.is_empty() {
+        return Some(("invalid_args", "Say which chat this is for: the switches are a Bot's.".to_owned()));
+    }
+    let owner = ctx.store.read(|s| owner_in(s, thread));
+    if tool_state(ctx, &owner, key) != Pos::Off {
+        return None;
+    }
+    let title = keys::label_of(ctx, key).map(|l| l.0).unwrap_or_else(|| key.to_owned());
+    let whose = if owner == CHATS { "plain chats" } else { "this Bot" };
+    Some(("disabled", format!("{title} is switched off for {whose}. Turn it on in Tools to use it here.")))
+}
+
+/// `GET /v1/host/tools/off?thread=<chat>`: the plugins and MCP servers (`v1:…`, `mcp:…` keys) switched
+/// off for the chat's Bot, which the composer's `@` menu leaves out. The same switches
+/// [`scope_refusal`] reads.
+pub fn host_scopes_off(ctx: &HubCtx, thread: &str) -> Result<Value, V1Error> {
+    if thread.is_empty() {
+        return V1Error::err("invalid_args", "send ?thread=<chat>");
+    }
+    let owner = ctx.store.read(|s| owner_in(s, thread));
+    let mut off: Vec<String> = off_keys(ctx, &owner).into_iter().filter(|k| k.starts_with("v1:") || k.starts_with("mcp:")).collect();
+    off.sort();
+    Ok(json!({"ok": true, "bot": owner, "off": off}))
+}
+
 /// The Mac's shell mode.
 pub fn mode(ctx: &HubCtx) -> Mode {
     let m: Option<String> = db(ctx, |c| c.query_row("SELECT mode FROM shell_mode WHERE id=1", [], |r| r.get(0)).optional()).ok().flatten();

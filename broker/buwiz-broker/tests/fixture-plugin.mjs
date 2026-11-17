@@ -2,9 +2,11 @@
 // stdio, buwiz.provision and buwiz.session.open, the manifest FX_MANIFEST names.
 // While the file FX_HOLD names is there, provisioning waits, after writing
 // <FX_HOLD>.seen: a test's way to act during a restart. FX_INIT names a file
-// it writes the initialize request's params to.
+// it writes the initialize request's params to. The tool `<short>_find` answers
+// a resolve with one choice, and appends a line to the file FX_CALLS names for
+// each call, so a test counts what reached the plugin.
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const text = readFileSync(process.env.FX_MANIFEST, "utf8");
@@ -41,6 +43,11 @@ const tools = {
     return ok({ cert, cert_sig: signed(cert) });
   },
   "buwiz.session.close": () => ok({ ok: true }),
+  [`${manifest.short}_find`]: (a) => {
+    if (process.env.FX_CALLS) appendFileSync(process.env.FX_CALLS, `${JSON.stringify(a)}\n`);
+
+    return ok({ result: "choices", choices: [{ value: "a", label: "A" }] });
+  },
 };
 const reply = {
   initialize: (p) => {
