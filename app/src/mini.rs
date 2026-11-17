@@ -25,6 +25,7 @@ use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 
 use crate::live::store;
+use crate::mini_v1::settle::{self, Hold};
 
 /// Whether the live mini apps placed under it can't be seen now: a
 /// chat row out of the viewport or under a full-screen app, a full-screen
@@ -51,12 +52,28 @@ pub(crate) fn mini_app(
     design: Option<std::rc::Rc<dyn Fn() -> (f32, f32)>>,
     on_natural: Option<std::rc::Rc<dyn Fn(f32)>>,
 ) -> impl IntoElement {
+    mini_app_with(app, h, design, on_natural, None)
+}
+
+/// [`mini_app`], held while it settles when `hold` is given: the element
+/// arms the hold at its mount and its `placeholder` and `settled` events
+/// move `hold` (`Hold::hear`).
+fn mini_app_with(
+    app: &str,
+    h: f32,
+    design: Option<std::rc::Rc<dyn Fn() -> (f32, f32)>>,
+    on_natural: Option<std::rc::Rc<dyn Fn(f32)>>,
+    hold: Option<Signal<Hold>>,
+) -> impl IntoElement {
+    let heard = hold.map(hold_heard);
+    let held = hold.is_some_and(|h| h.get_untracked() != Hold::Done);
     let name = app.to_owned();
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
     let owns = use_context::<OwnsKeys>();
     native("rox/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
+        .when(heard.is_some(), |n| n.prop("hold", move || JsonValue::Bool(held)))
         .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
         .prop("host_keys", || serde_json::json!(crate::keys::host_keys()))
         .prop("design", move || match &design {
@@ -70,6 +87,9 @@ pub(crate) fn mini_app(
             if &*e.name == "natural"
                 && let (Some(f), Some(h)) = (&on_natural, e.data.as_f64()) {
                     f(h as f32);
+            }
+            if let Some(heard) = &heard {
+                heard(e);
             }
         })
         .prop("source", move || {
@@ -91,15 +111,78 @@ pub(crate) fn mini_app(
         .when(h <= 0.0, |v| v.flex_1())
 }
 
-/// Where an inline card's hold is (`mini_v1::settle`): nothing over the
-/// held app at first, the placeholder once the hold is long enough to
-/// see, its fade once the app shows, then nothing again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hold {
-    Quiet,
-    Placeholder,
-    Fading,
-    Done,
+/// A generated widget card's app (`R<n>`, `mini_app`) held like an inline
+/// card's: hidden until its layout settles, the dot grid over it from
+/// 100 ms (the one `art_placeholder` showed while it was built, keyed by
+/// the turn's `id` so its progress goes on), then shown. A widget that
+/// was shown once (`Store::shown_widgets`) is not held again when its
+/// chat is switched back to: its card is mounted again, and simply there.
+pub(crate) fn mini_app_widget(
+    app: &str,
+    id: String,
+    design: Option<std::rc::Rc<dyn Fn() -> (f32, f32)>>,
+    on_natural: Option<std::rc::Rc<dyn Fn(f32)>>,
+) -> impl IntoElement {
+    let hold = signal(store().shown_widgets.borrow().start(app));
+    let name = app.to_owned();
+    // seen from the moment it is unhidden, not when its fade ends
+    effect(move || store().shown_widgets.borrow_mut().note(&name, hold.get()));
+    hold_cleanup(hold, id.clone());
+    view()
+        .w_full()
+        .flex_1()
+        .child(mini_app_with(app, 0.0, design, on_natural, Some(hold)))
+        .child(hold_overlay(hold, id, |grid| grid))
+}
+
+/// The hold's events for a card: what `placeholder` and `settled` do to
+/// `hold` (`Hold::hear`), the fade's end included.
+fn hold_heard(hold: Signal<Hold>) -> impl Fn(&NativeEvent) + 'static {
+    let owner = Owner::current();
+    move |e: &NativeEvent| {
+        let Some(next) = hold.get_untracked().hear(&e.name, reduce_motion()) else { return };
+        hold.set(next);
+        if next == Hold::Fading {
+            owner.run(|| {
+                set_timeout(std::time::Duration::from_millis(settle::FADE_MS as u64), move || hold.set(Hold::Done))
+            });
+        }
+    }
+}
+
+/// The grid's progress (`Store::art_started`) is dropped once, when the
+/// card is revealed: a card left while held picks up where it was.
+fn hold_cleanup(hold: Signal<Hold>, key: String) {
+    let prev = std::cell::Cell::new(None);
+    effect(move || {
+        let now = hold.get();
+        if Hold::drops_progress(prev.replace(Some(now)), now) {
+            store().art_started.borrow_mut().remove(&key);
+        }
+    });
+}
+
+/// What covers a held card while `hold` says so: `cover` makes the
+/// placeholder around the grid it is given. It is made shown, then faded
+/// by flipping its opacity (a transition does not start from the default
+/// style); under Reduce Motion the grid is still.
+fn hold_overlay(hold: Signal<Hold>, key: String, cover: impl Fn(View) -> View + 'static) -> impl IntoElement {
+    when(
+        move || hold.get().covers(),
+        move || {
+            let grid = if reduce_motion() {
+                crate::dotgrid::dot_grid_still(key.clone()).into_element()
+            } else {
+                crate::dotgrid::dot_grid(key.clone(), crate::dotgrid::TAU_APP).into_element()
+            };
+            crate::dotgrid::cover(cover(view().flex_1().child(grid)))
+                .pointer_events(PointerEvents::None)
+                .opacity(move || if hold.get() == Hold::Fading { 0.0f32 } else { 1.0 })
+                .transition_opacity()
+                .duration(settle::FADE_MS)
+                .into_element()
+        },
+    )
 }
 
 /// A v1 app inline in a chat (spec 6.5): `w×h`, its viewport saying
@@ -111,13 +194,12 @@ enum Hold {
 /// that `wait_ready`s loads its data after it draws: its placeholder is
 /// up from the mount.
 pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, title: String, wait_ready: bool) -> impl IntoElement {
-    use crate::mini_v1::settle::{self, Reveal};
     let name = app.to_owned();
     let name2 = app.to_owned();
     let name3 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
-    let hold = signal(if wait_ready { Hold::Placeholder } else { Hold::Quiet });
-    let owner = Owner::current();
+    let hold = signal(Hold::start(true, wait_ready));
+    let heard = hold_heard(hold);
     let h = std::rc::Rc::new(h);
     let h2 = h.clone();
     let app_view = native("rox/mini-app")
@@ -134,60 +216,16 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
         .prop("app", move || JsonValue::String(store().mini_source_title(&name2).get()))
         // the open whose app called `buwiz.ready()`
         .prop("ready", move || store().v1.ready.with(|r| r.get(&name3).map_or(JsonValue::Null, |n| (*n).into())))
-        .on_native_event(move |e: &NativeEvent| match (&*e.name, hold.get_untracked()) {
-            ("placeholder", Hold::Quiet) => hold.set(Hold::Placeholder),
-            // settled before the placeholder was due: nothing to take down
-            ("settled", Hold::Quiet) => hold.set(Hold::Done),
-            ("settled", Hold::Placeholder) => match settle::reveal(reduce_motion()) {
-                Reveal::Swap => hold.set(Hold::Done),
-                Reveal::Fade => {
-                    hold.set(Hold::Fading);
-                    owner.run(|| {
-                        set_timeout(std::time::Duration::from_millis(settle::FADE_MS as u64), move || hold.set(Hold::Done))
-                    });
-                }
-            },
-            _ => {}
-        })
+        .on_native_event(move |e: &NativeEvent| heard(e))
         .w(px(w))
         .h(move || px(h()));
     let key = format!("settle:{app}");
-    {
-        // the grid's progress counts from this hold, not from one before
-        let (k1, k2) = (key.clone(), key.clone());
-        effect(move || {
-            if hold.get() == Hold::Done {
-                store().art_started.borrow_mut().remove(&k1);
-            }
-        });
-        cleanup(move || {
-            store().art_started.borrow_mut().remove(&k2);
-        });
-    }
-    view().w(px(w)).h(move || px(h2())).child(app_view).child(when(
-        move || matches!(hold.get(), Hold::Placeholder | Hold::Fading),
-        move || {
-            // made shown, then faded by flipping its opacity: a transition
-            // does not start from the default style
-            let grid = if reduce_motion() {
-                crate::dotgrid::dot_grid_still(key.clone()).into_element()
-            } else {
-                crate::dotgrid::dot_grid(key.clone(), crate::dotgrid::TAU_APP).into_element()
-            };
-            crate::chat::app_placeholder(title.clone(), String::new(), view().flex_1().child(grid))
-                .absolute()
-                .top(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .bg(crate::theme::CARD)
-                .pointer_events(PointerEvents::None)
-                .opacity(move || if hold.get() == Hold::Fading { 0.0f32 } else { 1.0 })
-                .transition_opacity()
-                .duration(settle::FADE_MS)
-                .into_element()
-        },
-    ))
+    hold_cleanup(hold, key.clone());
+    view()
+        .w(px(w))
+        .h(move || px(h2()))
+        .child(app_view)
+        .child(hold_overlay(hold, key, move |grid| crate::chat::app_placeholder(title.clone(), String::new(), grid)))
 }
 
 /// The appearance every mini app (generated `R<n>` widgets, v0 `mcp:` and
@@ -1570,6 +1608,13 @@ mod imp {
                 let p = value.and_then(|v| v.as_str()).filter(|p| *p == "inline").unwrap_or("full");
                 *self.fit.ivars().placement.borrow_mut() = p.to_owned();
                 if p == "inline" {
+                    self.fit.arm();
+                }
+                return;
+            }
+            if name == "hold" {
+                // a generated widget's card: held while it settles
+                if value.and_then(|v| v.as_bool()).unwrap_or(false) {
                     self.fit.arm();
                 }
                 return;
