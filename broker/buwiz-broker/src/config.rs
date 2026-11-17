@@ -8,7 +8,7 @@
 //! scripts) still pass the flag. It goes in a later release. `--node` and
 //! `--node-script` are gone and are unknown arguments.
 //! The same goes for the variables `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST`
-//! and `BUWIZ_BROKER_MCP_HOST` (and their `ROX_` names): each once chose
+//! and `BUWIZ_BROKER_MCP_HOST`: each once chose
 //! between this broker and Node for a part of it. Nothing reads them now: the
 //! hub, the plugin host and the MCP host are always on. Other repos' test
 //! scripts still set them.

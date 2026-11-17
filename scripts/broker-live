@@ -8,8 +8,7 @@
 #   scripts/broker-live start      start Buwiz Bot.app's buwiz-broker, started as
 #                                  Buwiz Bot starts it: hub, v1 and MCP hosts;
 #                                  Buwiz Bot then finds it answering
-#   scripts/broker-live restart|use-bundled   stop, then start (use-rox, the old name
-#                                  of use-bundled, still works)
+#   scripts/broker-live restart|use-bundled   stop, then start
 #   --port N (any position)        the same as PORT=N
 #
 # GS: the data dir (default ~/Library/Application Support/Buwiz Broker, or
@@ -18,19 +17,9 @@
 # other broker answers on 8787).
 # BUWIZ_APP: the Buwiz Bot.app it starts from (default ~/Applications/Buwiz Bot.app).
 # BUWIZ_LOG: its log (default ~/Library/Logs/Buwiz Bot/broker.log, the app's).
-# (ROX_APP and ROX_LOG, the old names, still work.)
 # PORT: default 8787.
 # BUWIZ_HEALTH_TRIES: how many half-seconds to wait for the broker (default 120).
 set -euo pipefail
-# old_name NEW OLD: NEW takes OLD's value (with a warning) when only OLD is set
-old_name() {
-  if [ -z "${!1+x}" ] && [ -n "${!2+x}" ]; then
-    echo "$2 is an old name; use $1" >&2
-    printf -v "$1" '%s' "${!2}"
-  fi
-}
-old_name BUWIZ_APP ROX_APP
-old_name BUWIZ_LOG ROX_LOG
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,9 +35,7 @@ if [ -z "${GS:-}" ]; then
 fi
 BUWIZ_APP="${BUWIZ_APP:-$HOME/Applications/Buwiz Bot.app}"
 RB="$BUWIZ_APP/Contents/Resources/broker"
-# the broker by its name, else by its name before the rename
 RB_BIN="$RB/buwiz-broker"
-[ -x "$RB_BIN" ] || [ ! -x "$RB/rox-broker" ] || RB_BIN="$RB/rox-broker"
 BUWIZ_LOG="${BUWIZ_LOG:-$HOME/Library/Logs/Buwiz Bot/broker.log}"
 PORT="${PORT:-8787}"
 URL="http://127.0.0.1:$PORT"
@@ -80,25 +67,25 @@ stop() {
 }
 
 # What Buwiz Bot.app's broker needs; prints what is missing.
-rox_missing() {
+bundle_missing() {
   local f
   [ -x "$RB_BIN" ] || echo "$RB/buwiz-broker"
   for f in bin/nsh bin/nsh-macos-host; do [ -x "$RB/$f" ] || echo "$RB/$f"; done
   [ -d "$RB/server" ] || echo "$RB/server"
 }
 
-# The same command line as Rox's own start (app/src/broker.rs launch()):
-# the data dir's chunks, the bundle's nsh, without Rox's automation
-# variables; cwd /, its own process group (Rox's start), stdin closed.
-start_rox() {
+# The same command line as Buwiz Bot's own start (app/src/broker.rs launch()):
+# the data dir's chunks, the bundle's nsh, without Buwiz Bot's automation
+# variables; cwd /, its own process group (Buwiz Bot's start), stdin closed.
+start_bundled() {
   local PIDFILE
   [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
-  [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete: $(rox_missing | tr '\n' ' ')" >&2; return 1; }
+  [ -z "$(bundle_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete: $(bundle_missing | tr '\n' ' ')" >&2; return 1; }
   mkdir -p "$(dirname "$BUWIZ_LOG")" "$GS"
   PIDFILE=$(mktemp "${TMPDIR:-/tmp}/broker-live-pid.XXXXXX")
   (cd / && exec env -u GPUI_AGENT -u GPUI_AGENT_TOKEN -u GPUI_AGENT_TOKEN_FILE -u GPUI_AGENT_ADDR -u GPUI_AGENT_ALLOW_RELEASE -u GPUI_AGENT_ACTOR \
-    -u PORT -u BUWIZ_PUBLIC_PORT -u ROX_PUBLIC_PORT \
-    BUWIZ_BROKER_DATA_DIR="$GS" GROK_DATA_DIR="$GS" NSH="$RB/bin/nsh" NSH_HOST="$RB/bin/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
+    -u PORT -u BUWIZ_PUBLIC_PORT \
+    BUWIZ_BROKER_DATA_DIR="$GS" NSH="$RB/bin/nsh" NSH_HOST="$RB/bin/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
     nohup /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV or die "$ARGV[0]: $!\n"' \
     "$RB_BIN" --port "$PORT" --data "$GS" --assets "$RB/server" \
     >>"$BUWIZ_LOG" 2>&1 </dev/null &
@@ -175,11 +162,10 @@ case "${1:-}" in
   status) status ;;
   backup) backup ;;
   stop) stop ;;
-  start|restart|use-bundled|use-rox)
-    [ "$1" = use-rox ] && echo "broker-live use-rox is an old name; use use-bundled" >&2
+  start|restart|use-bundled)
     # nothing stops before Buwiz Bot.app's broker is complete
-    [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete (run app/bundle-dev.sh): $(rox_missing | tr '\n' ' ')nothing changed" >&2; exit 1; }
+    [ -z "$(bundle_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete (run app/bundle-dev.sh): $(bundle_missing | tr '\n' ' ')nothing changed" >&2; exit 1; }
     if [ "$1" != start ]; then stop; fi
-    start_rox || { echo "Buwiz Bot.app's buwiz-broker did not come up on $PORT" >&2; exit 1; } ;;
+    start_bundled || { echo "Buwiz Bot.app's buwiz-broker did not come up on $PORT" >&2; exit 1; } ;;
   *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

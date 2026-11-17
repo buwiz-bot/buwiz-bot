@@ -40,7 +40,6 @@ fn spawn(port: u16, args: &[&str], env: &[(&str, &str)], err: &PathBuf) -> Child
         .args(["--port", &port.to_string()])
         .args(args)
         .env_remove("BUWIZ_TRUST_FILE")
-        .env_remove("ROX_TRUST_FILE")
         // the hub's /models and image routes call the model gateway: at a
         // closed port, never a real one
         .env("OPENCODEX_URL", "http://127.0.0.1:9")

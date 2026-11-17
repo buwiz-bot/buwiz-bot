@@ -176,20 +176,13 @@ pub fn is_test_instance(backend: Option<&str>, background: Option<&str>, data_di
     backend.is_some() || background == Some("1") || data_dir.is_some_and(|d| !d.is_empty())
 }
 
-/// [`is_test_instance`] over the environment `get` reads, by the Buwiz
-/// names and, apart, by their old ones (`ROX_BACKEND`, `ROX_BACKGROUND`,
-/// `ROX_DATA_DIR`): a bench that sets either is a test instance, so it never
-/// starts a broker on the owner's port or data.
+/// [`is_test_instance`] over the environment `get` reads
+/// (`BUWIZ_BACKEND`, `BUWIZ_BACKGROUND`, `BUWIZ_DATA_DIR`): a bench that
+/// sets one is a test instance, so it never starts a broker on the owner's
+/// port or data.
 pub fn test_instance_in(get: impl Fn(&str) -> Option<OsString>) -> bool {
-    let s = |k: &str| get(k).map(|v| v.to_string_lossy().into_owned());
-    let by = |names: [&str; 3]| is_test_instance(s(names[0]).as_deref(), s(names[1]).as_deref(), s(names[2]).as_deref());
-    let new = ["BUWIZ_BACKEND", "BUWIZ_BACKGROUND", "BUWIZ_DATA_DIR"];
-    let test = by(new) || by(new.map(|n| buwiz_protocol::env::old_name(n).unwrap_or(n)));
-    // the old names' warning, once
-    for n in new {
-        let _ = buwiz_protocol::env::var_in(n, &get);
-    }
-    test
+    let s = |k: &str| buwiz_protocol::env::var_in(k, &get).map(|v| v.to_string_lossy().into_owned());
+    is_test_instance(s("BUWIZ_BACKEND").as_deref(), s("BUWIZ_BACKGROUND").as_deref(), s("BUWIZ_DATA_DIR").as_deref())
 }
 
 /// The start decision. `probe` asks the origin (twice when it starts: a
@@ -250,20 +243,18 @@ fn probe(addr: SocketAddr) -> Answer {
     }
 }
 
-/// The bundled broker's file name, and its name before the rename (an app
-/// binary updated in a bundle `bundle-dev.sh` has not repackaged yet).
+/// The bundled broker's file name.
 pub const BROKER_NAME: &str = "buwiz-broker";
-pub const OLD_BROKER_NAME: &str = "rox-broker";
 
 /// The broker in the bundle `exe` runs from (`<app>/Contents/MacOS/<exe>`
-/// → `<app>/Contents/Resources/broker/buwiz-broker`, else `…/rox-broker`
-/// when only that one `is_file`); `None` outside a bundle or with neither.
+/// → `<app>/Contents/Resources/broker/buwiz-broker`) when it `is_file`;
+/// `None` outside a bundle or without it.
 pub fn bundled_broker(exe: &Path, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let shape = macos.file_name()? == "MacOS" && contents.file_name()? == "Contents";
     let dir = shape.then(|| contents.join("Resources").join("broker"))?;
-    [BROKER_NAME, OLD_BROKER_NAME].iter().map(|n| dir.join(n)).find(|b| is_file(b))
+    Some(dir.join(BROKER_NAME)).filter(|b| is_file(b))
 }
 
 /// How the broker is started.
@@ -330,21 +321,17 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
         "--assets".into(),
         assets.into(),
     ];
-    // by the Buwiz names and the old ones: the bundle's broker may be an
-    // older build that reads only the old names
-    let both = |k: &'static str, v: OsString| buwiz_protocol::env::with_old(k).map(move |n| (n, v.clone()));
-    let env = both("BUWIZ_BROKER_DATA_DIR", data.clone().into())
-        .chain([
-            ("NSH", dir.join("bin").join("nsh").into()),
-            ("NSH_HOST", dir.join("bin").join("nsh-macos-host").into()),
-            ("NSH_CHUNK_DIR", data.join("chunks").into()),
-        ])
-        .collect();
+    let env = vec![
+        ("BUWIZ_BROKER_DATA_DIR", data.clone().into()),
+        ("NSH", dir.join("bin").join("nsh").into()),
+        ("NSH_HOST", dir.join("bin").join("nsh-macos-host").into()),
+        ("NSH_CHUNK_DIR", data.join("chunks").into()),
+    ];
     let mut env_remove = vec!["GPUI_AGENT", "GPUI_AGENT_TOKEN", "GPUI_AGENT_TOKEN_FILE", "GPUI_AGENT_ADDR", "GPUI_AGENT_ALLOW_RELEASE", "PORT"];
     // a release binary doesn't name it: `scripts/release/build.sh` checks
     #[cfg(feature = "dev-agent")]
     env_remove.push("GPUI_AGENT_ACTOR");
-    env_remove.extend(buwiz_protocol::env::with_old("BUWIZ_PUBLIC_PORT"));
+    env_remove.push("BUWIZ_PUBLIC_PORT");
     let log = crate::identity::logs_dir(home).join("broker.log");
     Launch { program: broker.to_owned(), args, env, env_remove, data, log }
 }
@@ -493,9 +480,6 @@ mod tests {
             ] {
                 assert!(refused(EXE, None, &[("BUWIZ_BACKEND", backend), DATA]).is_some(), "{backend:?}");
             }
-            // a blank new name shadows a good old one, and the client goes to the default
-            let shadow = [("BUWIZ_BACKEND", "   "), ("ROX_BACKEND", "http://127.0.0.1:8821"), DATA];
-            assert!(refused(EXE, None, &shadow).is_some());
         }
 
         #[test]
@@ -537,8 +521,6 @@ mod tests {
         #[test]
         fn a_test_bundle_with_its_own_setup_starts() {
             assert_eq!(refused(EXE, Some("dev.buwiz.bot.test-gws"), &[BROKER, DATA]), None);
-            let old = [("ROX_BACKEND", "http://127.0.0.1:8821"), ("ROX_DATA_DIR", "/tmp/x")];
-            assert_eq!(refused(EXE, None, &old), None);
             let nobody = [("BUWIZ_BACKEND", "http://127.0.0.1:1"), DATA];
             assert_eq!(refused(EXE, None, &nobody), None);
             // no scheme is a typo: the client goes to an address nothing answers on
@@ -584,23 +566,19 @@ mod tests {
         assert!(!is_test_instance(None, None, Some("")));
     }
 
-    /// A bench that still sets the old names is a test instance, as is one
-    /// that sets the new; the owner's app (neither) is not.
+    /// A bench that sets a test name is a test instance; the owner's app
+    /// (none of them) is not.
     #[test]
-    fn a_test_instance_by_its_old_or_new_names() {
+    fn a_test_instance_by_its_names() {
         let env = |pairs: &[(&str, &str)]| {
             let pairs: Vec<(String, OsString)> = pairs.iter().map(|(k, v)| (k.to_string(), OsString::from(v))).collect();
             move |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
         };
         assert!(!test_instance_in(env(&[])));
         assert!(!test_instance_in(env(&[("HOME", "/Users/u"), ("BUWIZ_BACKGROUND", "0")])));
-        for (new, old, v) in [("BUWIZ_BACKEND", "ROX_BACKEND", "http://127.0.0.1:8798"), ("BUWIZ_BACKGROUND", "ROX_BACKGROUND", "1"), ("BUWIZ_DATA_DIR", "ROX_DATA_DIR", "/tmp/r/data")] {
-            assert!(test_instance_in(env(&[(new, v)])), "{new}");
-            assert!(test_instance_in(env(&[(old, v)])), "{old}");
+        for (name, v) in [("BUWIZ_BACKEND", "http://127.0.0.1:8798"), ("BUWIZ_BACKGROUND", "1"), ("BUWIZ_DATA_DIR", "/tmp/r/data")] {
+            assert!(test_instance_in(env(&[(name, v)])), "{name}");
         }
-        // an old name says so even when the new one says otherwise
-        assert!(test_instance_in(env(&[("BUWIZ_BACKGROUND", "0"), ("ROX_BACKGROUND", "1")])));
-        assert!(test_instance_in(env(&[("BUWIZ_DATA_DIR", ""), ("ROX_DATA_DIR", "/tmp/r/data")])));
     }
 
     /// Runs [`decide`] against canned answers; → (decision, probes made,
@@ -682,12 +660,9 @@ mod tests {
             bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), any),
             Some(PathBuf::from("/A/Rox.app/Contents/Resources/broker/buwiz-broker"))
         );
-        // a bundle packaged before the rename: its broker has the old name
-        let old = |b: &Path| b.ends_with("broker/rox-broker");
-        assert_eq!(
-            bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), old),
-            Some(PathBuf::from("/A/Rox.app/Contents/Resources/broker/rox-broker"))
-        );
+        // only the broker's own name counts
+        let other = |b: &Path| b.ends_with("broker/other-broker");
+        assert_eq!(bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), other), None);
         assert_eq!(bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), |_: &Path| false), None);
         assert_eq!(bundled_broker(Path::new("/r/app/target/debug/buwiz-bot"), any), None);
         assert_eq!(bundled_broker(Path::new("/rox"), any), None);
@@ -716,7 +691,6 @@ mod tests {
             env,
             [
                 ("BUWIZ_BROKER_DATA_DIR", data),
-                ("GROK_DATA_DIR", data),
                 ("NSH", "/A/Rox.app/Contents/Resources/broker/bin/nsh"),
                 ("NSH_HOST", "/A/Rox.app/Contents/Resources/broker/bin/nsh-macos-host"),
                 ("NSH_CHUNK_DIR", "/Users/u/Library/Application Support/Buwiz Broker/chunks")
@@ -724,7 +698,7 @@ mod tests {
         );
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN"));
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN_FILE"));
-        assert!(l.env_remove.contains(&"BUWIZ_PUBLIC_PORT") && l.env_remove.contains(&"ROX_PUBLIC_PORT"));
+        assert!(l.env_remove.contains(&"BUWIZ_PUBLIC_PORT"));
         assert_eq!(l.data, PathBuf::from(data));
         assert_eq!(l.log, PathBuf::from("/Users/u/Library/Logs/Buwiz Bot/broker.log"));
     }

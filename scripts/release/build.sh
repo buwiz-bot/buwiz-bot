@@ -18,8 +18,7 @@
 #   NSH_TARGET_DIR            nsh's (default CARGO_TARGET_DIR, else nsh/target)
 #   BUWIZ_BOT_BIN, BUWIZ_BROKER_BIN, NSH_BIN, NSH_HOST_BIN
 #                             prebuilt binaries to package instead of
-#                             building them (ROX_BIN and ROX_BROKER_BIN, the
-#                             first two's old names, still work)
+#                             building them
 #   OFFICE_DIST, OFFICE_FONTS, MATERIAL_SYMBOLS_TTF   as in bundle-dev.sh
 #   NODE_MODULES=<dir>        office/'s node_modules (default office/node_modules)
 #   APP_ICON=<path>           AppIcon.icns, or a 1024x1024 PNG to make it
@@ -31,15 +30,6 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib.sh"
-
-# the old names, with a warning
-for pair in BUWIZ_BOT_BIN:ROX_BIN BUWIZ_BROKER_BIN:ROX_BROKER_BIN; do
-  new="${pair%%:*}" old="${pair#*:}"
-  if [ -z "${!new+x}" ] && [ -n "${!old+x}" ]; then
-    echo "$old is an old name; use $new" >&2
-    printf -v "$new" '%s' "${!old}"
-  fi
-done
 
 # The identity, from the Info.plist app/bundle-dev.sh writes, so the two
 # bundles can't drift: name, bundle id, URL schemes and the executable's

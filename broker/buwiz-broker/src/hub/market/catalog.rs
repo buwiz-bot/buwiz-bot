@@ -130,9 +130,8 @@ fn ident(s: &str) -> bool {
     b.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
-// `${BUWIZ_FILES_DIR}`, and `${ROX_FILES_DIR}` (its old name) in configs
-// written before
-const BUILTIN: [&str; 9] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "BUWIZ_FILES_DIR", "ROX_FILES_DIR"];
+// `${BUWIZ_FILES_DIR}` is the folder generated files go in
+const BUILTIN: [&str; 8] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "BUWIZ_FILES_DIR"];
 
 fn is_secret_key(k: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -233,7 +232,7 @@ pub struct Market {
     pub server: Option<PathBuf>,
     /// `<data>/plugins`
     pub plugins: PathBuf,
-    /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`, old name `${ROX_FILES_DIR}`)
+    /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`)
     pub out_dir: PathBuf,
     /// the port Rox reaches (fixed OAuth redirects)
     pub port: u16,
@@ -658,7 +657,7 @@ impl Market {
                         "CLAUDE_PLUGIN_ROOT" | "CURSOR_PLUGIN_ROOT" | "PLUGIN_ROOT" => root.clone(),
                         "workspaceFolder" | "userHome" => val(name).unwrap_or_else(|| std::env::var("HOME").unwrap_or_default()),
                         "HOME" | "USERPROFILE" => val(name).or_else(|| std::env::var(name).ok()).unwrap_or_default(),
-                        "BUWIZ_FILES_DIR" | "ROX_FILES_DIR" => self.out_dir.display().to_string(),
+                        "BUWIZ_FILES_DIR" => self.out_dir.display().to_string(),
                         n if !ident(n) => all.to_owned(),
                         n => val(n).unwrap_or_else(|| dflt.unwrap_or("").to_owned()),
                     }

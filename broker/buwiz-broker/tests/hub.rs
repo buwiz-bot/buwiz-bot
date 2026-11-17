@@ -134,7 +134,7 @@ fn the_hub_answers_every_route_and_unknown_paths_404() {
 #[test]
 fn the_old_flag_and_switches_are_accepted_and_change_nothing() {
     for (name, value) in [("old-on", "1"), ("old-off", "0")] {
-        let switches = [("BUWIZ_BROKER_HUB", value), ("ROX_BROKER_HUB", value), ("BUWIZ_BROKER_V1_HOST", value), ("BUWIZ_BROKER_MCP_HOST", value), ("ROX_BROKER_MCP_HOST", value)];
+        let switches = [("BUWIZ_BROKER_HUB", value), ("BUWIZ_BROKER_V1_HOST", value), ("BUWIZ_BROKER_MCP_HOST", value)];
         let b = start_env(name, true, &switches);
         let (status, root) = request(b.port, "GET", "/", b"").unwrap();
         assert!(status == 200 && root.starts_with("app-server ok — "), "{name}: {status} {root}");

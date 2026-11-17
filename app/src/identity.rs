@@ -358,15 +358,12 @@ mod tests {
         assert!(script.contains("/buwiz-bot-bin\""));
         // the checkout's debug build by the binary's own name
         assert!(script.contains("/debug/buwiz-bot\""), "{script}");
-        // the broker by its name, and by its old one (a link) for an app
-        // binary built before the rename
         let broker = app.join("Contents/Resources/broker");
         assert!(broker.join("buwiz-broker").is_file());
-        assert_eq!(std::fs::read_link(broker.join("rox-broker")).unwrap(), Path::new("buwiz-broker"));
-        // the token by its new file name and, for an older scripts/rox-agent,
-        // its old one; BUWIZ_FPS by both names
+        assert!(!broker.join("rox-broker").exists());
+        // the token by its file name, and also by the older one
         assert!(script.contains("buwiz-gpui-agent-token") && script.contains("rox-gpui-agent-token"));
-        assert!(script.contains("BUWIZ_FPS=0 ROX_FPS=0"));
+        assert!(script.contains("BUWIZ_FPS=0") && !script.contains("ROX_FPS"));
         assert!(!app.join("Contents/MacOS/rox").exists());
         // a dry run leaves LaunchServices alone
         assert!(!String::from_utf8_lossy(&out.stdout).contains("unregistered"));
@@ -418,17 +415,6 @@ mod tests {
         // no --name: the instance dir's, made fit for a bundle id
         let app = run(&[], &dir.join("Bench_2"));
         assert_eq!(app.file_name().unwrap(), "Buwiz Bot test-bench-2.app");
-        // scripts/test-rox, the old name, runs the same and says it is old
-        let out = std::process::Command::new("sh")
-            .arg(manifest.join("../scripts/test-rox"))
-            .args(["--bundle-only", "--name", "books"])
-            .arg(&fake)
-            .arg(dir.join("bench"))
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert_eq!(PathBuf::from(String::from_utf8(out.stdout).unwrap().trim()), dir.join("bench/Buwiz Bot test-books.app"));
-        assert!(String::from_utf8_lossy(&out.stderr).contains("scripts/test-rox is an old name; use scripts/buwiz-test"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
