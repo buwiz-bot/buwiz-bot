@@ -514,6 +514,8 @@ pub struct PluginEntry {
     pub scopes: Vec<Value>,
     pub apps: Vec<Value>,
     pub commands: Vec<Value>,
+    /// The badges its pins show (`GET /v1/host/plugins`, then `badge` events).
+    pub badges: Vec<super::badge::Badge>,
 }
 
 impl PluginEntry {
@@ -532,6 +534,7 @@ impl PluginEntry {
             scopes: list("scopes"),
             apps: list("apps"),
             commands: list("commands"),
+            badges: super::badge::from_list(v.get("badges")),
         })
     }
 

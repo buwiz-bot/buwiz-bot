@@ -60,7 +60,7 @@ fn in_surface(surface: Option<&Value>, plugin: &str, name: &str) -> bool {
         .any(|x| x.get("plugin").and_then(Value::as_str) == Some(plugin) && x.get("tools").and_then(Value::as_array).is_some_and(|t| t.iter().any(|n| n.as_str() == Some(name))))
 }
 
-/// 16.4: a tool whose `buwiz/audience` leaves out "agent" serves apps only, and so does one whose
+/// 16.5: a tool whose `buwiz/audience` leaves out "agent" serves apps only, and so does one whose
 /// audience is present but not an array: that is a mistake, and the safe side is off the list. No
 /// audience at all leaves the tool on it. The mistake is logged once per tool.
 fn for_agent(plugin: &str, name: &str, t: &Value) -> bool {

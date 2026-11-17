@@ -22,7 +22,7 @@ use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use super::{
-    RoxError, V1Key,
+    RoxError, V1Key, badge,
     cards::{self, CardAction, CardMeta, OpenCard, Opener, Placement},
     connect, consent,
     host_api::{self, HttpBroker, PluginAction},
@@ -318,6 +318,10 @@ impl Store {
             super::session::set_event_listener(Arc::new(|v: &Value| {
                 let v = v.clone();
                 super::to_store(move |st| st.v1_plugin_event(&v));
+            }));
+            super::session::set_badge_listener(Arc::new(|v: &Value| {
+                let v = v.clone();
+                super::to_store(move |st| st.v1_badge_event(&v));
             }));
             super::session::listen_for_generations();
         }
@@ -657,6 +661,18 @@ impl Store {
             }
         }
         self.v1_refresh();
+    }
+
+    /// A broker `badge` event: one plugin's badge on its pins changed. The
+    /// plugin's entry takes it at once, with no list asked for; an event of a
+    /// plugin not listed yet is dropped, for the list will carry it.
+    pub fn v1_badge_event(&'static self, event: &Value) {
+        let Some((plugin, badge)) = super::badge::from_event(event) else { return };
+        self.v1.entries.update(|entries| {
+            if let Some(p) = entries.iter_mut().find(|p| p.id == plugin) {
+                super::badge::apply(&mut p.badges, badge);
+            }
+        });
     }
 
     /// A question from the bridge (an app's `buwiz.open({url})` or
@@ -2422,8 +2438,45 @@ pub fn pin_button(key: &str, n: u64) -> impl IntoElement {
         })
 }
 
+/// The room a pin's badge has, reserved on every pinned row: the dot, the
+/// gap and 8 characters of 11-point text. A badge is drawn inside it, so a
+/// row is the same size, and its title the same width, with a badge, another
+/// or none.
+pub const BADGE_SLOT_W: f32 = 58.0;
+const BADGE_DOT: f32 = 8.0;
+const BADGE_TEXT_W: f32 = 46.0;
+
+/// A badge's dot colour: the theme's own status colours.
+pub(crate) fn badge_ink(dot: badge::Dot) -> Option<AdaptiveColor> {
+    match dot {
+        badge::Dot::Red => Some(theme::DOWN),
+        badge::Dot::Amber => Some(theme::WARN),
+        badge::Dot::Green => Some(theme::UP),
+        badge::Dot::None => None,
+    }
+}
+
+/// A pin's badge, a dot and its text in the room reserved for it
+/// ([`BADGE_SLOT_W`]); an empty room when it has none. Never any size of its
+/// own, never animated.
+fn badge_slot(b: Option<&badge::Badge>) -> impl IntoElement {
+    let mut slot = view().w(px(BADGE_SLOT_W)).flex_shrink(0.0).flex_row().items_center().gap(px(4.0));
+    let Some(b) = b else { return slot };
+    // the dot's room is kept when it has no colour, so the text stays where it is
+    let dot = view().size(px(BADGE_DOT)).flex_shrink(0.0).rounded(px(BADGE_DOT / 2.0));
+    slot = match badge_ink(b.dot) {
+        Some(ink) => slot.child(dot.label(format!("Status {}", b.dot.word())).bg(ink)),
+        None => slot.child(dot),
+    };
+    if !b.text.is_empty() {
+        slot = slot.child(text(b.text.clone()).w(px(BADGE_TEXT_W)).number_of_lines(1).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::DIM));
+    }
+    slot
+}
+
 /// The pinned v1 apps in the sidebar (12.3): a press opens each as its app
-/// declares (inline in the open chat, or full screen); ✕ unpins.
+/// declares (inline in the open chat, or full screen); ✕ unpins. A plugin's
+/// badge on a pin (`buwiz/badge`) shows after its title.
 pub fn pins_section() -> impl IntoElement {
     let pins = computed(|| {
         // a pin a sidebar group already shows (a migrated v0 pin) is left
@@ -2431,6 +2484,7 @@ pub fn pins_section() -> impl IntoElement {
         let grouped: Vec<V1Key> = store().groups.with(|gs| {
             gs.iter().flat_map(|g| &g.items).filter(|it| it.kind == "app").filter_map(|it| V1Key::parse(&it.id).ok()).collect()
         });
+        let entries = store().v1.entries.get();
         store()
             .v1
             .records
@@ -2438,6 +2492,10 @@ pub fn pins_section() -> impl IntoElement {
             .into_iter()
             .filter(|p| !grouped.iter().any(|k| k.plugin == p.plugin && k.app == p.app && k.ticket == p.ticket))
             .filter(|p| store().v1_reach(&p.plugin) != connect::Reach::Gone)
+            .map(|p| {
+                let b = entries.iter().find(|e| e.id == p.plugin).and_then(|e| badge::for_pin(&e.badges, &p.app, p.ticket.as_deref())).cloned();
+                (p, b)
+            })
             .collect::<Vec<_>>()
     });
     dynamic(move || {
@@ -2450,10 +2508,12 @@ pub fn pins_section() -> impl IntoElement {
             .pb_2()
             .gap(px(2.0))
             .child(text("Pinned apps").text_size(px(12.0)).text_color(theme::DIM).px_2().py_1())
-            .children(pins.into_iter().map(|p| {
+            .children(pins.into_iter().map(|(p, b)| {
                 let key = V1Key { plugin: p.plugin.clone(), app: p.app.clone(), ticket: p.ticket.clone(), props: Default::default() }.to_key();
                 let (k1, k2, title) = (key.clone(), key, p.title.clone());
                 let label = if p.needs_update { format!("{} · needs update", p.title) } else { p.title.clone() };
+                // the accessible name says the badge in words: colour is not the only signal
+                let spoken = badge::spoken(&label, b.as_ref());
                 view()
                     .flex_row()
                     .items_center()
@@ -2461,10 +2521,11 @@ pub fn pins_section() -> impl IntoElement {
                     .px_2()
                     .py(px(6.0))
                     .rounded(px(8.0))
-                    .label(label.clone())
+                    .label(spoken)
                     .on_press(move || store().open_mini_full(&k1, &title))
                     .child(crate::appdetails::named_tile("", &p.title, 24.0))
-                    .child(text(label).flex_1().number_of_lines(1).text_size(px(13.0)).text_color(theme::TEXT))
+                    .child(text(label).flex_1().min_w(px(0.0)).number_of_lines(1).text_size(px(13.0)).text_color(theme::TEXT))
+                    .child(badge_slot(b.as_ref()))
                     .child(
                         view()
                             .size(px(18.0))
