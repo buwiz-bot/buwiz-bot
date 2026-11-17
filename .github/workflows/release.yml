@@ -233,9 +233,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: server/package-lock.json
-      - name: Office editor and fonts (server/)
-        working-directory: server
+          cache-dependency-path: office/package-lock.json
+      - name: Office editor and fonts (office/)
+        working-directory: office
         run: |
           npm ci
           npm run build:office-editor

@@ -165,7 +165,7 @@ export function rasterizePreviews(svgs) {
 // --- Picture mode: a "Bot"-style picture from the image model ---------------
 
 // The style prompt lives in templates/, like Design's system prompt.
-export const PICTURE_STYLE = readFileSync(new URL("./templates/avatar-picture-style.txt", import.meta.url), "utf8").replace(/\n$/, "");
+export const PICTURE_STYLE = readFileSync(new URL("../../broker/buwiz-broker/assets/templates/avatar-picture-style.txt", import.meta.url), "utf8").replace(/\n$/, "");
 
 /** The image model's instructions: the style, then what the user typed on
  *  top of it (it adds to the style; it never replaces it). With no
@@ -242,7 +242,7 @@ async function svgPicture(ask, block, model, out, pick = {}) {
   return model || AVATAR_MODEL;
 }
 
-const MOCK_PICTURE = fileURLToPath(new URL("../test/fixtures/avatar-mock.png", import.meta.url));
+const MOCK_PICTURE = fileURLToPath(new URL("../../broker/buwiz-broker/assets/avatar-mock.png", import.meta.url));
 
 /** Edits `src` as `prompt` says into `out`: the opencodex image relay
  *  first, then Gemini's image model when a key is configured. */

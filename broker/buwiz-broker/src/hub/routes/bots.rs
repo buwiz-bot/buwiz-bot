@@ -1102,8 +1102,8 @@ impl hyper::body::Body for KeptAlive {
     }
 }
 
-/// MOCK's stand-in picture when there is no reference (test/fixtures/avatar-mock.png).
-const MOCK_PICTURE: &[u8] = include_bytes!("../../../../../server/test/fixtures/avatar-mock.png");
+/// MOCK's stand-in picture when there is no reference (assets/avatar-mock.png).
+const MOCK_PICTURE: &[u8] = include_bytes!("../../../assets/avatar-mock.png");
 
 /// `POST /avatar/picture {image?, prompt?, model?}` → `{ok, via, uri, name,
 /// w, h}` (avatar-design.mjs `designPicture`): a "Bot"-style picture in the

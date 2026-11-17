@@ -49,14 +49,14 @@ jobs:
         with:
           submodules: recursive
       # the office crates' tests draw and measure with @betteroffice/fonts,
-      # which they find in server/node_modules
+      # which they find in office/node_modules
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: server/package-lock.json
-      - name: npm ci (server)
-        working-directory: server
+          cache-dependency-path: office/package-lock.json
+      - name: npm ci (office)
+        working-directory: office
         run: npm ci
       # rustup installs app/rust-toolchain.toml's 1.99.0 on first use
       - uses: Swatinem/rust-cache@v2

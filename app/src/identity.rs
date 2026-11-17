@@ -306,7 +306,7 @@ mod tests {
 
     /// `app/bundle-dev.sh` against a scratch bundle, with stand-in
     /// binaries: the bundle has the new id, the buwiz scheme alone and the new
-    /// executable. Skipped (said so) without the icon font or server/'s
+    /// executable. Skipped (said so) without the icon font or office/'s
     /// node_modules, which the script copies.
     #[test]
     fn bundle_dev_writes_buwiz_bots_identity() {
@@ -316,9 +316,9 @@ mod tests {
             .iter()
             .map(|d| real_home.join("Library/Caches").join(d).join("fonts/MaterialSymbolsOutlined-v382.ttf"))
             .find(|f| f.is_file());
-        let modules = manifest.join("../server/node_modules/@betteroffice");
+        let modules = manifest.join("../office/node_modules/@betteroffice");
         let (Some(font), true) = (font, modules.join("fonts/assets/Carlito-Regular.ttf").is_file()) else {
-            eprintln!("skipped: no cached Material Symbols font or no server/node_modules");
+            eprintln!("skipped: no cached Material Symbols font or no office/node_modules");
             return;
         };
         let dir = scratch("bundle");

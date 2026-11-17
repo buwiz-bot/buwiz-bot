@@ -117,7 +117,7 @@ const seedCache = new Map<string, Promise<Uint8Array>>();
 function seedBytes(format: "xlsx" | "pptx"): Promise<Uint8Array> {
   let pending = seedCache.get(format);
   if (!pending) {
-    pending = readFile(new URL(`./seeds/blank.${format}`, import.meta.url)).then(
+    pending = readFile(new URL(`../../../office/seeds/blank.${format}`, import.meta.url)).then(
       bytes => new Uint8Array(bytes),
       () => { throw new DocumentToolError("ENGINE_ERROR", `Missing blank.${format} seed asset.`); },
     );

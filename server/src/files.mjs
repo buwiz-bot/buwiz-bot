@@ -270,12 +270,12 @@ function htmlToMd(html) {
 
 const MAX_TEXT = 400_000;
 // Kinds with a BetterOffice engine view: the app opens the bundled editor
-// (real editing chrome) when server/office/editor/dist was built, else the
+// (real editing chrome) when office/editor/dist was built, else the
 // read-only display-list page, else the classic render when the engines are
 // absent (pptx has no other renderer — without them the card shows
 // "unavailable").
 const OFFICE_VIEW = { pptx: "pptx", xlsx: "xlsx", xlsm: "xlsx", docx: "docx" };
-const EDITOR_BUNDLE = join(dirname(fileURLToPath(import.meta.url)), "office", "editor", "dist", "editor.js");
+const EDITOR_BUNDLE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "office", "editor", "dist", "editor.js");
 const officeUrl = async (path, rel, ext) => {
   const kind = OFFICE_VIEW[ext];
   if (!kind || !rel) return undefined;

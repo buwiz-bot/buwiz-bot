@@ -21,7 +21,7 @@
 #                             building them (ROX_BIN and ROX_BROKER_BIN, the
 #                             first two's old names, still work)
 #   OFFICE_DIST, OFFICE_FONTS, MATERIAL_SYMBOLS_TTF   as in bundle-dev.sh
-#   NODE_MODULES=<dir>        server/'s node_modules (default server/node_modules)
+#   NODE_MODULES=<dir>        office/'s node_modules (default office/node_modules)
 #   APP_ICON=<path>           AppIcon.icns, or a 1024x1024 PNG to make it
 #                             from (default app/resources/AppIcon.icns, else
 #                             app/resources/AppIcon.png)
@@ -79,14 +79,15 @@ cargo_release() { # <workspace dir> <target dir> <cargo args...>
 }
 
 # Inputs first, so a missing one fails before the long builds.
-SERVER="$ROOT/server"
-NODE_MODULES="${NODE_MODULES:-$SERVER/node_modules}"
+OFFICE="$ROOT/office"
+ASSETS="$ROOT/broker/buwiz-broker/assets"
+NODE_MODULES="${NODE_MODULES:-$OFFICE/node_modules}"
 OFFICE_FONTS="${OFFICE_FONTS:-$NODE_MODULES/@betteroffice/fonts}"
-DIST="${OFFICE_DIST:-$SERVER/src/office/editor/dist}"
-[ -d "$NODE_MODULES/@betteroffice" ] || die "no @betteroffice packages in $NODE_MODULES: run npm ci in server/ (or set NODE_MODULES)"
-[ -f "$OFFICE_FONTS/assets/Carlito-Regular.ttf" ] || die "no @betteroffice/fonts at $OFFICE_FONTS: run npm ci in server/ (or set OFFICE_FONTS)"
+DIST="${OFFICE_DIST:-$OFFICE/editor/dist}"
+[ -d "$NODE_MODULES/@betteroffice" ] || die "no @betteroffice packages in $NODE_MODULES: run npm ci in office/ (or set NODE_MODULES)"
+[ -f "$OFFICE_FONTS/assets/Carlito-Regular.ttf" ] || die "no @betteroffice/fonts at $OFFICE_FONTS: run npm ci in office/ (or set OFFICE_FONTS)"
 # a release without the editor ships a broken office editor: fail, not warn
-[ -f "$DIST/editor.js" ] || die "no office editor bundle in $DIST: run npm run build:office-editor in server/ (or set OFFICE_DIST)"
+[ -f "$DIST/editor.js" ] || die "no office editor bundle in $DIST: run npm run build:office-editor in office/ (or set OFFICE_DIST)"
 
 # The office views' icon font, pinned by hash as in bundle-dev.sh.
 SYMBOLS_URL="https://fonts.gstatic.com/s/materialsymbolsoutlined/v382/kJF1BvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzByHX9rA6RzaxHMPdY43zj-jCxv3fzvRNU22ZXGJpEpjC_1v-p_4MrImHCIJIZrDCvHOem.ttf"
@@ -160,12 +161,12 @@ mkdir -p "$B/bin" "$B/server/office/editor/dist" "$B/node_modules"
 cp "$BUWIZ_BROKER_BIN" "$B/buwiz-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
-cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
-cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
-cp -R "$SERVER/src/office/seeds" "$B/server/office/seeds"
+cp "$OFFICE/viewer.html" "$B/server/office/viewer.html"
+cp "$OFFICE/editor/editor.html" "$B/server/office/editor/editor.html"
+cp -R "$OFFICE/seeds" "$B/server/office/seeds"
 cp -R "$DIST/." "$B/server/office/editor/dist/"
-cp -R "$SERVER/src/plugins" "$B/server/plugins"
-cp "$SERVER/src/v1/trust.json" "$B/server/trust.json"
+cp -R "$ASSETS/plugins" "$B/server/plugins"
+cp "$ASSETS/trust.json" "$B/server/trust.json"
 cp -R "$NODE_MODULES/@betteroffice" "$B/node_modules/@betteroffice"
 find "$APP" -name .DS_Store -delete
 

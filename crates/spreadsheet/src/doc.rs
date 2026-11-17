@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn the_showcase_total_fits_its_column_in_calibris_metrics() {
         use nsh_core::canvas::CanvasOp;
-        let seed = include_bytes!("../../../server/src/office/seeds/showcase.xlsx");
+        let seed = include_bytes!("../../../office/seeds/showcase.xlsx");
         let mut book = Book::open(seed.to_vec(), Path::new("showcase.xlsx")).unwrap();
         ready(&mut book);
         let Some(Out::List { list, .. }) = book.draw(0, Viewport { x: 0.0, y: 0.0, width: 800.0, height: 400.0 }, 1.0) else { panic!("a list") };

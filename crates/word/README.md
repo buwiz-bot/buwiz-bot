@@ -30,7 +30,7 @@ cargo test -p buwiz-word
 ```
 
 Some read the demo document from the Buwiz Bot checkout
-(`server/src/office/seeds/`). The feature `testing` gives the app's tests
+(`office/seeds/`). The feature `testing` gives the app's tests
 the test documents (`fixture`).
 
 ## Licence

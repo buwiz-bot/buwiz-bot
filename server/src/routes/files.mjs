@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { serverFile, ASSETS_DIR, AVATAR_DIR, ATTACH_DIR, GEN_DIR, WIDGETS_DIR, outFile } from "../config.mjs";
+import { OFFICE_DIR, ASSETS_DIR, AVATAR_DIR, ATTACH_DIR, GEN_DIR, WIDGETS_DIR, outFile } from "../config.mjs";
 import { headOf, verFile } from "../pipeline.mjs";
 import { sendRanged } from "../state.mjs";
 import { osa } from "../avatars.mjs";
@@ -49,14 +49,14 @@ export default async function handle(req, res) {
   // (dist bundles, wasm, font assets) so the page's imports resolve.
   if (req.method === "GET" && (req.url === "/office/" || req.url.startsWith("/office/?") || req.url.startsWith("/office/editor/"))) {
     const editing = req.url.startsWith("/office/editor/");
-    const page = serverFile(editing ? "office/editor/editor.html" : "office/viewer.html");
+    const page = join(OFFICE_DIR, editing ? "editor/editor.html" : "viewer.html");
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.setHeader("cache-control", "no-cache");
     let html = readFileSync(page, "utf8");
     if (editing) {
       // WebViews cache /office/dist/editor.js hard; a ?v=mtime makes every
       // bundle rebuild a fresh URL so stale chrome can never come back.
-      const dist = serverFile("office/editor/dist/editor.js");
+      const dist = join(OFFICE_DIR, "editor/dist/editor.js");
       const v = existsSync(dist) ? Math.floor(statSync(dist).mtimeMs) : 0;
       html = html.replaceAll("/office/dist/editor.js", `/office/dist/editor.js?v=${v}`);
     }
@@ -66,7 +66,7 @@ export default async function handle(req, res) {
   // resolved relative to the bundle URL, so dist/generated/ holds the wasms.
   if (req.method === "GET" && req.url.startsWith("/office/dist/")) {
     const rest = decodeURIComponent(req.url.slice("/office/dist/".length).split("?")[0]);
-    const dir = serverFile("office/editor/dist");
+    const dir = join(OFFICE_DIR, "editor/dist");
     const p = join(dir, rest);
     if (!p.startsWith(dir + "/") || !existsSync(p) || !statSync(p).isFile()) {
       res.statusCode = 404;

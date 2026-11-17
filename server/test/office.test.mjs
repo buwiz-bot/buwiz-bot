@@ -38,7 +38,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { ROOT, modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
-const SEEDS = join(ROOT, "src", "office", "seeds");
+const SEEDS = join(ROOT, "..", "office", "seeds");
 const GOLDEN = join(ROOT, "test", "fixtures", "office-golden.json");
 const TOOLS_JSON = join(ROOT, "..", "broker", "buwiz-broker", "src", "office", "tools.json");
 const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
@@ -515,15 +515,15 @@ test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async (
   assert.equal(viewer.status, 200);
   assert.equal(viewer.headers["content-type"], "text/html; charset=utf-8");
   assert.equal(viewer.headers["cache-control"], "no-cache");
-  assert.equal(viewer.text, readFileSync(join(ROOT, "src", "office", "viewer.html"), "utf8"));
+  assert.equal(viewer.text, readFileSync(join(ROOT, "..", "office", "viewer.html"), "utf8"));
   assert.equal((await request("GET", "/office/")).text, viewer.text);
   const editor = await request("GET", "/office/editor/?path=seeds/blank.pptx&kind=pptx");
-  const bundle = join(ROOT, "src", "office", "editor", "dist", "editor.js");
+  const bundle = join(ROOT, "..", "office", "editor", "dist", "editor.js");
   const v = existsSync(bundle) ? Math.floor(statSync(bundle).mtimeMs) : 0;
 
   assert.equal(editor.status, 200);
   assert.equal(editor.headers["content-type"], "text/html; charset=utf-8");
-  assert.equal(editor.text, readFileSync(join(ROOT, "src", "office", "editor", "editor.html"), "utf8").replaceAll("/office/dist/editor.js", `/office/dist/editor.js?v=${v}`));
+  assert.equal(editor.text, readFileSync(join(ROOT, "..", "office", "editor", "editor.html"), "utf8").replaceAll("/office/dist/editor.js", `/office/dist/editor.js?v=${v}`));
   const pkg = await request("GET", "/office/vendor/docx/package.json?x=1");
 
   assert.equal(pkg.status, 200);
@@ -546,7 +546,7 @@ test("OFF-20 /office/* pages, caps, vendor files and the editor bundle", async (
 
 test("OFF-21 /file/render for docx, xlsx and pptx files: the viewer's payload and the office URL", async () => {
   const render = async (path) => (await request("GET", `/file/render?path=${encodeURIComponent(path)}`)).json;
-  const bundle = join(ROOT, "src", "office", "editor", "dist", "editor.js");
+  const bundle = join(ROOT, "..", "office", "editor", "dist", "editor.js");
   const office = (path, kind) => existsSync(bundle)
     ? `/office/editor/?path=${path}&kind=${kind}&v=${Math.floor(statSync(bundle).mtimeMs)}`
     : `/office/?path=${path}&kind=${kind}`;

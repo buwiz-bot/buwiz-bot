@@ -23,7 +23,7 @@ text as this repository's LICENSE). The BetterOffice fonts shipped in the
 app bundle are under the SIL Open Font License 1.1 (in that package's
 LICENSES/).
 
-server/src/plugins/external_plugins/ vendors three plugins under their own
+broker/buwiz-broker/assets/plugins/external_plugins/ vendors three plugins under their own
 licenses: calcom (MIT, Cal.com), neon (Apache-2.0, Neon) and
 google-workspace (MIT, taylorwilsdon/google_workspace_mcp); each folder's
 plugin.json names its license and author.

@@ -270,7 +270,7 @@ fn lines(w: &Word) -> Vec<String> {
 
 #[test]
 fn the_demo_breaks_its_lines_where_the_web_editor_does() {
-    let w = open(include_bytes!("../../../server/src/office/seeds/betteroffice-demo.docx").to_vec());
+    let w = open(include_bytes!("../../../office/seeds/betteroffice-demo.docx").to_vec());
     let lines = lines(&w);
     // the subtitle in Calibri Light (Carlito's metrics), as the web lays it
     let i = lines.iter().position(|l| l.starts_with("A faithful, open .docx editor")).unwrap_or_else(|| panic!("{lines:?}"));

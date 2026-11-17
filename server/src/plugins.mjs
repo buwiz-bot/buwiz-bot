@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { SERVER_DIR, OUT_DIR, PLUGIN_CATALOG, PLUGINS_DIR, git } from "./config.mjs";
+import { BROKER_ASSETS, OUT_DIR, PLUGIN_CATALOG, PLUGINS_DIR, git } from "./config.mjs";
 import { db } from "./state.mjs";
 import { fixedRedirectUrl } from "./mcp.mjs";
 import { adjustServers as adjust, repoOf, resolveEntry, sourceUrlInfo } from "./plugin_resolve.mjs";
@@ -118,7 +118,7 @@ export function pluginRoot(key) {
     return meta.path ? join(dir, meta.path) : dir;
   }
   if (p.source?.type === "local" || (p.source?.path && !p.source?.url)) {
-    const root = join(SERVER_DIR, "plugins", String(p.source.path).replace(/^\.\//, ""));
+    const root = join(BROKER_ASSETS, "plugins", String(p.source.path).replace(/^\.\//, ""));
     return existsSync(root) ? root : null;
   }
   const dir = join(PLUGINS_DIR, p.name);
