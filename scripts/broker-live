@@ -1,34 +1,24 @@
 #!/bin/bash
-# The live broker, in one command (Rust broker plan, 0.6).
+# The live broker, in one command: Buwiz Bot.app's own buwiz-broker.
 #
 #   scripts/broker-live status     health, who answers the port, plugins, last routine runs
-#   scripts/broker-live backup     app.db (sqlite .backup), the bundle's server/ and
-#                                  Buwiz Bot.app's broker/ (as buwiz-broker/) into
-#                                  <data dir>/backups/<UTC time>/
-#   scripts/broker-live start|stop|restart
-#   scripts/broker-live use-node   the Node broker on the port (the rollback)
-#   scripts/broker-live use-rust   buwiz-broker on the port, Node behind it (phase 1 on);
-#                                  from phase 3 it hosts the v1 plugins and sessions
-#                                  (BUWIZ_BROKER_V1_HOST=0 leaves them to Node), from
-#                                  phase 4 the MCP servers (BUWIZ_BROKER_MCP_HOST=0
-#                                  leaves them to Node)
-#   scripts/broker-live use-bundled  Buwiz Bot.app's own buwiz-broker (phase 7), started as
-#                                  Buwiz Bot starts it: hub, v1 and MCP hosts, no Node;
-#                                  Buwiz Bot then finds it answering (use-rox, its old
-#                                  name, still works)
+#   scripts/broker-live backup     app.db (sqlite .backup) and Buwiz Bot.app's broker/ (as
+#                                  buwiz-broker/) into <data dir>/backups/<UTC time>/
+#   scripts/broker-live stop       stop whatever broker holds the port
+#   scripts/broker-live start      start Buwiz Bot.app's buwiz-broker, started as
+#                                  Buwiz Bot starts it: hub, v1 and MCP hosts;
+#                                  Buwiz Bot then finds it answering
+#   scripts/broker-live restart|use-bundled   stop, then start (use-rox, the old name
+#                                  of use-bundled, still works)
 #   --port N (any position)        the same as PORT=N
 #
 # GS: the data dir (default ~/Library/Application Support/Buwiz Broker, or
 # Grok Shell, its old name, while that one was not moved yet; a buwiz-broker
 # from this repo moves it once, after a backup, when it starts on it and no
 # other broker answers on 8787).
-# RES: the app bundle's Resources dir holding server/ (default: the Grok
-# Shell.app built in a grok-shell checkout beside this repo).
-# BUWIZ_APP: the Buwiz Bot.app use-bundled starts from (default ~/Applications/Buwiz Bot.app).
-# BUWIZ_LOG: use-bundled's log (default ~/Library/Logs/Buwiz Bot/broker.log, the app's).
-# (ROX_APP, ROX_LOG, ROX_BROKER_V1_HOST and ROX_BROKER_MCP_HOST, the old
-# names, still work.) Every broker it starts gets its variables by their
-# Buwiz names and their old ones: it may be a build from before the rename.
+# BUWIZ_APP: the Buwiz Bot.app it starts from (default ~/Applications/Buwiz Bot.app).
+# BUWIZ_LOG: its log (default ~/Library/Logs/Buwiz Bot/broker.log, the app's).
+# (ROX_APP and ROX_LOG, the old names, still work.)
 # PORT: default 8787.
 set -euo pipefail
 # old_name NEW OLD: NEW takes OLD's value (with a warning) when only OLD is set
@@ -40,9 +30,6 @@ old_name() {
 }
 old_name BUWIZ_APP ROX_APP
 old_name BUWIZ_LOG ROX_LOG
-old_name BUWIZ_BROKER_V1_HOST ROX_BROKER_V1_HOST
-old_name BUWIZ_BROKER_MCP_HOST ROX_BROKER_MCP_HOST
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,13 +43,9 @@ if [ -z "${GS:-}" ]; then
   OLD_GS="$HOME/Library/Application Support/Grok Shell"
   if [ ! -e "$GS" ] && [ -d "$OLD_GS" ]; then GS="$OLD_GS"; fi
 fi
-RES="${RES:-$ROOT/../grok-shell/dist/Grok Shell.app/Contents/Resources}"
 BUWIZ_APP="${BUWIZ_APP:-$HOME/Applications/Buwiz Bot.app}"
 RB="$BUWIZ_APP/Contents/Resources/broker"
-# the brokers by their names, else by their names before the rename (a
-# bundle or Grok Shell.app packaged before it has a rox-broker)
-RUST_BIN="$RES/server/buwiz-broker"
-[ -x "$RUST_BIN" ] || [ ! -x "$RES/server/rox-broker" ] || RUST_BIN="$RES/server/rox-broker"
+# the broker by its name, else by its name before the rename
 RB_BIN="$RB/buwiz-broker"
 [ -x "$RB_BIN" ] || [ ! -x "$RB/rox-broker" ] || RB_BIN="$RB/rox-broker"
 BUWIZ_LOG="${BUWIZ_LOG:-$HOME/Library/Logs/Buwiz Bot/broker.log}"
@@ -95,31 +78,6 @@ stop() {
   return 1
 }
 
-# `exec`: the broker replaces the backgrounded subshell, which otherwise
-# stays as its parent holding the caller's stdout (a pipe never closes).
-start_node() {
-  [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
-  [ -x "$RES/server/node" ] || { echo "no $RES/server/node (set RES)" >&2; return 1; }
-  (cd /tmp && BUWIZ_BROKER_DATA_DIR="$GS" GROK_DATA_DIR="$GS" BUWIZ_BUNDLE_ID=dev.goldcoders.grokshell \
-    GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
-    NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" PORT="$PORT" \
-    exec nohup "$RES/server/node" "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
-  wait_health && echo "node broker on $PORT"
-}
-
-start_rust() {
-  [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
-  [ -x "$RUST_BIN" ] || { echo "no $RUST_BIN yet (phase 1 packages it)" >&2; return 1; }
-  (cd /tmp && BUWIZ_BROKER_DATA_DIR="$GS" GROK_DATA_DIR="$GS" BUWIZ_BUNDLE_ID=dev.goldcoders.grokshell \
-    GROK_BUNDLE_ID=dev.goldcoders.grokshell NSH="$RES/server/nsh" \
-    NSH_HOST="$RES/server/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
-    BUWIZ_BROKER_V1_HOST="${BUWIZ_BROKER_V1_HOST:-1}" ROX_BROKER_V1_HOST="${BUWIZ_BROKER_V1_HOST:-1}" \
-    BUWIZ_BROKER_MCP_HOST="${BUWIZ_BROKER_MCP_HOST:-1}" ROX_BROKER_MCP_HOST="${BUWIZ_BROKER_MCP_HOST:-1}" \
-    exec nohup "$RUST_BIN" --port "$PORT" --data "$GS" --node "$RES/server/node" \
-      --node-script "$RES/server/app-server.mjs" >>"$GS/server.log" 2>&1 </dev/null &)
-  wait_health && echo "buwiz-broker on $PORT"
-}
-
 # What Buwiz Bot.app's broker needs; prints what is missing.
 rox_missing() {
   local f
@@ -145,17 +103,14 @@ start_rox() {
   wait_health && echo "Buwiz Bot.app's buwiz-broker on $PORT (log $BUWIZ_LOG)"
 }
 
-# Which broker holds the port: bundled (Buwiz Bot.app's, no Node), rust (buwiz-broker
-# with Node behind it), node, or none.
+# Which broker holds the port: bundled (Buwiz Bot.app's), or none, or whatever else.
 mode() {
   local pid cmd
   pid=$(listener)
   [ -z "$pid" ] && { echo none; return; }
   cmd=$(ps -o command= -p "$pid")
   case "$cmd" in
-    *"/Contents/Resources/broker/buwiz-broker "*--no-node* | *"/Contents/Resources/broker/rox-broker "*--no-node*) echo bundled ;;
-    *buwiz-broker* | *rox-broker*) echo rust ;;
-    *node*) echo node ;;
+    *"/Contents/Resources/broker/buwiz-broker "* | *"/Contents/Resources/broker/rox-broker "*) echo bundled ;;
     *) echo "other: $cmd" ;;
   esac
 }
@@ -173,21 +128,18 @@ status() {
 for p in json.load(sys.stdin).get("plugins", []): print("plugin:", p.get("id"), p.get("version"), p.get("state"), "on" if p.get("enabled") else "off")' 2>/dev/null || echo "plugins: unreadable"
   fi
   sqlite3 "file:$DB?mode=ro" "SELECT 'routine: ' || routine || ' ' || CASE enabled WHEN 1 THEN 'on' ELSE 'off' END || ' last run ' || coalesce(datetime(last_run/1000,'unixepoch','localtime'),'never') || coalesce(' error: ' || last_error, '') FROM v1_instances" 2>/dev/null || true
-  # who runs each v1 plugin process: buwiz-broker (phase 3) or Node
+  # who runs each v1 plugin process
   sqlite3 "file:$DB?mode=ro" "SELECT id, command FROM v1_plugins WHERE enabled=1" 2>/dev/null | while IFS='|' read -r id cmd; do
     local p parent
     p=$(pgrep -f -n "^$cmd" 2>/dev/null || true)
     parent=$([ -n "$p" ] && basename "$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')")" || echo none)
     echo "process: $id pid ${p:-none} under ${parent}"
   done
-  # the MCP servers' status, and who runs the stdio ones: processes under
-  # buwiz-broker (phase 4) or under Node
+  # the MCP servers' status
   if [ -n "$pid" ]; then
     curl -s -m 5 "$URL/mcp/servers" | python3 -c 'import json,sys
 for s in json.load(sys.stdin).get("servers", []): print("mcp:", s.get("id"), s.get("status"))' 2>/dev/null || echo "mcp: unreadable"
-    local node
-    node=$(pgrep -P "$pid" -f "server/node" | head -1 || true)
-    echo "children: buwiz-broker $(pgrep -P "$pid" | grep -vc "^${node:-x}$" || true), node $([ -n "$node" ] && pgrep -P "$node" | wc -l | tr -d ' ' || echo 0)"
+    echo "children: $(pgrep -P "$pid" | wc -l | tr -d ' ')"
   fi
   echo "keychain dialog: $(pgrep -q SecurityAgent && echo UP || echo none)"
 }
@@ -197,8 +149,7 @@ backup() {
   dir="$GS/backups/$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p "$dir"
   sqlite3 "$DB" ".backup '$dir/app.db'"
-  if [ -d "$RES/server" ]; then cp -R "$RES/server" "$dir/server"; fi
-  # use-bundled's broker: buwiz-broker, its nsh and static files
+  # the app's broker: buwiz-broker, its nsh and static files
   if [ -d "$RB" ]; then cp -R "$RB" "$dir/buwiz-broker"; fi
   echo "$dir"
 }
@@ -206,18 +157,12 @@ backup() {
 case "${1:-}" in
   status) status ;;
   backup) backup ;;
-  start) start_node ;;
   stop) stop ;;
-  restart) stop && start_node ;;
-  use-node) stop && start_node ;;
-  use-rust)
-    # nothing stops before there is a buwiz-broker to start
-    [ -x "$RUST_BIN" ] || { echo "no $RUST_BIN yet (phase 1 packages it): nothing changed" >&2; exit 1; }
-    stop && start_rust || { echo "buwiz-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
-  use-bundled|use-rox)
+  start|restart|use-bundled|use-rox)
     [ "$1" = use-rox ] && echo "broker-live use-rox is an old name; use use-bundled" >&2
     # nothing stops before Buwiz Bot.app's broker is complete
     [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete (run app/bundle-dev.sh): $(rox_missing | tr '\n' ' ')nothing changed" >&2; exit 1; }
-    stop && start_rox || { echo "Buwiz Bot.app's buwiz-broker did not come up: back to node" >&2; stop || true; start_node; exit 1; } ;;
-  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    if [ "$1" != start ]; then stop; fi
+    start_rox || { echo "Buwiz Bot.app's buwiz-broker did not come up on $PORT" >&2; exit 1; } ;;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
