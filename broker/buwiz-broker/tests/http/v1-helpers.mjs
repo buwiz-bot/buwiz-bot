@@ -204,11 +204,27 @@ export async function rawFixture(b, args = []) {
   const spec = fixtureSpec(b, args);
   const child = spawn(spec.command, spec.args, { env: { PATH: process.env.PATH, ...spec.env }, stdio: ["pipe", "pipe", "ignore"] });
   const waiting = new Map();
+  const exited = new Promise((r) => child.once("exit", r));
   let id = 0;
+  let broken = null;
   const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+  const fail = (e) => {
+    broken ??= e;
+
+    for (const w of waiting.values()) w.reject(e);
+    waiting.clear();
+  };
 
   createInterface({ input: child.stdout }).on("line", (line) => {
-    const m = JSON.parse(line);
+    let m;
+
+    // a line that is no JSON fails this fixture's pending calls, not the test file
+    try {
+      m = JSON.parse(line);
+    } catch {
+      return fail(new Error(`the fixture wrote a line that is not JSON: ${line.slice(0, 120)}`));
+    }
+
     const w = waiting.get(m.id);
 
     if (!w) return;
@@ -217,13 +233,19 @@ export async function rawFixture(b, args = []) {
     if (m.error) w.reject(Object.assign(new Error(m.error.message), { code: m.error.code }));
     else w.resolve(m.result);
   });
+  child.once("exit", () => fail(new Error("the fixture exited")));
 
-  const rpc = (method, params) => new Promise((resolve, reject) => (waiting.set(++id, { resolve, reject }), send({ jsonrpc: "2.0", id, method, params })));
+  const rpc = (method, params) =>
+    new Promise((resolve, reject) => {
+      if (broken) return reject(broken);
+      waiting.set(++id, { resolve, reject });
+      send({ jsonrpc: "2.0", id, method, params });
+    });
 
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
-  return { callTool: (name, a = {}) => rpc("tools/call", { name, arguments: a }), close: () => child.kill() };
+  return { callTool: (name, a = {}) => rpc("tools/call", { name, arguments: a }), close: async () => (child.kill(), await exited) };
 }
 
 /** A tool result's data: its structuredContent, else its first text parsed. */

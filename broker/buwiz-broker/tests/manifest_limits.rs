@@ -1,6 +1,11 @@
-//! The limits a host enforces on a manifest (spec section 24), against the table the plugin
-//! developer kit documents in its manifest guide (`docs/manifest.md`, "Limits"): a plugin author
-//! designs to that table, so the broker's numbers must be those.
+//! The limits the broker enforces on a manifest (spec section 24) are these numbers, the ones
+//! the protocol guide lists in its "Limits" table: a plugin author designs to that table.
+//!
+//! The table's home is the developer kit's repository, so this test holds a copy of its numbers
+//! and cannot read the guide itself; checking the guide's own table against them is that
+//! repository's. The check goes both ways: every limit the broker enforces is in the copy, and
+//! every row of the copy is a limit the broker has, so a limit added to the broker without the
+//! table fails here.
 
 use buwiz_broker::v1::manifest::limits_json;
 use serde_json::json;
@@ -9,8 +14,8 @@ const KIB: u64 = 1024;
 const MIB: u64 = 1024 * 1024;
 
 #[test]
-fn the_brokers_limits_are_the_documented_ones() {
-    let documented = json!({
+fn the_brokers_limits_are_exactly_the_numbers_the_protocol_guide_lists() {
+    let listed = json!({
         "manifestBytes": 256 * KIB, "pluginId": 255, "version": 32, "title": 60, "description": 300, "publisherName": 80,
         "commands": 32, "scopes": 16, "routines": 8, "apps": 16,
         "commandDescription": 200, "commandArgs": 120, "scopeDescription": 120, "scopeHint": 1500,
@@ -22,7 +27,11 @@ fn the_brokers_limits_are_the_documented_ones() {
         "inlineWidth": [240, 960], "inlineHeight": [96, 800],
     });
     let held = limits_json();
-    for (key, want) in documented.as_object().unwrap() {
-        assert_eq!(&held[key], want, "LIMITS.{key}");
+    let (listed, held) = (listed.as_object().unwrap(), held.as_object().unwrap());
+    for key in held.keys() {
+        assert!(listed.contains_key(key), "the broker enforces LIMITS.{key}, which the table does not list");
+    }
+    for (key, want) in listed {
+        assert_eq!(held.get(key), Some(want), "LIMITS.{key}");
     }
 }

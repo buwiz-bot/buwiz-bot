@@ -91,8 +91,12 @@ function writeStats() {
   const file = process.env.FX_STATS_FILE;
 
   if (!file) return;
-  writeFileSync(`${file}.tmp`, JSON.stringify(stats()));
-  renameSync(`${file}.tmp`, file);
+  // a name of its own per process: every process of a bed shares the file
+  const tmp = `${file}.${process.pid}.tmp`;
+
+  // the seed it was given is for a test to look for in the logs (a throwaway key)
+  writeFileSync(tmp, JSON.stringify({ ...stats(), seed: key?.seed ?? null }));
+  renameSync(tmp, file);
 }
 
 const manifest = () => parseIJson(readFileSync(MANIFEST, "utf8"));

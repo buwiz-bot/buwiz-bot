@@ -34,7 +34,7 @@ test("RSV-01 buwiz.provision is the first request answered; other tools before i
       assert.equal(dataOf(await c.callTool("buwiz.provision", provision(k))).ok, true);
       assert.equal(dataOf(await c.callTool("fx_echo", { a: 1 })).args.a, 1);
     } finally {
-      c.close();
+      await c.close();
     }
 
     // a plugin that does not answer buwiz.provision is plugin_invalid
@@ -58,7 +58,7 @@ test("RSV-02 buwiz.session.open with an unknown app or a wrong perms_sha256 fail
 
       assert.equal(dataOf(wrong).code, "invalid_args");
     } finally {
-      c.close();
+      await c.close();
     }
 
     // the broker refuses all of it before relaying
@@ -72,32 +72,51 @@ test("RSV-02 buwiz.session.open with an unknown app or a wrong perms_sha256 fail
   });
 });
 
+// every file under `dir`, but the ones in `skip` (paths or folders)
+const filesUnder = (dir, skip) =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const f = join(dir, e.name);
+
+    if (skip.some((s) => f === s || f.startsWith(`${s}.`))) return [];
+
+    return e.isDirectory() ? filesUnder(f, skip) : [f];
+  });
+
+/** The files of a run that hold `seed`: the broker's log (`log`) and every
+ *  file of its data dir and bed but the key store and the fixture's own record. */
+const holding = (seed, { b, dataDir }, log) => {
+  const skip = [b.keysDir, b.statsFile];
+  const hits = filesUnder(dataDir, skip).concat(filesUnder(b.dir, skip)).filter((f) => readFileSync(f).includes(seed));
+
+  return log.includes(seed) ? [...hits, "the broker's output"] : hits;
+};
+
 const logsOf = (dataDir) => {
   const dir = join(dataDir, "v1", "logs");
 
-  return (existsSync(dir) ? readdirSync(dir) : []).map((f) => [f, readFileSync(join(dir, f), "utf8")]);
+  return (existsSync(dir) ? readdirSync(dir) : []).map((f) => readFileSync(join(dir, f), "utf8"));
 };
 
 test("RSV-03 the certificate verifies with the plugin public key; the seed is never logged", async () => {
-  await withHost("rsv03", async ({ b, api, dataDir }) => {
+  await withHost("rsv03", async ({ b, api, dataDir, server }) => {
     const inst = await installFixture(api, b);
     const keyFile = join(b.keysDir, `${FX}.key`);
     const seed = readFileSync(keyFile, "utf8").trim();
 
     assert.equal(pubOf(seed), inst.plugin_pub);
     assert.equal(statSync(keyFile).mode & 0o777, 0o600, "the file keystore keeps keys 0600");
+    assert.equal(statsOf(b.statsFile).seed, seed, "the fixture was given the seed the keystore holds");
     const o = await openApp(api, await api.plugin(), "board");
 
     assert.ok(verify(inst.plugin_pub, signedBytes(o.res.cert), o.res.cert_sig));
     assert.deepEqual(Object.keys(o.res.cert).sort(), ["app", "ks_pub", "not_after", "open_id", "perms_sha256", "plugin", "typ", "v"]);
     assert.equal(o.res.cert.perms_sha256, permsDigest(o.res.permissions));
     await api.disable();
-
-    for (const [f, text] of logsOf(dataDir)) assert.ok(!text.includes(seed), `${f} holds a seed`);
+    assert.deepEqual(holding(seed, { b, dataDir }, server.log()), [], "a file holds the seed");
   });
 
-  // a misbehaving plugin that prints its key: stopped, and the log holds no seed
-  await withHost("rsv03-leak", async ({ b, api, dataDir }) => {
+  // a misbehaving plugin that prints its key: stopped, and nothing holds the seed
+  await withHost("rsv03-leak", async ({ b, api, dataDir, server }) => {
     const leakCode = await codeOf(installFixture(api, b, ["--misbehave=log-seed"]));
 
     // refused at the gate, or stopped as soon as the line arrives
@@ -106,12 +125,12 @@ test("RSV-03 the certificate verifies with the plugin public key; the seed is ne
       assert.equal((await api.plugin()).code, "plugin_invalid");
     }
 
-    const keyFile = join(b.keysDir, `${FX}.key`);
-    const leakSeed = existsSync(keyFile) ? readFileSync(keyFile, "utf8").trim() : "-none-";
-    const logs = logsOf(dataDir);
+    // the seed the fixture was given and printed, whatever became of the install
+    const seed = statsOf(b.statsFile).seed;
 
-    for (const [f, text] of logs) assert.ok(!text.includes(leakSeed), `${f} holds the leaked seed`);
-    assert.match(logs.map(([, text]) => text).join(""), /\[redacted key\]/);
+    assert.match(seed, /^[A-Za-z0-9_-]{43}$/, "the fixture got a seed to leak");
+    assert.deepEqual(holding(seed, { b, dataDir }, server.log()), [], "a file holds the leaked seed");
+    assert.match(logsOf(dataDir).join(""), /\[redacted key\]/);
   });
 
   // a certificate signed by another key: plugin_bad_signature, plugin failed
@@ -146,7 +165,7 @@ test("RSV-05 buwiz.session.close and buwiz.uninstall answer ok; an unknown buwiz
       assert.deepEqual(dataOf(await c.callTool("buwiz.uninstall", {})), { ok: true });
       await assert.rejects(c.callTool("buwiz.revoke", {}), (e) => e.code === -32601);
     } finally {
-      c.close();
+      await c.close();
     }
   });
 });
@@ -303,8 +322,13 @@ test("LCY-08 a restart provisions and verifies again; a changed manifest fails m
     await until(async () => ["restarting", "failed"].includes((await api.plugin()).state), 5000, "the restart to begin");
     await until(stateIs(api, "failed"), 8000, "failed");
     assert.equal((await api.plugin()).code, "manifest_changed");
-    await new Promise((r) => setTimeout(r, 1500));
-    assert.equal((await api.plugin()).state, "failed", "no restart loop");
+    // a restart would be a new process (its pid in the stats file) and a new generation
+    const [pid, generation] = [statsOf(b.statsFile).pid, (await api.plugin()).generation];
+
+    await new Promise((r) => setTimeout(r, 2500));
+    const p = await api.plugin();
+
+    assert.deepEqual([p.state, p.generation, statsOf(b.statsFile).pid], ["failed", generation, pid], "no restart loop");
     // a new version found on restart waits for the update flow
     b.writeManifest((m) => (m.version = "1.0.1"));
     assert.equal((await api.enable()).state, "update_available");
@@ -343,7 +367,11 @@ test("EVT-01 sessions opening, calling and closing announce no plugin event; a s
     const p = await api.plugin();
     const seen = [];
 
+    let attached;
+    const ready = new Promise((r) => (attached = r));
+
     const stream = httpRequest({ host: "127.0.0.1", port: PORT, path: "/v1/host/events", headers: { "X-Buwiz-Host": api.token } }, (res) => {
+      attached();
       res.setEncoding("utf8");
       res.on("data", (d) => {
         for (const m of d.matchAll(/event: plugin\ndata: (.+)\n/g)) seen.push(JSON.parse(m[1]));
@@ -353,7 +381,7 @@ test("EVT-01 sessions opening, calling and closing announce no plugin event; a s
     stream.end();
 
     try {
-      await new Promise((r) => setTimeout(r, 200));
+      await ready;
 
       for (let i = 0; i < 3; i++) {
         const open = await openApp(api, p, "board");

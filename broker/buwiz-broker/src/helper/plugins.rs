@@ -1872,11 +1872,13 @@ mod tests {
         in_state(&b.host, "failed").await;
         assert_eq!(b.host.runtime_view(FX).code.as_deref(), Some("failed"));
         assert_eq!(b.host.clock.manual_wait(), None, "no seventh restart is scheduled");
+        // the state is set before its event is sent: wait for the last event
         let mut seen = Vec::new();
-        while let Ok(e) = events.try_recv() {
+        while seen.last().map(String::as_str) != Some("failed") {
+            let e = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.expect("the failed event never came").unwrap();
             seen.push(e["state"].as_str().unwrap_or_default().to_owned());
         }
-        assert!(seen.iter().any(|s| s == "restarting") && seen.last().map(String::as_str) == Some("failed"), "{seen:?}");
+        assert!(seen.iter().any(|s| s == "restarting"), "{seen:?}");
         // past the 10-minute window the count starts over (after a Retry)
         b.host.clock.manual_step(Some(b.host.clock.now() + 11.0 * 60_000.0), false);
         assert_eq!(b.host.enable(FX).await.unwrap()["state"], "running");
