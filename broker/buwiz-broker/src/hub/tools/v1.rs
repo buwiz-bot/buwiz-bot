@@ -1,4 +1,4 @@
-//! What v1 plugins put in front of the model (v1/agent.mjs, spec 16, 18):
+//! What v1 plugins put in front of the model:
 //! their tools under their own names (`<short>_<tool>`, `[short] `
 //! descriptions capped at 1024), server instructions and scope hints, only
 //! from enabled, running, approved plugins; a routine's turn sees its own

@@ -1,4 +1,4 @@
-//! The jobs table (state.mjs `jobs`, `setJob`, `jobJson`): what `/status`
+//! The jobs table: what `/status`
 //! reads while a chat turn runs. A job keeps its last 30 events, so a
 //! poller sees a status that lasted less than its interval; `/chat` keeps
 //! the last 25 jobs (`/retry` and other starters don't trim).

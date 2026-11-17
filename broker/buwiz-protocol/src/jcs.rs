@@ -1,6 +1,6 @@
 //! JSON Canonicalization Scheme (RFC 8785) for the objects the mini app
 //! protocol signs: session certificates, call envelopes and permissions
-//! digests. The broker's canonicalizer (`server/v1/jcs.mjs`) must produce
+//! digests. The broker's canonicalizer must produce
 //! the same bytes, so both are tested against one set of vectors
 //! (`jcs-vectors.json`, copied here from grok-shell).
 //!

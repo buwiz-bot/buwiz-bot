@@ -26,12 +26,12 @@ pub struct Thread {
 }
 
 pub trait RoutineHost: Send + Sync {
-    /// `findThread(key)` (state.mjs): the thread whose id or uid is `key`
+    /// `findThread(key)`: the thread whose id or uid is `key`
     /// (none for "").
     fn thread(&self, key: &str) -> Option<Thread>;
 
     /// The threads that carry a `routine` mark, in `store.list` order
-    /// (routine-threads.mjs `find` and `adopt` search them).
+    ///.
     fn routine_threads(&self) -> Vec<Thread>;
 
     /// routine-threads.mjs `ensure`, the new thread: `{id: "t" +
@@ -40,15 +40,15 @@ pub trait RoutineHost: Send + Sync {
     fn add_routine_thread(&self, title: &str, mark: &Value) -> Thread;
 
     /// `t.routine = mark` and, when given, `t.title = title`, then
-    /// `writeIndex()` (routine-threads.mjs `ensure` renaming, `adopt`).
+    /// `writeIndex()`.
     fn set_routine_mark(&self, id: &str, mark: &Value, title: Option<&str>);
 
-    /// routine-threads.mjs `notice`: `{id: uuidv7(), role: "notice", text,
+    /// `{id: uuidv7(), role: "notice", text,
     /// notice}` pushed onto the turns of the thread whose id or uid is
     /// `chat`, then `writeIndex()`; `false` when there is no such thread.
     fn push_notice(&self, chat: &str, text: &str, notice: &Value) -> bool;
 
-    /// routine-threads.mjs `settle`: in the thread whose id or uid is
+    /// In the thread whose id or uid is
     /// `chat`, every turn whose `notice` has kind `routine_consent`, this
     /// `instance` and state `pending` gets `notice = {...notice, state}`
     /// (the key keeps its place); `writeIndex()` when one changed.
@@ -58,9 +58,9 @@ pub trait RoutineHost: Send + Sync {
     /// `routineJson`'s `botName`).
     fn bot_name(&self, thread: &str) -> Option<String>;
 
-    /// `threadBot(id)?.threadId` (state.mjs): the chat of the bot the
+    /// `threadBot(id)?.threadId`: the chat of the bot the
     /// thread answers as: its own bot's, else, for a routine's thread, the
-    /// bot of the chat it reports to (routines.mjs `chatsOf`).
+    /// bot of the chat it reports to.
     fn bot_chat(&self, thread: &str) -> Option<String>;
 
     /// routines.mjs `googleEmail`'s `linked()`: over `store.list` in order,
@@ -68,7 +68,7 @@ pub trait RoutineHost: Send + Sync {
     /// the first one `is_email` accepts.
     fn linked_account(&self, is_email: &dyn Fn(&str) -> bool) -> Option<String>;
 
-    /// Whether the job `job` is done (`job.done` in state.mjs's `jobs`):
+    /// Whether the job `job` is done:
     /// routines.mjs `afterJob` waits for it.
     fn job_done(&self, job: JobId) -> bool;
 }

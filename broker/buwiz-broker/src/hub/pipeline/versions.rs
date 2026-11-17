@@ -36,7 +36,7 @@ fn strip_tsx(s: &str) -> &str {
     }
 }
 
-/// state.mjs's `slugFile`: a display filename, kebab-case plus ".tsx", or
+/// A display filename, kebab-case plus ".tsx", or
 /// "" when nothing usable is left.
 pub fn slug_file(s: &str) -> String {
     let t = s.trim_matches(js::is_space);

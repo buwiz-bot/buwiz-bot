@@ -1324,7 +1324,7 @@ fn said(r: Res<String>) -> ToolResult {
     }
 }
 
-/// A routine's agent turn in its own thread (`routineTurn`, v1/broker.mjs):
+/// A routine's agent turn in its own thread:
 /// the turn runner's, with the job naming the routine and its surface.
 async fn routine_turn(ctx: &Arc<HubCtx>, host: &dyn RoutineHost, turn: TurnRequest) -> Result<crate::hub::traits::TurnDone, String> {
     if host.thread(&turn.turn.thread).is_none() {

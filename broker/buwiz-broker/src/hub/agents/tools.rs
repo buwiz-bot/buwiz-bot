@@ -1,4 +1,4 @@
-//! The agent tools (agents-tools.mjs, drafts/agent-messaging.md §4): in an
+//! The agent tools: in an
 //! agent's chat and in its delivery turns, never in a routine's run. The
 //! caller is the bot the turn answers as (`turn.acting_bot`, Node's
 //! `job.agentBot`), else the thread's own; in a chat without a Bot, the user

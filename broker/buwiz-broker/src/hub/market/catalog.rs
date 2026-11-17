@@ -828,7 +828,7 @@ fn abbreviations(s: &str) -> String {
     re(&R, r"\b(Api|Mcp|Url|Id|Pat|Dd)\b").replace_all(s, |c: &regex_lite::Captures| c[0].to_uppercase()).into_owned()
 }
 
-/// plugin_resolve.mjs's `adjustServers`: Cursor's Google proxies go
+/// Cursor's Google proxies go
 /// straight to Google; servers behind Cursor's or Grok's gateways are
 /// marked unavailable.
 pub fn adjust_servers(servers: Option<&Value>) -> Map<String, Value> {

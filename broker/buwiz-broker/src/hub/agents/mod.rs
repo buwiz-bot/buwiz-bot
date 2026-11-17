@@ -1,4 +1,4 @@
-//! Agent messaging (plan 5.6, track E; agents.mjs): the user's agents
+//! Agent messaging: the user's agents
 //! messaging each other and the world outside Rox. The v1 envelope,
 //! agents' threads (a thread marked `agents: {conversation, participants,
 //! subject, created_by, created_at}`, read-only and never a sidebar row),
@@ -8,13 +8,13 @@
 //! - [`Agents`] (this file) decides and records, on the store's
 //!   [`State`]; what it hands on for delivery comes back as
 //!   [`Delivery`]s, which the caller routes once the store is written.
-//! - `run` delivers (agents-run.mjs, agents-wire.mjs): the recipient's
+//! - `run` delivers: the recipient's
 //!   turn, one per agent at a time and four in all; a reply wakes the
 //!   asker in its own chat once that chat is idle.
-//! - `external` (agents-external.mjs): outside endpoints, a signed `ah_`
+//! - `external`: outside endpoints, a signed `ah_`
 //!   webhook in, an outgoing webhook's outbox, the Claude Code bridge.
 //!   Owns the tables `agent_endpoints`, `agent_hook_seen`, `agent_outbox`.
-//! - `tools` (agents-tools.mjs): the six agent tools, by name.
+//! - `tools`: the six agent tools, by name.
 //! - `hub/routes/agents.rs`: `/v1/host/agents/*`, `/v1/hooks/ah_*`,
 //!   `/v1/bridge/*`.
 //!
@@ -145,7 +145,7 @@ pub struct Endpoint {
     pub bot: String,
 }
 
-/// Where the endpoints are looked up (agents-external.mjs's `get`).
+/// Where the endpoints are looked up.
 pub trait Endpoints: Send + Sync {
     fn get(&self, id: &str) -> Option<Endpoint>;
 }
@@ -431,7 +431,7 @@ fn thread_index(s: &State, key: Option<&str>) -> Option<usize> {
 
 pub type Uid = Arc<dyn Fn() -> String + Send + Sync>;
 
-/// agents.mjs's `createAgents`: the send limit's memory, the clock, the
+/// The send limit's memory, the clock, the
 /// uid minter and the endpoints; everything else is the store's.
 pub struct Agents {
     clock: Arc<Clock>,

@@ -1,4 +1,4 @@
-//! files.mjs `highlight(code, ext)`: a file's lines as tokens
+//! A file's lines as tokens
 //! `[text, dark colour, light colour]`, in Grok's cursor-dark and
 //! cursor-light palettes.
 //!
@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use syntect::highlighting::{Color, Highlighter, Theme, ThemeSet};
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
-/// files.mjs `LANG`: the extensions with a grammar, each as the extension
+/// The extensions with a grammar, each as the extension
 /// syntect finds that grammar by.
 fn grammar_ext(ext: &str) -> Option<&'static str> {
     Some(match ext {

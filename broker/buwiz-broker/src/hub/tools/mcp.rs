@@ -262,7 +262,7 @@ pub async fn app_tools_load(run: &Run, input: &Value) -> Out {
     Out::ok(format!("Loaded {} {label} tools; call them from your next step:\n{}", names.len(), names.join("\n")))
 }
 
-/// mcp.mjs `callTool(row, tool, input)`: the content folded into one
+/// The content folded into one
 /// string, `is_error` always set, and the result's `_meta`.
 async fn call_tool(ctx: &HubCtx, id: &str, tool: &str, input: &Value) -> Result<(Out, Option<Value>), String> {
     let Some(mcp) = &ctx.mcp else { return Ok((Out::err(format!("mcp server {id} is not connected (failed to start)")), None)) };
@@ -320,7 +320,7 @@ pub async fn exec(run: &Run, name: &str, input: &Value) -> Option<Result<Out, St
     Some(
         async {
             let (out, meta) = call_tool(ctx, &server, &tool, input).await?;
-            // a Drive file the AI made or changed joins the reply (drive.mjs)
+            // a Drive file the AI made or changed joins the reply
             if server == super::drive::DRIVE_SERVER {
                 super::drive::note_drive_call(run, &tool, input, &out);
             }

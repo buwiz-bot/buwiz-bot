@@ -1,4 +1,4 @@
-//! The tool loop (agent.mjs `agentTurn`, `backgroundTurn`): up to 8 model
+//! The tool loop: up to 8 model
 //! calls, the last with `tool_choice: none`; `pause_turn` polls again; a
 //! refused server web search turns on the client one, and a stream that
 //! fails before its first event turns streaming off, both for the process.

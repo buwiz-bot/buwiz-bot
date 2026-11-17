@@ -1,7 +1,7 @@
 //! Private skills: the six tools the model manages them with (tools.mjs
 //! `toolSkillAdmin`), what the agent's system prompt carries of them
 //! (`privateSkillsInject`), and the writes behind `POST /skills`,
-//! `/skills/state` and `/skills/delete` (routes/market.mjs).
+//! `/skills/state` and `/skills/delete`.
 
 use std::sync::Arc;
 

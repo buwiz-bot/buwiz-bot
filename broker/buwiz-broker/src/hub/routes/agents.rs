@@ -1,4 +1,4 @@
-//! The agents' HTTP side (v1/routes.mjs; plan 5.6, track E):
+//! The agents' HTTP side:
 //!
 //! - `POST /v1/host/agents/archive|resume|accepts|card` and
 //!   `/v1/host/agents/endpoints/create|list|rotate|delete`: the host

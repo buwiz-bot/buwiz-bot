@@ -1,5 +1,5 @@
 //! `/prefs`: theme, model, effort, fast and the sidebar's two section
-//! names, kept row by row in `meta` (server/src/routes/apps.mjs).
+//! names, kept row by row in `meta`.
 
 use rusqlite::OptionalExtension;
 use serde_json::{Map, Value};

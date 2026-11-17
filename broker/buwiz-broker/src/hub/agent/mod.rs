@@ -1,4 +1,4 @@
-//! The tool loop (plan 5.4; agent.mjs): the hub's `TurnRunner`. `/chat`
+//! The tool loop: the hub's `TurnRunner`. `/chat`
 //! and `/retry` jobs run `generate` (`generate.rs`): the slash commands
 //! (`slash_mock.rs`), the tool loop (`turn.rs`, with the streamed
 //! placeholders of `placeholders.rs` and the user's message as
@@ -109,7 +109,7 @@ impl TurnRunner for Agent {
     }
 }
 
-/// An agent's request (agents-wire.mjs `runRequest`): the recipient's turn
+/// An agent's request: the recipient's turn
 /// on a stand-in thread (the conversation from its side, `history`), whose
 /// writes are its own and never shown; `agentTurn` with the tools, else
 /// `chatReply`. → its answer and the cards it made (`job.linkTurn.links`).

@@ -1,6 +1,6 @@
 //! The chat's MCP routes (5.2): `POST /mcp/servers` (routes/market.mjs and
 //! tools.mjs `mcpUpsertServer`), `POST /mcp/attach` and `GET
-//! /mcp/attachments` (attachments.mjs). The servers are McpHost's
+//! /mcp/attachments`. The servers are McpHost's
 //! (`ctx.mcp`); when the host could not start the two that need a server
 //! answer 501.
 
@@ -124,7 +124,7 @@ fn server_row(ctx: &HubCtx, id: &str) -> Result<Option<Row>, String> {
     })
 }
 
-/// tools.mjs `mcpUpsertServer`: add or edit a server; a field left out
+/// Add or edit a server; a field left out
 /// keeps its stored value; an enabled one is probed now.
 pub async fn upsert_server(ctx: &HubCtx, b: &Value) -> Result<Value, String> {
     let mcp = ctx.mcp.clone().ok_or("the MCP servers are not hosted here")?;

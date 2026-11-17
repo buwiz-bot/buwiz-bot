@@ -1,4 +1,4 @@
-//! The chat routes (5.2; routes/chat.mjs): threads, turns, `/chat` and
+//! The chat routes: threads, turns, `/chat` and
 //! `/retry` (a job, run by `ctx.turns`), `/status`, reactions, copy and
 //! share. [`install`] is track A's one line in `hub/mod.rs`: it loads the
 //! store first (other tracks' starts read it), then registers the chat,
@@ -76,7 +76,7 @@ pub fn parse(body: &Bytes) -> Result<Value, String> {
     })
 }
 
-/// `MOCK ? "mock" : MODEL` (config.mjs).
+/// `MOCK ? "mock" : MODEL`.
 pub fn mock() -> bool {
     std::env::var_os("MOCK").is_some_and(|v| !v.is_empty())
 }
@@ -132,7 +132,7 @@ pub(crate) use wrote;
 
 // ————— the seams —————
 
-/// artifacts.mjs `libraryOf(thread, origin)`: `/thread/apps`' list for a
+/// `/thread/apps`' list for a
 /// thread (its `t<n>` id). Track C fills it in `ctx.ext`.
 #[derive(Clone)]
 pub struct LibraryOf(pub Arc<dyn Fn(Arc<HubCtx>, String, String) -> BoxFuture<'static, Value> + Send + Sync>);

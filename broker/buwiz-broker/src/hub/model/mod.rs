@@ -31,7 +31,7 @@ use super::traits::ModelApi;
 use super::types::{BoxFuture, Pattern, TurnCtx, Verb};
 use super::Registry;
 
-/// The provider settings (config.mjs), read once from the environment.
+/// The provider settings, read once from the environment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// `GEN_PROVIDER`, default `anthropic`
@@ -119,7 +119,7 @@ impl Settings {
 
 // BUG: a 5xx on the first streamed round reads as "streaming unavailable":
 // streaming stays off for the process from then on (MODEL-05). Node's
-// `agentStream` (tools.mjs): the tool loop turns it off when a stream
+// `agentStream`: the tool loop turns it off when a stream
 // fails before its first event, and never back on.
 static AGENT_STREAM: AtomicBool = AtomicBool::new(true);
 

@@ -1,4 +1,4 @@
-//! A mini app's details (appmeta.mjs): title, file label, description,
+//! A mini app's details: title, file label, description,
 //! size and icon in `apps`, the summary `/apps/meta`, `/artifacts` and
 //! `/app/info` share, and the icon an image model draws. The routes
 //! (`routes/apps.rs`) and the tool loop's app tools (5.4) call these.
@@ -660,7 +660,7 @@ impl crate::hub::tools::artifact::AppMeta for ToolSide {
         Box::pin(gen_app_icon(ctx, &name, &prompt, &model))
     }
 
-    /// tools.mjs: `updateAppMeta(String(name || ""), meta)` then
+    /// `updateAppMeta(String(name || ""), meta)` then
     /// `appInfo(String(name))` (no origin: the answer reads no URL).
     fn update(&self, ctx: Arc<HubCtx>, name: String, meta: Value) -> crate::hub::types::BoxFuture<'static, Result<Value, String>> {
         Box::pin(async move {

@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::js;
 
-/// A refusal with the spec's code (22.1; `v1/errors.mjs`).
+/// A refusal with the spec's code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct V1Error {
     pub code: String,
@@ -56,7 +56,7 @@ impl V1Error {
 
 
 /// Whether `s` is a whole `kind` name of the v1 grammar table
-/// (`grammar.mjs` `V1`, spec 4).
+///.
 pub fn grammar_ok(kind: &str, s: &str) -> bool {
     let tail = |s: &str, first: fn(char) -> bool, rest: fn(char) -> bool, max: usize| {
         let mut cs = s.chars();
@@ -110,7 +110,7 @@ pub fn shown(v: Option<&Value>, n: usize) -> String {
     v.map_or_else(|| "undefined".to_owned(), |v| js::slice_utf16(&js::stringify(v), n))
 }
 
-/// `kindOf(v)` (`v1/jcs.mjs`).
+/// `kindOf(v)`.
 pub fn kind_of(v: Option<&Value>) -> &'static str {
     match v {
         None => "other",
@@ -143,7 +143,7 @@ pub fn same(a: Option<&Value>, b: Option<&Value>) -> bool {
     }
 }
 
-/// `fromB64u(s, len)` (`v1/ed.mjs`): base64url of exactly `len` bytes in
+/// `fromB64u(s, len)`: base64url of exactly `len` bytes in
 /// its one canonical form.
 pub fn from_b64u(v: Option<&Value>, len: usize) -> Option<Vec<u8>> {
     let Some(Value::String(s)) = v else { return None };
@@ -151,7 +151,7 @@ pub fn from_b64u(v: Option<&Value>, len: usize) -> Option<Vec<u8>> {
     (bytes.len() == len && buwiz_protocol::keys::b64(&bytes) == *s).then_some(bytes)
 }
 
-/// `canonicalize(v)` (`v1/jcs.mjs`): RFC 8785 text, any finite number.
+/// `canonicalize(v)`: RFC 8785 text, any finite number.
 pub fn canonicalize(v: &Value) -> String {
     match v {
         Value::Array(items) => format!("[{}]", items.iter().map(canonicalize).collect::<Vec<_>>().join(",")),
@@ -164,7 +164,7 @@ pub fn canonicalize(v: &Value) -> String {
     }
 }
 
-/// `signedBytes(v)` (`v1/jcs.mjs`): JCS bytes of a value holding safe
+/// `signedBytes(v)`: JCS bytes of a value holding safe
 /// integers only, refused with Node's message at the first other number.
 pub fn signed_bytes(v: &Value) -> Result<Vec<u8>, String> {
     fn first_unsafe(v: &Value) -> Option<f64> {
@@ -188,7 +188,7 @@ pub fn signed_bytes(v: &Value) -> Result<Vec<u8>, String> {
     buwiz_protocol::jcs::signed_bytes(v)
 }
 
-/// `verify(pub, bytes, sig)` (`v1/ed.mjs`): malformed keys or signatures
+/// `verify(pub, bytes, sig)`: malformed keys or signatures
 /// are a plain false.
 pub fn ed_verify(public: &str, bytes: &[u8], sig: &str) -> bool {
     use ed25519_dalek::Verifier as _;

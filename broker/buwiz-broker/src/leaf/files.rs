@@ -1,4 +1,4 @@
-//! The read side of files (server/src/routes/files.mjs): a reply's files
+//! The read side of files: a reply's files
 //! under `generated/files` (with Range), their saved versions, attachments,
 //! avatars and generated assets. Every path is resolved as Node's
 //! `path.join` resolves it, and a reply's file must stay inside the files

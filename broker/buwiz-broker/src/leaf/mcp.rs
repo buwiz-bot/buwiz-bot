@@ -7,7 +7,7 @@
 //! The servers themselves are McpHost's (helper/mcp_servers.rs); its status
 //! is what `/mcp/servers` shows and Node mirrors. `/mcp/open` hands only
 //! Rox links to the system (`open`, from PATH), an app link with a one-time
-//! pass that `/mcp/open/pass` redeems (open-pass.mjs). `/oauth/callback/`
+//! pass that `/mcp/open/pass` redeems. `/oauth/callback/`
 //! also finishes a mini app account's sign-in (§20.2) when the plugin
 //! host started it.
 
@@ -576,7 +576,7 @@ impl McpRoutes {
         }
     }
 
-    /// open-pass.mjs's `withPass`: `url` with a fresh one-time pass.
+    /// `url` with a fresh one-time pass.
     fn with_pass(&self, url: &str) -> String {
         let mut passes = self.passes.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
@@ -586,7 +586,7 @@ impl McpRoutes {
         format!("{url}{}buwiz_pass={pass}", if url.contains('?') { "&" } else { "?" })
     }
 
-    /// open-pass.mjs's `redeem`: once, while fresh.
+    /// Once, while fresh.
     fn redeem(&self, pass: &str) -> bool {
         let until = self.passes.lock().unwrap_or_else(|e| e.into_inner()).remove(pass);
         until.is_some_and(|u| u > Instant::now())

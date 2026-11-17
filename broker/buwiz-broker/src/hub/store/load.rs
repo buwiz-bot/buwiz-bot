@@ -242,7 +242,7 @@ fn thread_number(id: &str) -> u64 {
     }
 }
 
-/// state.mjs `backfillIds`: uids for rows written before they existed. A
+/// Uids for rows written before they existed. A
 /// known time stays; an artifact turn takes its version's `created_at`;
 /// the rest fall in creation order (thread number, then turn order) right
 /// after the previous known time.

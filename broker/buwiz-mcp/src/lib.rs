@@ -107,7 +107,7 @@ pub struct Conn {
     capabilities: Mutex<Value>,
 }
 
-/// mcp.mjs's `toolPath()`: an app started from Finder gets launchd's bare
+/// An app started from Finder gets launchd's bare
 /// PATH, without the folders npx, uvx and bunx usually live in.
 pub fn tool_path(path: &str, home: &str) -> String {
     let mut have: Vec<String> = path.split(':').filter(|p| !p.is_empty()).map(str::to_owned).collect();
@@ -313,7 +313,7 @@ async fn read_loop(conn: Arc<Conn>, stdout: tokio::process::ChildStdout, hooks: 
         let text = text.strip_suffix('\r').unwrap_or(&text);
         let msg: Value = match serde_json::from_str(text) {
             Ok(Value::Object(o)) if o.get("jsonrpc") == Some(&json!("2.0")) => Value::Object(o),
-            // not JSON-RPC: the connection is broken (plugins.mjs closes it)
+            // not JSON-RPC: the connection is broken
             _ => break,
         };
         let id = msg.get("id").cloned();

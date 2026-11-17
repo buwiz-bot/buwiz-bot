@@ -1,4 +1,4 @@
-//! Images (the image side of avatars.mjs): which chat models may draw
+//! Images: which chat models may draw
 //! (`imageModels`, `imageCapable`, from opencodex's `/v1/models`, a minute's
 //! cache), `generateImage` (opencodex's images relay, then Gemini, then
 //! OpenAI with keys from `keyOf`, then an SVG the chat model draws,
@@ -176,7 +176,7 @@ pub async fn edit_image(settings: &Settings, local: &dyn LocalTools, src: &Path,
     Ok("chatgpt".to_owned())
 }
 
-/// avatar-design.mjs `editAvatarImage(src, prompt, out)`: the opencodex
+/// The opencodex
 /// image relay first, then Gemini's image model when a key is configured.
 pub async fn edit_avatar_image(settings: &Settings, local: &dyn LocalTools, src: &Path, prompt: &str, out: &Path) -> Result<String, String> {
     let mut errs: Vec<String> = Vec::new();

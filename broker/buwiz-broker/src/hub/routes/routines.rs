@@ -1,4 +1,4 @@
-//! The v0 routines Rox shows in a chat's Details pane (routes/routines.mjs):
+//! The v0 routines Rox shows in a chat's Details pane:
 //! the list, the on/off switch and interval, Delete, Run now, and the
 //! templates connected servers suggest. Node matches `req.url` exactly, so
 //! a query string makes any of them Node's final 404 ("not found").

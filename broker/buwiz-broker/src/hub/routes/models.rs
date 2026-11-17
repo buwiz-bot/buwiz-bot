@@ -1,4 +1,4 @@
-//! `GET /models` (routes/apps.mjs): the model picker's catalog from
+//! `GET /models`: the model picker's catalog from
 //! opencodex's `/v1/models`, its `--fast` twins folded into a `fast` flag,
 //! each model's effort ladder and default, whether it reaches an image
 //! model, and its route (opencodex's provider, from `~/.opencodex/

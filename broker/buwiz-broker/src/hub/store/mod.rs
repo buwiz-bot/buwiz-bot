@@ -140,9 +140,9 @@ pub struct Thread {
     pub title: String,
     pub hidden: bool,
     pub archived: bool,
-    /// a v1 routine's own thread (v1/routine-threads.mjs)
+    /// a v1 routine's own thread
     pub routine: Option<Value>,
-    /// an agents' conversation (agents.mjs)
+    /// an agents' conversation
     pub agents: Option<Value>,
     pub turns: Vec<Turn>,
 }
@@ -161,7 +161,7 @@ pub struct Bot {
     pub name: String,
     pub shape: String,
     pub color: String,
-    /// a custom shape's SVG path data (avatar-shape.mjs); `None` for a kit shape
+    /// a custom shape's SVG path data; `None` for a kit shape
     pub outline: Option<String>,
     /// a rich avatar's painted layers `[{path, fill, opacity?}]` (custom only)
     pub layers: Option<Vec<Value>>,
@@ -190,7 +190,7 @@ pub struct Bot {
     pub memories: Vec<Value>,
     /// `[{id, kind, at, via}]`
     pub integrations: Vec<Value>,
-    // made by another agent (agents.mjs): the bots table's `extra`
+    // made by another agent: the bots table's `extra`
     pub made_by: Option<Value>,
     pub purpose: Option<Value>,
     pub helper: Option<Value>,
@@ -236,7 +236,7 @@ impl Bot {
     }
 }
 
-/// state.mjs `botDefaults`: (description, instructions).
+/// (description, instructions).
 pub fn bot_defaults(name: &str) -> (String, String) {
     (
         format!("{name} is a personal assistant bot in Buwiz Bot."),
@@ -244,7 +244,7 @@ pub fn bot_defaults(name: &str) -> (String, String) {
     )
 }
 
-/// state.mjs `slugFile`: a module's display filename, kebab-case plus
+/// A module's display filename, kebab-case plus
 /// ".tsx", or "" when nothing usable is left.
 pub fn slug_file(s: &str) -> String {
     let s = s.trim_matches(crate::js::is_space);
@@ -294,14 +294,14 @@ pub(crate) struct Written {
     pub meta: std::collections::HashMap<&'static str, Option<String>>,
 }
 
-/// The store's memory (state.mjs `store`, `seq`, `threadSeq`).
+/// The store's memory.
 #[derive(Clone, Debug, Default)]
 pub struct State {
     /// the server's active chat (`store.active`)
     pub active: String,
-    /// the `R<n>` counter (state.mjs `seq`)
+    /// the `R<n>` counter
     pub seq: u64,
-    /// the next `t<n>` (state.mjs `threadSeq`)
+    /// the next `t<n>`
     pub thread_seq: u64,
     /// the sidebar's sections (`store.sections`, a JSON array)
     pub sections: Value,

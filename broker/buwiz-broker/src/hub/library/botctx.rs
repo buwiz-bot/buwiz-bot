@@ -1,4 +1,4 @@
-//! A bot's own context (botctx.mjs): profile, memories and integrations,
+//! A bot's own context: profile, memories and integrations,
 //! the system-prompt section and the five bot tools. The bots live in the
 //! store; these are the operations on them.
 //!
@@ -145,7 +145,7 @@ fn or(v: &Value, d: &Value) -> Value {
     }
 }
 
-/// botctx.mjs `lookup(kind, id)`: what an integration resolves to now.
+/// What an integration resolves to now.
 pub fn lookup(ctx: &HubCtx, conn: &Connection, kind: &str, id: &str) -> Option<Value> {
     let cat = catalog(ctx);
     let entry = |key: &str| cat.and_then(|c| c.entry(key));

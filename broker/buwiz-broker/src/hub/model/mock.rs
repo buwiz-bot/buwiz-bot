@@ -1,4 +1,4 @@
-//! What `MOCK=1` answers instead of a model (model.mjs). The mock module
+//! What `MOCK=1` answers instead of a model. The mock module
 //! the legacy generator falls back to is the pipeline's (`mockModule`,
 //! 5.7a); `ask_model` takes it as an argument.
 

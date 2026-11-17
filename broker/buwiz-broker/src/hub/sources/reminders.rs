@@ -64,7 +64,7 @@ pub(super) fn local(ctx: &HubCtx) -> std::sync::Arc<dyn crate::hub::traits::Loca
     crate::helper::local::tools(ctx)
 }
 
-/// `jxa(script, env)` (state.mjs): `osascript -l JavaScript -e <script>`
+/// `jxa(script, env)`: `osascript -l JavaScript -e <script>`
 /// with a 15 s timeout, its output parsed as JSON, or `{error, hint}`.
 async fn jxa(ctx: &HubCtx, script: &str, env: Vec<(String, String)>) -> Value {
     let cmd = LocalCommand { program: "osascript".into(), args: vec!["-l".into(), "JavaScript".into(), "-e".into(), script.into()], env, stdin: None, timeout: Some(Duration::from_secs(15)) };

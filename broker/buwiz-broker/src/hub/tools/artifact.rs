@@ -92,7 +92,7 @@ pub fn image_module(file: &str, w: u32, h: u32) -> String {
     )
 }
 
-/// state.mjs `cardTurn(thread, name, v)`: the card of that version, else
+/// The card of that version, else
 /// the latest card of that name (never a building one).
 fn card_turn(ctx: &HubCtx, thread: &str, name: &str, v: Option<i64>) -> Option<String> {
     ctx.store.read(|s| {

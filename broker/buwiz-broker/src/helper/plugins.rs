@@ -1,4 +1,4 @@
-//! The v1 plugin host (spec 5.4, 6.2, 9, 22; `v1/plugins.mjs`): install
+//! The v1 plugin host (spec 5.4, 6.2, 9, 22): install
 //! records, processes, restarts.
 //!
 //! A v1 plugin is a stdio MCP child this host owns. Every spawn runs the

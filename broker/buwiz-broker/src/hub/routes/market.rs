@@ -1,4 +1,4 @@
-//! The market's 11 routes (routes/market.mjs): `/plugins/catalog`,
+//! The market's 11 routes: `/plugins/catalog`,
 //! `/plugins/detail`, `/plugins/skill`,
 //! `/plugins/inspect` (the review, no Node twin), `/plugins/install`,
 //! `/plugins/uninstall`, `/plugins/settings`,
@@ -44,7 +44,7 @@ pub fn register(routes: &mut Registry, market: Arc<Market>) {
     routes.route(Verb::Post, Pattern::Exact("/skills/delete"), |ctx, req| async move { skills_delete(&ctx, req) });
 }
 
-/// market.mjs's `readBody`: the JSON body, `{}` when it isn't JSON.
+/// The JSON body, `{}` when it isn't JSON.
 fn body(req: &HubRequest) -> Value {
     let text = if req.body.is_empty() { "{}".as_bytes() } else { &req.body[..] };
     serde_json::from_slice(text).unwrap_or_else(|_| json!({}))

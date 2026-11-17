@@ -1,4 +1,4 @@
-//! The office tools (tools.mjs `toolOffice`, `officeArt`, `cardOfficeFile`):
+//! The office tools:
 //! `office_create` writes its file with office.mjs's `officeCreateBytes`
 //! (`office::Office::create_bytes`) and lands it as a file card; every
 //! other `office_*` call goes to the in-process office (plan 6.1, which

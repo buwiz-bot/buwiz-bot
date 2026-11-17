@@ -1,5 +1,5 @@
 //! The avatar checks against pins recorded from the old Node implementation
-//! (avatar-shape.mjs): the same outlines, recipes and replies give the same
+//!: the same outlines, recipes and replies give the same
 //! errors and candidates, and one system prompt. The pins are under
 //! `tests/pins/avatar_shape/` (see `test-support/pins.rs`).
 

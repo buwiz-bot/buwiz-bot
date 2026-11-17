@@ -142,7 +142,7 @@ pub fn stopped(run: &Run) -> Option<TurnDone> {
     })
 }
 
-/// An agent's request (agents-wire.mjs `runRequest`): `agentTurn` on the
+/// An agent's request: `agentTurn` on the
 /// run's stand-in thread when the tools are on, else `chatReply`.
 pub async fn request_reply(run: &Run, prompt: &str) -> Result<String, String> {
     if tools_on(run) {

@@ -1,4 +1,4 @@
-//! The build pipeline (plan 5.7a; Node's `pipeline.mjs`): `nsh build` and
+//! The build pipeline: `nsh build` and
 //! `nsh check` in `.stage` (`nsh`), import fixing (`imports`), runtime
 //! chunks (`chunks`) and the `generated/<name>/<slug>.v<k>.tsx` version tree
 //! with its `versions` and `heads` rows (`versions`). A library: the tool
@@ -57,7 +57,7 @@ pub const SOURCE_DECL: (&str, &str) = (
 );
 
 /// Where the pipeline reads and writes, under Node's data dir
-/// (config.mjs's GEN_DIR, STAGE_DIR, CHUNK_DIR, WIDGETS_DIR).
+///.
 #[derive(Clone, Debug)]
 pub struct Dirs {
     pub gen: PathBuf,

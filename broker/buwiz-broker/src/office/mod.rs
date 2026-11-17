@@ -260,7 +260,7 @@ impl Office {
         Self { root, started: Mutex::new(None) }
     }
 
-    /// The hub's: the files dir (`generated/files`, made as config.mjs makes it).
+    /// The hub's: the files dir.
     pub fn for_hub(data: &Path) -> Arc<Self> {
         let root = data.join("generated").join("files");
         let _ = std::fs::create_dir_all(&root);

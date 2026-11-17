@@ -210,7 +210,7 @@ impl Hub {
         res
     }
 
-    /// `/v1/hooks/<id>/<secret>` (v1/routes.mjs `hookRoute`): an `ah_` id
+    /// `/v1/hooks/<id>/<secret>`: an `ah_` id
     /// is an agent's webhook, any other a routine instance's. A path of
     /// another shape, or not a POST, is Node's 404.
     async fn hook(&self, mut req: HubRequest) -> HubResponse {

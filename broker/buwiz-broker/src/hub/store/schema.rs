@@ -185,11 +185,11 @@ pub fn ensure(conn: &Connection) -> Result<(), String> {
     migrate_names(conn).map(|_| ())
 }
 
-/// `meta` key marking [`migrate_names`] done (names-migration.mjs's MARKER).
+/// `meta` key marking [`migrate_names`] done.
 pub const NAMES_MARKER: &str = "names_buwiz";
 
 /// The rox names a stored chat, link, pin or _meta may hold, and their
-/// buwiz ones (names-migration.mjs's RENAMES).
+/// buwiz ones.
 pub const RENAMES: [(&str, &str); 7] = [
     ("rox-app://", "buwiz-app://"),
     ("rox://", "buwiz://"),

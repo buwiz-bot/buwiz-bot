@@ -1,4 +1,4 @@
-//! avatar-shape.mjs: what a bot's avatar body may be, and the avatar
+//! What a bot's avatar body may be, and the avatar
 //! designer's candidate logic. A body is a kit shape (the app's mark engine
 //! draws 13 of them) or "custom": an SVG outline in a 0 0 100 100 box, y
 //! down, drawn with M/L/C/Q/Z only. The checks, their error texts and the
@@ -40,7 +40,7 @@ pub fn rich_system() -> &'static str {
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
 }
 
-/// Picture mode's style prompt (avatar-design.mjs `PICTURE_STYLE`).
+/// Picture mode's style prompt.
 pub fn picture_style() -> &'static str {
     const TEXT: &str = include_str!("../../../assets/templates/avatar-picture-style.txt");
     TEXT.strip_suffix('\n').unwrap_or(TEXT)
@@ -1624,7 +1624,7 @@ pub fn mock_rich() -> Vec<Value> {
     ]
 }
 
-/// avatar-design.mjs `pictureRequest({prompt, image})`: the style, then
+/// The style, then
 /// what the user typed on top of it; with no picture, the character is the
 /// user's description.
 pub fn picture_request(prompt: &str, image: bool) -> String {
@@ -1641,7 +1641,7 @@ pub fn picture_request(prompt: &str, image: bool) -> String {
     }
 }
 
-/// The SVG Picture mode asks for (avatar-design.mjs `SVG_RULES`).
+/// The SVG Picture mode asks for.
 pub const SVG_RULES: &str = "Draw it as one SVG: viewBox=\"0 0 1024 1024\", full-bleed, the background covering every pixel. Flat shapes and simple linear or radial gradients only; no text, no <image>, no filters, no scripts. Reply with only the <svg>…</svg> markup.";
 
 /// The SVG in a reply (`/<svg[\s\S]*<\/svg>/`), or why it can't be drawn.

@@ -1,5 +1,5 @@
 //! Google Drive files the AI made or changed, as Library artifacts
-//! (drive.mjs). A successful google-workspace write leaves a link on the AI
+//!. A successful google-workspace write leaves a link on the AI
 //! turn that made it:
 //!   turn.links = [{provider: "gdrive", id, name, mime, link, action, at, account?}]
 //! one per file id, action "created" | "edited" | "renamed". `artifacts`

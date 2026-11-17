@@ -1,5 +1,5 @@
 //! The store against pins recorded from the old Node implementation
-//! (server/src/state.mjs): a database Node seeded loads and serializes as
+//!: a database Node seeded loads and serializes as
 //! Node's did, byte for byte, and writes the rows Node's start would; what
 //! Rust writes, Node loaded into the same reads (R8); and the rules Node's
 //! tests pinned (STORE-04 building turns, STORE-05 the uid backfill). The

@@ -1,4 +1,4 @@
-//! `@` tokens attached to a chat or a bot (attachments.mjs): attach (the
+//! `@` tokens attached to a chat or a bot: attach (the
 //! token resolved through its server, stored, its card posted in the
 //! chat), the list with where each is, and the display names. Detach and
 //! rename are the leaf's (`leaf/mcp.rs`); `scopeSection` is the tool
@@ -14,7 +14,7 @@ use crate::hub::store::{now_ms, uuidv7, Turn};
 use crate::js;
 use crate::leaf::mcp::McpRoutes;
 
-/// grammar.mjs `parseToken`: `@<server>:<scope>:<value>` → its parts.
+/// `@<server>:<scope>:<value>` → its parts.
 pub fn parse_token(s: &str) -> Option<(String, String, String)> {
     let s = s.trim_matches(|c: char| js::is_space(c) || matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
     let rest = s.strip_prefix('@')?;
@@ -26,7 +26,7 @@ pub fn parse_token(s: &str) -> Option<(String, String, String)> {
     (server_ok && scope_ok && value_ok).then(|| (server.into(), scope.into(), value.into()))
 }
 
-/// Every token in free text, in order (grammar.mjs `tokensIn`): (server, scope).
+/// Every token in free text, in order: (server, scope).
 pub fn tokens_in(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut from = 0;

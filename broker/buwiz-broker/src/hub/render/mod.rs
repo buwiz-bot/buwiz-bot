@@ -2,12 +2,12 @@
 //! runs with no Node at all:
 //!
 //! - `GET /file/render?path=<rel>` for every kind but the office ones
-//!   (routes/files.mjs and files.mjs `renderFile`): markdown, code and
+//!: markdown, code and
 //!   text (lines from `highlight`), JSON, HTML, CSV/TSV, `.xls`, and the
 //!   meta of images, video, audio, PDFs and the rest; `app:R<n>` and
 //!   `app:R<n>@v<k>` are a mini app's source. docx, xlsx and pptx go to
 //!   `office::routes` (6.1).
-//! - `GET /` (routes/misc.mjs): `app-server ok — <n> threads, model=<m>`.
+//! - `GET /`: `app-server ok — <n> threads, model=<m>`.
 
 pub mod highlight;
 
@@ -77,7 +77,7 @@ async fn render(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// routes/files.mjs `viewerFile(path)`: a reply's file, or a mini app's
+/// A reply's file, or a mini app's
 /// source (`app:R<n>`: the head version's file, else the module, else the
 /// widget; `app:R<n>@v<k>`: that version's file).
 fn viewer_file(ctx: &HubCtx, rel: &str) -> Option<PathBuf> {

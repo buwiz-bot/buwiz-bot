@@ -1,4 +1,4 @@
-//! Every route of the Node broker (drafted from `server/tools/route-inventory.mjs`),
+//! Every route of the Node broker,
 //! by who answers it (the hub is always on; plan D30):
 //!
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no

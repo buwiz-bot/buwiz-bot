@@ -1,4 +1,4 @@
-//! `GET /skills`: the user's own skills (server/src/routes/market.mjs).
+//! `GET /skills`: the user's own skills.
 //! Node still writes them; this reads the rows as they stand.
 
 use serde_json::{Map, Value};

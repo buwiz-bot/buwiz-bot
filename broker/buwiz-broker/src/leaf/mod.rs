@@ -163,7 +163,7 @@ impl Leaf {
         if slot.is_none() {
             let conn = Connection::open(self.data.join("generated").join("app.db")).map_err(|e| e.to_string())?;
             conn.busy_timeout(Duration::from_secs(5)).map_err(|e| e.to_string())?;
-            // the tables Rust writes, as Node creates them (state.mjs)
+            // the tables Rust writes, as Node creates them
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS kv(name TEXT PRIMARY KEY, data TEXT);
                  CREATE TABLE IF NOT EXISTS timeclock(

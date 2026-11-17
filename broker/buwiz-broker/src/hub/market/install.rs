@@ -17,7 +17,7 @@ use super::{at, entries, nn, parse, posix_dirname, truthy};
 use crate::hub::ctx::HubCtx;
 use crate::js;
 
-/// config.mjs's `git(args)`: 120 s; stdout, or execFile's error message.
+/// 120 s; stdout, or execFile's error message.
 pub async fn git(args: &[String]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);

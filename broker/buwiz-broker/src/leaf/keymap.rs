@@ -1,5 +1,5 @@
 //! `/keymap`: the user's keyboard shortcuts in `<data>/keymap.json`, a map
-//! of command id → keystrokes (server/src/routes/apps.mjs). The file can be
+//! of command id → keystrokes. The file can be
 //! edited by hand, so a GET reads it fresh.
 
 use serde_json::{Map, Value};

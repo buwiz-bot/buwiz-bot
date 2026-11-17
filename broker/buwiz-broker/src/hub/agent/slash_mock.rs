@@ -1,4 +1,4 @@
-//! The model-free slash commands of `generate` (agent.mjs): `/mock …`
+//! The model-free slash commands of `generate`: `/mock …`
 //! (sample files of every kind, one kind, or `images n [ar]` numbered
 //! tiles) and `/upload` (the message's attachments echoed back as file
 //! cards).

@@ -6,7 +6,7 @@
 pub mod attachments;
 /// Designs read from a link: fetched, capped and checked, never run
 pub mod avatar_packs;
-/// avatar-shape.mjs: the avatar checks and the designer's candidate logic
+/// The avatar checks and the designer's candidate logic
 pub mod avatar_shape;
 pub mod botctx;
 pub mod groups;

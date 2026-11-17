@@ -11,7 +11,7 @@ const BLANK_XLSX: &[u8] = include_bytes!("seeds/blank.xlsx");
 const BLANK_PPTX: &[u8] = include_bytes!("seeds/blank.pptx");
 
 /// Which copy's errors: the MCP tool's (create.ts, coded) or the chat
-/// tool's (office.mjs, plain messages without the final period).
+/// tool's.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Flavor {
     Tool,

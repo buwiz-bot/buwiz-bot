@@ -1,5 +1,5 @@
 //! The `timeclock` source: clock-in and clock-out rows in `timeclock`
-//! (what `/data/timeclock` was, server/src/routes/data.mjs). Times are `toISOString()` strings; minutes
+//!. Times are `toISOString()` strings; minutes
 //! and "today" are counted as Node counts them, in local time.
 
 use std::time::{SystemTime, UNIX_EPOCH};

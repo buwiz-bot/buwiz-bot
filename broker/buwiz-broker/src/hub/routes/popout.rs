@@ -112,7 +112,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, Pattern::Exact("/popout"), popout);
 }
 
-/// The `close_app` tool (tools.mjs): ends every window of `name`, pinned
+/// The `close_app` tool: ends every window of `name`, pinned
 /// or not; its answer text.
 pub fn close_app(ctx: &HubCtx, name: &str) -> String {
     let mut n = 0;
@@ -197,7 +197,7 @@ fn env_or(k: &str, default: &str) -> String {
     buwiz_protocol::env::var(k).filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
 }
 
-/// config.mjs: `NSH`, and `NSH_HOST`, else `nsh-macos-host` beside NSH
+/// `NSH`, and `NSH_HOST`, else `nsh-macos-host` beside NSH
 /// when NSH is a path, else on PATH.
 fn nsh_bins() -> (String, String) {
     let nsh = env_or("NSH", "nsh");

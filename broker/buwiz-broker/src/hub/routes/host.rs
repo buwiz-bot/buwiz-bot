@@ -190,7 +190,7 @@ fn authorized_by(rs: &Routines, headers: &HeaderMap) -> bool {
     same(headers.get("x-buwiz-host").map(|v| v.as_bytes()).unwrap_or_default(), want.as_bytes())
 }
 
-/// v1/routes.mjs's `STATUS`: a refusal's HTTP status.
+/// A refusal's HTTP status.
 pub fn status_of(code: &str) -> StatusCode {
     match code {
         "disabled" => StatusCode::CONFLICT,

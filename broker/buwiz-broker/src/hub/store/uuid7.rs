@@ -1,4 +1,4 @@
-//! Permanent ids (state.mjs `uuidv7`): UUID v7 (RFC 9562), a 48-bit unix-ms
+//! Permanent ids: UUID v7 (RFC 9562), a 48-bit unix-ms
 //! timestamp, version 7, variant 10, the rest random. rand_a (12 bits)
 //! counts up within one millisecond so ids minted back to back stay
 //! monotonic, one counter for the whole process as Node keeps it.
@@ -48,7 +48,7 @@ pub fn uuidv7_at(ms: i64) -> String {
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
-/// state.mjs `v7Time`: the time a v7 id carries, else `None`.
+/// The time a v7 id carries, else `None`.
 pub fn v7_time(id: Option<&str>) -> Option<i64> {
     let id = id?;
     let b = id.as_bytes();

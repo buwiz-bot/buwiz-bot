@@ -1,4 +1,4 @@
-//! The user's v0 MCP servers (`mcp_servers`; `mcp.mjs`), hosted here (plan
+//! The user's v0 MCP servers (`mcp_servers`), hosted here (plan
 //! 4.1, 4.2, D12): one client per server, made on first use and shared, with
 //! the server's tools, capabilities and resources. Node keeps the table's
 //! config columns, the `/mcp/*` routes and what the model sees, and reaches
@@ -98,7 +98,7 @@ pub fn auth_error(text: &str) -> bool {
 
 pub const MANIFEST_URI: &str = "buwiz://manifest";
 
-/// grammar.mjs's `isName`: `[A-Za-z0-9_-]+`.
+/// `[A-Za-z0-9_-]+`.
 pub fn is_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
@@ -154,7 +154,7 @@ fn pairs(text: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// mcp.mjs's `googleApiOff`: Google's MCP hosts answer a signed-in request
+/// Google's MCP hosts answer a signed-in request
 /// with a bare 403 when the service is off in the client's project.
 fn google_api_off(row: &Row, e: &RpcError) -> Option<String> {
     if e.code != 403 || !row.has_tokens() {
@@ -352,7 +352,7 @@ impl McpHost {
         f(&db).map_err(|e| e.to_string())
     }
 
-    /// mcp.mjs's `listResources`: the server's resources, `[]` when it
+    /// The server's resources, `[]` when it
     /// isn't connected, has no resources capability, or the list fails.
     pub async fn resources(&self, id: &str) -> Vec<Value> {
         let Ok((client, _, _)) = self.client(id).await else { return Vec::new() };
@@ -365,7 +365,7 @@ impl McpHost {
         }
     }
 
-    /// mcp.mjs's `readManifest`: the server's `buwiz://manifest` (an object,
+    /// The server's `buwiz://manifest` (an object,
     /// else `{}`), commands and scopes whose name breaks the grammar
     /// dropped with a warning; read once per connection.
     pub async fn manifest(&self, id: &str) -> Value {
@@ -407,7 +407,7 @@ impl McpHost {
         m
     }
 
-    /// mcp.mjs's `statusOf`: `{status, tools, err?}`, status idle,
+    /// `{status, tools, err?}`, status idle,
     /// connected, needs-auth or error.
     pub fn status(&self, id: &str) -> Value {
         if let Some(l) = self.live.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
@@ -472,7 +472,7 @@ impl McpHost {
         self.changed(id);
     }
 
-    /// mcp.mjs's `ensureClient`: `{ok, tools, capabilities, needsAuth?}` or
+    /// `{ok, tools, capabilities, needsAuth?}` or
     /// `{ok: false, err, code}`.
     pub async fn ensure(&self, id: &str) -> Value {
         match self.client(id).await {

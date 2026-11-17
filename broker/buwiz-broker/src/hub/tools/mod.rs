@@ -159,7 +159,7 @@ impl Run {
 
 // The Anthropic server-side web_search gets one shot: if this build of the
 // API or model rejects it, the client-side search takes over for the
-// process (tools.mjs `serverSearch`).
+// process.
 static SERVER_SEARCH: AtomicBool = AtomicBool::new(true);
 
 pub fn server_search() -> bool {
@@ -197,7 +197,7 @@ async fn offered(run: &Run) -> Vec<Value> {
     };
     // a routine's own turn doesn't make, change or run routines
     let routine: &[Value] = if run.turn.routine.is_some() { &[] } else { defs::routine_tools() };
-    // an agent's own turns message and make agents (agents-tools.mjs); a plain chat's
+    // an agent's own turns message and make agents; a plain chat's
     // user messages them, but makes none
     let user_agent: Vec<Value>;
     let agent: &[Value] = if run.turn.routine.is_some() || run.turn.surface.is_some() {

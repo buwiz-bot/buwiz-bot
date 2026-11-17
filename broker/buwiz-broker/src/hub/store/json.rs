@@ -342,7 +342,7 @@ pub fn bot_from(v: &Value) -> Bot {
 }
 
 impl Bot {
-    /// state.mjs `botExtra`: `{made_by, purpose, helper, accepts}`, or
+    /// `{made_by, purpose, helper, accepts}`, or
     /// `None` when all four are undefined.
     pub fn extra_json(&self) -> Option<String> {
         let mut m = Map::new();
@@ -355,7 +355,7 @@ impl Bot {
     }
 }
 
-/// drive.mjs `driveType(mime, name)`: a Drive file's kind and type name.
+/// A Drive file's kind and type name.
 pub fn drive_type(mime: Option<&Value>, name: Option<&Value>) -> (&'static str, String) {
     let mime = mime.filter(|m| js::truthy(m)).map(js::string_of).unwrap_or_default();
     let has = |words: &[&str]| words.iter().any(|w| mime.contains(w));
@@ -481,7 +481,7 @@ fn derived_origins(t: &Turn, l: &Lookups) -> HashMap<usize, Value> {
     out
 }
 
-/// state.mjs `turnsJson(thread)`: the turns as the app renders them. It
+/// The turns as the app renders them. It
 /// may fill an old image card's `art` from its module (persisted with the
 /// next write, as in Node).
 pub fn turns_json(thread: &mut Thread, l: &Lookups, gen_dir: &Path) -> Value {
@@ -732,7 +732,7 @@ pub fn threads_json(s: &State, model: &str, integrations: impl Fn(&Bot) -> Value
             o.insert("name".into(), json!(b.name));
             o.insert("shape".into(), json!(b.shape));
             o.insert("color".into(), json!(b.color));
-            // a custom shape's SVG path data (avatar-shape.mjs)
+            // a custom shape's SVG path data
             if let Some(x) = &b.outline {
                 o.insert("outline".into(), json!(x));
             }

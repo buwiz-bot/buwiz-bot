@@ -1,4 +1,4 @@
-//! generated/index.tsx (state.mjs `writeIndex`): a stable registry, one
+//! generated/index.tsx: a stable registry, one
 //! import and one map entry per module on disk, each version of each
 //! artifact, and each published widget; rewritten only when that set
 //! changes. And widgets/index.tsx (`writeShelf`): the shelf template,

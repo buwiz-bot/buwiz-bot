@@ -1,4 +1,4 @@
-//! Verifying a plugin's `buwiz://manifest` (spec 6; `v1/manifest.mjs`).
+//! Verifying a plugin's `buwiz://manifest` (spec 6).
 //!
 //! Nothing a plugin says is trusted until its manifest passes, in the
 //! spec's order (6.2): I-JSON parse, protocol and version, trust store,
