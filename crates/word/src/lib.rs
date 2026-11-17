@@ -23,6 +23,7 @@ pub mod project;
 pub mod save;
 #[cfg(test)]
 mod save_tests;
+pub mod strip;
 #[cfg(test)]
 mod tests;
 pub mod toolbar;
@@ -58,11 +59,34 @@ impl PartialEq for Shown {
     }
 }
 
+/// A page's thumbnail drawn: the page's display list at [`doc::THUMB_W`].
+#[derive(Clone)]
+pub struct Thumb(pub Arc<Drawn>);
+
+impl PartialEq for Thumb {
+    fn eq(&self, o: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &o.0)
+    }
+}
+
 pub struct WordUi {
     pub meta: Signal<Arc<Meta>>,
     /// Each page's drawing, a signal per page: a page redrawn wakes only
     /// its own canvas.
     pub pages: RefCell<Vec<Signal<Option<Shown>>>>,
+    /// Each page's thumbnail, a signal per page ([`strip`]).
+    pub thumbs: RefCell<Vec<Signal<Option<Thumb>>>>,
+    /// Whether the strip shows, as the person chose: `None` takes the
+    /// default (a document of more than one page). Kept across documents,
+    /// as the zoom is.
+    pub strip: Signal<Option<bool>>,
+    /// The strip's scroll and size, in points.
+    pub strip_scroll: Signal<f32>,
+    pub strip_area: Signal<(f32, f32)>,
+    /// The thumbnails last asked of the worker: (first, last, page count,
+    /// whole layout) and the page the strip last followed.
+    pub thumbs_asked: std::cell::Cell<Option<(usize, usize, usize, bool)>>,
+    pub strip_followed: std::cell::Cell<Option<usize>>,
     pub caret: Signal<Caret>,
     pub zoom: Signal<f32>,
     /// The scroll, in points from the top of the first page.
@@ -100,6 +124,12 @@ impl WordUi {
         WordUi {
             meta: signal(Arc::new(Meta::default())),
             pages: RefCell::new(Vec::new()),
+            thumbs: RefCell::new(Vec::new()),
+            strip: signal(None),
+            strip_scroll: signal(0.0),
+            strip_area: signal((0.0, 0.0)),
+            thumbs_asked: std::cell::Cell::new(None),
+            strip_followed: std::cell::Cell::new(None),
             caret: signal(Caret::default()),
             zoom: signal(1.0),
             scroll: signal(0.0),
@@ -126,6 +156,12 @@ impl WordUi {
         for p in self.pages.borrow().iter() {
             p.set(None);
         }
+        for t in self.thumbs.borrow().iter() {
+            t.set(None);
+        }
+        self.thumbs_asked.set(None);
+        self.strip_followed.set(None);
+        self.strip_scroll.set(0.0);
         self.caret.set(Caret::default());
         self.scroll.set(0.0);
         self.media.set(Arc::new(HashMap::new()));
@@ -142,6 +178,7 @@ impl WordUi {
     /// The file changed under it: the pages are drawn again.
     pub fn reloaded(&self) {
         self.asked.set(None);
+        self.thumbs_asked.set(None);
     }
 
     /// Page `i`'s signal (made on first use). It lives as long as the
@@ -156,6 +193,27 @@ impl WordUi {
         }
         pages[i]
     }
+
+    /// Drops the thumbnails outside the strip's window `first..=last` (and
+    /// [`doc::THUMB_KEEP`] beyond it), all with `None`: the worker keeps the
+    /// same, so what it does not resend is what is still here.
+    pub fn keep_thumbs(&self, window: Option<(usize, usize)>) {
+        for (i, t) in self.thumbs.borrow().iter().enumerate() {
+            let keep = doc::thumb_kept(i, window);
+            if !keep && t.get_untracked().is_some() {
+                t.set(None);
+            }
+        }
+    }
+
+    /// Page `i`'s thumbnail signal (made as [`Self::page`] is).
+    pub fn thumb(&self, i: usize) -> Signal<Option<Thumb>> {
+        let mut thumbs = self.thumbs.borrow_mut();
+        while thumbs.len() <= i {
+            thumbs.push(Owner::detached().run(|| signal(None)));
+        }
+        thumbs[i]
+    }
 }
 
 /// An answer from the worker.
@@ -166,6 +224,14 @@ pub fn on_out(u: &WordUi, o: Out) {
             u.meta.set(Arc::new(*m));
             if new {
                 view::ask_pages(u, true);
+            }
+            strip::ask(u);
+        }
+        Out::Thumb { index, drawn } => {
+            // one the strip has left since the worker drew it (it was on its way) is not kept
+            let window = u.thumbs_asked.get().map(|(a, b, ..)| (a, b));
+            if doc::thumb_kept(index, window) {
+                u.thumb(index).set(Some(Thumb(drawn)));
             }
         }
         Out::Page { index, rev, zoom, drawn } => {

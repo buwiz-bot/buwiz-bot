@@ -363,3 +363,211 @@ fn a_next_page_section_break_starts_a_page_and_a_continuous_one_none() {
     let m = last_meta(&mut w, Cmd::Insert(Insert::SectionBreak("continuous")));
     assert_eq!(m.pages.len(), 2, "{}", w.request_sections());
 }
+
+/// What the worker draws of the strip once the keys pause: ticks until it
+/// has nothing more to do, none of them drawing more than one page.
+fn settled(w: &mut Word) -> Vec<Out> {
+    std::thread::sleep(super::doc::THUMB_SETTLE);
+    let mut all = Vec::new();
+    while w.busy() {
+        let (outs, _) = w.tick();
+        assert!(thumbs(&outs).len() <= 1, "a tick brings up one thumbnail at most: {:?}", thumbs(&outs));
+        all.extend(outs);
+    }
+    all
+}
+
+/// The strip as the view keeps it: each thumbnail's last drawing sent.
+fn apply(shown: &mut std::collections::HashMap<usize, std::sync::Arc<super::draw::Drawn>>, outs: &[Out]) {
+    for o in outs {
+        if let Out::Thumb { index, drawn } = o {
+            shown.insert(*index, drawn.clone());
+        }
+    }
+}
+
+/// Every thumbnail of `pages` the strip shows is its page's drawing now.
+fn assert_strip_current(w: &mut Word, shown: &std::collections::HashMap<usize, std::sync::Arc<super::draw::Drawn>>, pages: &[usize]) {
+    for i in pages {
+        let fresh = w.fresh_thumb(*i).unwrap();
+        let on_screen = shown.get(i).unwrap_or_else(|| panic!("page {i} has no thumbnail"));
+        assert!(on_screen.drawing == fresh.drawing, "page {i}'s thumbnail is not its page");
+    }
+}
+
+/// The strip asks for `pages`: the command's answer and the ticks that bring
+/// the rest, one page each (no pause to wait for).
+fn ask_strip(w: &mut Word, pages: Vec<usize>) -> Vec<Out> {
+    let (mut all, _) = w.run(Cmd::Thumbs { pages });
+    while w.busy() {
+        let (outs, _) = w.tick();
+        assert!(thumbs(&outs).len() <= 1, "a tick brings up one thumbnail at most");
+        all.extend(outs);
+    }
+    all
+}
+
+/// The thumbnails the answers carry, by page.
+fn thumbs(outs: &[Out]) -> Vec<usize> {
+    outs.iter().filter_map(|o| if let Out::Thumb { index, .. } = o { Some(*index) } else { None }).collect()
+}
+
+#[test]
+fn the_strip_gets_one_thumbnail_per_page_drawn_from_its_display_list() {
+    use super::doc::THUMB_W;
+    let mut w = open(fixture::document(4));
+    let pages = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.clone();
+    assert_eq!(pages.len(), 4);
+    let all: Vec<usize> = (0..pages.len()).collect();
+    let outs = ask_strip(&mut w, all.clone());
+    assert_eq!(thumbs(&outs), all, "one each, none of the pages in view first");
+    for o in &outs {
+        let Out::Thumb { index, drawn } = o else { continue };
+        let (pw, ph) = pages[*index];
+        assert!((drawn.w - THUMB_W).abs() < 0.01, "page {index} is {} wide", drawn.w);
+        assert!((drawn.h - THUMB_W * ph / pw).abs() < 0.01, "its height keeps the page's shape");
+        assert!(drawn.drawing.ops.len() > 10, "page {index} has its text drawn: {} operations", drawn.drawing.ops.len());
+    }
+    // asked again, nothing changed: nothing drawn
+    let outs = ask_strip(&mut w, all);
+    assert!(thumbs(&outs).is_empty(), "{:?}", thumbs(&outs));
+    // no page canvas was drawn for the strip
+    assert!(!outs.iter().any(|o| matches!(o, Out::Page { .. })));
+}
+
+#[test]
+fn a_one_page_document_has_its_one_thumbnail() {
+    let mut w = open(fixture::paragraphs(&["Hello world"]));
+    let outs = ask_strip(&mut w, vec![0, 1, 7]);
+    assert_eq!(thumbs(&outs), vec![0], "pages the document lacks are not drawn");
+}
+
+#[test]
+fn an_edit_draws_again_only_the_thumbnail_of_the_page_it_changed() {
+    let mut w = open(fixture::document(6));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    let all: Vec<usize> = (0..n).collect();
+    w.run(Cmd::View { pages: all.clone(), zoom: 1.0 });
+    ask_strip(&mut w, all);
+    // a character typed on page 3 (a page break starts each section)
+    w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+    let (outs, changed) = w.run(Cmd::Type("!".into()));
+    assert!(changed);
+    assert!(thumbs(&outs).is_empty(), "the key's answer holds no thumbnail work");
+    assert!(w.busy(), "the strip is looked at once the keys pause");
+    assert_eq!(thumbs(&settled(&mut w)), vec![2], "page 3's thumbnail, and no other");
+    assert!(!w.busy());
+    // and again for the next key
+    let (outs, _) = w.run(Cmd::Type("?".into()));
+    assert!(thumbs(&outs).is_empty());
+    assert_eq!(thumbs(&settled(&mut w)), vec![2]);
+}
+
+#[test]
+fn a_key_builds_no_display_list_for_the_strip_and_the_pause_brings_it_up_to_date() {
+    let mut w = open(fixture::document(8));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    // the strip shows every page, the document shows the third
+    w.run(Cmd::View { pages: vec![2], zoom: 1.0 });
+    let outs = ask_strip(&mut w, (0..n).collect());
+    assert_eq!(thumbs(&outs).len(), n);
+    w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+    w.run(Cmd::Type("!".into()));
+    let unbuilt = (0..n).filter(|i| w.page(*i).is_some_and(|p| p.unbuilt)).count();
+    assert!(unbuilt >= n - 3, "the pages off the screen stay unbuilt after a key: {unbuilt} of {n}");
+    assert_eq!(thumbs(&settled(&mut w)), vec![2], "the pause draws the one that changed");
+    assert!(!w.busy());
+}
+
+#[test]
+fn after_the_pause_every_thumbnail_the_strip_shows_is_its_page_even_when_an_edit_reflowed_the_pages() {
+    use super::doc::Insert;
+    let mut w = open(fixture::document(10));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    // the document shows page 1; the strip shows pages 5 to 9, which are not built
+    w.run(Cmd::View { pages: vec![0], zoom: 1.0 });
+    let strip: Vec<usize> = (4..n.min(9)).collect();
+    let mut shown = std::collections::HashMap::new();
+    let outs = ask_strip(&mut w, strip.clone());
+    apply(&mut shown, &outs);
+    assert_strip_current(&mut w, &shown, &strip);
+    // a page break on page 1: every later page now holds the one before it
+    let (outs, _) = w.run(Cmd::Insert(Insert::PageBreak));
+    assert!(thumbs(&outs).is_empty(), "the key's answer carries no thumbnail");
+    let outs = settled(&mut w);
+    assert!(!thumbs(&outs).is_empty(), "the pages moved, so thumbnails changed");
+    apply(&mut shown, &outs);
+    assert_strip_current(&mut w, &shown, &strip);
+    assert!(!w.busy());
+}
+
+#[test]
+fn a_key_after_the_pause_is_not_held_up_and_starts_the_wait_again() {
+    let mut w = open(fixture::document(6));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    w.run(Cmd::View { pages: vec![0], zoom: 1.0 });
+    ask_strip(&mut w, (0..n).collect());
+    w.run(Cmd::Type("a".into()));
+    std::thread::sleep(super::doc::THUMB_SETTLE);
+    // the pass has begun: one page a tick, more to do
+    let (outs, _) = w.tick();
+    assert!(thumbs(&outs).len() <= 1);
+    assert!(w.busy());
+    // a key: the pass starts over after the pause, and until then ticks do nothing
+    let (outs, _) = w.run(Cmd::Type("b".into()));
+    assert!(thumbs(&outs).is_empty());
+    let (outs, _) = w.tick();
+    assert!(thumbs(&outs).is_empty() && w.busy());
+    assert_eq!(thumbs(&settled(&mut w)), vec![0]);
+}
+
+#[test]
+fn a_scroll_asks_nothing_of_the_strip_and_the_strip_drops_what_it_left() {
+    let mut w = open(fixture::document(12));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    assert!(n >= 12);
+    ask_strip(&mut w, (0..4).collect());
+    assert!(!w.busy());
+    w.run(Cmd::View { pages: vec![5], zoom: 1.0 });
+    assert!(!w.busy(), "a scroll changes no page: nothing to check later");
+    ask_strip(&mut w, (8..11).collect());
+    let kept = w.thumbs_kept();
+    assert!(kept.iter().all(|i| (8 - super::doc::THUMB_KEEP..=10 + super::doc::THUMB_KEEP).contains(i)), "{kept:?}");
+    assert!(kept.contains(&8) && kept.contains(&10));
+    ask_strip(&mut w, Vec::new());
+    assert!(w.thumbs_kept().is_empty());
+}
+
+#[test]
+fn a_thumbs_command_draws_only_the_first_few_and_the_rest_come_a_page_a_tick() {
+    use super::doc::THUMB_NOW;
+    let mut w = open(fixture::document(12));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    assert!(n >= 12);
+    let (outs, _) = w.run(Cmd::Thumbs { pages: (0..10).collect() });
+    assert_eq!(thumbs(&outs), (0..THUMB_NOW).collect::<Vec<_>>(), "the first few, so the strip is not empty");
+    assert!(w.busy(), "the rest are to come");
+    let mut got = thumbs(&outs);
+    let mut ticks = 0;
+    while w.busy() {
+        let (outs, _) = w.tick();
+        assert!(thumbs(&outs).len() <= 1);
+        got.extend(thumbs(&outs));
+        ticks += 1;
+    }
+    assert_eq!(ticks, 10 - THUMB_NOW, "one page a tick");
+    assert_eq!(got, (0..10).collect::<Vec<_>>());
+    // a new ask in the middle drops what was left of the last
+    let (_, _) = w.run(Cmd::Thumbs { pages: (0..10).collect() });
+    let (outs, _) = w.run(Cmd::Thumbs { pages: vec![11] });
+    assert_eq!(thumbs(&outs), vec![11]);
+    assert!(!w.busy());
+}
+
+#[test]
+fn the_worker_and_the_view_keep_the_same_thumbnails() {
+    use super::doc::{THUMB_KEEP, thumb_kept};
+    assert!(thumb_kept(10, Some((10, 12))) && thumb_kept(10 - THUMB_KEEP, Some((10, 12))) && thumb_kept(12 + THUMB_KEEP, Some((10, 12))));
+    assert!(!thumb_kept(10 - THUMB_KEEP - 1, Some((10, 12))) && !thumb_kept(12 + THUMB_KEEP + 1, Some((10, 12))));
+    assert!(!thumb_kept(0, None));
+}
