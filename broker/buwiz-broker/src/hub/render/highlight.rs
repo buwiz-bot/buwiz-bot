@@ -1,11 +1,9 @@
-//! files.mjs `highlight(code, ext)`: a file's lines as tokens
+//! A file's lines as tokens
 //! `[text, dark colour, light colour]`, in Grok's cursor-dark and
 //! cursor-light palettes.
 //!
-//! Node runs Shiki (TextMate grammars on Oniguruma); this runs syntect with
-//! two-face's grammars (Sublime syntaxes on fancy-regex) and the same two
-//! themes, converted to tmTheme once (the two .tmTheme files here are the
-//! source now). The shape is
+//! This runs syntect with two-face's grammars (Sublime syntaxes on
+//! fancy-regex) and two themes (the two .tmTheme files here). The shape is
 //! Shiki's: lines split at `\r\n` and `\n`, an empty line as `[]`, colours
 //! as upper-case `#RRGGBB[AA]`, adjacent tokens joined when both colours
 //! and vscode-textmate's token type (comment, string, regex, other) are
@@ -20,7 +18,7 @@ use serde_json::{json, Value};
 use syntect::highlighting::{Color, Highlighter, Theme, ThemeSet};
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
-/// files.mjs `LANG`: the extensions with a grammar, each as the extension
+/// The extensions with a grammar, each as the extension
 /// syntect finds that grammar by.
 fn grammar_ext(ext: &str) -> Option<&'static str> {
     Some(match ext {

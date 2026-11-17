@@ -1,5 +1,5 @@
 //! `buwiz-broker office-mcp [--root <dir>] [--read-only]`: the office tools
-//! over stdio, as Node's `mcp-main.ts` serves them (newline-delimited
+//! over stdio (newline-delimited
 //! JSON-RPC, MCP's `initialize`, `tools/list`, `tools/call`).
 
 use std::io::{BufRead, Write};

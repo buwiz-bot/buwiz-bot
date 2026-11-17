@@ -1,26 +1,21 @@
-//! Every route of the Node broker (drafted from `server/tools/route-inventory.mjs`),
-//! by who answers it (the hub is always on; plan D30):
+//! Every route of the broker, by who answers it:
 //!
 //! - `Hub(track)`: the brain's, answered here and never forwarded; one no
 //!   track has registered yet answers 501 `not_ported`.
-//!   `/office/*` and `/file/render` for office files are the hub's since
-//!   6.1 (`Hub(OfficeFiles)`), `/popout` (6.3) too,
-//!   and `GET /` and `/file/render` for every other kind since phase 7
-//!   (`Hub(Files)`): no route is Node's any more, and the broker forwards
-//!   nothing to Node (its forwarding is gone). `/highlight` is deleted
-//!   (6.2: no caller), and `/mermaid*` too (Buwiz Bot draws every diagram natively).
+//!   `/office/*` and `/file/render` for office files are the hub's
+//!   (`Hub(OfficeFiles)`), `/popout` too, and `GET /` and `/file/render`
+//!   for every other kind (`Hub(Files)`). The broker forwards nothing.
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`);
 //!   with no MCP host (it could not start), the hub answers 501.
 //!
-//! A path in no entry gets the hub's 404 (a copy of Node's last resort); an
+//! A path in no entry gets the hub's 404 (404 "not found"); an
 //! OPTIONS preflight is answered by the hub (204).
 //! The first matching entry wins: specific paths before the prefixes.
 //!
-//! Deleted in 6.2 (no caller; drafts' route inventory has the evidence):
-//! `POST /highlight`. It has no entry, so with the hub on it gets the
-//! hub's 404; plain Node still answers it until phase 7 (D11/D12).
-//! `GET /plugins/icon/<key>` went with the bundled third-party logos (the
-//! Apache-2.0 relicense, #93): neither broker answers it, so it gets the 404.
+//! `POST /highlight`, `GET /plugins/icon/<key>` and `/mermaid*` are not
+//! served: they have no entry and get the ordinary 404 (pinned by
+//! `tests/hub.rs` `the_hub_answers_every_route_and_unknown_paths_404` and
+//! tests/http/market.test.mjs MKT-08).
 
 /// the agents' host routes, `ah_` webhooks and the bridge (5.6, track E)
 pub mod agents;
@@ -190,7 +185,7 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/v1/host/tickets/title"), Hub(Host)),
     e(Post, X("/v1/host/resolve"), Hub(Host)),
     e(Post, X("/v1/host/apps/source"), Hub(Host)),
-    // the rest of /v1/host/ (Node's 401, 405 and 404 answers)
+    // the rest of /v1/host/ (401, 405 and 404 answers)
     e(Any, P("/v1/host/"), Hub(Host)),
     // 5.7b artifacts and widgets
     e(Get, P("/module"), Hub(Artifacts)),
@@ -234,7 +229,7 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/file/save"), Hub(Leftovers)),
     // a widget's call of a data source: the ticket in the path is the proof
     e(Post, P("/w/"), Hub(Artifacts)),
-    // pop-out windows (6.3; Node's office role's until then, D36)
+    // pop-out windows 
     e(Post, X("/popout"), Hub(Artifacts)),
     // office: in Rust since 6.1 (`classify` gives office files'
     // `/file/render` to it); the other kinds and `/` since phase 7

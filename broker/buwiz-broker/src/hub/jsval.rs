@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::js;
 
-/// `b.<name>` of a parsed body; `Err` with the TypeError Node throws when
+/// `b.<name>` of a parsed body; `Err` with the TypeError JavaScript throws when
 /// the body is `null`.
 pub fn field<'a>(b: &'a Value, name: &str) -> Result<Option<&'a Value>, String> {
     match b {

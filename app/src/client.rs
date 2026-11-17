@@ -1,5 +1,4 @@
-//! HTTP against the Grok app server (`server/app-server.mjs`, default
-//! `127.0.0.1:8787`): the same endpoints the TSX app calls — `/chat`,
+//! HTTP against the broker (default `127.0.0.1:8787`): `/chat`,
 //! `/turns`, `/status`, `/prefs`, `/threads`, `/models`, `/catalog`,
 //! `/state/:app`, `/mcp/servers`, `/skills`.
 //!

@@ -1,4 +1,4 @@
-//! The Library's one record per artifact (artifacts.mjs). Mini apps and
+//! The Library's one record per artifact. Mini apps and
 //! image cards (id `R<n>`), the files a reply made (`file:<path>`), the
 //! Drive files it made or changed (`gdrive:<file id>`, `drive`) and the `@`
 //! tokens attached to a chat (`attach:<id>`) share a shape:
@@ -32,7 +32,7 @@ use crate::js;
 
 // ————— files —————
 
-/// files.mjs `extOf(name)`.
+/// A file name's extension.
 pub fn ext_of(name: &str) -> String {
     let n = name.rsplit(['/', '\\']).next().unwrap_or("");
     match n.rfind('.') {
@@ -50,7 +50,7 @@ const TEXTUAL: &[&str] = &[
     "go", "rs", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp", "cs", "php", "sql", "css", "scss", "tex", "json", "jsonc",
 ];
 
-/// files.mjs `viewerKind(name)`.
+/// A file name's viewer kind.
 pub fn viewer_kind(name: &str) -> &'static str {
     let t = ext_of(name);
     let t = t.as_str();
@@ -112,7 +112,7 @@ pub fn file_kind(f: &Value) -> &'static str {
     }
 }
 
-/// `path.join(a, b)`, normalized as Node does (`.` and `..` resolved).
+/// `path.join(a, b)`, normalized (`.` and `..` resolved).
 pub fn join_norm(base: &Path, rel: &str) -> PathBuf {
     let joined = base.join(rel.trim_start_matches('/'));
     let mut out = PathBuf::new();
@@ -128,14 +128,14 @@ pub fn join_norm(base: &Path, rel: &str) -> PathBuf {
     out
 }
 
-/// config.mjs `outFile(rel)`: a path under generated/files, else `None`.
+/// A path under generated/files, else `None`.
 pub fn out_file(ctx: &HubCtx, rel: &str) -> Option<PathBuf> {
     let base = gen_dir(ctx).join("files");
     let p = join_norm(&base, rel);
     p.display().to_string().starts_with(&format!("{}/", base.display())).then_some(p)
 }
 
-/// routes/files.mjs `versionsOfFile(rel).at(-1)?.v || 0`.
+/// The newest saved version of a file, 0 when it has none.
 fn last_file_version(ctx: &HubCtx, rel: &str) -> i64 {
     let Some(dir) = out_file(ctx, &format!(".versions/{rel}")) else { return 0 };
     let Ok(list) = std::fs::read_dir(dir) else { return 0 };
@@ -175,7 +175,7 @@ fn doc_cache() -> &'static DocCache {
     C.get_or_init(Default::default)
 }
 
-/// files.mjs `docMeta(path)`: a PDF's pages, a deck's slides, a workbook's
+/// A PDF's pages, a deck's slides, a workbook's
 /// sheet names, a Word file's page count when it recorded one; read once
 /// per file version.
 pub fn doc_meta(path: &Path) -> Map<String, Value> {
@@ -1093,7 +1093,7 @@ pub fn is_app(ctx: &HubCtx, id: &str) -> bool {
     is_r_name(id) && image_file_of(ctx, id, None).is_none()
 }
 
-/// routes/artifacts.mjs `info(id)`: an app's /app/info, else its record.
+/// An app's /app/info, else its record.
 pub fn info(ctx: &HubCtx, id: &str, origin: &str) -> Result<Value, String> {
     if is_app(ctx, id) {
         app_info(ctx, id, origin)
@@ -1210,7 +1210,7 @@ pub fn delete_artifact(ctx: &HubCtx, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// mcp.mjs `callTool(row, tool, input)`: the content folded to one string
+/// The content folded to one string
 /// and whether it is an error; a failed request is an `Err`.
 pub async fn call_tool(ctx: &HubCtx, id: &str, tool: &str, input: &Value) -> Result<(String, bool), String> {
     let Some(mcp) = ctx.mcp.clone() else { return Ok((format!("mcp server {id} is not connected (failed to start)"), true)) };
@@ -1296,7 +1296,7 @@ pub async fn rename_remote(ctx: &HubCtx, id: &str, name: &str, origin: &str) -> 
 
 // ————— modules —————
 
-/// mcp.mjs `parseAppKey(key)`: `mcp:<server>/<app>[|<props JSON>]`.
+/// An app key: `mcp:<server>/<app>[|<props JSON>]`.
 pub fn parse_app_key(key: &str) -> Option<(String, String, Map<String, Value>)> {
     let rest = key.strip_prefix("mcp:")?;
     let (head, props) = match rest.split_once('|') {
@@ -1319,7 +1319,7 @@ pub fn parse_app_key(key: &str) -> Option<(String, String, Map<String, Value>)> 
 
 /// `GET /module?name=mcp:<server>/<app>[|<props>]` (`mcpAppModule(raw)`):
 /// the shipped module with its props ahead of it as `globalThis.roxProps`.
-/// A failed read is an `Err` (Node's route throws).
+/// A failed read is an `Err` (the route throws).
 pub async fn mcp_app_module(ctx: &HubCtx, raw: &str) -> Result<Value, String> {
     let k = parse_app_key(raw);
     let row = match &k {

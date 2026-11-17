@@ -1,4 +1,4 @@
-//! The build pipeline (plan 5.7a; Node's `pipeline.mjs`): `nsh build` and
+//! The build pipeline: `nsh build` and
 //! `nsh check` in `.stage` (`nsh`), import fixing (`imports`), runtime
 //! chunks (`chunks`) and the `generated/<name>/<slug>.v<k>.tsx` version tree
 //! with its `versions` and `heads` rows (`versions`). A library: the tool
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use crate::js;
 
 /// The hub's nsh: the shell-out (`NSH`, else `nsh`), unless a test set one;
-/// and the stage dir as config.mjs leaves it at start ([`prepare_stage`]).
+/// and the stage dir as it is left at start ([`prepare_stage`]).
 pub fn install(ctx: &mut crate::hub::ctx::HubCtx) {
     if ctx.nsh.is_none() {
         ctx.nsh = Some(std::sync::Arc::new(nsh::NshCli::from_env()));
@@ -27,12 +27,12 @@ pub fn install(ctx: &mut crate::hub::ctx::HubCtx) {
     }
 }
 
-/// config.mjs at start: `.stage` made; check entries, candidates and
+/// At start: `.stage` made; check entries, candidates and
 /// outputs left by earlier runs (`*.tsx`, `out-*`) cleared, as one broken
 /// sibling fails every later check; and the `tsconfig.json` `nsh check`
 /// needs there written, extending the `.nsh/` the build step regenerates and
-/// scoped to the stage files. With no Node behind the hub nothing else
-/// writes it, and a data dir without one fails every check.
+/// scoped to the stage files. Nothing else writes it, and a data dir
+/// without one fails every check.
 pub fn prepare_stage(stage: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(stage)?;
     for e in std::fs::read_dir(stage)? {
@@ -56,8 +56,7 @@ pub const SOURCE_DECL: (&str, &str) = (
     "declare function source(name: string): { call(action: string, args?: Record<string, unknown>): Promise<any> };\n",
 );
 
-/// Where the pipeline reads and writes, under Node's data dir
-/// (config.mjs's GEN_DIR, STAGE_DIR, CHUNK_DIR, WIDGETS_DIR).
+/// Where the pipeline reads and writes, under the data dir.
 #[derive(Clone, Debug)]
 pub struct Dirs {
     pub gen: PathBuf,
@@ -266,9 +265,9 @@ pub(crate) mod tests {
         assert_eq!(error_card(&format!("{}y", "x".repeat(700))), card(&format!("\"{}\"", "x".repeat(600))));
     }
 
-    /// pipeline.test.mjs MOCK_SHA, re-pinned for nsh 0.3's homes and props
+    /// The mock modules' hashes, pinned for nsh 0.3's homes and props
     /// (`Input` from nsh/base, `onChange`, `activeStyle`); each text passes
-    /// the installed `nsh build` and `nsh check`, so Node's pins differ now
+    /// the installed `nsh build` and `nsh check`
     #[test]
     fn pipe_11_mock_modules_by_keyword_hash_as_nodes() {
         let cases = [

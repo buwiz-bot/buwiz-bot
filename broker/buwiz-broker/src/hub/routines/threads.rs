@@ -1,4 +1,4 @@
-//! Where a v1 routine's runs land (`v1/routine-threads.mjs`, spec 19.1):
+//! Where a v1 routine's runs land:
 //! each instance has its own thread, made when it is enabled and reused by
 //! every run, titled by the routine's name (and the instance's params) and
 //! marked `routine: {plugin, id, instance, name, thread}`, `thread` being
@@ -78,8 +78,8 @@ fn is(v: Option<&Value>, s: &str) -> bool {
     v.and_then(Value::as_str) == Some(s)
 }
 
-/// The instance's thread, if it has one (`find`); `None` is Node's
-/// `undefined` instance (a mark without one).
+/// The instance's thread, if it has one (`find`); `None` is an
+/// instance that is `undefined` (a mark without one).
 pub fn find(host: &dyn RoutineHost, plugin: &str, routine: &str, instance: Option<&str>) -> Option<Thread> {
     host.routine_threads().into_iter().find(|t| mark_of(t).is_some_and(|m| is(m.get("plugin"), plugin) && is(m.get("id"), routine) && m.get("instance").and_then(Value::as_str) == instance))
 }
@@ -128,7 +128,7 @@ mod tests {
     use super::super::host::{MemBot, MemoryHost};
     use super::*;
 
-    /// routine-threads.test.mjs: a routine's thread, its item turns and the
+    /// A routine's thread, its item turns and the
     /// chat's notice (the store keeps them; here, their shape).
     #[test]
     fn routine_threads_a_routines_thread_its_item_turns_and_the_chats_notice() {

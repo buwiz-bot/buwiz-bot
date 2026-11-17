@@ -1,5 +1,5 @@
-//! What Node does to values on their way through, so a route answered here
-//! reads byte for byte as Node's: `JSON.stringify` (numbers as JavaScript
+//! What JavaScript does to values on their way through, so a route's
+//! answer reads byte for byte as clients expect: `JSON.stringify` (numbers as JavaScript
 //! prints them, integer keys first), `String(v)`, `trim`, `decodeURIComponent`
 //! and `URLSearchParams.get`.
 
@@ -174,7 +174,7 @@ pub fn squeeze(s: &str) -> String {
 }
 
 /// `s.slice(0, n)`: n UTF-16 units. A pair cut in half leaves its first
-/// half, which SQLite then stores as U+FFFD (Node writes it so).
+/// half, which SQLite then stores as U+FFFD (it is written so).
 pub fn slice_utf16(s: &str, n: usize) -> String {
     let mut out = String::new();
     let mut units = 0;

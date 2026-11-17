@@ -1,4 +1,4 @@
-//! What v1 plugins put in front of the model (v1/agent.mjs, spec 16, 18):
+//! What v1 plugins put in front of the model:
 //! their tools under their own names (`<short>_<tool>`, `[short] `
 //! descriptions capped at 1024), server instructions and scope hints, only
 //! from enabled, running, approved plugins; a routine's turn sees its own
@@ -318,7 +318,7 @@ pub fn account_card(plugin: &str, title: &str, a: &crate::v1::package::Account, 
     n
 }
 
-/// `@short:scope:value` tokens a message types (grammar.mjs `typedToken`,
+/// `@short:scope:value` tokens a message types (`typedToken`,
 /// global): (short, scope) of each.
 pub fn typed_tokens(text: &str) -> Vec<(String, String)> {
     let cs: Vec<char> = text.chars().collect();

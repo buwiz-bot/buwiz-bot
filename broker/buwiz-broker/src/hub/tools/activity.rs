@@ -1,4 +1,4 @@
-//! What `/status` says a turn is doing (tools.mjs `PHRASES`, `phraseFor`,
+//! What `/status` says a turn is doing (`PHRASES`, `phraseFor`,
 //! `TOOL_ACTIVITY`, `toolActivity`): a phase (Buwiz Bot's avatar animation) and a
 //! short phrase, one drawn per phase and kept while that phase lasts.
 
@@ -21,7 +21,7 @@ pub fn pool(key: &str) -> &'static [&'static str] {
 }
 
 /// `phraseFor(job, key, pool)`: a phrase drawn at random when the key
-/// changes, the same one while it stays (kept on the job as Node keeps
+/// changes, the same one while it stays (kept on the job as
 /// `_phraseKey` and `_phrase`).
 pub fn phrase_for(ctx: &HubCtx, job: JobId, key: &str, pool: &[&str]) -> String {
     ctx.jobs

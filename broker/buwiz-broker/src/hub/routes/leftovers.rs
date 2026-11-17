@@ -1,9 +1,8 @@
-//! Track L, the leaves no 5.x item names (server/src/routes/data.mjs and
-//! files.mjs): Reminders through JXA, Linear's GraphQL (the key from
+//! The remaining leaves: Reminders through JXA, Linear's GraphQL (the key from
 //! `LINEAR_API_KEY` or `secret get`), and the file routes that write a
 //! reply's file or hand one to another app (`/file/write`, `/file/open`,
 //! `/file/save`). The commands go through `LocalTools`, Linear through
-//! `helper/http.rs`. Pinned by server/test/leftovers.test.mjs (LEFT-xx).
+//! `helper/http.rs`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -33,7 +32,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, Pattern::Exact("/file/save"), |c, r| exact(c, r, file_save));
 }
 
-/// Node matches these on `req.url`: with a query string none matches, and
+/// These match on `req.url`: with a query string none matches, and
 /// its dispatcher ends in a bare 404.
 async fn exact<F, Fut>(ctx: Arc<HubCtx>, req: HubRequest, f: F) -> HubResponse
 where
@@ -63,15 +62,14 @@ fn body_json(req: &HubRequest) -> Result<Value, String> {
     serde_json::from_str(text).map_err(|e| parse_error(text, &e))
 }
 
-/// What Node's dispatcher answers for a throw before any answer (there, a
-/// throw inside a body's `end` handler is uncaught and ends the process).
+/// What a throw answers before any other answer.
 fn thrown(error: &str) -> HubResponse {
     types::json(StatusCode::INTERNAL_SERVER_ERROR, &json!({ "error": error }))
 }
 
 // ————— files —————
 
-/// The data dir's folders, as config.mjs joins them.
+/// The data dir's folders.
 struct Dirs {
     data: String,
     gen: String,
@@ -93,7 +91,7 @@ impl Dirs {
     }
 }
 
-/// Node's `path.normalize` (POSIX), as leaf/files.rs has it.
+/// `path.normalize` (POSIX), as leaf/files.rs has it.
 fn normalize(path: &str) -> String {
     let absolute = path.starts_with('/');
     let trailing = path.ends_with('/');
@@ -189,7 +187,7 @@ pub fn base64_loose(s: &str) -> Vec<u8> {
     out
 }
 
-/// A Node fs error's message: `ENOENT: no such file or directory, open '<p>'`.
+/// A file-system error's message: `ENOENT: no such file or directory, open '<p>'`.
 fn fs_error(e: &std::io::Error, syscall: &str, path: &str, dest: Option<&str>) -> String {
     let (code, desc) = match e.raw_os_error() {
         Some(libc::ENOENT) => ("ENOENT", "no such file or directory"),
@@ -536,7 +534,7 @@ mod tests {
         assert_eq!(sources::reminders::change(&ctx, false, &json!({"name": "x"})).await.unwrap(), failed);
         assert_eq!(stub.calls.lock().unwrap()[2].env, [("REM_NAME".to_owned(), "x".to_owned()), ("REM_LIST".into(), "".into()), ("REM_DUE".into(), "".into())]);
         assert_eq!(sources::reminders::change(&ctx, true, &json!({})).await.unwrap(), json!({"error": "name?"}));
-        // a `null` body is Node's TypeError
+        // a `null` body answers a TypeError
         assert_eq!(sources::reminders::change(&ctx, true, &Value::Null).await.unwrap_err(), "Cannot read properties of null (reading 'name')");
     }
 

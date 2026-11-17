@@ -1,4 +1,4 @@
-//! agents.test.mjs and agents-external.test.mjs's module-level cases, by
+//! The module-level cases of agent messaging and of the outside endpoints, by
 //! ID: the store on a temp dir, a manual clock, stub turns (`Runs`) and a
 //! stub outgoing POST.
 
@@ -583,7 +583,7 @@ fn a_bots_messages_are_as_before_and_it_reaches_the_user_only_in_their_conversat
     assert!(w.list("scout").as_array().unwrap().iter().all(|b| b["id"] != json!(format!("chat:{plain}"))));
 }
 
-// ————— agents-external.test.mjs —————
+// ————— outside endpoints —————
 
 fn env(fields: Value) -> String {
     let mut e = json!({"v": 1, "id": "msg_hook00000001", "subject": "Build failed", "text": "main is red", "expects_reply": true});

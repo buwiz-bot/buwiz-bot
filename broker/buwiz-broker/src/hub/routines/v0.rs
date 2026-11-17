@@ -1,4 +1,4 @@
-//! v0 routines (routines.mjs): work the agent does on a timer, in the chat
+//! v0 routines: work the agent does on a timer, in the chat
 //! it was asked in. A routine ticks every `every_s` seconds (60 at
 //! least); with a `check` a tick first calls one MCP tool directly (no
 //! model) and wakes the agent only for items it hasn't seen. The turn runs
@@ -48,7 +48,7 @@ pub fn clamp_every(s: Option<&Value>) -> f64 {
     MIN_EVERY.max(MAX_EVERY.min(round(if n.is_nan() || n == 0.0 { 0.0 } else { n })))
 }
 
-/// A refusal: Node's thrown Error, and `need` when Buwiz Bot has to ask for the
+/// A refusal, and `need` when Buwiz Bot has to ask for the
 /// user's Google address.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fail {
@@ -648,7 +648,7 @@ impl V0 {
     }
 }
 
-/// A UUID v7 (state.mjs's `uuidv7`): the time in ms, then random bits,
+/// A UUID v7: the time in ms, then random bits,
 /// counting up within one millisecond.
 pub fn uuidv7(now: f64) -> String {
     static LAST: Mutex<(u64, u16)> = Mutex::new((0, 0));

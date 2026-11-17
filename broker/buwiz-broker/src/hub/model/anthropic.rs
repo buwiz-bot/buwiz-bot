@@ -1,5 +1,5 @@
 //! Anthropic Messages over HTTP as the SDK (`@anthropic-ai/sdk` 0.133)
-//! sends it for Node: `POST <base>/v1/messages` with `anthropic-version`,
+//! sends it: `POST <base>/v1/messages` with `anthropic-version`,
 //! `x-api-key` (and `Authorization` when `ANTHROPIC_AUTH_TOKEN` is set), the
 //! body as `JSON.stringify` writes it; 2 retries on 408, 409, 429, 5xx and
 //! connection errors (`x-should-retry` obeyed; `retry-after-ms`, then
@@ -43,7 +43,7 @@ impl ApiError {
         Self { status, message: message.into() }
     }
 
-    /// Node's `llm-api ${e.status ?? ""}: ${e.message}`.
+    /// `llm-api ${status ?? ""}: ${message}`.
     pub fn llm(&self) -> String {
         llm(self.status, &self.message)
     }

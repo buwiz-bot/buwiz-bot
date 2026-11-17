@@ -1,5 +1,5 @@
-//! `/state`: one JSON blob per widget or Buwiz Bot store, in `kv`
-//! (server/src/routes/apps.mjs). Accepts `/state/<name>`, `/state?name=`,
+//! `/state`: one JSON blob per widget or Buwiz Bot store, in `kv`.
+//! Accepts `/state/<name>`, `/state?name=`,
 //! and bodies of `{name, state}` or the bare state.
 
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use crate::js;
 /// The name in the URL: the path after `/state/`, decoded, else `?name=`.
 /// The path wins: an inline widget is granted only its own
 /// `/state/<name>` path (the app's `widget_policy`), and a query must not
-/// re-aim that grant at another key. `Err` where Node's
+/// re-aim that grant at another key. `Err` where
 /// decodeURIComponent throws.
 fn state_name(url: &str) -> Result<String, ()> {
     let path = js::pathname(url);
@@ -32,7 +32,7 @@ fn valid(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// The longest a `?wait=` holds a `/state` GET (Node's cap too).
+/// The longest a `?wait=` holds a `/state` GET (a cap).
 const MAX_WAIT: Duration = Duration::from_secs(30);
 
 /// `?wait=<ms>`: how long a GET may hold for a change, capped at
@@ -55,7 +55,7 @@ fn version(data: Option<&str>) -> String {
     format!("{h:016x}")
 }
 
-/// Held GETs of one name at most (Node's cap too); past it a GET answers now.
+/// Held GETs of one name at most (a cap); past it a GET answers now.
 const MAX_WAITERS_PER_NAME: usize = 32;
 
 /// Held GETs in all. Each pins a runtime thread in `block_in_place` for up
@@ -142,7 +142,7 @@ fn get_capped(leaf: &Leaf, url: &str, per_name: usize, total: usize) -> Answer {
     let hold = wait(url);
     if !hold.is_zero() {
         let baseline = js::search_param(url, "v").unwrap_or_else(|| version(data.as_deref()));
-        // past a cap the GET answers now with what is stored, as Node does
+        // past a cap the GET answers now with what is stored
         let seat = if baseline == version(data.as_deref()) { Seat::take(&leaf.waiting, &name, per_name, total) } else { None };
         if seat.is_some() {
             // `WAKE` stays held from the re-read to the sleep, so a
@@ -378,10 +378,9 @@ mod tests {
         assert!(w.total == 0 && w.by_name.is_empty());
     }
 
-    /// The `v` Node computes for the same text (server/test/state-wait.test.mjs
-    /// holds the same vectors).
+    /// The `v` of a text, FNV-1a.
     #[test]
-    fn the_version_is_fnv1a_as_node_computes_it() {
+    fn the_version_is_fnv1a() {
         assert_eq!(version(None), "cbf29ce484222325");
         assert_eq!(version(Some("")), "cbf29ce484222325");
         assert_eq!(version(Some("{\"n\":1}")), "0c85d1734a1666a0");

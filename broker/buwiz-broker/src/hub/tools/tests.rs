@@ -1,7 +1,6 @@
-//! Rust ports, by ID, of the tool surface's module-level JS tests:
-//! v1-agent.test.mjs (AGT-01…09, AUD-01, ATT-01/02, CARD-01/02, RSV-06,
-//! INV-01, INV-09), v1-routines.test.mjs's tool-loop cases (RTN-06,
-//! RTN-14) and mcp-agent.test.mjs (MAGT-01, 02, 04). The v1 fixture plugin
+//! The tool surface's module-level tests, by ID: AGT-01…09, AUD-01,
+//! ATT-01/02, CARD-01/02, RSV-06, INV-01, INV-09, the tool-loop cases of the
+//! routines (RTN-06, RTN-14) and MAGT-01, 02, 04. The v1 fixture plugin
 //! is a fake `PluginView` answering as the fixture does; the MCP servers
 //! are the real fixtures (`node`), under the hub's own McpHost.
 
@@ -585,7 +584,7 @@ async fn rtn_14_a_routines_turn_writes_only_what_its_writes_list() {
     assert!(caller.get("routine").is_none(), "RTN-14: outside a routine no routine is named");
 }
 
-// ————— mcp-agent.test.mjs —————
+// ————— MCP agent —————
 
 fn fixture(name: &str) -> String {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name).display().to_string()

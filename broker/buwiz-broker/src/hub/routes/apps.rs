@@ -1,8 +1,7 @@
-//! The mini-app routes (5.7b; routes/apps.mjs without the Rust-owned
-//! routes, `/models` and `/popout`): `/module`, `/app/*`, `/apps/meta`,
+//! The mini-app routes (without `/models` and `/popout`): `/module`, `/app/*`, `/apps/meta`,
 //! `/artifacts`, `/widgets`, `/publish`, `/unpublish`, `/reuse`,
-//! `/catalog`, `/widget-meta` and `/sources`; and at the hub's start what
-//! app-server.mjs runs after the store's start: the pre-versioning
+//! `/catalog`, `/widget-meta` and `/sources`; and at the hub's start, after
+//! the store's start: the pre-versioning
 //! migration, the pre-slug renames, the index, and the chunk backfill.
 //!
 //! `/app/version` reopens an open pop-out on the new head (`popout.rs`).
@@ -40,7 +39,7 @@ pub(crate) fn fail(status: u16, e: &str, ct: bool) -> HubResponse {
     json_at(status, &json!({"ok": false, "error": e}), ct)
 }
 
-/// Node's dispatcher answering a throw: 500 `{error}`.
+/// A route that threw: 500 `{error}`.
 fn crashed(e: &str, ct: bool) -> HubResponse {
     json_at(500, &json!({"error": e}), ct)
 }
@@ -106,7 +105,7 @@ fn widget_row(ctx: &HubCtx, name: &SqlValue) -> Result<bool, String> {
     ctx.db.with(|c| c.query_row("SELECT 1 FROM widgets WHERE name=?", [name], |_| Ok(())).optional().map(|r| r.is_some()))
 }
 
-/// Runs `f` after `ms` (Node's `setTimeout`).
+/// Runs `f` after `ms`.
 fn later(ms: u64, f: impl FnOnce() + Send + 'static) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -651,8 +650,9 @@ async fn reuse(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let r = (|| -> Result<_, String> {
         let j = body(&req)?;
         let raw = get(&j, "name");
-        // BUG: no name reaches SQLite unchecked (Node's widgetRow(undefined));
-        // the refusal carries node:sqlite's own message (ART-08)
+        // a name that is not null, a string or a number is refused with
+        // "Provided value cannot be bound to SQLite parameter 1." (the
+        // wording is fixed; tests/http/artifacts.test.mjs ART-08)
         let bound = bind(raw)?;
         let name = template(raw);
         if !widget_row(&ctx, &bound)? || !ctx.data.join("widgets").join(format!("{name}.tsx")).exists() {

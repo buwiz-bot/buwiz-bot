@@ -1,18 +1,16 @@
-//! The store against pins recorded from the old Node implementation
-//! (server/src/state.mjs): a database Node seeded loads and serializes as
-//! Node's did, byte for byte, and writes the rows Node's start would; what
-//! Rust writes, Node loaded into the same reads (R8); and the rules Node's
-//! tests pinned (STORE-04 building turns, STORE-05 the uid backfill). The
-//! pins are under `tests/pins/store/` (see `test-support/pins.rs`):
-//!   seed_db            the database Node seeded, as SQL (`sqlite3 .dump`)
-//!   seed_reads         what Node read back from it after its own start
+//! The store against recorded pins: a seeded database loads and serializes
+//! byte for byte as pinned, and the start writes the pinned rows; what the
+//! store writes reads back the same (R8); and the rules STORE-04 (building
+//! turns) and STORE-05 (the uid backfill). The pins are under
+//! `tests/pins/store/` (see `test-support/pins.rs`):
+//!   seed_db            the seeded database, as SQL (`sqlite3 .dump`)
+//!   seed_reads         what a read of it gives after the start
 //!   seed_start_rows    its rows after that start
-//!   rollback_reads     what Node read back from a database Rust wrote
-//!   rollback_rows      its rows after Node's persist of that database
+//!   rollback_reads     what a read gives of a database the store wrote
+//!   rollback_rows      its rows after a save of that database
 //! A row pin has `== <table>` and then the table's rows, one JSON object a
 //! line, with what differs between any two runs of the same writes left
-//! out (rowids, uids, timestamps, the data dir): the rules of Node's
-//! `tools/db-diff.mjs`, which recorded them.
+//! out (rowids, uids, timestamps, the data dir).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -64,8 +62,7 @@ fn reads_text(turns: &[(String, String)], threads: &str, norm: bool) -> String {
     text
 }
 
-/// A data dir whose database is the pinned seed: what Node's seed script
-/// wrote.
+/// A data dir whose database is the pinned seed.
 fn seeded(label: &str) -> PathBuf {
     let dir = temp(label);
     std::fs::create_dir_all(dir.join("generated")).unwrap();
@@ -76,7 +73,7 @@ fn seeded(label: &str) -> PathBuf {
 
 const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
-/// The rows of `dir`'s database as Node's db-diff.mjs reads them: per
+/// The rows of `dir`'s database: per
 /// table, a JSON line per row, sorted, after leaving out what differs
 /// between any two runs of the same writes (turns.id, uids, timestamps,
 /// every 13-digit millisecond time, the reply folders `m<base36>/`, bot
@@ -182,8 +179,8 @@ fn rows_text(rows: &BTreeMap<String, Vec<String>>) -> String {
 }
 
 /// `dir`'s rows against the pin, table by table, leaving out the tables only
-/// one side has (the pin's Node imported other modules' tables, and Rust
-/// has tables of its own), as db-diff's "(table only here)" did.
+/// one side has (the pin has other modules' tables, and the store
+/// has tables of its own).
 fn assert_rows(dir: &Path, pin: &str, what: &str) {
     let ours = db_rows(dir);
     let mut pinned: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -230,7 +227,7 @@ fn assert_rows(dir: &Path, pin: &str, what: &str) {
 #[test]
 fn store_loads_a_node_seeded_database_and_reads_it_as_node_did() {
     let dir = seeded("seed");
-    // Rust's start; Node's (a load and a persist) is the pins
+    // the start (a load and a save) is the pins
     let ctx = hub(&dir);
     let (turns, threads) = rust_reads(&ctx);
     pins::check_text("store/seed_reads", &reads_text(&turns, &threads, false));
@@ -286,7 +283,7 @@ fn store_rust_writes_what_node_loaded_back_unchanged() {
         })
         .unwrap();
     ctx.store.remove_turn(&first, &card.turn).unwrap();
-    // the building card stays in memory only: Node loads what Rust wrote
+    // the building card stays in memory only: a load reads what the store wrote
     // (the placeholder's gap closed, bob's NULL context read as the
     // defaults), and so does a Rust restart
     let (turns, threads) = rust_reads(&hub(&dir));
@@ -302,7 +299,7 @@ fn store_rust_writes_what_node_loaded_back_unchanged() {
     assert_eq!(threads.matches("\"layers\"").count(), 4, "only the custom bot's");
     assert_eq!(threads.matches("\"parts\":[{\"outline\":\"M12 38").count(), 2, "its parts, in bots[] and list[].bot");
     assert_eq!(threads.matches("\"z\":-0.5,\"d\":1.1}").count(), 2, "a part's depth");
-    assert_rows(&dir, "store/rollback_rows", "Node's persist() wrote what Rust wrote, the placeholder's gap closed");
+    assert_rows(&dir, "store/rollback_rows", "a save wrote what the store wrote, the placeholder's gap closed");
     let _ = std::fs::remove_dir_all(dir);
 }
 

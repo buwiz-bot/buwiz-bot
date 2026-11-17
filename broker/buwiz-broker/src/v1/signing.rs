@@ -1,6 +1,5 @@
 //! App fingerprints and manifest signatures (spec 11.2, 5.2;
-//! `v1/signing.mjs` and `v1/sign-manifest.mjs`). A manifest signed here is
-//! byte for byte the one Node's `sign-manifest.mjs` writes.
+//! signing and `sign-manifest`).
 
 use std::os::unix::fs::PermissionsExt as _;
 
@@ -53,7 +52,7 @@ pub fn sign_block(p: &Value, block: &str, seed: &str) -> Result<Value, String> {
 
 const USAGE: &str = "usage: buwiz-broker sign-manifest <manifest.json> (--key-file <path> | --keychain <key_id>) [--app <id>=<file>]... [--out <file>]\n       buwiz-broker sign-manifest <plugin.json> --block buwiz (--key-file <path> | --keychain <key_id>) [--out <file>]";
 
-/// `buwiz-broker sign-manifest`, as `node server/v1/sign-manifest.mjs`:
+/// `buwiz-broker sign-manifest`:
 ///
 /// ```text
 /// buwiz-broker sign-manifest manifest.json --keychain gc-2026-01 \

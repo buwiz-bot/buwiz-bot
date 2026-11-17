@@ -1,16 +1,16 @@
-//! The user's v0 MCP servers (`mcp_servers`; `mcp.mjs`), hosted here (plan
+//! The user's v0 MCP servers (`mcp_servers`), hosted here (plan
 //! 4.1, 4.2, D12): one client per server, made on first use and shared, with
-//! the server's tools, capabilities and resources. Node keeps the table's
-//! config columns, the `/mcp/*` routes and what the model sees, and reaches
-//! these clients over the line; `mcp.mjs` folds their answers as before.
+//! the server's tools, capabilities and resources. The table's config
+//! columns, the `/mcp/*` routes and what the model sees are the hub's, which
+//! reaches these clients through this host.
 //!
-//! A stdio server starts the way mcp.mjs starts it: this process's whole
+//! A stdio server starts with this process's whole
 //! environment, `PATH` with the folders npx/uvx/bunx live in, then the
 //! row's `env`. A remote (`url`) server is streamable HTTP, or legacy SSE
 //! when its `transport` says so, with the row's `headers`; once it has
 //! OAuth tokens (oauth.rs) they sign every request, and its `Authorization`
 //! header goes. A server whose process or stream died is started again on
-//! its next use (Node kept a dead client until the row changed).
+//! its next use (a dead client is not kept).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -78,13 +78,13 @@ struct Live {
     client: Client,
     tools: Vec<Value>,
     /// A remote server that answers without a token but publishes OAuth
-    /// metadata, or whose call failed as signed out (Node's `rec.needsAuth`).
+    /// metadata, or whose call failed as signed out.
     needs_auth: Option<String>,
-    /// Google's preview gate (Node's `rec.unavailable`).
+    /// Google's preview gate.
     unavailable: Option<String>,
 }
 
-/// mcp.mjs's AUTH_ERR: a failure that reads as a sign-in problem.
+/// A failure that reads as a sign-in problem.
 pub fn auth_error(text: &str) -> bool {
     let t = text.to_lowercase();
     let b = t.as_bytes();
@@ -98,7 +98,7 @@ pub fn auth_error(text: &str) -> bool {
 
 pub const MANIFEST_URI: &str = "buwiz://manifest";
 
-/// grammar.mjs's `isName`: `[A-Za-z0-9_-]+`.
+/// Whether a server name is valid: `[A-Za-z0-9_-]+`.
 pub fn is_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
@@ -114,12 +114,10 @@ pub struct McpHost {
     /// The front door's port: the OAuth redirect's.
     port: u16,
     me: Weak<McpHost>,
-    /// A connection that failed, kept until the row changes (Node's
-    /// cached attempt): its error.
+    /// A connection that failed, kept until the row changes:
+    /// its error.
     failed: Mutex<HashMap<String, RpcError>>,
-    /// Each server's status as it changes (`mcp` events).
-    events: tokio::sync::broadcast::Sender<Value>,
-    /// Each connection's `buwiz://manifest`, read once (Node's rec.manifest).
+    /// Each connection's `buwiz://manifest`, read once.
     manifests: Mutex<HashMap<String, Value>>,
 }
 
@@ -154,7 +152,7 @@ fn pairs(text: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// mcp.mjs's `googleApiOff`: Google's MCP hosts answer a signed-in request
+/// Google's MCP hosts answer a signed-in request
 /// with a bare 403 when the service is off in the client's project.
 fn google_api_off(row: &Row, e: &RpcError) -> Option<String> {
     if e.code != 403 || !row.has_tokens() {
@@ -178,7 +176,7 @@ fn google_api_off(row: &Row, e: &RpcError) -> Option<String> {
     ))
 }
 
-/// Logs a server's stderr as mcp.mjs does: `  mcp <id>: <chunk>`, Node's
+/// Logs a server's stderr: `  mcp <id>: <chunk>`, the runtime's
 /// own warnings left out.
 struct LogHooks {
     id: String,
@@ -235,7 +233,6 @@ impl McpHost {
             port,
             me: me.clone(),
             failed: Mutex::new(HashMap::new()),
-            events: tokio::sync::broadcast::channel(256).0,
             manifests: Mutex::new(HashMap::new()),
         }))
     }
@@ -292,7 +289,6 @@ impl McpHost {
                 self.failed.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), e.clone());
             }
         }
-        self.changed(id);
         made
     }
 
@@ -352,7 +348,7 @@ impl McpHost {
         f(&db).map_err(|e| e.to_string())
     }
 
-    /// mcp.mjs's `listResources`: the server's resources, `[]` when it
+    /// The server's resources, `[]` when it
     /// isn't connected, has no resources capability, or the list fails.
     pub async fn resources(&self, id: &str) -> Vec<Value> {
         let Ok((client, _, _)) = self.client(id).await else { return Vec::new() };
@@ -365,7 +361,7 @@ impl McpHost {
         }
     }
 
-    /// mcp.mjs's `readManifest`: the server's `buwiz://manifest` (an object,
+    /// The server's `buwiz://manifest` (an object,
     /// else `{}`), commands and scopes whose name breaks the grammar
     /// dropped with a warning; read once per connection.
     pub async fn manifest(&self, id: &str) -> Value {
@@ -407,7 +403,7 @@ impl McpHost {
         m
     }
 
-    /// mcp.mjs's `statusOf`: `{status, tools, err?}`, status idle,
+    /// `{status, tools, err?}`, status idle,
     /// connected, needs-auth or error.
     pub fn status(&self, id: &str) -> Value {
         if let Some(l) = self.live.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
@@ -422,20 +418,6 @@ impl McpHost {
             Some(e) => json!({"status": "error", "tools": 0, "err": e.message}),
             None => json!({"status": "idle", "tools": 0}),
         }
-    }
-
-    fn status_event(&self, id: &str) -> Value {
-        let mut v = self.status(id);
-        v["id"] = json!(id);
-        v
-    }
-
-    fn changed(&self, id: &str) {
-        let _ = self.events.send(self.status_event(id));
-    }
-
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
-        self.events.subscribe()
     }
 
     /// A remote server's call that reads as signed out, or as Google's
@@ -469,10 +451,9 @@ impl McpHost {
                 l.unavailable = Some(PREVIEW.to_owned());
             }
         }
-        self.changed(id);
     }
 
-    /// mcp.mjs's `ensureClient`: `{ok, tools, capabilities, needsAuth?}` or
+    /// `{ok, tools, capabilities, needsAuth?}` or
     /// `{ok: false, err, code}`.
     pub async fn ensure(&self, id: &str) -> Value {
         match self.client(id).await {
@@ -520,13 +501,10 @@ impl McpHost {
     /// in); the next use connects again.
     pub async fn invalidate(&self, id: &str) {
         let gone = self.live.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        let failed = self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id).is_some();
+        self.failed.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         self.manifests.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         if let Some(l) = &gone {
             l.client.close().await;
-        }
-        if gone.is_some() || failed {
-            self.changed(id);
         }
     }
 

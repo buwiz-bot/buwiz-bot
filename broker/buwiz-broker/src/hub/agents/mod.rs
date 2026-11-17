@@ -1,4 +1,4 @@
-//! Agent messaging (plan 5.6, track E; agents.mjs): the user's agents
+//! Agent messaging: the user's agents
 //! messaging each other and the world outside Buwiz Bot. The v1 envelope,
 //! agents' threads (a thread marked `agents: {conversation, participants,
 //! subject, created_by, created_at}`, read-only and never a sidebar row),
@@ -8,20 +8,19 @@
 //! - [`Agents`] (this file) decides and records, on the store's
 //!   [`State`]; what it hands on for delivery comes back as
 //!   [`Delivery`]s, which the caller routes once the store is written.
-//! - `run` delivers (agents-run.mjs, agents-wire.mjs): the recipient's
+//! - `run` delivers: the recipient's
 //!   turn, one per agent at a time and four in all; a reply wakes the
 //!   asker in its own chat once that chat is idle.
-//! - `external` (agents-external.mjs): outside endpoints, a signed `ah_`
+//! - `external`: outside endpoints, a signed `ah_`
 //!   webhook in, an outgoing webhook's outbox, the Claude Code bridge.
 //!   Owns the tables `agent_endpoints`, `agent_hook_seen`, `agent_outbox`.
-//! - `tools` (agents-tools.mjs): the six agent tools, by name.
+//! - `tools`: the six agent tools, by name.
 //! - `hub/routes/agents.rs`: `/v1/host/agents/*`, `/v1/hooks/ah_*`,
 //!   `/v1/bridge/*`.
 //!
-//! Turns run through `ctx.turns` (a reply's wake-up, Node's
-//! `backgroundTurn`) and the [`run::AgentRequestTurn`] seam (a request's
-//! answer, Node's `agentTurn` on a stand-in thread), which the tool loop
-//! (5.4) fills; until it does, MOCK answers as Node's `chatReply` does.
+//! Turns run through `ctx.turns` (a reply's wake-up, `backgroundTurn`) and
+//! the [`run::AgentRequestTurn`] seam (a request's answer, `agentTurn` on a
+//! stand-in thread), which the tool loop fills.
 
 pub mod external;
 pub mod run;
@@ -43,7 +42,7 @@ use crate::js;
 
 pub use run::AgentsHub;
 
-/// agents.mjs `LIMITS`.
+/// The messaging limits.
 pub const RECIPIENTS: usize = 8;
 pub const TEXT: usize = 16 * 1024;
 pub const DATA: usize = 64 * 1024;
@@ -57,7 +56,7 @@ pub const PER_HOUR: usize = 20;
 pub const MERGE_MS: f64 = 10.0 * 60_000.0;
 
 /// A refusal (`AgentError`): its code and message. `internal` is the
-/// store failing to write, Node's `persist()` throwing.
+/// store failing to write.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentError {
     pub code: String,
@@ -145,7 +144,7 @@ pub struct Endpoint {
     pub bot: String,
 }
 
-/// Where the endpoints are looked up (agents-external.mjs's `get`).
+/// Where the endpoints are looked up.
 pub trait Endpoints: Send + Sync {
     fn get(&self, id: &str) -> Option<Endpoint>;
 }
@@ -421,7 +420,7 @@ pub fn conversation_index(s: &State, conv: &str) -> Option<usize> {
     s.list.iter().position(|t| mark(t).and_then(|m| m.get("conversation")).and_then(Value::as_str) == Some(conv))
 }
 
-/// `findThread(key)` as agents.mjs's `thread`.
+/// `findThread(key)`.
 fn thread_index(s: &State, key: Option<&str>) -> Option<usize> {
     let key = key?;
     s.list.iter().position(|t| t.id == key || t.uid.as_deref() == Some(key))
@@ -431,7 +430,7 @@ fn thread_index(s: &State, key: Option<&str>) -> Option<usize> {
 
 pub type Uid = Arc<dyn Fn() -> String + Send + Sync>;
 
-/// agents.mjs's `createAgents`: the send limit's memory, the clock, the
+/// The send limit's memory, the clock, the
 /// uid minter and the endpoints; everything else is the store's.
 pub struct Agents {
     clock: Arc<Clock>,

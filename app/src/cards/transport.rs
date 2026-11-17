@@ -453,7 +453,7 @@ mod tests {
     fn a_saved_login_stays_in_the_app_when_the_broker_does_not_prove_itself() {
         let unproven = UserFormReply::Refused(UNPROVEN.to_owned());
         let only_proof = vec![(PROVE_PATH.to_owned(), None)];
-        // a proof under another token, a wrong-shaped one, Node's 401, a 404, no server
+        // a proof under another token, a wrong-shaped one, a 401, a 404, no server
         type Answer = Box<dyn Fn(&str) -> Option<(u16, Value)>>;
         let answers: Vec<Answer> = vec![
             Box::new(|n| Some((200, json!({ "proof": buwiz_protocol::proof::broker_proof("other", n) })))),

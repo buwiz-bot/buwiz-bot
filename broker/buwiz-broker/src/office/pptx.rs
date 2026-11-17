@@ -1,7 +1,7 @@
 //! `PptxAgentPresentation` (agents/pptx.ts) over `betteroffice-pptx-edit`'s
 //! `DeckSession`: `read_content`, `validate_edits` and `apply_edits` take
 //! and give the JSON the wasm binding's `readContent`, `validateEdits` and
-//! `applyEdits` do, so Node's requests and answers carry over.
+//! `applyEdits` do, so requests and answers carry over.
 
 use pptx_edit::{DeckSession, EditCtx, EditRequest, ReadRequest, ShapeDraft};
 use serde_json::{json, Map, Value};

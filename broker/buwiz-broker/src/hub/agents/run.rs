@@ -1,5 +1,4 @@
-//! Delivering an agent's message (agents-run.mjs, agents-wire.mjs;
-//! drafts/agent-messaging.md §5): the recipient's turn, one at a time per
+//! Delivering an agent's message the recipient's turn, one at a time per
 //! agent and four in all, the rest queued.
 //!
 //! - A request (`expects_reply`) runs a turn as the recipient, on its own
@@ -156,7 +155,7 @@ pub fn cards_to_chat(s: &mut State, now: f64, bot: &str, msg: &Value, thread: &s
 
 /// A request's turn: the recipient answering as itself, on a stand-in
 /// thread (the conversation from its side; what the turn writes there is
-/// its own, never shown). Node's `agentTurn(job, prompt, history)` with
+/// its own, never shown): `agentTurn(job, prompt, history)` with
 /// `job.agentBot`/`agentHop` (here `turn.acting_bot`/`agent_hop`).
 #[derive(Clone, Debug)]
 pub struct AgentRequest {
@@ -175,9 +174,8 @@ pub struct RequestDone {
     pub links: Vec<Value>,
 }
 
-/// The seam the tool loop (5.4) fills in `ctx.ext` for a request's turn.
-/// Without it, MOCK answers as Node's `chatReply` does and anything else
-/// fails as not ported.
+/// The seam the tool loop fills in `ctx.ext` for a request's turn.
+/// Without it, MOCK answers with its canned reply and anything else fails.
 #[derive(Clone)]
 pub struct AgentRequestTurn(pub Arc<dyn Fn(Arc<HubCtx>, AgentRequest) -> BoxFuture<'static, Result<RequestDone, String>> + Send + Sync>);
 
@@ -191,7 +189,7 @@ fn bot_model(s: &State, id: &str) -> Option<BotModel> {
     s.bot(id).map(|b| BotModel { name: b.name.clone(), model: b.model.clone(), effort: b.effort.clone(), fast: b.fast })
 }
 
-/// agents-wire.mjs's `runRequest` and `runReply`.
+/// `runRequest` and `runReply`.
 pub struct Wired;
 
 impl Runs for Wired {

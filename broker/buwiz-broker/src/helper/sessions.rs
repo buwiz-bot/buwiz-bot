@@ -1,5 +1,5 @@
 //! App opens and the calls they make (spec 5.5, 13.2, 14, 15.2;
-//! `v1/sessions.mjs`).
+//! sessions).
 //!
 //! Buwiz Bot opens an app by asking for a session: `buwiz.session.open` goes to
 //! the plugin, its certificate is verified with the plugin key from the

@@ -1,6 +1,6 @@
 //! Runtime chunks (`emitChunk`, `chunkKey`): `nsh build` on one module into
 //! `.stage/chunk-<name>`, its `bundle.js` copied to `chunks/<name>.js`.
-//! Best-effort, as Node's: a failure logs nsh's last line and leaves the
+//! Best-effort: a failure logs nsh's last line and leaves the
 //! card on its "module missing" path; a missing `chunks/` drops the copy.
 
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ fn last_line(e: &str) -> &str {
     e.trim_matches(crate::js::is_space).rsplit('\n').next().unwrap_or("")
 }
 
-/// The chunk builds a write started (Node fires them and forgets): dropped,
+/// The chunk builds a write started (fired and forgotten): dropped,
 /// they run on; `done` waits for them.
 #[derive(Default)]
 pub struct ChunkJobs(pub Vec<tokio::task::JoinHandle<()>>);

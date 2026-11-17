@@ -1,13 +1,11 @@
-//! The last routes Node's office role answered (plan phase 7), so the hub
-//! runs with no Node at all:
+//! The file-rendering routes of the hub:
 //!
-//! - `GET /file/render?path=<rel>` for every kind but the office ones
-//!   (routes/files.mjs and files.mjs `renderFile`): markdown, code and
-//!   text (lines from `highlight`), JSON, HTML, CSV/TSV, `.xls`, and the
+//! - `GET /file/render?path=<rel>` for every kind but the office ones:
+//!   markdown, code and text (lines from `highlight`), JSON, HTML, CSV/TSV, `.xls`, and the
 //!   meta of images, video, audio, PDFs and the rest; `app:R<n>` and
 //!   `app:R<n>@v<k>` are a mini app's source. docx, xlsx and pptx go to
 //!   `office::routes` (6.1).
-//! - `GET /` (routes/misc.mjs): `app-server ok — <n> threads, model=<m>`.
+//! - `GET /`: `app-server ok — <n> threads, model=<m>`.
 
 pub mod highlight;
 
@@ -43,12 +41,12 @@ fn text(status: StatusCode, body: String, content_type: Option<&'static str>) ->
     res
 }
 
-/// Node's last resort for a URL no route takes.
+/// The last resort for a URL no route takes.
 fn not_found() -> HubResponse {
     text(StatusCode::NOT_FOUND, "not found".to_owned(), None)
 }
 
-/// `GET /` (Node matches the URL exactly, so `/?x` is its 404).
+/// `GET /` (the URL matches exactly, so `/?x` is a 404).
 async fn root(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     if req.url != "/" {
         return not_found();
@@ -60,7 +58,7 @@ async fn root(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 }
 
 async fn render(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
-    // Node's route is `/file/render?…`: the bare path is its 404
+    // the route is `/file/render?…`: the bare path is a 404
     if !req.url.starts_with("/file/render?") {
         return not_found();
     }
@@ -77,7 +75,7 @@ async fn render(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// routes/files.mjs `viewerFile(path)`: a reply's file, or a mini app's
+/// A reply's file, or a mini app's
 /// source (`app:R<n>`: the head version's file, else the module, else the
 /// widget; `app:R<n>@v<k>`: that version's file).
 fn viewer_file(ctx: &HubCtx, rel: &str) -> Option<PathBuf> {
@@ -102,7 +100,7 @@ fn viewer_file(ctx: &HubCtx, rel: &str) -> Option<PathBuf> {
     head.into_iter().chain([dirs.gen.join(format!("{name}.tsx")), dirs.widgets.join(format!("{name}.tsx"))]).find(|p| p.exists())
 }
 
-/// `readFileSync(p, "utf8")`, failing with Node's message.
+/// `readFileSync(p, "utf8")`, failing with the OS error's message.
 fn read_text(p: &Path) -> Result<String, String> {
     match std::fs::read(p) {
         Ok(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
@@ -114,7 +112,7 @@ fn read_text(p: &Path) -> Result<String, String> {
     }
 }
 
-/// files.mjs `renderFile(path, rel)` for the kinds that aren't office's.
+/// A file's render for the kinds that aren't office's.
 async fn render_file(ctx: &HubCtx, p: &Path) -> Result<Map<String, Value>, String> {
     let base = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // the name without an upload's `<id>-<4>-` prefix

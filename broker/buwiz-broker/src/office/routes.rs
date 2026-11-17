@@ -1,6 +1,5 @@
-//! The office routes (routes/files.mjs, files.mjs' `renderFile` for office
-//! kinds, office.mjs's caps and vendor roots), answered here with the hub
-//! on:
+//! The office routes (`renderFile` for office kinds, the caps and
+//! vendor roots), answered with the hub on:
 //!
 //! - `GET /office/`, `/office/?…`: the viewer page (viewer.html);
 //!   `GET /office/editor/…`: the editor page, its bundle URL stamped with
@@ -49,7 +48,7 @@ fn not_found() -> HubResponse {
     respond(StatusCode::NOT_FOUND, Vec::new(), None, false)
 }
 
-/// office.mjs's `VENDOR_PKGS`.
+/// The vendor packages.
 fn vendor_package(key: &str) -> Option<&'static str> {
     Some(match key {
         "docx" => "@betteroffice/docx",
@@ -161,11 +160,11 @@ async fn office(req: HubRequest) -> HubResponse {
             Err(_) => not_found(),
         };
     }
-    // no office route: Node's catch-all
+    // no office route: the catch-all
     respond(StatusCode::NOT_FOUND, b"not found".to_vec(), None, false)
 }
 
-/// The kinds `/file/render` answers here: the ones Node reads with its
+/// The kinds `/file/render` answers here: the ones read with the
 /// office libraries (mammoth, ExcelJS) or hands to the office viewer.
 pub fn renders(url: &str) -> bool {
     let rel = crate::js::search_param(url, "path").unwrap_or_default();
@@ -173,7 +172,7 @@ pub fn renders(url: &str) -> bool {
     !rel.starts_with("app:") && ["docx", "xlsx", "pptx"].contains(&ext.as_str())
 }
 
-/// files.mjs's `cardVariant`/`viewerKind` for the office kinds.
+/// The card variant and viewer kind for the office kinds.
 fn kind_variant(ext: &str) -> (&'static str, &'static str) {
     match ext {
         "docx" => ("docx", "docx"),
@@ -182,7 +181,7 @@ fn kind_variant(ext: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// files.mjs's `officeUrl(path, rel, ext)`.
+/// The office viewer's URL for a file.
 fn office_url(rel: &str, ext: &str) -> Option<String> {
     let kind = ext;
     if rel.is_empty() || caps()[kind] != json!(true) {
@@ -254,7 +253,7 @@ pub fn install(routes: &mut Registry) {
     routes.route(Verb::Get, Pattern::Exact("/file/render"), render);
 }
 
-/// The viewer's text for a docx and rows for a workbook, as files.mjs reads
+/// The viewer's text for a docx and rows for a workbook, as read
 /// them with mammoth (through `htmlToMd`) and ExcelJS.
 pub mod markdown {
     use std::path::Path;
@@ -403,7 +402,7 @@ pub mod markdown {
         }
     }
 
-    /// mammoth's HTML through files.mjs's `htmlToMd`.
+    /// mammoth's HTML to markdown.
     pub fn docx(path: &Path) -> Result<String, String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let doc = betteroffice_docx::Document::open(&bytes).map_err(|e| e.to_string())?;

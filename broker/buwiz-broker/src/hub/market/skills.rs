@@ -1,7 +1,7 @@
-//! Private skills: the six tools the model manages them with (tools.mjs
-//! `toolSkillAdmin`), what the agent's system prompt carries of them
+//! Private skills: the six tools the model manages them with
+//! (`toolSkillAdmin`), what the agent's system prompt carries of them
 //! (`privateSkillsInject`), and the writes behind `POST /skills`,
-//! `/skills/state` and `/skills/delete` (routes/market.mjs).
+//! `/skills/state` and `/skills/delete`.
 
 use std::sync::Arc;
 
@@ -106,7 +106,7 @@ fn text(content: String) -> ToolResult {
 pub fn tool(ctx: &HubCtx, name: &str, input: &Value) -> ToolResult {
     match admin(ctx, name, input) {
         Ok(r) => r,
-        // Node's execTool turns a throw into the tool's error text
+        // a failure becomes the tool's error text
         Err(e) => ToolResult { content: Value::String(e), is_error: true },
     }
 }
@@ -232,7 +232,7 @@ mod tests {
     use super::*;
     use crate::hub::traits::Clock;
 
-    /// market.test.mjs MKT-13
+    /// MKT-13
     #[tokio::test]
     async fn mkt_13_the_six_skill_tools() {
         let dir = std::env::temp_dir().join(format!("buwiz-mkt-tools-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

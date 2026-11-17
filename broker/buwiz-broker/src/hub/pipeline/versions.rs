@@ -20,8 +20,7 @@ fn nsh_of(ctx: &HubCtx) -> Arc<dyn Nsh> {
     ctx.nsh.clone().unwrap_or_else(|| Arc::new(NshCli::from_env()))
 }
 
-/// Directory entries by name, as Node's readdirSync lists them (libuv
-/// sorts them bytewise).
+/// Directory entries by name, sorted bytewise.
 pub fn read_dir_sorted(dir: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
     let mut list: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
     list.sort_by_key(|e| e.file_name());
@@ -36,7 +35,7 @@ fn strip_tsx(s: &str) -> &str {
     }
 }
 
-/// state.mjs's `slugFile`: a display filename, kebab-case plus ".tsx", or
+/// A display filename, kebab-case plus ".tsx", or
 /// "" when nothing usable is left.
 pub fn slug_file(s: &str) -> String {
     let t = s.trim_matches(js::is_space);
@@ -139,7 +138,7 @@ pub fn write_version(ctx: &HubCtx, name: &str, code: &str, parent: Option<i64>, 
 }
 
 /// `setHead(name, v)`: the pointer moves, nothing is rewritten. `None`
-/// (Node's false) when that version has no file.
+/// when that version has no file.
 pub fn set_head(ctx: &HubCtx, name: &str, v: i64) -> Result<Option<ChunkJobs>, String> {
     let dirs = Dirs::of(&ctx.data);
     let Some(file) = ver_file(&dirs, name, &v.to_string()).filter(|f| f.exists()) else { return Ok(None) };
@@ -186,7 +185,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::hub::traits::Clock;
 
-    /// Node's CREATE statements for what the pipeline reads and writes.
+    /// The CREATE statements for what the pipeline reads and writes.
     pub fn schema(ctx: &HubCtx) {
         ctx.db
             .with(|db| {

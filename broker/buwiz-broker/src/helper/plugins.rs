@@ -1,4 +1,4 @@
-//! The v1 plugin host (spec 5.4, 6.2, 9, 22; `v1/plugins.mjs`): install
+//! The v1 plugin host (spec 5.4, 6.2, 9, 22): install
 //! records, processes, restarts.
 //!
 //! A v1 plugin is a stdio MCP child this host owns. Every spawn runs the
@@ -81,7 +81,7 @@ const COLUMNS: [(&str, &str); 3] = [("package", "TEXT"), ("skills", "TEXT NOT NU
 type Res<T = Value> = Result<T, V1Error>;
 
 /// Ends a plugin's opens (sessions.rs): disable, uninstall and update run
-/// it, as plugins.mjs ran its closers.
+/// it.
 pub type Closer = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The broker's limits on a plugin's answers.
@@ -392,7 +392,7 @@ pub struct Host {
     badge_gates: Mutex<HashMap<(String, String, String), badges::Gate>>,
     /// the highest badge `rev` issued
     last_rev: AtomicI64,
-    /// orders snapshots: a newer one replaces an older one in Node's view
+    /// orders snapshots: a newer one replaces an older one in a view
     seq: AtomicU64,
     closers: Mutex<Vec<Closer>>,
     apps_dir: Option<PathBuf>,
@@ -483,7 +483,7 @@ impl Host {
         self.with_rt(id, |rt| rt.conn.clone())
     }
 
-    /// A plugin's state as the line sends it: what Node's runtime held,
+    /// A plugin's state as the line sends it: what the runtime held,
     /// plus `seq` (later snapshots are higher), the process id and the
     /// pending restart (`timer`, `next_delay_ms`).
     pub fn snapshot(&self, id: &str) -> Value {
@@ -511,7 +511,7 @@ impl Host {
         }
     }
 
-    /// A plugin's live state as v1/plugins.mjs's views read `runtime(id)`:
+    /// A plugin's live state, as the plugin views read it:
     /// state, code, message, generation, whether it has a connection, its
     /// tools and its instructions.
     pub fn runtime_view(&self, id: &str) -> RuntimeView {

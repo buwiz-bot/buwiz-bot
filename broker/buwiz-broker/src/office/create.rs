@@ -1,4 +1,4 @@
-//! New documents (office/create.ts, and office.mjs's copy the chat tool
+//! New documents (office/create.ts, and the copy the chat tool
 //! uses): a docx written as `@betteroffice/docx`'s `createDocx` writes one
 //! (the same parts, paragraphs and run properties), an xlsx typed into the
 //! blank seed, a pptx built slide by slide on the blank seed.
@@ -11,7 +11,7 @@ const BLANK_XLSX: &[u8] = include_bytes!("seeds/blank.xlsx");
 const BLANK_PPTX: &[u8] = include_bytes!("seeds/blank.pptx");
 
 /// Which copy's errors: the MCP tool's (create.ts, coded) or the chat
-/// tool's (office.mjs, plain messages without the final period).
+/// tool's.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Flavor {
     Tool,

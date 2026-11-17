@@ -445,8 +445,8 @@ fn command_server(name: &str) -> Option<String> {
 }
 
 /// `@server:scope:value` → its parts, whatever the servers announce, in
-/// the grammar the app server parses tokens with (`attachments.mjs`,
-/// `@([a-z0-9-]+):([A-Za-z0-9_-]+):(\S*)`): the server an id of `a-z`,
+/// the grammar the broker parses tokens with
+/// (`@([a-z0-9-]+):([A-Za-z0-9_-]+):(\S*)`): the server an id of `a-z`,
 /// `0-9` and `-`; the scope ASCII letters, digits, `_` and `-`; the value
 /// the rest of the word, `:` and `/` included (TINs, branch codes). An
 /// empty value is a token too, as the server reads it: sent alone, its

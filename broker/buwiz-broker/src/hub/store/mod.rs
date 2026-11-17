@@ -1,9 +1,9 @@
-//! The store (plan 5.1): threads, turns, bots and `meta`'s `active`,
-//! `sections` and `seq`, held in memory as Node's state.mjs holds them and
+//! The store (`hub/store`): threads, turns, bots and `meta`'s `active`,
+//! `sections` and `seq`, held in memory and
 //! written to app.db row by row (D33), never as `persist()`'s whole-store
 //! rewrite.
 //!
-//! # The API the other tracks call
+//! # The API
 //!
 //! The store is `ctx.store` (a [`Store`]). Everything goes through three
 //! calls; none may be held across an `.await`:
@@ -17,7 +17,7 @@
 //!   changed, `meta` `active`/`sections`/`seq` when they changed. Missing
 //!   uids (threads' `uid`, turns' `id`) are minted first, as `persist()`
 //!   mints them. `Err` is the SQLite error; memory keeps the change and the
-//!   next write retries it (Node's `persist()` throwing).
+//!   next write retries it.
 //! - [`Store::touch`]`(|s: &mut State| …)`: a change to what is never
 //!   persisted (a building placeholder's `status`, `revising`).
 //!
@@ -40,7 +40,7 @@
 //!
 //! A building placeholder (`Turn::building`) lives in memory only: it is
 //! never written, and its index still counts (`turns.seq` keeps the gap,
-//! as Node writes it). [`crate::hub::jobs::Jobs::set`] drops it when its
+//! as written). [`crate::hub::jobs::Jobs::set`] drops it when its
 //! job ends.
 //!
 //! Files: [`Store::write_index`] (`writeIndex()`'s generated/index.tsx,
@@ -69,18 +69,18 @@ use super::ctx::Db;
 use super::traits::TurnDone;
 pub use uuid7::{now_ms, uuidv7};
 
-/// A turn as Node keeps it in a thread (`{role, id, text, …}`). `None` is
+/// A turn as kept in a thread (`{role, id, text, …}`). `None` is
 /// JavaScript's `undefined`; a meta field read back as `null` is
 /// `Some(Value::Null)`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Turn {
     /// "user", "ai", "notice", "agent_message"
     pub role: String,
-    /// the turn's permanent uid (Node's `id`)
+    /// the turn's permanent uid
     pub id: Option<String>,
     pub text: Option<String>,
     pub name: Option<String>,
-    /// a card row loaded with a NULL name: Node's `null`, not `undefined`
+    /// a card row loaded with a NULL name: `null`, not `undefined`
     /// (only `/share/thread` and `/react` tell them apart)
     pub null_name: bool,
     pub label: Option<String>,
@@ -140,9 +140,9 @@ pub struct Thread {
     pub title: String,
     pub hidden: bool,
     pub archived: bool,
-    /// a v1 routine's own thread (v1/routine-threads.mjs)
+    /// a v1 routine's own thread
     pub routine: Option<Value>,
-    /// an agents' conversation (agents.mjs)
+    /// an agents' conversation
     pub agents: Option<Value>,
     pub turns: Vec<Turn>,
 }
@@ -161,7 +161,7 @@ pub struct Bot {
     pub name: String,
     pub shape: String,
     pub color: String,
-    /// a custom shape's SVG path data (avatar-shape.mjs); `None` for a kit shape
+    /// a custom shape's SVG path data; `None` for a kit shape
     pub outline: Option<String>,
     /// a rich avatar's painted layers `[{path, fill, opacity?}]` (custom only)
     pub layers: Option<Vec<Value>>,
@@ -171,7 +171,7 @@ pub struct Bot {
     pub parts: Option<Vec<Value>>,
     /// a rich avatar's real 3D pieces, in head space (custom only)
     pub solids: Option<Vec<Value>>,
-    /// Node's `threadId` (`null` once its chat is gone)
+    /// The chat's id (`null` once its chat is gone)
     pub thread_id: Option<String>,
     pub pinned: bool,
     pub section: String,
@@ -190,7 +190,7 @@ pub struct Bot {
     pub memories: Vec<Value>,
     /// `[{id, kind, at, via}]`
     pub integrations: Vec<Value>,
-    // made by another agent (agents.mjs): the bots table's `extra`
+    // made by another agent: the bots table's `extra`
     pub made_by: Option<Value>,
     pub purpose: Option<Value>,
     pub helper: Option<Value>,
@@ -236,7 +236,7 @@ impl Bot {
     }
 }
 
-/// state.mjs `botDefaults`: (description, instructions).
+/// A bot's defaults: (description, instructions).
 pub fn bot_defaults(name: &str) -> (String, String) {
     (
         format!("{name} is a personal assistant bot in Buwiz Bot."),
@@ -244,7 +244,7 @@ pub fn bot_defaults(name: &str) -> (String, String) {
     )
 }
 
-/// state.mjs `slugFile`: a module's display filename, kebab-case plus
+/// A module's display filename, kebab-case plus
 /// ".tsx", or "" when nothing usable is left.
 pub fn slug_file(s: &str) -> String {
     let s = s.trim_matches(crate::js::is_space);
@@ -294,21 +294,21 @@ pub(crate) struct Written {
     pub meta: std::collections::HashMap<&'static str, Option<String>>,
 }
 
-/// The store's memory (state.mjs `store`, `seq`, `threadSeq`).
+/// The store's memory.
 #[derive(Clone, Debug, Default)]
 pub struct State {
     /// the server's active chat (`store.active`)
     pub active: String,
-    /// the `R<n>` counter (state.mjs `seq`)
+    /// the `R<n>` counter
     pub seq: u64,
-    /// the next `t<n>` (state.mjs `threadSeq`)
+    /// the next `t<n>`
     pub thread_seq: u64,
     /// the sidebar's sections (`store.sections`, a JSON array)
     pub sections: Value,
     pub list: Vec<Thread>,
     pub bots: Vec<Bot>,
     /// stand-in threads by their own key, never listed or written: an
-    /// agent's request turn runs on one (agents-wire.mjs's `history`, the
+    /// agent's request turn runs on one (`history`, the
     /// conversation from the recipient's side); [`State::thread`] finds
     /// them by that key
     pub stand_ins: std::collections::HashMap<String, Thread>,
@@ -393,7 +393,7 @@ pub struct Store {
 }
 
 impl Store {
-    /// An empty store over `data` (Node's `BUWIZ_BROKER_DATA_DIR`); [`Store::load`]
+    /// An empty store over `data` (`BUWIZ_BROKER_DATA_DIR`); [`Store::load`]
     /// reads it.
     pub fn new(data: PathBuf) -> Self {
         let db = Db::new(data.join("generated").join("app.db"));
@@ -412,8 +412,7 @@ impl Store {
         self.data.join("widgets")
     }
 
-    /// The store's start (state.mjs's import and app-server.mjs's first
-    /// steps): the directories Node makes, the schema, the rows (or the
+    /// The store's start (the broker's first steps): the directories made, the schema, the rows (or the
     /// legacy JSON, or a first chat), the uid backfill, and the rows as
     /// `persist()` would write them (only those that differ).
     pub fn load(&self) -> Result<(), String> {

@@ -85,7 +85,7 @@ async fn main() {
     let allowed = buwiz_broker::guard::allowed_origins(config.port, buwiz_protocol::env::var("BUWIZ_ALLOWED_ORIGINS").as_deref());
     // The hub is always on. BUWIZ_BROKER_HUB, BUWIZ_BROKER_V1_HOST and
     // BUWIZ_BROKER_MCP_HOST (and `--no-node`) once chose between this broker
-    // and Node for a part of it; they are accepted, never read, and do nothing.
+    // a part of it; they are accepted, never read, and do nothing.
     // The hub hosts the v1 plugins and the MCP servers its routes call.
     let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
     let db = data.join("generated").join("app.db");

@@ -1,5 +1,4 @@
-//! Agents and the world outside Buwiz Bot (agents-external.mjs, drafts/agent-
-//! messaging.md §10). An endpoint belongs to one agent and is a participant
+//! Agents and the world outside Buwiz Bot. An endpoint belongs to one agent and is a participant
 //! `ext:<id>` in its conversations:
 //!
 //! - kind "hook": an incoming webhook, `POST /v1/hooks/<id>/<secret>` with

@@ -1,4 +1,4 @@
-//! The bot routes (5.2; routes/bots.mjs): new, update, memories,
+//! The bot routes: new, update, memories,
 //! integrations, delete, the avatar images and shape, and the composer's
 //! attachment picker. The Mac's pickers and image tools run through
 //! `ctx.local`.
@@ -8,7 +8,7 @@
 //! in `ctx.ext` (5.3's image models); without it that kind answers 501.
 //!
 //! `/bot/new` and `/bot/update` check the avatar (`applyAvatar`: a kit
-//! shape clears a custom outline). `/avatar/design` (avatar-design.mjs) asks
+//! shape clears a custom outline). `/avatar/design` asks
 //! Design's model, or the one the picker sent, for three candidates and
 //! checks them with `library::avatar_shape`; MOCK answers fixed ones.
 
@@ -33,7 +33,7 @@ use crate::hub::types::{not_ported, ModelChoice, BoxFuture, HubRequest, HubRespo
 use crate::hub::Registry;
 use crate::js;
 
-/// avatars.mjs `generateAvatarImage(description, out)`: draws the avatar
+/// Draws the avatar
 /// into `out`. Track B fills it in `ctx.ext`.
 #[derive(Clone)]
 pub struct AvatarImage(pub Arc<dyn Fn(Arc<HubCtx>, String, PathBuf) -> BoxFuture<'static, Result<(), String>> + Send + Sync>);
@@ -95,7 +95,7 @@ impl Avatar {
     }
 }
 
-/// routes/bots.mjs `applyAvatar(bot, {shape, color, outline, layers,
+/// `applyAvatar(bot, {shape, color, outline, layers,
 /// eyes})`: the avatar a request leaves a bot with (`cur` its own), or the
 /// errors joined. A kit shape clears the outline and layers, an outline
 /// without a shape makes it "custom", a new outline brings its own layers
@@ -463,7 +463,7 @@ async fn osa(ctx: &HubCtx, script: &str) -> Result<String, String> {
     exec(ctx, LocalCommand { program: "osascript".into(), args: vec!["-e".into(), script.into()], ..Default::default() }).await.map(|o| o.trim().to_owned())
 }
 
-/// files.mjs `imageSize(path)`: `{width, height}`, or `{}`.
+/// An image's size: `{width, height}`, or `{}`.
 async fn image_size(ctx: &HubCtx, path: &Path) -> Value {
     let p = path.to_string_lossy().into_owned();
     if p.to_ascii_lowercase().ends_with(".svg") {
@@ -495,7 +495,7 @@ fn sips_value(out: &str, key: &str) -> u64 {
     out.find(&format!("{key}: ")).map(|i| out[i + key.len() + 2..].chars().take_while(char::is_ascii_digit).collect::<String>()).and_then(|d| d.parse().ok()).unwrap_or(0)
 }
 
-/// files.mjs `isAnimated(path, ext)`.
+/// Whether an image file is animated.
 fn is_animated(path: &Path, ext: &str) -> bool {
     if ext == "gif" {
         return true;
@@ -699,7 +699,7 @@ async fn avatar_image(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 const SHAPES: [&str; 13] = ["blob", "cloud", "square", "sparkle", "clover", "heart", "flower", "teardrop", "tablet", "wedge", "house", "star", "hex"];
 const COLORS: [&str; 11] = ["#FFFFFF", "#936439", "#FF263C", "#FF6700", "#FF9800", "#00C972", "#00BCA6", "#1084FE", "#9159FE", "#FF309B", "#777777"];
 
-/// avatar-design.mjs `pickKitAvatar(description)`: the old /avatar/gen
+/// The old /avatar/gen
 /// choice, a kit shape and a swatch (blob, #1084FE when the model's answer
 /// is off the lists). `Ok(None)`: no model client (501).
 async fn pick_kit(ctx: &HubCtx, desc: &str) -> Result<Option<(String, String)>, String> {
@@ -792,7 +792,7 @@ fn text_of(m: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// Design's model when the picker names none (config.mjs `AVATAR_MODEL`):
+/// Design's model when the picker names none:
 /// `GEN_AVATAR_MODEL`, else the chat default.
 fn avatar_model(settings: &Settings) -> String {
     std::env::var("GEN_AVATAR_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| settings.model.clone())
@@ -844,7 +844,7 @@ fn inside(root: &Path, p: &Path) -> bool {
     }
 }
 
-/// avatar-design.mjs `avatarImagePath(uri)`: the checked path of a
+/// The checked path of a
 /// `file://` URI /avatar/image/pick or /paste returned; anything outside
 /// the avatar folder (as written, or after symlinks) is refused.
 fn avatar_image_path(ctx: &HubCtx, uri: &Value) -> Result<PathBuf, String> {
@@ -869,7 +869,7 @@ fn avatar_image_path(ctx: &HubCtx, uri: &Value) -> Result<PathBuf, String> {
     Ok(real)
 }
 
-/// avatar-design.mjs `avatarImageBlock(uri)`: the image as a Messages
+/// The image as a Messages
 /// image block.
 async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> {
     let real = avatar_image_path(ctx, uri)?;
@@ -898,7 +898,7 @@ async fn avatar_image_block(ctx: &HubCtx, uri: &Value) -> Result<Value, String> 
     Ok(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": base64::engine::general_purpose::STANDARD.encode(&bytes)}}))
 }
 
-/// avatar-design.mjs `askDesigner(messages, model, {effort, fast})`: the
+/// Asks the designer model and returns the
 /// reply's text. The picker's model ("gpt-5.5", "claude-haiku-5-5--fast")
 /// routes through opencodex as a bot's chosen model does; "" is
 /// [`avatar_model`].
@@ -937,7 +937,7 @@ async fn ask_designer(ctx: Arc<HubCtx>, messages: Vec<Value>, pick: Pick, system
 }
 
 /// `POST /avatar/design {prompt, image?, name?, model?, style?}` → `{ok,
-/// candidates}` (avatar-design.mjs `designAvatar`). A picture alone is
+/// candidates}`. A picture alone is
 /// enough; `style: "rich"` asks for layered, multi-colour avatars.
 async fn avatar_design(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let b = match parse(&req.body) {
@@ -991,7 +991,7 @@ async fn avatar_design(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// avatar-design.mjs `rasterizePreviews(svgs)`: the self-check's previews
+/// The self-check's previews
 /// as PNG image blocks (QuickLook renders each SVG at 512), or `None` when
 /// that fails (the SVG text goes instead).
 async fn rasterize_previews(ctx: Arc<HubCtx>, svgs: Vec<String>) -> Option<Vec<Value>> {
@@ -1031,7 +1031,7 @@ fn keep_alive_ms() -> (u64, u64) {
     (wait.unwrap_or(10_000), every.or(wait).unwrap_or(15_000))
 }
 
-/// routes/bots.mjs `keepAlive`: the app's HTTP client gives up on a
+/// The app's HTTP client gives up on a
 /// response idle for 60 s, and a rich design or a picture can take longer.
 /// A job done within the wait answers as it is; past it the answer starts
 /// as a 200 at once, a space goes out every interval (JSON parsers skip
@@ -1106,7 +1106,7 @@ impl hyper::body::Body for KeptAlive {
 const MOCK_PICTURE: &[u8] = include_bytes!("../../../assets/avatar-mock.png");
 
 /// `POST /avatar/picture {image?, prompt?, model?}` → `{ok, via, uri, name,
-/// w, h}` (avatar-design.mjs `designPicture`): a "Bot"-style picture in the
+/// w, h}`: a "Bot"-style picture in the
 /// avatar folder. The picked model (else Design's default) draws it as
 /// SVG, which QuickLook rasterizes; when that fails, the image models (the
 /// opencodex relay, then Gemini) try.
@@ -1190,7 +1190,7 @@ async fn design_picture(ctx: &Arc<HubCtx>, b: &Value) -> Result<Value, String> {
     Ok(json!({"ok": true, "via": via, "uri": format!("file://{out_s}"), "name": "Bot picture", "w": sips_value(&dims, "pixelWidth"), "h": sips_value(&dims, "pixelHeight")}))
 }
 
-/// avatar-design.mjs `svgPicture`: the model draws the picture as SVG,
+/// The model draws the picture as SVG,
 /// QuickLook (WebKit) renders it to `out`. → the model's id.
 async fn svg_picture(ctx: &Arc<HubCtx>, ask: &str, block: Option<Value>, pick: &Pick, out: &Path, dir: &Path) -> Result<String, String> {
     let chosen = pick.model.as_str();

@@ -1,6 +1,6 @@
-//! The read side of files (server/src/routes/files.mjs): a reply's files
+//! The read side of files: a reply's files
 //! under `generated/files` (with Range), their saved versions, attachments,
-//! avatars and generated assets. Every path is resolved as Node's
+//! avatars and generated assets. Every path is resolved as
 //! `path.join` resolves it, and a reply's file must stay inside the files
 //! folder.
 //!
@@ -84,7 +84,7 @@ const ASSET_TYPES: &[(&str, &str)] = &[
     ("mp4", "video/mp4"),
 ];
 
-/// What Node's dispatcher sends when a route throws before setting a type.
+/// What a throw answers before a type is set.
 fn thrown(error: &str) -> Answer {
     Answer::bare(500, format!("{{\"error\":{}}}", js::quote(error)))
 }
@@ -93,7 +93,7 @@ fn not_found() -> Answer {
     Answer::bare(404, Vec::new())
 }
 
-/// Node's `path.join` / `path.normalize` (POSIX).
+/// `path.join` / `path.normalize` (POSIX).
 pub fn normalize(path: &str) -> String {
     let absolute = path.starts_with('/');
     let trailing = path.ends_with('/');

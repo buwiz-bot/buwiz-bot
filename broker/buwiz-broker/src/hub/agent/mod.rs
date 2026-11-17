@@ -1,14 +1,14 @@
-//! The tool loop (plan 5.4; agent.mjs): the hub's `TurnRunner`. `/chat`
+//! The tool loop: the hub's `TurnRunner`. `/chat`
 //! and `/retry` jobs run `generate` (`generate.rs`): the slash commands
 //! (`slash_mock.rs`), the tool loop (`turn.rs`, with the streamed
 //! placeholders of `placeholders.rs` and the user's message as
 //! `user_content.rs` builds it), the chat reply, the legacy generator.
 //! Routines' and agents' turns run `backgroundTurn`.
 //!
-//! What Node keeps in AsyncLocalStorage is explicit here: the model choice
-//! (`modelCtx`) is `TurnCtx::model`, picked by this runner (`/chat` and
-//! background turns under `choiceFor(thread)`, `/retry` under none, Node's
-//! MODEL-01 bug), and the acting bot is `TurnCtx::acting_bot`.
+//! What a turn runs under is explicit: the model choice (`modelCtx`) is
+//! `TurnCtx::model`, picked by this runner (`/chat` and background turns
+//! under `choiceFor(thread)`, `/retry` under none; tests/http/model.test.mjs MODEL-01), and the acting
+//! bot is `TurnCtx::acting_bot`.
 
 pub mod files;
 pub mod generate;
@@ -109,7 +109,7 @@ impl TurnRunner for Agent {
     }
 }
 
-/// An agent's request (agents-wire.mjs `runRequest`): the recipient's turn
+/// An agent's request: the recipient's turn
 /// on a stand-in thread (the conversation from its side, `history`), whose
 /// writes are its own and never shown; `agentTurn` with the tools, else
 /// `chatReply`. → its answer and the cards it made (`job.linkTurn.links`).
@@ -134,7 +134,7 @@ pub async fn request_turn(ctx: Arc<HubCtx>, settings: Arc<Settings>, req: AgentR
 
 /// Track B's 5.4: the runner (in place of any other) and an agent's
 /// request turn (5.6's seam). The office it calls is installed by
-/// `office::install` (6.1, in process; it was D31's Node child).
+/// `office::install` (in process).
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.on_start(|ctx| runs::cut_off(&ctx));
     let settings = Arc::new(Settings::global().clone());

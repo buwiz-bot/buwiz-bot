@@ -1,5 +1,5 @@
 {
-  "about": "RFC 8785 vectors shared by grok-shell (server/v1/jcs.mjs) and Rox. input: JSON text; jcs: canonical text; signable: whether a signed object may carry it (safe integers only); error: input is not I-JSON.",
+  "about": "RFC 8785 vectors. input: JSON text; jcs: canonical text; signable: whether a signed object may carry it (safe integers only); error: input is not I-JSON.",
   "vectors": [
     {
       "name": "empty object",

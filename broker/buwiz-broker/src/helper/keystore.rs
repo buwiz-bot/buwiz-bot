@@ -1,9 +1,9 @@
-//! Where plugin private keys live (spec 5.4; server/src/v1/keystore.mjs).
+//! Where plugin private keys live (spec 5.4).
 //!
 //! One ed25519 seed per installed plugin. Default: the macOS login
 //! Keychain, service `com.buwiz.bot.plugin-key`, account = plugin id,
 //! reached only through `/usr/bin/security` (rule R5): that tool already
-//! has access to Node's items, so a rebuilt buwiz-broker never prompts. A
+//! has access to the items, so a rebuilt buwiz-broker never prompts. A
 //! seed goes to `security -i` on stdin, never in argv, and is never
 //! logged. Keys Rox saved under `dev.goldcoders.rox.plugin-key` are moved
 //! over once ([`Keystore::move_from_rox`]). `BUWIZ_KEYSTORE=file:<dir>` keeps
@@ -407,8 +407,8 @@ impl Keystore {
     }
 
     /// Moves the keys of `ids` (the installed plugins) from Rox's service
-    /// to ours, once: `marker` (a file beside the database, which the Node
-    /// broker shares) says it is done, and a failure writes none, so the
+    /// to ours, once: `marker` (a file beside the database)
+    /// says it is done, and a failure writes none, so the
     /// next start tries again. A file store has nothing to move.
     pub fn move_from_rox(&self, ids: &[String], marker: &std::path::Path) -> Result<usize, String> {
         if *self != Keystore::Keychain || marker.exists() {

@@ -13,9 +13,9 @@ explains the build and the live loop.
 ## Private files
 
 This repo is public. Plans, specs, briefs and status notes go under
-`drafts/`, which git ignores; the private stow repo tracks them in place
-(`stow add <path>`, then `stow push`; it lives in `.stow/`). Keep machine
-paths, client data and secrets out of tracked files.
+`drafts/`, which git ignores (so does `.stow/`, where the private stow
+repo lives; `stow add <path>` tracks a file there in place, then `stow push`).
+Keep machine paths, client data and secrets out of tracked files.
 
 ## Changing nsh
 
@@ -34,10 +34,10 @@ are lost at the next rebuild.
   launch.
 - Drive the running app with `gpui-agent` (`README.md`), not OS clicks or
   keystrokes. Buwiz Bot's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)buwiz-agent-menu`,
-  or its old name `rox-agent-menu`, read by `app/src/hot.rs`) runs
-  commands: `cmd <command-id>`.
-- Start a test instance with `scripts/buwiz-test`. Environment variables
-  have Buwiz names (`BUWIZ_*`).
+  read by `app/src/hot.rs`) runs commands: `cmd <command-id>`.
+- Start a test instance with `scripts/buwiz-test`. Environment variables have
+  Buwiz names (`BUWIZ_*`); a `ROX_*` variable (or `GROK_DATA_DIR`,
+  `GROK_ALLOWED_ORIGINS`, `GROK_BUNDLE_ID`) stops the app and the broker at start.
 - Point `gpui-agent` at your own instance by address: `--addr
   127.0.0.1:<your agent port>` (or `GPUI_AGENT_ADDR`), never `--connect`
   (by bundle id or `last`). `--connect` finds whichever Buwiz Bot is
@@ -56,10 +56,11 @@ are lost at the next rebuild.
 
 - The broker holds chats, model calls, routines, v1 plugin hosting and
   agent messaging. It is the Rust workspace in `broker/` (`buwiz-broker` is
-  the binary); build and test with `cd broker && cargo test --locked`. Its
-  hub, plugin host and MCP host are always on: `--no-node`,
-  `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST` and `BUWIZ_BROKER_MCP_HOST` are
-  accepted and do nothing.
+  the binary); build with `cd broker && cargo build -p buwiz-broker` and test
+  with `cd broker && cargo test --locked` (about 1300 tests; wrap either in
+  `scripts/wait-build`). Its hub, plugin host and MCP host are always on:
+  `--no-node`, `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST` and
+  `BUWIZ_BROKER_MCP_HOST` are accepted and do nothing.
 - The broker's HTTP tests are in `broker/buwiz-broker/tests/http/` (plain
   `node`). Run them with `broker/buwiz-broker/tests/http/run.sh
   <built buwiz-broker>`; each test starts the broker on `TEST_PORT` (8797 by
@@ -73,5 +74,5 @@ are lost at the next rebuild.
 - `bridge/buwiz-bridge.mjs` talks to the broker's `/v1/bridge/*` routes; its
   setup is in the file's header, its tests are `cd bridge && npm ci && npm test`.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
-  (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
+  (an earlier folder moves there once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.

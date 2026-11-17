@@ -1,9 +1,9 @@
-//! The plugin market and private skills (plan 5.8): Node's `plugins.mjs`
-//! (`catalog`), `plugin_resolve.mjs` (`resolve`), the installs from git and
+//! The plugin market and private skills: the catalog
+//! (`catalog`), plugin resolution (`resolve`), the installs from git and
 //! the connector rows (`install`), the skill tools and prompt sections
 //! (`skills`); the routes are `hub/routes/market.rs`. Owns `skills`,
 //! `installed_plugins`, `plugin_settings` and the `mcp_servers` rows it
-//! materializes (it drops McpHost's client for each, as Node does).
+//! materializes (it drops McpHost's client for each).
 
 pub mod catalog;
 pub mod install;
@@ -22,7 +22,7 @@ use super::Registry;
 use crate::js;
 
 /// Adds the market's routes and the six skill tools, and makes its tables
-/// at start (Node's DDL; the store's schema (5.1) makes them too).
+/// at start (the store's schema makes them too).
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     let market = Arc::new(match assets_dir() {
         Some(server) => Market::load(&server, &ctx.data, own_port()),
@@ -41,7 +41,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     });
 }
 
-/// plugins.mjs's `entryOf` for botctx (5.2's [`Catalog`]).
+/// The catalog entry for botctx ([`Catalog`]).
 ///
 /// [`Catalog`]: crate::hub::library::botctx::Catalog
 struct BotCatalog(Arc<Market>);
@@ -94,7 +94,7 @@ pub fn own_port() -> u16 {
     paths().port
 }
 
-/// The tables the market writes, as state.mjs makes them (IF NOT EXISTS,
+/// The tables the market writes, as the store makes them (IF NOT EXISTS,
 /// ALTERs whose failure means the column is there).
 pub fn schema(ctx: &HubCtx) -> Result<(), String> {
     ctx.db.with(|db| {
@@ -204,7 +204,7 @@ pub(crate) fn now(ctx: &HubCtx) -> i64 {
     ctx.clock.now() as i64
 }
 
-/// Node's `path.join` for these paths: segments joined, `.` and `..`
+/// `path.join` for these paths: segments joined, `.` and `..`
 /// resolved, no trailing slash.
 pub(crate) fn join(base: &Path, rel: &str) -> PathBuf {
     PathBuf::from(posix_normalize(&format!("{}/{rel}", base.display())))

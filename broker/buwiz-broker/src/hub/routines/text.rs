@@ -1,8 +1,8 @@
-//! The text helpers routines share with Node: `approvedText` (v1/agent.mjs),
-//! `paramsProblem` and `paramsSummary` (v1/params.mjs), JavaScript's
+//! The text helpers routines share: `approvedText`,
+//! `paramsProblem` and `paramsSummary`, JavaScript's
 //! `String(v)`, `Number(v)` and template-literal forms, `isEmail`, and the
-//! v0 tool name (`mcpName`). Lengths and cuts count UTF-16 units where
-//! Node's do.
+//! v0 tool name (`mcpName`). Lengths and cuts count UTF-16 units, as
+//! JavaScript's do.
 
 use serde_json::Value;
 
@@ -30,7 +30,7 @@ pub fn nonempty(v: Option<&Value>) -> Option<&str> {
     v.and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
-/// `isObject(v)` (jcs.mjs): a plain object.
+/// `isObject(v)`: a plain object.
 pub fn is_obj(v: Option<&Value>) -> bool {
     v.is_some_and(Value::is_object)
 }
@@ -114,7 +114,7 @@ pub fn number(v: Option<&Value>) -> f64 {
 }
 
 /// A number as JSON carries it: an integral one as an integer (so values
-/// compare as Node's do), else a float.
+/// compare as JavaScript's do), else a float.
 pub fn num(x: f64) -> Value {
     if x.is_finite() && x.fract() == 0.0 && x.abs() < 9_007_199_254_740_992.0 {
         Value::from(x as i64)
@@ -148,7 +148,7 @@ pub fn is_email(v: Option<&Value>) -> bool {
     chars.iter().enumerate().any(|(i, c)| *c == '.' && i > 0 && i + 1 < chars.len())
 }
 
-/// `mcpName(id, tool)` (mcp.mjs): `mcp_<id>_<tool>`, other characters
+/// `mcpName(id, tool)`: `mcp_<id>_<tool>`, other characters
 /// `_`, at most 64.
 pub fn mcp_name(id: &str, tool: &str) -> String {
     let raw = format!("mcp_{id}_{tool}");
@@ -156,7 +156,7 @@ pub fn mcp_name(id: &str, tool: &str) -> String {
     String::from_utf16_lossy(&units)
 }
 
-// ── params (v1/params.mjs) ───────────────────────────────────────────────
+// ── params ───────────────────────────────────────────────
 
 pub const PARAMS_MAX_BYTES: usize = 4096;
 

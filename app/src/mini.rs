@@ -3,16 +3,16 @@
 //!
 //! A widget is a `generated/R<n>.tsx` module (`export default function
 //! R()`); `GET /module?name=` returns its source. [`compile_widget`]
-//! wraps it with `mount(R)` (the same wrapper `pipeline.mjs`'s chunk
-//! emits) and hands it to `nsh_bundler::compile_module` — TypeScript
+//! wraps it with `mount(R)` (the same wrapper the broker's chunk
+//! build emits) and hands it to `nsh_bundler::compile_module` — TypeScript
 //! stripped, JSX compiled, `nsh:*` imports left for the runtime.
 //!
 //! The element `native("buwiz/mini-app")` mounts a registered native
 //! component whose NSView *is* an `AppView`: each mini app gets its own
 //! engine + QuickJS inside the Rust tree — the pure-Rust root is untouched.
 //! `mini_bundle` selects, for a generated widget, a policy of its own state
-//! and its one `source` call path (`widget_policy`), and an
-//! app-server-only policy for `mcp:` modules. The `source` prop carries the
+//! and its one `source` call path (`widget_policy`), and a
+//! policy of the broker's for `mcp:` modules. The `source` prop carries the
 //! module key and compiled JS; a changed pair reloads the app.
 //!
 //! A v1 plugin's app (`v1:<plugin id>/<app id>`, `crate::mini_v1`) gets an
@@ -333,7 +333,7 @@ fn rehome(stmt: &Import, base: &[String]) -> String {
 }
 
 /// TSX → the module the runtime runs: the source plus the wrapper
-/// `pipeline.mjs` writes into every emitted chunk.
+/// the broker's pipeline writes into every emitted chunk.
 pub(crate) fn compile_widget(name: &str, source: &str) -> Result<String, String> {
     let source = current_homes(source);
     let wrapped = format!("{source}\nimport {{ mount }} from \"nsh\";\nmount(R);\n");

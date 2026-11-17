@@ -1,4 +1,4 @@
-//! The Library's per-artifact routes (5.7b; routes/artifacts.mjs):
+//! The Library's per-artifact routes:
 //! details, icons, hiding and deleting for images and files, a mini app's
 //! details passed through to `/app/meta`'s edit, a Drive file's rename sent
 //! to Drive.

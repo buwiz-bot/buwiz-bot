@@ -2,7 +2,7 @@
 //! launch, when nothing answers on the broker's default origin
 //! ([`client::DEFAULT_GEN`]), Buwiz Bot runs the `buwiz-broker` its own bundle
 //! carries (`Contents/Resources/broker/`, put there by `bundle-dev.sh`):
-//! the hub on, hosting the v1 plugins and MCP servers, no Node, on the
+//! the hub on, hosting the v1 plugins and MCP servers, on the
 //! owner's broker folder (`~/Library/Application Support/Buwiz Broker`,
 //! moved there from `Grok Shell` once, just before this start:
 //! [`move_data_dir`]). It runs detached, in its own process

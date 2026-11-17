@@ -1,4 +1,4 @@
-//! plugins.mjs's catalog side: the first-party catalog (`plugins/catalog.json`,
+//! The catalog side of the market: the first-party catalog (`plugins/catalog.json`,
 //! possibly absent or empty), categories, an installed plugin the catalog
 //! doesn't list (read from its installed record), setup values (with the
 //! shared `@google` row), the setup fields a plugin shows, its MCP server
@@ -829,7 +829,7 @@ fn abbreviations(s: &str) -> String {
     re(&R, r"\b(Api|Mcp|Url|Id|Pat|Dd)\b").replace_all(s, |c: &regex_lite::Captures| c[0].to_uppercase()).into_owned()
 }
 
-/// plugin_resolve.mjs's `adjustServers`: Cursor's Google proxies go
+/// Cursor's Google proxies go
 /// straight to Google; servers behind Cursor's or Grok's gateways are
 /// marked unavailable.
 pub fn adjust_servers(servers: Option<&Value>) -> Map<String, Value> {
@@ -857,7 +857,7 @@ pub fn adjust_servers(servers: Option<&Value>) -> Map<String, Value> {
     out
 }
 
-/// The DCR probe (RFC 9728, then RFC 8414 metadata). Like Node's fetch with
+/// The DCR probe (RFC 9728, then RFC 8414 metadata). With
 /// NODE_USE_ENV_PROXY=1, a proxy in HTTPS_PROXY / HTTP_PROXY takes the
 /// request; it is only asked to CONNECT (no TLS through it here), so a
 /// proxied probe answers unknown.
@@ -882,7 +882,7 @@ async fn dcr_probe(url: &str) -> Option<bool> {
     }
 }
 
-/// The proxy Node's fetch would use for `url` under NODE_USE_ENV_PROXY=1.
+/// The proxy to use for `url` under NODE_USE_ENV_PROXY=1.
 fn proxy_for(url: &url::Url) -> Option<String> {
     if std::env::var("NODE_USE_ENV_PROXY").as_deref() != Ok("1") {
         return None;

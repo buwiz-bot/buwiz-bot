@@ -3,14 +3,12 @@
 //!   buwiz-broker [--port P] [--data DIR] [--assets DIR] [--no-node]
 //!
 //! The port comes from `--port`, else `PORT`, else 8787.
-//! `--no-node` is accepted and does nothing: the broker used to be able to
-//! run the old Node broker behind it, and the app (and other repos' test
+//! `--no-node` is accepted and does nothing: the app (and other repos' test
 //! scripts) still pass the flag. It goes in a later release. `--node` and
-//! `--node-script` are gone and are unknown arguments.
+//! `--node-script` are unknown arguments.
 //! The same goes for the variables `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST`
-//! and `BUWIZ_BROKER_MCP_HOST`: each once chose
-//! between this broker and Node for a part of it. Nothing reads them now: the
-//! hub, the plugin host and the MCP host are always on. Other repos' test
+//! and `BUWIZ_BROKER_MCP_HOST` (and their `ROX_` names): each is
+//! accepted and ignored: the hub, the plugin host and the MCP host are always on. Other repos' test
 //! scripts still set them.
 //! `--assets` is the folder of the static files the broker serves and
 //! reads (office pages and seeds, the plugin catalog and its plugins,
@@ -49,7 +47,7 @@ impl Config {
                 "--port" => port = Some(value("--port")?),
                 "--data" => data = Some(PathBuf::from(value("--data")?)),
                 "--assets" => assets = Some(PathBuf::from(value("--assets")?)),
-                // accepted for one more release; it did "run no Node", and nothing runs Node now
+                // accepted for one more release; it does nothing
                 "--no-node" => {}
                 other => return Err(format!("unknown argument {other}")),
             }

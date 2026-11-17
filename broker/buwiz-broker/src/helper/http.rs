@@ -1,6 +1,6 @@
-//! The HTTP client remote MCP servers and their OAuth run on, as Node's
-//! `fetch` does for the SDK (1.32): http and https (rustls, Mozilla's roots
-//! from webpki-roots, as Node's bundled store; the Keychain is never read),
+//! The HTTP client remote MCP servers and their OAuth run on, as the MCP
+//! SDK's `fetch` does (1.32): http and https (rustls, Mozilla's roots
+//! from webpki-roots; the Keychain is never read),
 //! no proxy, `accept: */*` unless a request names one. Redirects follow the
 //! SDK's `fetchWithinOrigin` (shared/transport.js): at most 5, only within
 //! the origin (http to https on default ports counts), only when the method
@@ -157,7 +157,7 @@ pub async fn send(req: &Req) -> Result<Resp, String> {
     Ok(Resp { status: parts.status.as_u16(), headers: parts.headers, url: req.url.clone(), peer, body })
 }
 
-/// The innermost cause, as Node prints a fetch failure's `cause`.
+/// The innermost cause of a fetch failure.
 fn source_of(e: &(dyn std::error::Error + 'static)) -> String {
     let mut cur = e;
     while let Some(next) = cur.source() {

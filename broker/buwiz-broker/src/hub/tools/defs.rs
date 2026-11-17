@@ -1,7 +1,5 @@
-//! The tool schemas and the agent's system prompt, as Node writes them
-//! (D35): `defs.json` is dumped from tools.mjs, routines.mjs, botctx.mjs
-//! and agents-tools.mjs, and server/test/tool-defs.test.mjs fails when it
-//! drifts. `TOOLS`, `CLIENT_SEARCH`, `ROUTINE_TOOLS`, `BOT_TOOLS`,
+//! The tool schemas and the agent's system prompt, as sent to the model:
+//! `defs.json` holds them. `TOOLS`, `CLIENT_SEARCH`, `ROUTINE_TOOLS`, `BOT_TOOLS`,
 //! `AGENT_TOOLS`; `agentSystem` (`baseSystem() + botSection(thread)`, with
 //! `privateSkillsInject()`, `pluginSkillsInject()` and `contractFor`).
 
@@ -120,7 +118,7 @@ mod tests {
         assert_eq!(bot_tools().iter().map(name_of).collect::<Vec<_>>(), botctx::BOT_TOOLS);
         assert_eq!(agent_tools().len(), 6);
         assert!(defs().system.starts_with("You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.\n"));
-        // Node's key order survives: the schema is sent as written
+        // the key order survives: the schema is sent as written
         assert!(crate::js::stringify(&tools()[0]).starts_with(r#"{"name":"generate_app","description":"Build an interactive"#));
     }
 }

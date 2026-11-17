@@ -28,7 +28,7 @@ pub struct LinearApi {
     pub key: Option<String>,
 }
 
-/// The key once found (Node's `linearKey`).
+/// The key once found.
 static LINEAR_KEY: Mutex<Option<String>> = Mutex::new(None);
 /// When a lookup last found no key. A miss is looked up again (the person may add a key
 /// while the broker runs), but not before [`MISS_FOR`] has passed: every listing of the

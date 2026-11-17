@@ -1,4 +1,4 @@
-//! The sidebar's groups (5.2; routes/groups.mjs): the list with resolved
+//! The sidebar's groups: the list with resolved
 //! members, create, rename / recolor / fold / move, delete, and members
 //! added, moved and removed (`library/groups.rs`).
 

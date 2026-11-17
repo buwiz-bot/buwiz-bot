@@ -3,7 +3,7 @@
 //! serves them (`nsh` and `nsh/base`; it removed `nsh/canvas`, `nsh/image`,
 //! `nsh/list`, `nsh/ui/mobile` and the other alias modules). A name counts
 //! as used where it is an identifier in the code, not a word in a string or
-//! a comment. The import patterns are Node's; `\s` reads ASCII here (its
+//! a comment. `\s` reads ASCII here (JavaScript's
 //! `\s` also takes Unicode spaces, which no generated import uses).
 
 use std::sync::OnceLock;
@@ -160,7 +160,7 @@ mod tests {
 
     const CODE: &str = "import { Text } from \"nsh\";\n\nexport default function R() {\n  return <Text>hi</Text>;\n}\n";
 
-    /// pipeline.test.mjs PIPE-02
+    /// PIPE-02
     #[test]
     fn pipe_02_fix_imports() {
         let cases = [
