@@ -155,13 +155,14 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                 // size; coming back loads the app again.
                 .child({
                     let app = art.app.clone();
+                    let turn = id.clone();
                     let shown = use_context::<crate::chat::ChatShown>();
                     when(
                         move || shown.as_ref().is_none_or(|s| s.0.get()),
                         move || {
-                            crate::mini::mini_app(
+                            crate::mini::mini_app_widget(
                                 &app,
-                                0.0,
+                                turn.clone(),
                                 Some(std::rc::Rc::new(move || (dw, h_of()))),
                                 Some(on_natural.clone()),
                             )
