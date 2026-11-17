@@ -48,24 +48,25 @@ impl FrontDoor {
         let started = Instant::now();
         let method = req.method().clone();
         let shown = crate::redact(req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"));
-        let (res, side) = match req.uri().path() {
-            "/health" => (self.health(), "rust"),
-            "/meta" => (self.meta(), "rust"),
-            // a mini app account's sign-in: the plugin host's, whatever else is hosted
-            p if method == Method::GET && p.starts_with("/oauth/callback/account:") && self.accounts.is_some() => match &self.accounts {
-                Some(host) => (leaf::mcp::serve_account_callback(host, req.uri().path_and_query().map(|q| q.as_str()).unwrap_or(p)).await, "rust"),
-                None => (self.hub.serve(req).await, "hub"),
-            },
-            p if self.mcp.is_some() && leaf::mcp::route(&method, req.uri().path_and_query().map(|q| q.as_str()).unwrap_or(p)) => match &self.mcp {
-                Some(m) => (m.serve(req).await, "rust"),
-                None => (self.hub.serve(req).await, "hub"),
-            },
-            _ => match leaf::route(&method, req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/")) {
-                Some(route) => (self.leaf.serve(route, req).await, "rust"),
-                // the hub answers everything else, a path no broker has (its
-                // 404) and a preflight (its 204) included
-                None => (self.hub.serve(req).await, "hub"),
-            },
+        let path = req.uri().path().to_owned();
+        let target = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_owned();
+        // a mini app account's sign-in: the plugin host's, whatever else is hosted
+        let accounts = self.accounts.as_ref().filter(|_| method == Method::GET && path.starts_with("/oauth/callback/account:"));
+        let mcp = self.mcp.as_ref().filter(|_| leaf::mcp::route(&method, &target));
+        let (res, side) = if path == "/health" {
+            (self.health(), "rust")
+        } else if path == "/meta" {
+            (self.meta(), "rust")
+        } else if let Some(host) = accounts {
+            (leaf::mcp::serve_account_callback(host, &target).await, "rust")
+        } else if let Some(m) = mcp {
+            (m.serve(req).await, "rust")
+        } else if let Some(route) = leaf::route(&method, &target) {
+            (self.leaf.serve(route, req).await, "rust")
+        } else {
+            // the hub answers everything else, a path no broker has (its
+            // 404) and a preflight (its 204) included
+            (self.hub.serve(req).await, "hub")
         };
         println!("buwiz-broker {method} {shown} {} {}ms {side}", res.status().as_u16(), started.elapsed().as_millis());
         Ok(res)
