@@ -55,7 +55,7 @@ pub const SAID_NO: &str = "The user said no to this. Ask them in words first.";
 pub const NO_BOT_NAME: &str = "A plain chat";
 /// The owner id of the profile every plain chat shares (never a Bot's id: those are
 /// `b_…`), and what its cards and receipts call it.
-pub const CHATS: &str = "@chats";
+pub use buwiz_protocol::switches::CHATS;
 pub const CHATS_NAME: &str = "Plain chats";
 
 /// A switch's position: on, ask before a call that changes something or reaches someone,
@@ -173,6 +173,43 @@ pub fn off_keys(ctx: &HubCtx, owner: &str) -> HashSet<String> {
     let default = OFF_BY_DEFAULT.iter().filter(|k| !rows.iter().any(|r| r.0 == **k)).map(|k| (*k).to_owned());
     let off: Vec<String> = default.collect();
     rows.into_iter().filter(|r| r.1 == Pos::Off).map(|r| r.0).chain(off).collect()
+}
+
+/// The profile whose switches apply to the chat `thread` in state `s`: its Bot's id, else
+/// [`CHATS`] (a chat no Bot owns, or one this broker has not heard of yet).
+pub fn owner_in(s: &crate::hub::store::State, thread: &str) -> String {
+    s.thread_bot(thread).map(|b| b.id.clone()).unwrap_or_else(|| CHATS.to_owned())
+}
+
+/// What an `@` scope's resolve and complete ask first: the plugin or MCP server `key` (`v1:<plugin id>`,
+/// `mcp:<server id>`) must be on for the Bot of the chat `thread`. → the plain sentence when it is
+/// not. A request naming no chat is the plain chats': with no chat in front there is no Bot to ask.
+pub fn scope_refusal(ctx: &HubCtx, thread: &str, key: &str) -> Option<(&'static str, String)> {
+    let owner = ctx.store.read(|s| owner_in(s, thread));
+    if tool_state(ctx, &owner, key) != Pos::Off {
+        return None;
+    }
+    Some(("disabled", off_sentence(ctx, &owner, key)))
+}
+
+/// The words for `key` being off for `owner`: the refusal's, and what the app shows.
+fn off_sentence(ctx: &HubCtx, owner: &str, key: &str) -> String {
+    let title = keys::label_of(ctx, key).map(|l| l.0).unwrap_or_else(|| key.to_owned());
+    let whose = if owner == CHATS { "plain chats" } else { "this Bot" };
+    format!("{title} is switched off for {whose}. Turn it on in Tools to use it here.")
+}
+
+/// `GET /v1/host/tools/off?thread=<chat>` (`said`: each key's refusal sentence): the plugins and MCP servers (`v1:…`, `mcp:…` keys) switched
+/// off for the chat's Bot, which the composer's `@` menu leaves out. The same switches
+/// [`scope_refusal`] reads.
+pub fn host_scopes_off(ctx: &HubCtx, thread: &str) -> Result<Value, V1Error> {
+    let owner = ctx.store.read(|s| owner_in(s, thread));
+    let (v1, mcp) = (keys::v1_key(""), keys::mcp_key(""));
+    let mut off: Vec<String> = off_keys(ctx, &owner).into_iter().filter(|k| k.starts_with(&v1) || k.starts_with(&mcp)).collect();
+    off.sort();
+    // what the refusal of each says, for the app to show as it is
+    let said: serde_json::Map<String, Value> = off.iter().map(|k| (k.clone(), json!(off_sentence(ctx, &owner, k)))).collect();
+    Ok(json!({"ok": true, "bot": owner, "off": off, "said": said}))
 }
 
 /// The Mac's shell mode.

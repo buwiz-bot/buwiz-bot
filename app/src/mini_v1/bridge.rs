@@ -1190,6 +1190,7 @@ impl OpenContext {
             value: value.to_owned(),
             complete: false,
             context: json!({"attached": []}),
+            thread: super::ui::active_chat(),
         };
         let v = host_api::resolve(&*self.broker, &ask)?;
         let r = v.get("result").filter(|r| r.is_object()).unwrap_or(&v);

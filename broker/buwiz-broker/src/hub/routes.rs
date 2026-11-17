@@ -46,6 +46,8 @@ pub mod apps;
 pub mod artifacts;
 /// pop-out windows and their table (6.3)
 pub mod popout;
+#[cfg(test)]
+mod scope_gate_tests;
 
 use super::types::Pattern::{self, Exact as X, Prefix as P, Segments as S};
 use super::types::Verb::{self, Any, Get, Post};

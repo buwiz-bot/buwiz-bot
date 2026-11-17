@@ -615,6 +615,9 @@ pub(crate) fn draft_changed(t: &str) {
         crate::slash::close();
         return;
     }
+    if at_start().get_untracked() != i as i64 {
+        crate::slash::at_opened();
+    }
     at_start().set(i as i64);
     if crate::slash::token_menu(tail) {
         return;

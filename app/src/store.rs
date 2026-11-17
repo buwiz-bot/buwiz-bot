@@ -2772,6 +2772,11 @@ pub struct Store {
     pub mcp_loaded: std::cell::Cell<bool>,
     /// Stale `@` value completions are dropped by generation.
     pub complete_seq: std::cell::Cell<u64>,
+    /// What the broker said of the plugins and servers off for the Bot of a chat, for the `@`
+    /// menu's opening (slash.rs).
+    pub at_off: std::cell::RefCell<crate::slash::AtOff>,
+    /// Goes up with each ask and each end of an opening: an older answer is dropped.
+    pub at_off_seq: std::cell::Cell<u64>,
     /// A picked `@` token's label (its chip shows it).
     pub token_labels: std::cell::RefCell<std::collections::HashMap<String, String>>,
 
@@ -3311,6 +3316,8 @@ impl Store {
             mcp_asked: std::cell::Cell::new(None),
             mcp_loaded: std::cell::Cell::new(false),
             complete_seq: std::cell::Cell::new(0),
+            at_off: std::cell::RefCell::new(crate::slash::AtOff::Idle),
+            at_off_seq: std::cell::Cell::new(0),
             token_labels: std::cell::RefCell::new(std::collections::HashMap::new()),
             at_open: signal(false),
             sending: signal(std::collections::BTreeSet::new()),
@@ -8940,8 +8947,9 @@ impl Store {
         if title.is_empty()
             && let Some((server, scope, value)) = crate::slash::token(token)
         {
+            let thread = self.active_id.get_untracked();
             spawn_detached(async move {
-                let body = serde_json::json!({ "server": server, "name": scope, "args": value, "complete": false });
+                let body = serde_json::json!({ "server": server, "name": scope, "args": value, "complete": false, "thread": thread });
                 let Some(v) = client::post("/mcp/resolve", body).await else { return };
                 let t = v.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_owned();
                 if v.get("ok").and_then(|x| x.as_bool()) == Some(true) && !t.is_empty() {

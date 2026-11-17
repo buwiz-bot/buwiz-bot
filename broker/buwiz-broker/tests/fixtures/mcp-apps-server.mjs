@@ -3,7 +3,8 @@
 // the resolve tool both name. Newline-delimited JSON-RPC, no SDK. The
 // resolve tool echoes what it was given, so a test sees the route's
 // arguments (including `context.attached`). When FIXTURE_MARK names a file,
-// each start appends its pid there.
+// each start appends its pid there. When FIXTURE_CALLS names a file, each
+// tool call appends a line there.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -44,6 +45,8 @@ function answer(method, params) {
       return { tools: TOOLS };
     case "tools/call": {
       const args = params?.arguments ?? {};
+
+      if (process.env.FIXTURE_CALLS) appendFileSync(process.env.FIXTURE_CALLS, `${params?.name}\n`);
       const out = params?.name === "resolve" ? resolve(args) : { tool: params?.name, args };
 
       return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };

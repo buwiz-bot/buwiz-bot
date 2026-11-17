@@ -42,7 +42,7 @@ use proto::{Res, ToolError};
 use workspace::{Doc, Workspace};
 
 /// The tools' definitions and the server's instructions as Node's MCP
-/// server lists them (recorded from it; office.test.mjs OFF-01 holds both
+/// server lists them (recorded from it; tests/http/office.test.mjs OFF-01 holds both
 /// to it).
 pub fn defs() -> &'static Value {
     static DEFS: OnceLock<Value> = OnceLock::new();
