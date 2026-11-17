@@ -19,3 +19,7 @@ pub mod proof;
 pub mod setup;
 pub mod tokens;
 pub mod ui;
+
+#[cfg(test)]
+#[path = "../../test-support/pins.rs"]
+mod pins;

@@ -1,0 +1,47 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "gpt-5.5--fast",
+        "max_tokens": 100,
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:pause]] x"
+          }
+        ],
+        "stream": true
+      }
+    }
+  ],
+  "result": {
+    "id": "msg_fake",
+    "type": "message",
+    "role": "assistant",
+    "model": "gpt-5.5--fast",
+    "content": [
+      {
+        "type": "server_tool_use",
+        "id": "srvtoolu_1",
+        "name": "web_search",
+        "input": {
+          "query": "rox"
+        }
+      }
+    ],
+    "stop_reason": "pause_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 10
+    },
+    "parsed_output": null
+  }
+}

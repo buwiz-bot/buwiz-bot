@@ -1,0 +1,64 @@
+PRAGMA foreign_keys=OFF;
+BEGIN TRANSACTION;
+CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
+INSERT INTO meta VALUES('names_buwiz','1794869383040');
+INSERT INTO meta VALUES('active','t1');
+INSERT INTO meta VALUES('sections','["Work"]');
+INSERT INTO meta VALUES('seq','0');
+CREATE TABLE threads(
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, ord INTEGER NOT NULL DEFAULT 0, agents TEXT, uid TEXT, hidden INTEGER DEFAULT 0, archived INTEGER DEFAULT 0, routine TEXT);
+INSERT INTO threads VALUES('t1','first chat',0,NULL,'01a1e68d-4f81-77ce-9b6e-775f8a313424',0,0,NULL);
+INSERT INTO threads VALUES('t2','Routine thread',1,NULL,'01a1e68d-4f82-7059-9d2b-b4e03d7b4d18',1,1,'{"plugin":"p.one","id":"daily","name":"Daily","thread":"t1"}');
+INSERT INTO threads VALUES('t3','Q3 😀 plans',2,'{"subject":"Q3","participants":["ann","bob"]}','01a1e68d-4f82-705a-8569-02895ce9addd',0,0,NULL);
+CREATE TABLE turns(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL,
+    text TEXT, name TEXT, label TEXT, caption TEXT, reaction TEXT,
+    retries INTEGER DEFAULT 0, widget INTEGER DEFAULT 0, meta TEXT, v INTEGER, uid TEXT);
+INSERT INTO turns VALUES(1,'t1',0,'user','hello',NULL,NULL,NULL,'🎉',0,0,'{"reply":{"i":0,"text":"quoted","files":["m1/a.txt"]},"attachments":[{"uri":"file:///x/a.png","name":"a.png","kind":"image"}],"v1Attachments":[{"plugin":"p.one","token":"@p:x:1"}]}',NULL,'01a1e68d-4f82-705b-ba15-383816cb373c');
+INSERT INTO turns VALUES(2,'t1',1,'ai','answer','','claude-haiku-5-5','cap','👍',2,0,'{"files":[{"path":"m1/a.txt","name":"a.txt","kind":"text"}],"art":{"title":"T","desc":"D","w":100,"h":80},"links":[{"provider":"gdrive","id":"f1","name":"Doc","link":"https://example.com/d","mime":"application/vnd.google-apps.document","account":"a@example.com"},{"provider":"mcp-app","id":"mcp:apps/x","name":"X","token":"@apps:i:1","kind":"app","file_type":"An item"}],"suggest":["Next step"]}',NULL,'01a1e68d-4f82-705c-ab58-48fdfc823767');
+INSERT INTO turns VALUES(3,'t1',2,'ai',NULL,'R1','mock',NULL,NULL,0,1,'{"art":{"title":"Counter","desc":"","w":0,"h":0}}',1,'01a1e68d-4f82-705d-82e2-4bcc35c0c75a');
+INSERT INTO turns VALUES(4,'t1',3,'notice','Daily ran',NULL,NULL,NULL,NULL,0,0,'{"notice":{"routine":"daily","thread":"t2"}}',NULL,'01a1e68d-4f82-705e-9426-413f8ebcfed3');
+INSERT INTO turns VALUES(5,'t1',4,'ai','xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx **bold** ## heading _under_ `code` > quote 😀😀',NULL,'m',NULL,NULL,0,0,NULL,NULL,'01a1e68d-4f82-705f-abc9-e06dff39ab5d');
+INSERT INTO turns VALUES(6,'t2',0,'user','Routine · Daily',NULL,NULL,NULL,NULL,0,0,'{"routine":{"plugin":"p.one","id":"daily","run":1}}',NULL,'01a1e68d-4f82-7060-ba07-cf607db46575');
+INSERT INTO turns VALUES(7,'t3',0,'agent_message','Check Q3.',NULL,NULL,NULL,NULL,0,0,'{"message":{"id":"m1","from":{"id":"ann","name":"Ann"},"to":["bob"],"subject":"Q3"},"pending":["bob"],"read_by":["ann"]}',NULL,'01a1e68d-4f82-7061-a06b-5fbe47c20080');
+INSERT INTO turns VALUES(8,'t3',1,'ai','woken',NULL,NULL,NULL,NULL,0,0,'{"agent":{"id":"bob","name":"Bob"}}',NULL,'01a1e68d-4f82-7062-afbd-30582ee166ed');
+CREATE TABLE widgets(
+    name TEXT PRIMARY KEY, title TEXT, prompt TEXT, published_at TEXT);
+CREATE TABLE bots(
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, shape TEXT NOT NULL,
+    color TEXT NOT NULL, thread_id TEXT, ord INTEGER NOT NULL DEFAULT 0, extra TEXT, pinned INTEGER DEFAULT 0, section TEXT, hidden INTEGER DEFAULT 0, image TEXT, crop TEXT, model TEXT, effort TEXT, fast INTEGER DEFAULT 0, label TEXT, description TEXT, instructions TEXT, memories TEXT, integrations TEXT, outline TEXT, art TEXT);
+INSERT INTO bots VALUES('ann','Ann','star','#FF309B','t1',0,'{"made_by":"bob","purpose":"help Bob","accepts":["bob"]}',1,'Work',0,'file:///x/ann.png','{"x":0.1,"y":0.2,"w":0.5,"h":0.5}','gpt-5.5','high',1,'tagline','','Be kind.','[{"id":"01a1e68d-4f82-7063-b72a-e0cb49e53bd8","text":"likes tea","at":1700000000000}]','[{"id":"s1","kind":"skill","at":1700000000000,"via":"user"}]',NULL,NULL);
+INSERT INTO bots VALUES('bob','Bob','blob','#1084FE',NULL,1,'{"helper":{"parent":"ann","task":"sort"}}',0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]',NULL,NULL);
+INSERT INTO bots VALUES('cy','Cy','custom','#FFFFFF','t3',2,NULL,0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]','M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z','{"layers":[{"path":"M30 60 L70 60 L50 80 Z","fill":"#F5EBD6"},{"path":"M30 30 L40 30 L35 40 Z","fill":"#F2C3B5","opacity":0.6}],"eyes":"#58D63A"}');
+INSERT INTO bots VALUES('dee','Dee','custom','#D9232E',NULL,3,NULL,0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]','M26 14 L74 14 L74 80 L26 80 Z','{"layers":[{"path":"M30 60 L70 60 L50 80 Z","fill":"#111111"}]}');
+INSERT INTO bots VALUES('eve','Eve','custom','#D9232E',NULL,4,NULL,0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]','M26 14 L74 14 L74 80 L26 80 Z','{"layers":[{"path":"M30 60 L70 60 L50 80 Z","fill":"#111111"}],"eyes":{"c":"#58D63A","at":[50,45.5],"gap":20,"s":1.25,"rim":"#111111","rw":0.3}}');
+INSERT INTO bots VALUES('fay','Fay','custom','#1E1E1E',NULL,5,NULL,0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]','M26 14 L74 14 L74 80 L26 80 Z','{"layers":[{"path":"M30 60 L70 60 L50 80 Z","fill":"#F5D7B5"},{"path":"M30 40 L50 40 L40 56 Z","fill":"#1E1E1E","over":true}],"eyes":{"c":"#1E1E1E","shut":"l"},"parts":[{"outline":"M12 38 L86 36 L86 42 L14 42 Z","color":"#4C8CC9","layers":[{"path":"M32 24 L68 24 L68 30 L32 30 Z","fill":"#F4F4F4"}],"z":1},{"outline":"M40 30 L60 30 L60 50 L40 50 Z","color":"#7A4A22","z":-0.5,"d":1.1}]}');
+INSERT INTO bots VALUES('gus','Gus','custom','#1E1E1E',NULL,6,NULL,0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]','M26 14 L74 14 L74 80 L26 80 Z','{"parts":[{"outline":"M40 30 L60 30 L60 50 L40 50 Z","color":"#7A4A22"}]}');
+INSERT INTO bots VALUES('hal','Hal','blob','#1E1E1E',NULL,7,NULL,0,NULL,0,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,'[]','[]',NULL,NULL);
+CREATE TABLE kv(name TEXT PRIMARY KEY, data TEXT);
+CREATE TABLE apps(name TEXT PRIMARY KEY, title TEXT, file TEXT, description TEXT, icon TEXT, icon_prompt TEXT, w REAL, h REAL, updated_at INTEGER);
+CREATE TABLE tombstones(name TEXT PRIMARY KEY);
+CREATE TABLE versions(
+    name TEXT NOT NULL, v INTEGER NOT NULL, parent INTEGER,
+    prompt TEXT, created_at INTEGER, label TEXT, PRIMARY KEY(name, v));
+CREATE TABLE heads(name TEXT PRIMARY KEY, v INTEGER NOT NULL);
+CREATE TABLE mcp_servers(
+    id TEXT PRIMARY KEY, name TEXT, command TEXT, args TEXT, env TEXT,
+    enabled INTEGER DEFAULT 1, bot TEXT, created_at INTEGER, url TEXT, disabled_tools TEXT, auth TEXT, account TEXT, headers TEXT, oauth_client TEXT, transport TEXT, agent_pending INTEGER);
+CREATE TABLE timeclock(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clock_in TEXT NOT NULL, clock_out TEXT);
+CREATE TABLE artifact_meta(
+    id TEXT PRIMARY KEY, title TEXT, file TEXT, description TEXT, icon TEXT, updated_at INTEGER);
+CREATE TABLE library_hidden(id TEXT PRIMARY KEY, at INTEGER);
+CREATE TABLE attachments(
+    id TEXT PRIMARY KEY, server TEXT NOT NULL, token TEXT NOT NULL, scope TEXT,
+    title TEXT, open TEXT, key TEXT, details TEXT, thread TEXT NOT NULL, bot TEXT,
+    turn TEXT, created_at INTEGER);
+CREATE TABLE attachment_names(token TEXT PRIMARY KEY, title TEXT, updated_at INTEGER);
+CREATE TABLE plugin_settings(plugin TEXT PRIMARY KEY, vals TEXT, updated_at INTEGER);
+CREATE TABLE skills(id TEXT PRIMARY KEY, name TEXT, description TEXT, body TEXT, enabled INTEGER DEFAULT 1, created_at INTEGER);
+CREATE TABLE installed_plugins(name TEXT PRIMARY KEY, meta TEXT, created_at INTEGER);
+INSERT INTO sqlite_sequence VALUES('turns',8);
+COMMIT;

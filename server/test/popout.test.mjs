@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startFakeOpencodex, say, use } from "./fixtures/fake-opencodex.mjs";
+import { startFakeOpencodex, say, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { modelEnv, nodeIn, postJson, request, startServer, stubCalls, stubEnv, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("popout");

@@ -1,0 +1,65 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "m2",
+        "max_tokens": 1024,
+        "system": "You are the assistant inside a generative-UI chat app: when the user asks for an interface, a tool builds and renders it natively. This message is conversation — answer in GitHub-flavored markdown, concise. If a UI would obviously help, offer to build it in one line.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:error-500]] fail"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "m2",
+        "max_tokens": 1024,
+        "system": "You are the assistant inside a generative-UI chat app: when the user asks for an interface, a tool builds and renders it natively. This message is conversation — answer in GitHub-flavored markdown, concise. If a UI would obviously help, offer to build it in one line.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:error-500]] fail"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "m2",
+        "max_tokens": 1024,
+        "system": "You are the assistant inside a generative-UI chat app: when the user asks for an interface, a tool builds and renders it natively. This message is conversation — answer in GitHub-flavored markdown, concise. If a UI would obviously help, offer to build it in one line.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:error-500]] fail"
+          }
+        ]
+      }
+    }
+  ],
+  "result": "_(model error — 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}})_"
+}

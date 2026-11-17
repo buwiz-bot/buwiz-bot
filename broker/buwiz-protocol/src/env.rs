@@ -198,23 +198,11 @@ mod tests {
         }
     }
 
-    /// `server/src/env.mjs` keeps the same table for the Node broker.
+    /// The Node broker kept the same table (`NAMES` in its env.mjs); it is
+    /// pinned in tests/pins/env_names.json.
     #[test]
-    fn the_node_table_matches() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../server/src/env.mjs");
-        let src = std::fs::read_to_string(path).expect("server/src/env.mjs");
-        let start = src.find("export const NAMES").expect("NAMES in env.mjs");
-        let end = start + src[start..].find("]);").expect("the end of NAMES");
-        let node: Vec<(String, String)> = src[start..end]
-            .lines()
-            .filter_map(|l| {
-                let l = l.trim().strip_prefix("[\"")?;
-                let (new, rest) = l.split_once("\", \"")?;
-                let old = rest.strip_suffix("\"],")?;
-                Some((new.to_owned(), old.to_owned()))
-            })
-            .collect();
-        let rust: Vec<(String, String)> = NAMES.iter().map(|(n, o)| (n.to_string(), o.to_string())).collect();
-        assert_eq!(node, rust);
+    fn the_table_is_the_pinned_one() {
+        let rust: Vec<Vec<&str>> = NAMES.iter().map(|(n, o)| vec![*n, *o]).collect();
+        crate::pins::check("env_names", &serde_json::json!(rust));
     }
 }

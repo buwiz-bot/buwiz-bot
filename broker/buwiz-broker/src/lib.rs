@@ -18,6 +18,10 @@ pub mod office;
 pub mod proxy;
 pub mod v1;
 
+#[cfg(test)]
+#[path = "../../test-support/pins.rs"]
+pub(crate) mod pins;
+
 /// A request path as the log shows it: no query, and the secret of a
 /// webhook (`/v1/hooks/<id>/<secret>`) replaced.
 pub fn redact(path_and_query: &str) -> String {

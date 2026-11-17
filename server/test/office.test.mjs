@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { say, startFakeOpencodex, use } from "./fixtures/fake-opencodex.mjs";
+import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { ROOT, modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const SEEDS = join(ROOT, "..", "office", "seeds");

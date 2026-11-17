@@ -1,0 +1,48 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/direct/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "m",
+        "max_tokens": 100,
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:cut-tool]] x"
+          }
+        ],
+        "stream": true
+      }
+    }
+  ],
+  "result": {
+    "id": "msg_fake",
+    "type": "message",
+    "role": "assistant",
+    "model": "m",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_x",
+        "name": "generate_app",
+        "input": {
+          "title": "Card",
+          "code": "import { Text } from \"nsh\";\n\nexport default function R() {\n  return <Text>hi</Text>;\n}"
+        }
+      }
+    ],
+    "stop_reason": "max_tokens",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 10
+    },
+    "parsed_output": null
+  }
+}
