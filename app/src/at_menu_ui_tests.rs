@@ -7,12 +7,10 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use nsh_core::element::Root;
-use nsh_core::platform::{FetchEvent, HttpHead, HttpRequest};
+use nsh_core::platform::HttpRequest;
 use nsh_core::prelude::*;
 use nsh_engine::{App, EngineConfig, FetchEvents, FetchTask, Network};
 use serde_json::{Value, json};
@@ -20,23 +18,10 @@ use serde_json::{Value, json};
 use buwiz_office_kit::testing::{Headless, run};
 
 use crate::live::store;
-
-const CHILD: &str = "BUWIZ_AT_MENU_UI_TEST";
+use crate::ui_test_support::{Done, Stage, finish, on, wait_until};
 
 fn in_child(name: &str) -> bool {
-    if std::env::var_os(CHILD).is_some() {
-        return true;
-    }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([&format!("at_menu_ui_tests::{name}"), "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD, "1")
-        .env("BUWIZ_BACKEND", "http://127.0.0.1:1")
-        .output()
-        .expect("run the test's child");
-    let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    println!("{log}");
-    assert!(out.status.success() && log.contains("1 passed"), "{name} failed in its child:\n{log}");
-    false
+    crate::ui_test_support::in_child("at_menu_ui_tests", name)
 }
 
 fn bot(id: &str, name: &str) -> Value {
@@ -67,15 +52,6 @@ struct Broker {
     /// Answers for this chat's off route wait here until `release`.
     hold: Mutex<Option<String>>,
     held: Mutex<Vec<(FetchEvents, Value)>>,
-}
-
-struct Done;
-
-impl FetchTask for Done {
-    fn send(&mut self, _: Vec<u8>) {}
-    fn finish(&mut self) {}
-    fn pause(&mut self, _: bool) {}
-    fn cancel(self: Box<Self>) {}
 }
 
 impl Network for Broker {
@@ -113,28 +89,6 @@ impl Broker {
     }
 }
 
-fn finish(mut events: FetchEvents, answer: Value) -> Box<dyn FetchTask> {
-    events(FetchEvent::Head(HttpHead { status: 200, ..Default::default() }));
-    events(FetchEvent::Data(answer.to_string().into_bytes()));
-    events(FetchEvent::End);
-    Box::new(Done)
-}
-
-/// How long a test waits for what it expects before it fails: generous, for a loaded runner.
-const PATIENCE: Duration = Duration::from_secs(60);
-
-/// `app` pumped until `done()` (run on the engine thread) says so.
-fn wait_until(app: &mut Headless, what: &str, done: impl Fn() -> bool + Send + Clone + 'static) {
-    let until = Instant::now() + PATIENCE;
-    while Instant::now() < until {
-        if on(app, done.clone()) {
-            return;
-        }
-        app.pump(Duration::from_millis(10));
-    }
-    panic!("waited for {what}");
-}
-
 fn start() -> (Headless, Arc<Broker>) {
     let seen = Arc::new(Broker { log: Mutex::new(Vec::new()), off: Mutex::new(HashMap::new()), refuse: AtomicBool::new(false), hold: Mutex::new(None), held: Mutex::new(Vec::new()) });
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
@@ -145,38 +99,6 @@ fn start() -> (Headless, Arc<Broker>) {
     on(&mut app, crate::slash::boot);
     wait_until(&mut app, "the manifest", || store().mcp_loaded.get() && store().mcp_manifest.with_untracked(|m| m.len()) == 2);
     (app, seen)
-}
-
-/// What the Stage's `job` press runs next.
-static JOB: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
-
-/// `f` on the engine thread, where the store's signals live.
-fn on<R: Send + 'static>(app: &mut Headless, f: impl FnOnce() -> R + Send + 'static) -> R {
-    let (tx, rx) = std::sync::mpsc::channel();
-    *JOB.lock().unwrap() = Some(Box::new(move || {
-        let _ = tx.send(f());
-    }));
-    app.press("job");
-    let until = Instant::now() + PATIENCE;
-    while Instant::now() < until {
-        if let Ok(r) = rx.try_recv() {
-            return r;
-        }
-        app.pump(Duration::from_millis(5));
-    }
-    panic!("the job never ran");
-}
-
-#[component]
-fn Stage() -> impl IntoElement {
-    Owner::detached().run(|| {
-        let _ = store();
-    });
-    view().size_full().child(text("probe ready=1")).child(crate::toast::layer()).child(view().label("job").w(px(40.0)).h(px(24.0)).on_press(|| {
-        if let Some(job) = JOB.lock().unwrap().take() {
-            job();
-        }
-    }))
 }
 
 /// Chat `chat` in front.

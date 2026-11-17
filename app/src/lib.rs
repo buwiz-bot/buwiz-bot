@@ -251,6 +251,10 @@ mod messages_ui_tests;
 #[cfg(test)]
 mod at_menu_ui_tests;
 #[cfg(test)]
+mod ui_test_support;
+#[cfg(test)]
+mod slash_menu_ui_tests;
+#[cfg(test)]
 mod network_ui_tests;
 #[cfg(test)]
 mod login_ui_tests;
