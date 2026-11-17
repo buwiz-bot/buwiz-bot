@@ -16,6 +16,10 @@ use buwiz_broker::front_door::FrontDoor;
 
 #[tokio::main]
 async fn main() {
+    if let Err(why) = buwiz_protocol::env::refuse_old_names() {
+        eprintln!("buwiz-broker: {why}");
+        std::process::exit(2);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("keystore-check") => std::process::exit(keystore_check(&args[1..])),

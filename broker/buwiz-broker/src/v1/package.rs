@@ -126,19 +126,10 @@ fn file_of(v: &Value, at: &str, path: Option<&str>) -> Res<File> {
 }
 
 fn protocol_ok(p: &str, host: &str) -> Res<()> {
-    let two = |s: &str| {
-        let mut it = s.split('.').map(|x| x.parse::<u64>().ok());
-        (it.next().flatten(), it.next().flatten())
-    };
-    let (Some(maj), Some(min)) = two(p) else { return Err(bad("buwiz.protocol must be a semver string")) };
     if !super::manifest::is_semver(Some(&json!(p))) {
         return Err(bad("buwiz.protocol must be a semver string"));
     }
-    let (hmaj, hmin) = two(host);
-    if Some(maj) != hmaj || Some(min) > hmin {
-        return Err(V1Error::new("protocol_unsupported", format!("the package is for protocol {p}; this Buwiz Bot supports {host}")));
-    }
-    Ok(())
+    super::manifest::check_protocol(p, host, "package")
 }
 
 /// The block's shape (§7.3's table), signature not checked; `platform`
@@ -468,9 +459,9 @@ pub(crate) mod tests {
             assert_eq!(verify(&plugin_json("p", |b| b["buwiz"]["protocol"] = json!(p)).to_string(), &trust(&[ID]), HOST, "p").unwrap().protocol, p);
         }
         // any other number gets the one refusal
-        for p in ["0.9.0", "1.1.0", "2.0.0", "2.1.0", "3.0.0"] {
+        for p in ["1.1.0", "3.0.0", "2.0.0", "2.1.0", "2.1.4", "2.2.0", "0.9.0"] {
             let e = refused(|b| b["buwiz"]["protocol"] = json!(p));
-            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("the package is for protocol {p}; this Buwiz Bot supports 1.0.0")));
+            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("the package implements protocol {p}; this Buwiz Bot supports 1.0")));
         }
     }
 

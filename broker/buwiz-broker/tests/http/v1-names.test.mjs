@@ -48,6 +48,47 @@ test("NAM-03 a plugin naming a protocol other than 1.0 gets the one refusal", as
   }
 });
 
+test("NAM-03c a plugin built for the old name gets an ordinary refusal and none of its tools is listed", async () => {
+  await withHost("names-old-name", async ({ b, api }) => {
+    const spec = fixtureSpec(b, ["--misbehave=old-name"]);
+    await assert.rejects(api.inspect(spec), (e) => e.code === "plugin_invalid" && e.message.startsWith("buwiz.provision failed:") && !/older|Rox|rox/.test(e.message));
+    assert.equal(await api.plugin(), undefined, "nothing was installed");
+  });
+});
+
+test("NAM-03d a stored record whose tools carry the old prefix fails to start and lists no tool", async () => {
+  const b = bed("names-old-record");
+  const dataDir = tempDir("v1-names-old-record-data");
+  const env = { BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile };
+  const first = await startServer(dataDir, { env });
+
+  try {
+    await installFixture(hostApi(dataDir), b);
+  } finally {
+    await first.stop();
+  }
+
+  const db = await seedDb(dataDir);
+
+  try {
+    db.prepare("UPDATE v1_plugins SET tools=?, args=? WHERE id=?").run(JSON.stringify([{ name: "rox.provision", description: "", readOnly: false }, { name: "fx_echo", description: "", readOnly: true }]), JSON.stringify(fixtureSpec(b, ["--misbehave=old-name"]).args), FX);
+  } finally {
+    db.close();
+  }
+
+  rmSync(b.statsFile, { force: true });
+  const server = await startServer(dataDir, { env });
+
+  try {
+    const api = hostApi(dataDir);
+    const p = await until(async () => (await api.plugin()).state === "failed" && (await api.plugin()), 10000, "the record to fail");
+    assert.deepEqual(p.tools.filter((t) => t.name.startsWith("rox.")), [], "no old-prefix tool is listed");
+    assert.equal(await codeOf(api.setTool(FX, "rox.provision", true)), "not_found", "and none is switchable");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("NAM-03b an installed record of an older protocol fails before it spawns", async () => {
   const b = bed("names-record");
   const dataDir = tempDir("v1-names-record-data");

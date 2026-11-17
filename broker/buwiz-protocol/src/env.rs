@@ -1,4 +1,8 @@
 //! Buwiz Bot's environment variables, read by their `BUWIZ_*` names.
+//!
+//! A variable that holds a name of an earlier version is not read, and it is
+//! not ignored either: [`refuse_old_names`] stops the program, so a bench
+//! that still sets one never runs against the owner's port, data or Keychain.
 
 use std::ffi::OsString;
 
@@ -22,9 +26,52 @@ pub fn var_in(name: &str, get: impl Fn(&str) -> Option<OsString>) -> Option<OsSt
     get(name)
 }
 
+/// The names that are not `ROX_*` and were once read.
+const OLD_EXACT: [&str; 3] = ["GROK_DATA_DIR", "GROK_ALLOWED_ORIGINS", "GROK_BUNDLE_ID"];
+
+/// Whether `name` is a name of an earlier version: any `ROX_*`, or one of [`OLD_EXACT`].
+pub fn is_old_name(name: &str) -> bool {
+    name.starts_with("ROX_") || OLD_EXACT.contains(&name)
+}
+
+/// The old names among `names`, sorted; the refusal line when there are any.
+pub fn old_names_in<I: IntoIterator<Item = OsString>>(names: I) -> Result<(), String> {
+    let mut found: Vec<String> = names.into_iter().filter_map(|n| n.into_string().ok()).filter(|n| is_old_name(n)).collect();
+    if found.is_empty() {
+        return Ok(());
+    }
+    found.sort();
+    Err(format!("these variables are set and no longer read: {}; use the BUWIZ_ name instead and unset them", found.join(", ")))
+}
+
+/// [`old_names_in`] over the process environment. Call it first thing in a
+/// program, before it opens anything.
+pub fn refuse_old_names() -> Result<(), String> {
+    old_names_in(std::env::vars_os().map(|(k, _)| k))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn an_old_name_set_is_refused_and_named() {
+        let e = old_names_in(names(&["PATH", "ROX_BACKGROUND", "BUWIZ_BACKEND", "GROK_DATA_DIR", "ROX_NO_KEYCHAIN"])).unwrap_err();
+        assert_eq!(e, "these variables are set and no longer read: GROK_DATA_DIR, ROX_BACKGROUND, ROX_NO_KEYCHAIN; use the BUWIZ_ name instead and unset them");
+        for old in ["GROK_ALLOWED_ORIGINS", "GROK_BUNDLE_ID", "ROX_X"] {
+            assert!(old_names_in(names(&[old])).is_err(), "{old}");
+        }
+    }
+
+    #[test]
+    fn no_old_name_starts_and_buwiz_names_are_unaffected() {
+        assert_eq!(old_names_in(names(&[])), Ok(()));
+        assert_eq!(old_names_in(names(&["PATH", "HOME", "BUWIZ_BACKEND", "BUWIZ_DATA_DIR", "BUWIZ_BROKER_DATA_DIR", "GROK_OTHER", "ROXY", "rox_lower"])), Ok(()));
+    }
 
     #[test]
     fn a_name_reads_only_itself() {

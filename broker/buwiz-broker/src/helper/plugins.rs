@@ -1337,7 +1337,8 @@ impl Host {
     pub fn set_tool(&self, id: &str, tool: Option<&Value>, disabled: Option<&Value>) -> Res {
         let row = self.must_row(id)?;
         let known = parse(&row.tools, json!([]));
-        if !known.as_array().into_iter().flatten().any(|t| crate::v1::same(get(t, "name"), tool)) {
+        let own = format!("{}_", row.short);
+        if !known.as_array().into_iter().flatten().any(|t| crate::v1::same(get(t, "name"), tool) && tpl(get(t, "name")).starts_with(&own)) {
             return V1Error::err("not_found", format!("{id} has no tool {}", js::slice_utf16(&tpl(tool), 80)));
         }
         if kind_of(disabled) != "boolean" {

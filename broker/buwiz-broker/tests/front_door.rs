@@ -242,3 +242,24 @@ fn a_second_front_door_on_a_taken_port_exits() {
     assert!(std::fs::read_to_string(&err).unwrap_or_default().contains("is taken"));
     let _ = std::fs::remove_file(&err);
 }
+
+/// A variable of an earlier name set: the broker refuses to start, names it
+/// and opens nothing (no port taken, no data folder made).
+#[test]
+fn an_old_variable_name_set_stops_the_broker_before_it_opens_anything() {
+    let data = std::env::temp_dir().join(format!("buwiz-old-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    for old in ["ROX_NO_KEYCHAIN", "GROK_DATA_DIR"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"))
+            .args(["--port", "0", "--data"])
+            .arg(&data)
+            .env(old, "1")
+            .env("BUWIZ_NO_KEYCHAIN", "1")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{old}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(old) && err.contains("use the BUWIZ_ name"), "{old}: {err}");
+        assert!(!data.exists(), "{old}: nothing opened");
+    }
+}

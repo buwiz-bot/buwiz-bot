@@ -22,7 +22,8 @@
 // `--misbehave=<mode>[,<mode>]` breaks one rule on purpose for negative
 // tests: skip-provision, bad-cert, log-seed, wrong-perms, crash-after:<n>,
 // old-cert (a certificate of another type), no-accounts (no
-// buwiz.account.set/clear: -32601). strict-host breaks none: it refuses to
+// buwiz.account.set/clear: -32601), old-name (a plugin that serves only
+// another manifest scheme and reserved-tool prefix). strict-host breaks none: it refuses to
 // be provisioned by a host that does not run protocol 1.0.
 //
 // buwiz.account.set/clear keep the pushed accounts in
@@ -431,17 +432,22 @@ function mcpServer(serverInfo, { capabilities, instructions }) {
 const instructions = process.env.FX_INSTRUCTIONS ?? "## Fixture\nUse fx_search to find items; fx_echo answers with what it was sent.";
 const server = mcpServer({ name: "buwiz-fixture", version: "1.0.0" }, { capabilities: { tools: {}, resources: { listChanged: true } }, instructions });
 
-const manifestUri = "buwiz://manifest";
+// old-name: serves only a manifest under another scheme, its reserved tools
+// under another prefix, and knows no buwiz.* tool
+const OLD = misbehave("old-name");
+const manifestUri = OLD ? "rox://manifest" : "buwiz://manifest";
 
 server.setRequestHandler("tools/list", () => ({
   tools: [
-    ...Object.keys(RESERVED).map((name) => ({ name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
+    ...Object.keys(RESERVED).map((name) => ({ name: OLD ? name.replace(/^buwiz\./, "rox.") : name, description: "Reserved for Buwiz Bot.", inputSchema: { type: "object" } })),
     ...TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations, ...(t.meta && { _meta: t.meta }) })),
   ],
 }));
 
 server.setRequestHandler("tools/call", async (req, extra) => {
   const { name, arguments: args = {}, _meta: meta } = req.params;
+
+  if (OLD && name.startsWith("buwiz.")) throw new McpError(ErrorCode.MethodNotFound, `${name} is not a tool of this plugin`);
 
   if (Object.hasOwn(RESERVED, name)) {
     const result = RESERVED[name](args);

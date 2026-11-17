@@ -142,7 +142,13 @@ fn ui_sets() -> Vec<nsh_core::element::Registry> {
 
 #[cfg(target_os = "macos")]
 fn main() -> impl std::process::Termination {
-    // first of all: a test bundle started bare would act as the owner's Bot
+    // first of all: an old variable name still set would leave a bench
+    // un-isolated, so the Bot does not start with one
+    if let Err(why) = buwiz_protocol::env::refuse_old_names() {
+        eprintln!("buwiz-bot: {why}");
+        std::process::exit(2);
+    }
+    // a test bundle started bare would act as the owner's Bot
     if let Some(why) = buwiz_bot::broker::refusal() {
         eprintln!("buwiz-bot: {why}");
         std::process::exit(2);

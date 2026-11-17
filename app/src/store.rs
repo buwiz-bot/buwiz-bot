@@ -1635,7 +1635,7 @@ pub struct BuwizApp {
     pub versions: Vec<AppVersion>,
     /// Where it lives; only "mac" has a local file.
     pub storage: ArtStorage,
-    /// Who keeps its versions: "buwiz" (the `v<n>` tree), "provider" (the
+    /// Who keeps its versions: "rox" (the `v<n>` tree), "provider" (the
     /// connected app's own history) or "none".
     pub versioning: String,
     /// An `mcp-app` item (a server's token attached here): the token, the

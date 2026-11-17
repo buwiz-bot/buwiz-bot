@@ -599,10 +599,10 @@ fn fields(m: &Map<String, Value>) -> Res {
 
 // ── verification (6.2) ───────────────────────────────────────────────────
 
-fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
-    let Some(protocol) = m.get("protocol").and_then(Value::as_str).filter(|p| semver(p).is_some()) else {
-        return Err(invalid("protocol", "must be a semver string"));
-    };
+/// The one decision on a protocol number, for a manifest and for a package
+/// block alike: it is 1.0.x, as the host's is, or it is refused with code
+/// `protocol_unsupported` and one sentence. `noun` is "plugin" or "package".
+pub fn check_protocol(protocol: &str, host: &str, noun: &str) -> Res {
     let two = |s: &str| {
         let mut parts = s.split('.').map(|p| p.parse::<f64>().unwrap_or(f64::NAN));
         (parts.next().unwrap_or(f64::NAN), parts.next().unwrap_or(f64::NAN))
@@ -610,8 +610,16 @@ fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
     let ((maj, min), (hmaj, hmin)) = (two(protocol), two(host));
     if maj != hmaj || min != hmin {
         let n = js::number;
-        return Err(V1Error::new("protocol_unsupported", format!("the plugin implements protocol {protocol}; this Buwiz Bot supports {}.{}", n(hmaj), n(hmin))));
+        return Err(V1Error::new("protocol_unsupported", format!("the {noun} implements protocol {protocol}; this Buwiz Bot supports {}.{}", n(hmaj), n(hmin))));
     }
+    Ok(())
+}
+
+fn protocol_of(m: &Map<String, Value>, host: &str) -> Res {
+    let Some(protocol) = m.get("protocol").and_then(Value::as_str).filter(|p| semver(p).is_some()) else {
+        return Err(invalid("protocol", "must be a semver string"));
+    };
+    check_protocol(protocol, host, "plugin")?;
     let version_ok = m.get("version").and_then(Value::as_str).is_some_and(|v| semver(v).is_some() && v.encode_utf16().count() <= L::VERSION);
     if !version_ok {
         return Err(invalid("version", format!("must be semver, at most {} characters", L::VERSION)));
