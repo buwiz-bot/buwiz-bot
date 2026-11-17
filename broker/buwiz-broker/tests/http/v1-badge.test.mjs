@@ -4,7 +4,7 @@
 // the badge read back from the plugin listing the app loads and from
 // the events stream (`event: badge`), a clear, a restart and an uninstall.
 // The app holds the pins themselves; the broker holds the badge of each
-// (plugin, app, ticket).
+// (plugin, app, ticket); each change carries a `rev` that only goes up, in the listing and the events.
 //
 //   BDG-01 a signed call whose result carries a badge: the app's answer has no
 //          `_meta`; the listing has the badge; the stream says it
@@ -37,7 +37,9 @@ let manifest;
 const brokerEnv = () => ({ ...offlineEnv(stubLog), BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile });
 const host = (method, path, obj) =>
   request(method, path, { headers: { "X-Buwiz-Host": token, ...(obj === undefined ? {} : { "Content-Type": "application/json" }) }, body: obj === undefined ? undefined : JSON.stringify(obj) });
-const badges = async () => (await host("GET", "/v1/host/plugins")).json.plugins.find((p) => p.id === FX)?.badges;
+/** A badge or event without its `rev`, which has to be a positive integer. */
+const strip = ({ rev, ...b }) => (assert.ok(Number.isInteger(rev) && rev > 0, `rev of ${JSON.stringify(b)}`), b);
+const badges = async () => (await host("GET", "/v1/host/plugins")).json.plugins.find((p) => p.id === FX)?.badges?.map(strip);
 const one = (app, ticket, dot, text) => ({ app, ticket, dot, text });
 
 /** /v1/host/events: the badge events so far. */
@@ -95,7 +97,7 @@ test("BDG-01 a signed call whose result carries a badge: no _meta for the app; t
   assert.ok(!("_meta" in r.json.result) && !r.text.includes("buwiz/badge"), `the app never sees the key: ${r.text}`);
   assert.deepEqual(await badges(), [one("card", TICKET, "red", "2 due")], "the plugin listing carries it");
   assert.ok(await waitFor(() => stream.events.length === 1, 5000), stream.raw);
-  assert.deepEqual(stream.events[0], { plugin: FX, ...one("card", TICKET, "red", "2 due") });
+  assert.deepEqual(strip(stream.events[0]), { plugin: FX, ...one("card", TICKET, "red", "2 due") });
   stream.close();
 });
 
@@ -113,7 +115,7 @@ test("BDG-02 a routine's query result sets one with no app open", async () => {
   assert.deepEqual(run.json.run.ran, true, run.text);
   assert.deepEqual(await badges(), [one("card", null, "amber", "18h"), one("card", TICKET, "red", "2 due")]);
   assert.ok(await waitFor(() => stream.events.length === 1, 5000), stream.raw);
-  assert.deepEqual(stream.events[0], { plugin: FX, ...one("card", null, "amber", "18h") });
+  assert.deepEqual(strip(stream.events[0]), { plugin: FX, ...one("card", null, "amber", "18h") });
   stream.close();
 });
 
@@ -139,7 +141,7 @@ test("BDG-03 a malformed badge or a failed result's changes nothing and the answ
   assert.equal(clear.json.ok, true, clear.text);
   assert.deepEqual(await badges(), [one("card", TICKET, "red", "2 due")], "the app-wide one is gone, the ticket's stays");
   assert.ok(await waitFor(() => stream.events.length === 1, 5000), stream.raw);
-  assert.deepEqual(stream.events[0], { plugin: FX, ...one("card", null, "none", "") });
+  assert.deepEqual(strip(stream.events[0]), { plugin: FX, ...one("card", null, "none", "") });
   stream.close();
 });
 
@@ -157,7 +159,7 @@ test("BDG-05 uninstall removes the badge, and the stream says so", async () => {
   await waitFor(() => stream.raw, 5000);
   assert.equal((await host("POST", `/v1/host/plugins/${FX}/uninstall`, {})).json.ok, true);
   assert.ok(await waitFor(() => stream.events.length === 1, 5000), stream.raw);
-  assert.deepEqual(stream.events[0], { plugin: FX, ...one("card", TICKET, "none", "") });
+  assert.deepEqual(strip(stream.events[0]), { plugin: FX, ...one("card", TICKET, "none", "") });
   assert.deepEqual((await host("GET", "/v1/host/plugins")).json.plugins, []);
   stream.close();
 });

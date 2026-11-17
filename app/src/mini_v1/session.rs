@@ -390,9 +390,12 @@ pub fn listen_for_generations() {
                                 f(&v);
                             }
                         }
-                        if name == "badge"
+                        // `resync`: this reader missed events, so the list is read again
+                        let resync = name == "resync";
+                        if (name == "badge" || resync)
                             && let Ok(v) = serde_json::from_str::<Value>(data)
                         {
+                            let v = if resync { serde_json::json!({"resync": true}) } else { v };
                             let f = BADGE_LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             if let Some(f) = f {
                                 f(&v);

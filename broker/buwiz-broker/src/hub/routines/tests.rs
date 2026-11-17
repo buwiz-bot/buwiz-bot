@@ -952,6 +952,7 @@ async fn rtn_09_and_the_host_routes_token_refusals_and_status_map() {
             "manifest_sha256",
             "update",
             "badges",
+            "badges_rev",
             "apps",
             "commands",
             "scopes",

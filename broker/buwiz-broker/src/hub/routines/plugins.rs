@@ -54,9 +54,9 @@ pub trait PluginView: Send + Sync {
     fn update(&self, _id: &str) -> Value {
         Value::Null
     }
-    /// The badges its pins show (`Host::badges_view`).
-    fn badges(&self, _id: &str) -> Value {
-        json!([])
+    /// The badges its pins show and the `rev` they are as of (`Host::badges_view`).
+    fn badges(&self, _id: &str) -> (i64, Value) {
+        (0, json!([]))
     }
 }
 
@@ -92,7 +92,7 @@ impl PluginView for Arc<Host> {
     fn update(&self, id: &str) -> Value {
         self.update_of(id).unwrap_or(Value::Null)
     }
-    fn badges(&self, id: &str) -> Value {
+    fn badges(&self, id: &str) -> (i64, Value) {
         self.badges_view(id)
     }
 }
@@ -232,7 +232,9 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
     // a newer release, or null: nothing of it is installed until the person's Install
     out.insert("update".into(), p.update(&row.id));
     // what its pins show (`buwiz/badge`)
-    out.insert("badges".into(), p.badges(&row.id));
+    let (rev, badges) = p.badges(&row.id);
+    out.insert("badges".into(), badges);
+    out.insert("badges_rev".into(), json!(rev));
     let apps: Vec<Value> = m
         .get("apps")
         .and_then(Value::as_array)

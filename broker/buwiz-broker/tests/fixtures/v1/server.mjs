@@ -338,7 +338,7 @@ const TOOLS = [
     run: (args) => ({ ...(args.fail ? fail("tool_error", "fx_badge failed") : ok({ badged: true, query: "from:badge", items: [] })), _meta: { "buwiz/badge": args.badge } }),
   },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
-  { name: "fx_app_only", description: "A tool for apps only (16.4 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
+  { name: "fx_app_only", description: "A tool for apps only (16.5 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
   { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok(stats()) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },

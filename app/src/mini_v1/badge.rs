@@ -1,12 +1,14 @@
 //! A plugin's badge on its pins (spec 16.4, `_meta["buwiz/badge"]`): a dot in
-//! one of three colours and up to 8 characters, set by the plugin with any
-//! tool result and kept by the broker. The broker lists each plugin's badges
+//! one of three colours and up to 8 characters, set by the plugin on a tool
+//! result and kept by the broker. The broker lists each plugin's badges
 //! with the plugin (`badges`) and says each change as a `badge` event; this is
 //! what the app reads from both, and what a pin says for one.
 //!
 //! The broker has judged a badge before it says it. What is read here is
 //! read again with the same rules, so a pin never shows more than the
 //! protocol allows, whatever arrives.
+
+use std::collections::HashMap;
 
 use serde_json::Value;
 
@@ -44,19 +46,23 @@ impl Dot {
     }
 }
 
-/// One badge: for the pins of `app`, or only those with `ticket`.
+/// One badge: for the pins of `app`, or only those with `ticket`. `rev` is
+/// the broker's number for the change (it only goes up), which orders an
+/// event against a list; a cleared badge has dot `none`, no text and its own `rev`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Badge {
     pub app: String,
     pub ticket: Option<String>,
     pub dot: Dot,
     pub text: String,
+    pub rev: i64,
 }
 
 impl Badge {
     /// A badge as the list or an event carries it, `None` when it breaks
-    /// the protocol's rules: an unknown dot, text over [`TEXT_MAX`]
-    /// characters or not on one line.
+    /// the protocol's rules: an unknown dot, no `rev`, text over [`TEXT_MAX`]
+    /// characters, not on one line or with a space at either end. The text is
+    /// read as it is; "" is no text.
     pub fn from_json(v: &Value) -> Option<Badge> {
         let app = v.get("app")?.as_str().filter(|a| !a.is_empty())?.to_owned();
         let ticket = match v.get("ticket") {
@@ -68,10 +74,10 @@ impl Badge {
             None | Some(Value::Null) => "",
             Some(t) => t.as_str()?,
         };
-        if text.chars().count() > TEXT_MAX || text.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}') {
+        if text.chars().count() > TEXT_MAX || text.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}') || text.starts_with(' ') || text.ends_with(' ') {
             return None;
         }
-        Some(Badge { app, ticket, dot, text: text.trim().to_owned() })
+        Some(Badge { app, ticket, dot, text: text.to_owned(), rev: v.get("rev")?.as_i64()? })
     }
 
     /// Shows nothing: no dot and no text, which is what a cleared badge is.
@@ -82,7 +88,7 @@ impl Badge {
 
 /// A plugin's `badges` as the list has them; one that breaks the rules is left out.
 pub fn from_list(v: Option<&Value>) -> Vec<Badge> {
-    v.and_then(Value::as_array).into_iter().flatten().filter_map(Badge::from_json).filter(|b| !b.is_empty()).collect()
+    v.and_then(Value::as_array).into_iter().flatten().filter_map(Badge::from_json).collect()
 }
 
 /// A `badge` event: the plugin's id and its badge (empty when cleared).
@@ -90,24 +96,51 @@ pub fn from_event(v: &Value) -> Option<(String, Badge)> {
     Some((v.get("plugin")?.as_str().filter(|p| !p.is_empty())?.to_owned(), Badge::from_json(v)?))
 }
 
-/// Puts `b` in `badges`, in place of the one for the same app and ticket; an
-/// empty one takes it out. Whether anything changed.
-pub fn apply(badges: &mut Vec<Badge>, b: Badge) -> bool {
-    let at = badges.iter().position(|x| x.app == b.app && x.ticket == b.ticket);
-    match (at, b.is_empty()) {
-        (Some(i), true) => {
-            badges.remove(i);
-            true
+type Key = (String, String, Option<String>);
+
+/// What the app holds of every plugin's badges, with the `rev` of each change,
+/// the clears included, so that an older plugin list can never bring back a
+/// badge an event changed or cleared, and an older event cannot undo a list.
+#[derive(Debug, Default)]
+pub struct Book {
+    held: HashMap<Key, Badge>,
+}
+
+impl Book {
+    /// A change `b` of `plugin`'s: taken when it is newer than what is held for its
+    /// app and ticket. Whether it was taken.
+    pub fn event(&mut self, plugin: &str, b: Badge) -> bool {
+        let key = (plugin.to_owned(), b.app.clone(), b.ticket.clone());
+        if self.held.get(&key).is_some_and(|h| h.rev >= b.rev) {
+            return false;
         }
-        (Some(i), false) if badges[i] != b => {
-            badges[i] = b;
-            true
+        self.held.insert(key, b);
+        true
+    }
+
+    /// `plugin`'s list, as of `at` (the highest `rev` the broker had issued when it made it):
+    /// each listed badge is taken when it is newer than what is held, and a badge held
+    /// from `at` or before that the list does not have is gone. What is held from after
+    /// `at` stays: the list is older than that.
+    pub fn list(&mut self, plugin: &str, at: i64, listed: Vec<Badge>) {
+        let mut seen: Vec<Key> = Vec::new();
+        for b in listed {
+            seen.push((plugin.to_owned(), b.app.clone(), b.ticket.clone()));
+            self.event(plugin, b);
         }
-        (None, false) => {
-            badges.push(b);
-            true
-        }
-        _ => false,
+        self.held.retain(|k, h| k.0 != plugin || seen.contains(k) || h.rev > at);
+    }
+
+    /// The badges `plugin` has now, in the order of their app and ticket.
+    pub fn badges_of(&self, plugin: &str) -> Vec<Badge> {
+        let mut out: Vec<Badge> = self.held.iter().filter(|(k, b)| k.0 == plugin && !b.is_empty()).map(|(_, b)| b.clone()).collect();
+        out.sort_by(|a, b| (&a.app, &a.ticket).cmp(&(&b.app, &b.ticket)));
+        out
+    }
+
+    /// Forgets every plugin not in `listed`.
+    pub fn keep(&mut self, listed: &[String]) {
+        self.held.retain(|k, _| listed.contains(&k.0));
     }
 }
 
@@ -138,60 +171,97 @@ mod tests {
 
     use super::*;
 
-    fn badge(app: &str, ticket: Option<&str>, dot: Dot, text: &str) -> Badge {
-        Badge { app: app.into(), ticket: ticket.map(Into::into), dot, text: text.into() }
+    fn badge(app: &str, ticket: Option<&str>, dot: Dot, text: &str, rev: i64) -> Badge {
+        Badge { app: app.into(), ticket: ticket.map(Into::into), dot, text: text.into(), rev }
     }
 
     #[test]
     fn the_list_and_an_event_parse_alike() {
         let listed = from_list(Some(&json!([
-            {"app": "forms", "ticket": null, "dot": "red", "text": "2 due"},
-            {"app": "forms", "ticket": "tkt_ABC", "dot": "none", "text": "18h"},
-            {"app": "forms", "ticket": "tkt_DEF", "dot": "green", "text": ""},
+            {"app": "forms", "ticket": null, "dot": "red", "text": "2 due", "rev": 5},
+            {"app": "forms", "ticket": "tkt_ABC", "dot": "none", "text": "18h", "rev": 6},
+            {"app": "forms", "ticket": "tkt_DEF", "dot": "green", "text": "", "rev": 7},
         ])));
-        assert_eq!(listed, vec![badge("forms", None, Dot::Red, "2 due"), badge("forms", Some("tkt_ABC"), Dot::None, "18h"), badge("forms", Some("tkt_DEF"), Dot::Green, "")]);
-        let event = json!({"plugin": "app.buwiz.ebirforms", "app": "forms", "ticket": null, "dot": "amber", "text": "18h"});
-        assert_eq!(from_event(&event), Some(("app.buwiz.ebirforms".into(), badge("forms", None, Dot::Amber, "18h"))));
-        let cleared = json!({"plugin": "p", "app": "forms", "ticket": null, "dot": "none", "text": ""});
+        assert_eq!(listed, vec![badge("forms", None, Dot::Red, "2 due", 5), badge("forms", Some("tkt_ABC"), Dot::None, "18h", 6), badge("forms", Some("tkt_DEF"), Dot::Green, "", 7)]);
+        let event = json!({"plugin": "app.buwiz.ebirforms", "app": "forms", "ticket": null, "dot": "amber", "text": "18h", "rev": 9});
+        assert_eq!(from_event(&event), Some(("app.buwiz.ebirforms".into(), badge("forms", None, Dot::Amber, "18h", 9))));
+        let cleared = json!({"plugin": "p", "app": "forms", "ticket": null, "dot": "none", "text": "", "rev": 10});
         assert!(from_event(&cleared).unwrap().1.is_empty());
-        assert!(from_list(Some(&json!([{"app": "forms", "ticket": null, "dot": "none", "text": ""}]))).is_empty(), "a cleared one is not kept");
         assert!(from_list(None).is_empty());
     }
 
     #[test]
     fn what_breaks_the_rules_is_not_read() {
         for bad in [
-            json!({"app": "forms", "dot": "blue", "text": ""}),
-            json!({"app": "forms", "dot": "red", "text": "nine char"}),
-            json!({"app": "forms", "dot": "red", "text": "a\nb"}),
-            json!({"app": "forms", "dot": "red", "text": "a\u{2028}b"}),
-            json!({"app": "forms", "text": "x"}),
-            json!({"dot": "red", "text": "x"}),
-            json!({"app": "forms", "dot": "red", "text": 8}),
-            json!({"app": "forms", "ticket": 4, "dot": "red"}),
+            json!({"app": "forms", "dot": "blue", "text": "", "rev": 1}),
+            json!({"app": "forms", "dot": "red", "text": "nine char", "rev": 1}),
+            json!({"app": "forms", "dot": "red", "text": "a\nb", "rev": 1}),
+            json!({"app": "forms", "dot": "red", "text": "a\u{2028}b", "rev": 1}),
+            json!({"app": "forms", "dot": "red", "text": " ok", "rev": 1}),
+            json!({"app": "forms", "dot": "red", "text": "ok ", "rev": 1}),
+            json!({"app": "forms", "text": "x", "rev": 1}),
+            json!({"dot": "red", "text": "x", "rev": 1}),
+            json!({"app": "forms", "dot": "red", "text": 8, "rev": 1}),
+            json!({"app": "forms", "ticket": 4, "dot": "red", "rev": 1}),
+            json!({"app": "forms", "dot": "red"}),
             json!("red"),
         ] {
             assert_eq!(Badge::from_json(&bad), None, "{bad}");
         }
-        assert_eq!(Badge::from_json(&json!({"app": "forms", "dot": "red", "text": "8 chars!"})).unwrap().text, "8 chars!", "8 is the limit");
-        assert_eq!(Badge::from_json(&json!({"app": "forms", "dot": "red", "text": "ÅÅÅÅÅÅÅÅ"})).unwrap().text.chars().count(), 8, "characters, not bytes");
+        assert_eq!(Badge::from_json(&json!({"app": "forms", "dot": "red", "text": "8 chars!", "rev": 1})).unwrap().text, "8 chars!", "8 is the limit");
+        assert_eq!(Badge::from_json(&json!({"app": "forms", "dot": "red", "text": "ÅÅÅÅÅÅÅÅ", "rev": 1})).unwrap().text.chars().count(), 8, "characters, not bytes");
+    }
+
+    fn texts(book: &Book, plugin: &str) -> Vec<String> {
+        book.badges_of(plugin).iter().map(|b| format!("{}:{:?}:{}", b.app, b.ticket, b.text)).collect()
     }
 
     #[test]
-    fn a_change_replaces_the_badge_of_its_app_and_ticket_and_a_clear_removes_it() {
-        let mut list = vec![badge("forms", None, Dot::Red, "2")];
-        assert!(!apply(&mut list, badge("forms", None, Dot::Red, "2")), "the same again is no change");
-        assert!(apply(&mut list, badge("forms", None, Dot::Green, "")));
-        assert!(apply(&mut list, badge("forms", Some("tkt_A"), Dot::Amber, "1h")));
-        assert_eq!(list, vec![badge("forms", None, Dot::Green, ""), badge("forms", Some("tkt_A"), Dot::Amber, "1h")]);
-        assert!(apply(&mut list, badge("forms", None, Dot::None, "")));
-        assert_eq!(list, vec![badge("forms", Some("tkt_A"), Dot::Amber, "1h")]);
-        assert!(!apply(&mut list, badge("forms", None, Dot::None, "")), "clearing nothing changes nothing");
+    fn an_event_then_an_older_list_keeps_the_event() {
+        let mut book = Book::default();
+        book.list("p", 10, vec![badge("forms", None, Dot::Red, "2", 8)]);
+        // the list asked for before the change comes back after the event
+        assert!(book.event("p", badge("forms", None, Dot::Green, "3", 12)));
+        book.list("p", 10, vec![badge("forms", None, Dot::Red, "2", 8)]);
+        assert_eq!(texts(&book, "p"), ["forms:None:3"], "the older list did not undo the event");
+        assert!(!book.event("p", badge("forms", None, Dot::Red, "2", 8)), "an old event is no change");
+    }
+
+    #[test]
+    fn a_list_then_a_newer_event_takes_the_event_and_a_newer_list_the_list() {
+        let mut book = Book::default();
+        book.list("p", 10, vec![badge("forms", None, Dot::Red, "2", 8)]);
+        assert!(book.event("p", badge("forms", Some("tkt_A"), Dot::Amber, "1h", 11)));
+        assert_eq!(texts(&book, "p"), ["forms:None:2", "forms:Some(\"tkt_A\"):1h"]);
+        // a newer list that has changed one and lost the other
+        book.list("p", 20, vec![badge("forms", None, Dot::Red, "5", 15)]);
+        assert_eq!(texts(&book, "p"), ["forms:None:5"], "what the newer list lacks is gone");
+        // but a badge newer than the list stays when the list lacks it
+        book.event("p", badge("card", None, Dot::Green, "", 30));
+        book.list("p", 25, vec![badge("forms", None, Dot::Red, "5", 15)]);
+        assert_eq!(texts(&book, "p"), ["card:None:", "forms:None:5"]);
+    }
+
+    #[test]
+    fn a_clear_then_an_older_list_stays_cleared() {
+        let mut book = Book::default();
+        book.list("p", 10, vec![badge("forms", None, Dot::Red, "2", 8)]);
+        assert!(book.event("p", badge("forms", None, Dot::None, "", 12)), "a clear");
+        assert!(book.badges_of("p").is_empty());
+        book.list("p", 10, vec![badge("forms", None, Dot::Red, "2", 8)]);
+        assert!(book.badges_of("p").is_empty(), "an older list does not bring it back");
+        // a newer set after the clear shows again, and a later list without it ends it
+        assert!(book.event("p", badge("forms", None, Dot::Amber, "9", 14)));
+        assert_eq!(texts(&book, "p"), ["forms:None:9"]);
+        book.list("p", 20, vec![]);
+        assert!(book.badges_of("p").is_empty());
+        book.keep(&[]);
+        assert!(book.held.is_empty());
     }
 
     #[test]
     fn a_pin_shows_its_ticket_badge_else_the_apps() {
-        let list = vec![badge("forms", None, Dot::Green, "ok"), badge("forms", Some("tkt_A"), Dot::Red, "late"), badge("card", None, Dot::Amber, "")];
+        let list = vec![badge("forms", None, Dot::Green, "ok", 1), badge("forms", Some("tkt_A"), Dot::Red, "late", 2), badge("card", None, Dot::Amber, "", 3)];
         assert_eq!(for_pin(&list, "forms", Some("tkt_A")).map(|b| b.text.as_str()), Some("late"));
         assert_eq!(for_pin(&list, "forms", Some("tkt_B")).map(|b| b.text.as_str()), Some("ok"), "every pin of the app");
         assert_eq!(for_pin(&list, "forms", None).map(|b| b.text.as_str()), Some("ok"), "a pin without a ticket has the app's, never a ticket's");
@@ -201,7 +271,7 @@ mod tests {
 
     #[test]
     fn a_screen_reader_hears_the_state_in_words() {
-        let say = |dot, text| spoken("Tax profiles", Some(&badge("forms", None, dot, text)));
+        let say = |dot, text| spoken("Tax profiles", Some(&badge("forms", None, dot, text, 1)));
         assert_eq!(say(Dot::Red, "2 due"), "Tax profiles, status red, 2 due");
         assert_eq!(say(Dot::Amber, ""), "Tax profiles, status amber");
         assert_eq!(say(Dot::Green, "ok"), "Tax profiles, status green, ok");

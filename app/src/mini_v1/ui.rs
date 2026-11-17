@@ -40,6 +40,9 @@ pub const COLUMN: f32 = 560.0;
 pub struct V1 {
     /// The installed v1 plugins as the broker lists them.
     pub entries: Signal<Vec<PluginEntry>>,
+    /// Every plugin's badges with the `rev` of each change: what the pins show is
+    /// the entries' `badges`, kept from this.
+    badge_book: RefCell<badge::Book>,
     /// The same, as Connect Apps shows them.
     pub listed: Signal<Vec<connect::Listed>>,
     pub loaded: Signal<bool>,
@@ -151,6 +154,7 @@ impl V1 {
     pub fn new() -> V1 {
         V1 {
             entries: signal(Vec::new()),
+            badge_book: RefCell::new(badge::Book::default()),
             listed: signal(Vec::new()),
             loaded: signal(false),
             known: signal(false),
@@ -380,7 +384,8 @@ impl Store {
                     }
                     return;
                 };
-                let entries: Vec<PluginEntry> = list.iter().filter_map(PluginEntry::from_json).collect();
+                let mut entries: Vec<PluginEntry> = list.iter().filter_map(PluginEntry::from_json).collect();
+                self.v1_merge_badges(&mut entries);
                 *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = entries.clone();
                 self.v1_prewarm(&list);
                 // each plugin's version, so its page can say it was updated
@@ -684,14 +689,34 @@ impl Store {
         self.v1_refresh();
     }
 
-    /// A broker `badge` event: one plugin's badge on its pins changed. The
-    /// plugin's entry takes it at once, with no list asked for; an event of a
-    /// plugin not listed yet is dropped, for the list will carry it.
+    /// A plugin list's badges, read against what is held: a list asked for before a
+    /// change does not undo it, each badge going by its `rev`.
+    pub(crate) fn v1_merge_badges(&self, entries: &mut [PluginEntry]) {
+        let mut book = self.v1.badge_book.borrow_mut();
+        for e in entries.iter_mut() {
+            book.list(&e.id, e.badges_at, std::mem::take(&mut e.badges));
+            e.badges = book.badges_of(&e.id);
+        }
+        book.keep(&entries.iter().map(|e| e.id.clone()).collect::<Vec<_>>());
+    }
+
+    /// A broker `badge` event: one plugin's badge on its pins changed. It is taken
+    /// when it is newer (by `rev`) than what is held, at once, with no list asked
+    /// for, and a list that comes later is read against it. An event of a plugin not
+    /// listed yet is kept for the list. `resync` says this reader missed events:
+    /// the list is read again.
     pub fn v1_badge_event(&'static self, event: &Value) {
+        if event.get("resync").is_some() {
+            return self.v1_refresh();
+        }
         let Some((plugin, badge)) = super::badge::from_event(event) else { return };
+        if !self.v1.badge_book.borrow_mut().event(&plugin, badge) {
+            return;
+        }
+        let now = self.v1.badge_book.borrow().badges_of(&plugin);
         self.v1.entries.update(|entries| {
             if let Some(p) = entries.iter_mut().find(|p| p.id == plugin) {
-                super::badge::apply(&mut p.badges, badge);
+                p.badges = now;
             }
         });
     }
@@ -2469,9 +2494,9 @@ pub fn pin_button(key: &str, n: u64) -> impl IntoElement {
 /// gap and 8 characters of 11-point text. A badge is drawn inside it, so a
 /// row is the same size, and its title the same width, with a badge, another
 /// or none.
-pub const BADGE_SLOT_W: f32 = 58.0;
+pub const BADGE_SLOT_W: f32 = 64.0;
 const BADGE_DOT: f32 = 8.0;
-const BADGE_TEXT_W: f32 = 46.0;
+pub(crate) const BADGE_TEXT_BOX: f32 = 52.0;
 
 /// A badge's dot colour: the theme's own status colours.
 pub(crate) fn badge_ink(dot: badge::Dot) -> Option<AdaptiveColor> {
@@ -2487,7 +2512,7 @@ pub(crate) fn badge_ink(dot: badge::Dot) -> Option<AdaptiveColor> {
 /// ([`BADGE_SLOT_W`]); an empty room when it has none. Never any size of its
 /// own, never animated.
 fn badge_slot(b: Option<&badge::Badge>) -> impl IntoElement {
-    let mut slot = view().w(px(BADGE_SLOT_W)).flex_shrink(0.0).flex_row().items_center().gap(px(4.0));
+    let mut slot = view().w(px(BADGE_SLOT_W)).flex_shrink(0.0).flex_row().items_center().gap(px(4.0)).overflow_hidden();
     let Some(b) = b else { return slot };
     // the dot's room is kept when it has no colour, so the text stays where it is
     let dot = view().size(px(BADGE_DOT)).flex_shrink(0.0).rounded(px(BADGE_DOT / 2.0));
@@ -2496,7 +2521,7 @@ fn badge_slot(b: Option<&badge::Badge>) -> impl IntoElement {
         None => slot.child(dot),
     };
     if !b.text.is_empty() {
-        slot = slot.child(text(b.text.clone()).w(px(BADGE_TEXT_W)).number_of_lines(1).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::DIM));
+        slot = slot.child(text(b.text.clone()).w(px(BADGE_TEXT_BOX)).number_of_lines(1).text_size(px(11.0)).line_height(px(15.0)).text_color(theme::DIM));
     }
     slot
 }

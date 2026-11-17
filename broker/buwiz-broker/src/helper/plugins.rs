@@ -24,7 +24,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -61,7 +61,7 @@ pub fn client_capabilities() -> Value {
 
 mod accounts;
 mod badges;
-pub use badges::{parse as parse_badge, KEY as BADGE_KEY, TEXT_MAX as BADGE_TEXT_MAX};
+pub use badges::{parse as parse_badge, CAP as BADGE_CAP, KEY as BADGE_KEY, TEXT_MAX as BADGE_TEXT_MAX};
 pub use accounts::{flow_id, token_ref, AccountRow, AccountsConfig, CLEAR as ACCOUNT_CLEAR, GOOGLE_AUTHORIZE, GOOGLE_TOKEN, NEEDS_GOOGLE_CLIENT, SET as ACCOUNT_SET};
 
 const SCHEMA: &str = "
@@ -294,11 +294,15 @@ struct Runtime {
     restarts: Vec<f64>,
     timer: Option<u64>,
     next_delay: Option<u64>,
+    /// whether the plugin was approved when it was started, and its apps' ids
+    /// (what `note_badge` goes by; the trust file and the record are not read per result)
+    approved: bool,
+    apps: Vec<String>,
 }
 
 impl Runtime {
     fn new() -> Self {
-        Runtime { state: "stopped", code: None, message: String::new(), generation: 0, conn: None, tools: Vec::new(), instructions: String::new(), restarts: Vec::new(), timer: None, next_delay: None }
+        Runtime { state: "stopped", code: None, message: String::new(), generation: 0, conn: None, tools: Vec::new(), instructions: String::new(), restarts: Vec::new(), timer: None, next_delay: None, approved: false, apps: Vec::new() }
     }
 }
 
@@ -387,6 +391,8 @@ pub struct Host {
     /// badge changes (`badges.rs`)
     badge_events: broadcast::Sender<Value>,
     badge_gates: Mutex<HashMap<(String, String, String), badges::Gate>>,
+    /// the highest badge `rev` issued
+    last_rev: AtomicI64,
     /// orders snapshots: a newer one replaces an older one in Node's view
     seq: AtomicU64,
     closers: Mutex<Vec<Closer>>,
@@ -426,6 +432,7 @@ impl Host {
             events,
             badge_events,
             badge_gates: Mutex::new(HashMap::new()),
+            last_rev: AtomicI64::new(0),
             seq: AtomicU64::new(1),
             closers: Mutex::new(Vec::new()),
             apps_dir: o.apps_dir,
@@ -805,7 +812,11 @@ impl Host {
     }
 
     fn adopt(&self, id: &str, g: Gate) {
+        let approved = self.row(id).is_some_and(|r| self.trust().is_approved(id, &r.publisher_key_id));
+        let apps: Vec<String> = get(&g.manifest, "apps").and_then(Value::as_array).into_iter().flatten().filter_map(|a| get(a, "id").and_then(Value::as_str).map(str::to_owned)).collect();
         self.with_rt(id, |rt| {
+            rt.approved = approved;
+            rt.apps = apps;
             rt.conn = Some(g.conn);
             rt.tools = g.tools;
             rt.instructions = g.instructions;

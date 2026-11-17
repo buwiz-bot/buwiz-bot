@@ -44,18 +44,21 @@ fn listed() -> Value {
     json!({
         "id": TAX, "title": "eBIRForms", "enabled": true,
         "badges": [
-            {"app": "forms", "ticket": null, "dot": "red", "text": "2 due"},
-            {"app": "forms", "ticket": "tkt_A", "dot": "green", "text": "ok"},
-            {"app": "calendar", "ticket": null, "dot": "amber", "text": ""},
-            {"app": "board", "ticket": null, "dot": "green", "text": "18h"},
-            {"app": "people", "ticket": null, "dot": "none", "text": "3 new"},
+            {"app": "forms", "ticket": null, "dot": "red", "text": "2 due", "rev": 1},
+            {"app": "forms", "ticket": "tkt_A", "dot": "green", "text": "ok", "rev": 2},
+            {"app": "calendar", "ticket": null, "dot": "amber", "text": "", "rev": 3},
+            {"app": "board", "ticket": null, "dot": "green", "text": "18h", "rev": 4},
+            {"app": "people", "ticket": null, "dot": "none", "text": "3 new", "rev": 5},
         ],
+        "badges_rev": 5,
     })
 }
 
 /// A badge as the broker's `badge` event says it.
 fn event(plugin: &str, app: &str, ticket: Option<&str>, dot: &str, text: &str) {
-    store().v1_badge_event(&json!({"plugin": plugin, "app": app, "ticket": ticket, "dot": dot, "text": text}));
+    static REV: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(100);
+    let rev = REV.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    store().v1_badge_event(&json!({"plugin": plugin, "app": app, "ticket": ticket, "dot": dot, "text": text, "rev": rev}));
 }
 
 fn button(label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
@@ -64,7 +67,9 @@ fn button(label: &'static str, on: impl Fn() + 'static) -> impl IntoElement {
 
 fn seed() {
     let st = store();
-    st.v1.entries.set(vec![PluginEntry::from_json(&listed()).unwrap()]);
+    let mut entries = vec![PluginEntry::from_json(&listed()).unwrap()];
+    st.v1_merge_badges(&mut entries);
+    st.v1.entries.set(entries);
     st.v1.records.update(|r| {
         for (title, app) in PINS {
             let ticket = (title == "Form A").then(|| "tkt_A".to_owned());
@@ -91,7 +96,14 @@ fn Stage() -> impl IntoElement {
                 .child(button("forms a clear", || event(TAX, "forms", Some("tkt_A"), "none", "")))
                 .child(button("plain red", || event(TAX, "plain", None, "red", "")))
                 .child(button("other plugin", || event("app.buwiz.other", "forms", None, "green", "x")))
-                .child(button("broken", || store().v1_badge_event(&json!({"plugin": TAX, "app": "forms", "ticket": null, "dot": "blue", "text": "no"})))),
+                .child(button("broken", || store().v1_badge_event(&json!({"plugin": TAX, "app": "forms", "ticket": null, "dot": "blue", "text": "no", "rev": 999}))))
+                .child(button("widest", || event(TAX, "plain", None, "green", "WWWWWWWW")))
+                .child(button("stale list", || {
+                    // the list a refresh asked for before the changes comes back last
+                    let mut entries = vec![PluginEntry::from_json(&listed()).unwrap()];
+                    store().v1_merge_badges(&mut entries);
+                    store().v1.entries.set(entries);
+                })),
         )
         .child(text(|| "probe ready=1".to_owned()))
         .child(view().label("stage").flex_1().w(px(240.0)).child(ui::pins_section()))
@@ -200,4 +212,50 @@ fn a_badge_never_changes_the_row_or_its_title() {
     assert_eq!(shape(&app, "Tax forms, status amber, 18h", "Tax forms"), red);
     app.press("clear forms");
     assert_eq!(shape(&app, "Tax forms", "Tax forms"), red);
+}
+
+/// The widest 8-character text stays inside its room: the text's frame inside the slot, the slot inside
+/// the row, the slot clear of the title and of the unpin control; ordinary texts show whole.
+#[test]
+fn the_widest_text_stays_inside_its_room() {
+    if !in_child("the_widest_text_stays_inside_its_room") {
+        return;
+    }
+    let mut app = start();
+    app.press("widest");
+    let row = app.frame("Plain, status green, WWWWWWWW");
+    let slot = app.parent_frame("Status green");
+    let (text_id, _) = app.text_view("WWWWWWWW");
+    let text = app.frames[&text_id];
+    let right = |b: &nsh_core::geometry::Bounds<nsh_core::geometry::Points>| b.origin.x.0 + b.size.width.0;
+    assert!(text.origin.x.0 >= 0.0 && right(&text) <= slot.size.width.0 + 0.5, "the text is inside the slot: {text:?} in {slot:?}");
+    assert_eq!(slot.size.width.0, ui::BADGE_SLOT_W, "the slot is its reserved width");
+    assert!(slot.origin.x.0 >= 0.0 && right(&slot) <= row.size.width.0, "the slot is inside the row: {slot:?} in {row:?}");
+    // the title ends before the slot starts, and the slot before the unpin control
+    let title = app.frames[&app.text_view("Plain").0];
+    assert!(right(&title) <= slot.origin.x.0 + 0.5, "the title ends where the slot starts: {title:?} {slot:?}");
+    let unpin = app.frame("Unpin");
+    assert!(right(&slot) <= unpin.origin.x.0 + 0.5, "the slot ends before the unpin control: {slot:?} {unpin:?}");
+    // the common texts fit whole: at 11 points a digit or a lowercase letter is at most about 6.2 pt wide
+    // (the widest capitals, like the W above, are cut), and the box is wider than 8 of them
+    for text in ["2 due", "18h", "99+", "12345678", "abcdefgh"] {
+        assert!(text.chars().count() as f32 * 6.2 <= ui::BADGE_TEXT_BOX, "{text}");
+    }
+}
+
+/// A list asked for before the changes comes back after them, and does not undo them.
+#[test]
+fn an_older_list_does_not_undo_what_arrived_since() {
+    if !in_child("an_older_list_does_not_undo_what_arrived_since") {
+        return;
+    }
+    let mut app = start();
+    app.press("forms amber");
+    app.press("plain red");
+    app.press("stale list");
+    assert!(has(&app, "Tax forms, status amber, 18h") && has(&app, "Plain, status red"), "{:?}", app.labels);
+    assert!(!has(&app, "Tax forms, status red, 2 due"));
+    app.press("clear forms");
+    app.press("stale list");
+    assert!(has(&app, "Tax forms") && !has(&app, "Tax forms, status red, 2 due"), "a cleared badge stays cleared: {:?}", app.labels);
 }

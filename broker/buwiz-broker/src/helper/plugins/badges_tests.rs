@@ -101,13 +101,24 @@ impl Bed {
     }
 
     fn badges(&self) -> Vec<Value> {
-        self.host.badges_view(FX).as_array().unwrap().clone()
+        strip(self.host.badges_view(FX).1)
     }
 
     async fn done(self) {
         self.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A badge list or event without its `rev`, which is checked where it matters.
+fn strip(v: Value) -> Vec<Value> {
+    v.as_array().unwrap().iter().map(|b| without_rev(b.clone())).collect()
+}
+
+fn without_rev(mut b: Value) -> Value {
+    assert!(b["rev"].as_i64().is_some_and(|r| r > 0), "a rev: {b}");
+    b.as_object_mut().unwrap().remove("rev");
+    b
 }
 
 fn one(app: &str, ticket: Option<&str>, dot: &str, text: &str) -> Value {
@@ -150,39 +161,28 @@ fn run_in(ctx: &Arc<HubCtx>) -> Run {
     Run::new(ctx.clone(), TurnCtx { thread, ..TurnCtx::default() }, job, Arc::new(Settings::from(|_| None)))
 }
 
+const VECTORS: &str = include_str!("../../../../buwiz-protocol/src/badge-vectors.json");
+
+/// The vectors every side shares (`vectors/badge.json` of the SDK): well formed, or malformed for the reason.
 #[test]
 fn what_a_badge_may_be() {
-    let m = json!({"apps": [{"id": "board"}, {"id": "card"}]});
-    let set = |dot: &str, text: &str| Parsed { app: "board".into(), ticket: None, set: Some((dot.into(), text.into())) };
-    assert_eq!(parse(&m, &json!({"app": "board", "dot": "red", "text": "2 due"})), Ok(set("red", "2 due")));
-    assert_eq!(parse(&m, &json!({"app": "board", "dot": "green"})), Ok(set("green", "")));
-    assert_eq!(parse(&m, &json!({"app": "board", "text": "18h"})), Ok(set("none", "18h")));
-    assert_eq!(parse(&m, &json!({"app": "board", "text": "  ok \n"})), Ok(set("none", "ok")), "trimmed");
-    assert_eq!(parse(&m, &json!({"app": "board", "text": "12345678"})), Ok(set("none", "12345678")), "8 is the limit");
-    assert_eq!(parse(&m, &json!({"app": "board", "text": "ÅÅÅÅÅÅÅÅ"})).unwrap().set.unwrap().1.chars().count(), 8, "characters, not bytes");
-    assert_eq!(parse(&m, &json!({"app": "card", "clear": true, "ticket": T1})), Ok(Parsed { app: "card".into(), ticket: Some(T1.into()), set: None }));
-    let bad = [
-        (json!("red"), "it is not an object"),
-        (json!({"dot": "red"}), "app is not a string"),
-        (json!({"app": "other", "dot": "red"}), "app is not an app of this plugin"),
-        (json!({"app": "board", "dot": "blue"}), "dot is not red, amber, green or none"),
-        (json!({"app": "board", "dot": 3}), "dot is not red, amber, green or none"),
-        (json!({"app": "board", "text": "123456789"}), "text is over 8 characters"),
-        (json!({"app": "board", "text": "a\nb"}), "text is not one line of plain characters"),
-        (json!({"app": "board", "text": "a\u{7}b"}), "text is not one line of plain characters"),
-        (json!({"app": "board", "text": "a\u{2028}b"}), "text is not one line of plain characters"),
-        (json!({"app": "board", "text": 7}), "text is not a string"),
-        (json!({"app": "board", "dot": "red", "ticket": "tkt_x"}), "ticket breaks the ticket grammar"),
-        (json!({"app": "board", "dot": "red", "ticket": 4}), "ticket breaks the ticket grammar"),
-        (json!({"app": "board"}), "it sets neither dot nor text"),
-        (json!({"app": "board", "clear": true, "dot": "red"}), "a clear carries only app and ticket"),
-        (json!({"app": "board", "clear": true, "text": ""}), "a clear carries only app and ticket"),
-        (json!({"app": "board", "clear": false}), "clear is not true"),
-        (json!({"app": "board", "clear": "yes"}), "clear is not true"),
-    ];
-    for (b, why) in bad {
-        assert_eq!(parse(&m, &b), Err(why), "{b}");
+    let v: Value = serde_json::from_str(VECTORS).unwrap();
+    let apps: Vec<String> = v["apps"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
+    let cases = v["cases"].as_array().unwrap();
+    assert!(cases.len() > 40);
+    for c in cases {
+        let got = parse(&apps, &c["badge"]);
+        match c["ok"].as_bool().unwrap() {
+            true => assert!(got.is_ok(), "{}: {got:?}", c["badge"]),
+            false => assert_eq!(got.unwrap_err(), c["why"].as_str().unwrap(), "{}", c["badge"]),
+        }
     }
+    // what a well formed one comes to
+    let set = |dot: &str, text: &str| Parsed { app: "board".into(), ticket: None, set: Some((dot.into(), text.into())) };
+    assert_eq!(parse(&apps, &json!({"app": "board", "dot": "green"})), Ok(set("green", "")));
+    assert_eq!(parse(&apps, &json!({"app": "board", "text": "18h"})), Ok(set("none", "18h")), "no dot is none");
+    assert_eq!(parse(&apps, &json!({"app": "board", "dot": "red", "ticket": null})), Ok(Parsed { app: "board".into(), ticket: None, set: Some(("red".into(), String::new())) }), "a null ticket is absent");
+    assert_eq!(parse(&apps, &json!({"app": "card", "clear": true, "ticket": T1})), Ok(Parsed { app: "card".into(), ticket: Some(T1.into()), set: None }));
 }
 
 /// The key is read on a routine's query call, the model's call, an app's signed
@@ -271,11 +271,14 @@ async fn a_failed_result_sets_nothing_a_clear_removes_it_and_a_ticket_narrows_it
     b.call(json!({"badge": {"app": "board", "clear": true}})).await;
     assert_eq!(b.badges(), Vec::<Value>::new());
     b.call(json!({"badge": {"app": "board", "dot": "none", "text": ""}})).await;
-    assert_eq!(b.badges(), Vec::<Value>::new(), "no dot and no text shows nothing: not kept");
-    // approval is the trust file's, read when the badge comes
+    assert_eq!(b.badges(), Vec::<Value>::new(), "a badge that shows nothing is malformed: not kept");
+    // approval is the host's own when it started the plugin: the trust file is read then, not per result
     std::fs::write(b.dir.join("trust.json"), json!({"v": 1, "publishers": {}, "approved_plugins": []}).to_string()).unwrap();
-    b.call(json!({"badge": {"app": "board", "dot": "red"}})).await;
-    assert_eq!(b.badges(), Vec::<Value>::new(), "not approved: ignored");
+    b.host.disable(FX).await.unwrap();
+    let _ = b.host.enable(FX).await;
+    let r = b.host.call_tool(FX, "fx_badge", &json!({"badge": {"app": "board", "dot": "red"}}), None, None).await;
+    assert!(r.is_err(), "a plugin that is not approved does not run, so no tool of it is called");
+    assert_eq!(b.badges(), Vec::<Value>::new(), "not approved when it started: nothing set");
     b.done().await;
 }
 
@@ -290,7 +293,7 @@ async fn badges_survive_a_restart_and_go_with_the_plugin_or_the_app() {
     assert_eq!(was.len(), 2);
     b.host.stop_all().await;
     let again = host_in(&b.dir);
-    assert_eq!(again.badges_view(FX), json!(was), "a restart keeps them");
+    assert_eq!(strip(again.badges_view(FX).1), was, "a restart keeps them");
     // an update without the card app (a newer version): its badge goes
     let mut events = again.badge_events();
     let next = sign(&b.dir, "next.json", |m| {
@@ -299,13 +302,13 @@ async fn badges_survive_a_restart_and_go_with_the_plugin_or_the_app() {
         m["apps"][0]["permissions"]["open"]["apps"] = json!([]);
     });
     install(&again, &spec_of(&next)).await;
-    assert_eq!(again.badges_view(FX), json!([one("board", None, "red", "2")]), "the card app left the manifest");
-    let gone = events.try_recv().unwrap();
+    assert_eq!(strip(again.badges_view(FX).1), vec![one("board", None, "red", "2")], "the card app left the manifest");
+    let gone = without_rev(events.try_recv().unwrap());
     assert_eq!(gone, json!({"plugin": FX, "app": "card", "ticket": T1, "dot": "none", "text": ""}), "and it is said");
     // uninstall
     again.uninstall(FX).await.unwrap();
-    assert_eq!(again.badges_view(FX), json!([]));
-    assert_eq!(events.try_recv().unwrap(), json!({"plugin": FX, "app": "board", "ticket": null, "dot": "none", "text": ""}));
+    assert_eq!(again.badges_view(FX).1, json!([]));
+    assert_eq!(without_rev(events.try_recv().unwrap()), json!({"plugin": FX, "app": "board", "ticket": null, "dot": "none", "text": ""}));
     again.stop_all().await;
     let _ = std::fs::remove_dir_all(&b.dir);
 }
@@ -316,13 +319,14 @@ async fn the_event_is_emitted_and_the_plugin_listing_carries_the_badge() {
     let b = bed("event").await;
     let mut events = b.host.badge_events();
     b.call(json!({"badge": {"app": "card", "ticket": T1, "dot": "amber", "text": "18h"}})).await;
-    let e = events.recv().await.unwrap();
+    let e = without_rev(events.recv().await.unwrap());
     assert_eq!(e, json!({"plugin": FX, "app": "card", "ticket": T1, "dot": "amber", "text": "18h"}));
     b.call(json!({"badge": {"app": "card", "ticket": T1, "dot": "amber", "text": "18h"}})).await;
     assert!(events.try_recv().is_err(), "the same badge again is no change and no event");
     let row = b.host.row(FX).unwrap();
     let listed = crate::hub::routines::plugins::describe(&b.host, &row, &|_, _| json!({}));
-    assert_eq!(listed["badges"], json!([one("card", Some(T1), "amber", "18h")]), "what a freshly started app loads");
+    assert_eq!(strip(listed["badges"].clone()), vec![one("card", Some(T1), "amber", "18h")], "what a freshly started app loads");
+    assert!(listed["badges_rev"].as_i64().unwrap() >= listed["badges"][0]["rev"].as_i64().unwrap(), "the list says what rev it is as of");
     b.done().await;
 }
 
@@ -348,5 +352,68 @@ async fn rapid_changes_collapse_to_the_latest() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
     b.call(json!({"badge": {"app": "board", "dot": "amber"}})).await;
     assert_eq!(events.recv().await.unwrap()["dot"], "amber");
+    b.done().await;
+}
+
+/// A plugin holds 32 badges; a set past that is dropped, a clear always works and frees a place,
+/// a change of one it holds still goes through, and no gate is kept for a badge that is gone.
+#[tokio::test]
+async fn a_plugin_holds_at_most_32_badges() {
+    let b = bed("cap").await;
+    let tickets: Vec<String> = (0..CAP + 1).map(|i| format!("tkt_{:0>26}", format!("{i:X}"))).collect();
+    for t in &tickets[..CAP] {
+        b.call(json!({"badge": {"app": "board", "ticket": t, "dot": "green"}})).await;
+    }
+    assert_eq!(b.badges().len(), CAP);
+    b.call(json!({"badge": {"app": "board", "ticket": &tickets[CAP], "dot": "red"}})).await;
+    b.call(json!({"badge": {"app": "card", "dot": "red"}})).await;
+    assert_eq!(b.badges().len(), CAP, "past the cap: dropped");
+    b.call(json!({"badge": {"app": "board", "ticket": &tickets[0], "dot": "red", "text": "late"}})).await;
+    assert_eq!(b.badges().iter().find(|x| x["ticket"] == json!(tickets[0])).unwrap()["dot"], "red", "one it holds can change");
+    b.call(json!({"badge": {"app": "board", "ticket": &tickets[1], "clear": true}})).await;
+    assert_eq!(b.badges().len(), CAP - 1, "a clear works");
+    b.call(json!({"badge": {"app": "card", "dot": "red"}})).await;
+    assert_eq!(b.badges().len(), CAP, "and frees a place");
+    assert!(b.host.badge_gates.lock().unwrap().len() <= CAP + 1);
+    b.done().await;
+}
+
+/// An announcement still waiting when the plugin is uninstalled says nothing and leaves no gate.
+#[tokio::test]
+async fn a_waiting_announcement_does_nothing_after_an_uninstall() {
+    let b = bed("late").await;
+    let mut events = b.host.badge_events();
+    for n in 1..=4 {
+        b.call(json!({"badge": {"app": "board", "dot": "red", "text": n.to_string()}})).await;
+    }
+    assert_eq!(events.recv().await.unwrap()["text"], "1", "the first went out");
+    b.host.uninstall(FX).await.unwrap();
+    let gone = events.recv().await.unwrap();
+    assert_eq!((gone["dot"].clone(), gone["text"].clone()), (json!("none"), json!("")), "the removal's own");
+    assert!(b.host.badge_gates.lock().unwrap().is_empty(), "no gate is left");
+    tokio::time::sleep(Duration::from_millis(1400)).await;
+    assert!(events.try_recv().is_err(), "nothing after it: the timer found nothing to do");
+    assert!(b.host.badge_gates.lock().unwrap().is_empty(), "and made no gate");
+    b.done().await;
+}
+
+/// Each badge, event and removal has a rev that only goes up, and the list says the rev it is as of.
+#[tokio::test]
+async fn revs_only_go_up() {
+    let b = bed("rev").await;
+    let mut events = b.host.badge_events();
+    b.call(json!({"badge": {"app": "board", "dot": "red"}})).await;
+    let first = events.recv().await.unwrap()["rev"].as_i64().unwrap();
+    let (at, list) = b.host.badges_view(FX);
+    assert_eq!(list[0]["rev"].as_i64().unwrap(), first, "the event and the list say the same rev");
+    assert!(at >= first);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    b.call(json!({"badge": {"app": "board", "clear": true}})).await;
+    let cleared = events.recv().await.unwrap();
+    assert_eq!(cleared["dot"], "none");
+    assert!(cleared["rev"].as_i64().unwrap() > first, "a clear's rev is newer than what it clears");
+    let (later, none) = b.host.badges_view(FX);
+    assert_eq!(none, json!([]));
+    assert!(later >= cleared["rev"].as_i64().unwrap() && later > at, "the list's rev covers the removal");
     b.done().await;
 }

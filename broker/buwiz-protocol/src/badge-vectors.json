@@ -1,0 +1,357 @@
+{
+ "about": "A tool result's _meta[\"buwiz/badge\"] against a manifest whose apps are board and card (spec 16.4). `ok`: well formed on the wire, else malformed for `why`. `helper_ok`: whether the libraries' Badge helper accepts the same author input when it differs (it trims plain spaces and does not know the manifest). Vectors with `clear` are for the host only.",
+ "apps": [
+  "board",
+  "card"
+ ],
+ "cases": [
+  {
+   "badge": {
+    "app": "board",
+    "dot": "red",
+    "text": "2 due"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "green"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "card",
+    "text": "18h"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "12345678"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "amber",
+    "ticket": "tkt_0123456789ABCDEFGHJKMNPQRS"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "none",
+    "text": "x"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a b"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u00a0x"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\ufeffx"
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": true
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "red",
+    "ticket": null
+   },
+   "ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": true,
+    "ticket": "tkt_0123456789ABCDEFGHJKMNPQRS"
+   },
+   "ok": true
+  },
+  {
+   "badge": "red",
+   "ok": false,
+   "why": "it is not an object"
+  },
+  {
+   "badge": {
+    "dot": "red"
+   },
+   "ok": false,
+   "why": "app is not a string"
+  },
+  {
+   "badge": {
+    "app": "other",
+    "dot": "red"
+   },
+   "ok": false,
+   "why": "app is not an app of this plugin",
+   "helper_ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "blue"
+   },
+   "ok": false,
+   "why": "dot is not red, amber, green or none"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": 3
+   },
+   "ok": false,
+   "why": "dot is not red, amber, green or none"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": null
+   },
+   "ok": false,
+   "why": "dot is not red, amber, green or none"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": 7
+   },
+   "ok": false,
+   "why": "text is not a string"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": ""
+   },
+   "ok": false,
+   "why": "text is empty"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": " "
+   },
+   "ok": false,
+   "why": "text starts or ends with a space",
+   "helper_ok": false
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": " ok"
+   },
+   "ok": false,
+   "why": "text starts or ends with a space",
+   "helper_ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "ok "
+   },
+   "ok": false,
+   "why": "text starts or ends with a space",
+   "helper_ok": true
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "ok\n"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\nok"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\nb"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\rb"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\tb"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u0007b"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u2028b"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u2029b"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u0085x"
+   },
+   "ok": false,
+   "why": "text is not one line of plain characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "123456789"
+   },
+   "ok": false,
+   "why": "text is over 8 characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5\u00c5"
+   },
+   "ok": false,
+   "why": "text is over 8 characters"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "red",
+    "ticket": "tkt_x"
+   },
+   "ok": false,
+   "why": "ticket breaks the ticket grammar"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "red",
+    "ticket": 4
+   },
+   "ok": false,
+   "why": "ticket breaks the ticket grammar"
+  },
+  {
+   "badge": {
+    "app": "board"
+   },
+   "ok": false,
+   "why": "it sets nothing: a badge shows a dot or text, and a clear is clear: true"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "dot": "none"
+   },
+   "ok": false,
+   "why": "it sets nothing: a badge shows a dot or text, and a clear is clear: true"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": true,
+    "dot": "red"
+   },
+   "ok": false,
+   "why": "a clear carries only app and ticket"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": true,
+    "dot": "none"
+   },
+   "ok": false,
+   "why": "a clear carries only app and ticket"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": true,
+    "text": "x"
+   },
+   "ok": false,
+   "why": "a clear carries only app and ticket"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": false
+   },
+   "ok": false,
+   "why": "clear is not true"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "clear": "yes"
+   },
+   "ok": false,
+   "why": "clear is not true"
+  }
+ ]
+}
