@@ -135,18 +135,35 @@ serves.
 
 `cargo test -p buwiz-word --lib bench::typing_200_strip -- --ignored --nocapture --exact`
 is the typing echo above with the strip showing eight pages around the
-caret (three of them the pages in view).
+caret (three of them the pages in view); `bench::strip_reflow_200` is an
+edit that moves every later page, with the strip showing eight pages far
+from it.
 
 - A thumbnail is the page's display list drawn at 96 points wide
-  (`draw::page` at a scale; no layout). The strip's first ask, eight
-  thumbnails with their lists built: ~40 ms. A scroll by one page, one new
-  thumbnail: ~10 ms. Neither is on the typing path.
-- A key sends no thumbnail: the worker looks at the strip 150 ms after the
-  last edit (`THUMB_SETTLE`, in `tick`), draws the built pages again and
-  sends only a thumbnail whose drawing differs (the edited page's; a page
-  that only moved in the text draws the same). 4–9 ms per pause.
-- Pages the strip shows that are not in view are not built after an edit;
-  they are looked at when the strip asks again (a scroll, the page count
-  changing), so a thumbnail far from the edit may lag until then.
-- Typing echo with the strip showing: 95.6 ms with footnotes (94.8 without
-  the strip), 53.6 ms without (52.5).
+  (`draw::page` at a scale; no layout). It is the page's drawing only:
+  the pictures on a page (image views over the page canvas) are not in its
+  thumbnail, as in the strip that was removed in #58.
+- The strip's first ask, eight thumbnails with their lists built: ~40 ms.
+  A scroll by one page, one new thumbnail: ~10 ms. Neither is on the typing
+  path. A scroll changes no page, so it schedules nothing later.
+- A key sends no thumbnail. 150 ms after the last edit (`THUMB_SETTLE`)
+  the worker brings every thumbnail the strip shows up to date, one page a
+  tick (`tick`): it builds the page's list if it is not built, draws it and
+  sends the thumbnail only if its drawing differs from the one it has (text
+  typed earlier shifts the offsets in every later page's list, so the lists
+  are not compared alone). A key that comes meanwhile clears the pass and
+  starts the wait again; it waits for the tick under way, a page (2 to 9 ms),
+  and no more.
+- A plain key: the pass is 8 ticks, 9 to 15 ms in all without footnotes, 28
+  to 52 ms with, one thumbnail drawn again (the edited page's).
+- An edit that moves every later page (a page break, `strip_reflow_200`):
+  the command 215 ms (268 with footnotes), as it is without the strip; the
+  pause check 57 ms (62 with footnotes) in all, worst tick 7.7 ms (8.5), all
+  8 thumbnails drawn again. A key right after a pass's first tick: echo
+  55.9 ms without footnotes (52.5 without the strip), 87.1 with (the
+  document's own echo there is 94).
+- The worker keeps the thumbnails of the strip's window and two pages
+  beyond it, and the view the same: a thumbnail the strip has left is
+  dropped on both sides.
+- Typing echo with the strip showing: 91.6 ms with footnotes (94 without
+  the strip), 55.0 ms without (52.6).

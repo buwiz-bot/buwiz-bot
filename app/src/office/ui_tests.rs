@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use buwiz_office_kit::testing::{Headless, WAIT, num, read, run, until};
+use buwiz_office_kit::testing::{Headless, WAIT, num, read, run, until, until_with};
 use nsh_core::element::Root;
 use nsh_core::prelude::*;
 use nsh_core::TouchPhase;
@@ -1230,19 +1230,6 @@ fn the_bar_overflows_into_more_actions_at_a_narrow_width() {
     assert!(app.has("Comments & Changes"));
 }
 
-/// [`until`] with the engine at hand, for conditions on its views.
-fn wait(app: &mut Headless, what: &str, ok: impl Fn(&Headless, &HashMap<String, String>) -> bool) -> HashMap<String, String> {
-    let end = Instant::now() + WAIT;
-    loop {
-        let p = read(app);
-        if !p.is_empty() && ok(app, &p) {
-            return p;
-        }
-        assert!(Instant::now() < end, "{what}: never happened\nprobe: {p:?}");
-        app.pump(Duration::from_millis(20));
-    }
-}
-
 /// The numbers of the thumbnails that exist, in order.
 fn thumbs_alive(app: &Headless) -> Vec<usize> {
     let mut v: Vec<usize> = app.labels.iter().filter(|(id, _)| app.live.contains(id)).filter_map(|(_, l)| l.strip_prefix("Go to page ")?.parse().ok()).collect();
@@ -1287,8 +1274,10 @@ fn the_strip_lists_a_thumbnail_per_page_marks_the_page_in_view_and_follows_the_s
         return;
     }
     let mut app = open_pages("strip-list", 5);
-    let p = wait(&mut app, "a thumbnail per page", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3, 4, 5] && num(p, "pages") == 5.0);
+    let p = until_with(&mut app, "a thumbnail per page", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3, 4, 5] && num(p, "pages") == 5.0);
     assert_eq!(num(&p, "cur"), 0.0);
+    // the pages were laid out before the strip was measured: it did not follow to a wrong place
+    assert_eq!(num(&p, "sscroll"), 0.0, "{p:?}");
     assert!(app.has("Page thumbnail strip") && app.has("Page 1 thumbnail"));
     assert_eq!(thumbs_marked(&app), [1], "the first page is in view");
     // each thumbnail is the page drawn small, in the page's shape and the strip's width
@@ -1320,7 +1309,7 @@ fn a_press_or_enter_on_a_thumbnail_scrolls_the_document_to_its_page() {
         return;
     }
     let mut app = open_pages("strip-press", 5);
-    wait(&mut app, "the strip", |app, _p| thumbs_alive(app) == [1, 2, 3, 4, 5]);
+    until_with(&mut app, "the strip", |app, _p| thumbs_alive(app) == [1, 2, 3, 4, 5]);
     // a button with its page's name
     assert_eq!(app.access("Go to page 4").0, AccessibilityRole::Button);
     app.press("Go to page 4");
@@ -1347,7 +1336,7 @@ fn the_view_menu_hides_and_shows_the_strip() {
         return;
     }
     let mut app = open_pages("strip-toggle", 3);
-    wait(&mut app, "the strip", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3]);
+    until_with(&mut app, "the strip", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3]);
     let left = num(&read(&app), "left");
     assert_eq!(menu_rows(&mut app, "View"), ["Page thumbnails"]);
     app.press("Page thumbnails");
@@ -1358,7 +1347,7 @@ fn the_view_menu_hides_and_shows_the_strip() {
     // shown again: its thumbnails are there, drawn, the first marked
     app.press("View");
     app.press("Page thumbnails");
-    wait(&mut app, "the strip shown", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3]);
+    until_with(&mut app, "the strip shown", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3]);
     until(&mut app, "the thumbnails drawn", |p| drawn_thumbs(p).len() == 3);
     assert_eq!(thumbs_marked(&app), [1]);
 }
@@ -1378,7 +1367,7 @@ fn a_one_page_document_starts_without_the_strip_and_shows_its_one_thumbnail_when
     assert!(is(&p, "strip", "0") && !app.has("Page thumbnail strip"));
     app.press("View");
     app.press("Page thumbnails");
-    wait(&mut app, "its thumbnail", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1]);
+    until_with(&mut app, "its thumbnail", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1]);
     until(&mut app, "its thumbnail drawn", |p| drawn_thumbs(p).len() == 1);
     assert_eq!(thumbs_marked(&app), [1]);
 }
@@ -1389,7 +1378,7 @@ fn typing_draws_again_only_the_thumbnail_of_the_page_typed_on() {
         return;
     }
     let mut app = open_pages("strip-edit", 4);
-    wait(&mut app, "the thumbnails drawn", |app, p| thumbs_alive(app) == [1, 2, 3, 4] && drawn_thumbs(p).len() == 4);
+    until_with(&mut app, "the thumbnails drawn", |app, p| thumbs_alive(app) == [1, 2, 3, 4] && drawn_thumbs(p).len() == 4);
     // the document's pages in view come to rest: all four are near at this size
     until(&mut app, "the pages drawn", |p| word(p, "pd").split(',').any(|i| i == "0"));
     // the whole layout (which draws every thumbnail again) has come and gone
@@ -1433,9 +1422,13 @@ fn a_long_documents_strip_keeps_only_the_thumbnails_near_its_view() {
     // the document at page 45: the strip follows, and 1 is gone while 45 is there
     app.scroll(pages_scroller(&app), page_top(45) - 16.0);
     until(&mut app, "page 45 marked", |p| num(p, "cur") == 44.0);
-    wait(&mut app, "its thumbnail", |app, _p| thumbs_alive(app).contains(&45));
+    until_with(&mut app, "its thumbnail", |app, _p| thumbs_alive(app).contains(&45));
     let alive = thumbs_alive(&app);
     assert!(!alive.contains(&1) && alive.len() <= most, "{alive:?}");
+    // the data too: what the strip left is dropped, in the view's signals and (so it is redrawn
+    // when it comes back) the worker's
+    let p = until(&mut app, "the old thumbnails dropped", |p| drawn_thumbs(p).iter().all(|t| t.split(':').next().and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| n >= 30)));
+    assert!(drawn_thumbs(&p).len() <= 2 * most, "{:?}", drawn_thumbs(&p));
     assert_eq!(thumbs_marked(&app), [45]);
     let p = until(&mut app, "page 45's thumbnail drawn", |p| drawn_thumbs(p).iter().any(|t| t.starts_with("44:")));
     assert!(drawn_thumbs(&p).len() <= 2 * most, "the strip's thumbnails stay near: {} drawn", drawn_thumbs(&p).len());

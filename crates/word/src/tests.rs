@@ -364,10 +364,35 @@ fn a_next_page_section_break_starts_a_page_and_a_continuous_one_none() {
     assert_eq!(m.pages.len(), 2, "{}", w.request_sections());
 }
 
-/// What the worker draws of the strip once the keys pause.
+/// What the worker draws of the strip once the keys pause: ticks until it
+/// has nothing more to do, none of them drawing more than one page.
 fn settled(w: &mut Word) -> Vec<Out> {
     std::thread::sleep(super::doc::THUMB_SETTLE);
-    w.tick().0
+    let mut all = Vec::new();
+    while w.busy() {
+        let (outs, _) = w.tick();
+        assert!(thumbs(&outs).len() <= 1, "a tick brings up one thumbnail at most: {:?}", thumbs(&outs));
+        all.extend(outs);
+    }
+    all
+}
+
+/// The strip as the view keeps it: each thumbnail's last drawing sent.
+fn apply(shown: &mut std::collections::HashMap<usize, std::sync::Arc<super::draw::Drawn>>, outs: &[Out]) {
+    for o in outs {
+        if let Out::Thumb { index, drawn } = o {
+            shown.insert(*index, drawn.clone());
+        }
+    }
+}
+
+/// Every thumbnail of `pages` the strip shows is its page's drawing now.
+fn assert_strip_current(w: &mut Word, shown: &std::collections::HashMap<usize, std::sync::Arc<super::draw::Drawn>>, pages: &[usize]) {
+    for i in pages {
+        let fresh = w.fresh_thumb(*i).unwrap();
+        let on_screen = shown.get(i).unwrap_or_else(|| panic!("page {i} has no thumbnail"));
+        assert!(on_screen.drawing == fresh.drawing, "page {i}'s thumbnail is not its page");
+    }
 }
 
 /// The thumbnails the answers carry, by page.
@@ -427,7 +452,7 @@ fn an_edit_draws_again_only_the_thumbnail_of_the_page_it_changed() {
 }
 
 #[test]
-fn typing_builds_no_display_list_for_the_strip() {
+fn a_key_builds_no_display_list_for_the_strip_and_the_pause_brings_it_up_to_date() {
     let mut w = open(fixture::document(8));
     let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
     // the strip shows every page, the document shows the third
@@ -436,26 +461,67 @@ fn typing_builds_no_display_list_for_the_strip() {
     assert_eq!(thumbs(&outs).len(), n);
     w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
     w.run(Cmd::Type("!".into()));
-    assert_eq!(thumbs(&settled(&mut w)), vec![2], "only the page in view, which is built, is compared");
     let unbuilt = (0..n).filter(|i| w.page(*i).is_some_and(|p| p.unbuilt)).count();
     assert!(unbuilt >= n - 3, "the pages off the screen stay unbuilt after a key: {unbuilt} of {n}");
+    assert_eq!(thumbs(&settled(&mut w)), vec![2], "the pause draws the one that changed");
+    assert!(!w.busy());
 }
 
 #[test]
-fn a_thumbnail_the_edit_left_behind_is_drawn_when_the_strip_asks_again() {
+fn after_the_pause_every_thumbnail_the_strip_shows_is_its_page_even_when_an_edit_reflowed_the_pages() {
     use super::doc::Insert;
-    let mut w = open(fixture::document(5));
+    let mut w = open(fixture::document(10));
     let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
-    let all: Vec<usize> = (0..n).collect();
+    // the document shows page 1; the strip shows pages 5 to 9, which are not built
     w.run(Cmd::View { pages: vec![0], zoom: 1.0 });
-    w.run(Cmd::Thumbs { pages: all.clone() });
-    // a page break at the caret (page 1): every page after it moves down one
+    let strip: Vec<usize> = (4..n.min(9)).collect();
+    let mut shown = std::collections::HashMap::new();
+    let (outs, _) = w.run(Cmd::Thumbs { pages: strip.clone() });
+    apply(&mut shown, &outs);
+    assert_strip_current(&mut w, &shown, &strip);
+    // a page break on page 1: every later page now holds the one before it
     let (outs, _) = w.run(Cmd::Insert(Insert::PageBreak));
+    assert!(thumbs(&outs).is_empty(), "the key's answer carries no thumbnail");
+    let outs = settled(&mut w);
+    assert!(!thumbs(&outs).is_empty(), "the pages moved, so thumbnails changed");
+    apply(&mut shown, &outs);
+    assert_strip_current(&mut w, &shown, &strip);
+    assert!(!w.busy());
+}
+
+#[test]
+fn a_key_after_the_pause_is_not_held_up_and_starts_the_wait_again() {
+    let mut w = open(fixture::document(6));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    w.run(Cmd::View { pages: vec![0], zoom: 1.0 });
+    w.run(Cmd::Thumbs { pages: (0..n).collect() });
+    w.run(Cmd::Type("a".into()));
+    std::thread::sleep(super::doc::THUMB_SETTLE);
+    // the pass has begun: one page a tick, more to do
+    let (outs, _) = w.tick();
+    assert!(thumbs(&outs).len() <= 1);
+    assert!(w.busy());
+    // a key: the pass starts over after the pause, and until then ticks do nothing
+    let (outs, _) = w.run(Cmd::Type("b".into()));
     assert!(thumbs(&outs).is_empty());
-    let settled = thumbs(&settled(&mut w));
-    assert!(settled.iter().all(|i| *i == 0), "only the page in view is looked at: {settled:?}");
-    let (outs, _) = w.run(Cmd::Thumbs { pages: all });
-    let got = thumbs(&outs);
-    assert!(got.len() >= n - 1, "the later pages' thumbnails are drawn again: {got:?}");
-    assert!(!got.contains(&0) || got.len() > 1);
+    let (outs, _) = w.tick();
+    assert!(thumbs(&outs).is_empty() && w.busy());
+    assert_eq!(thumbs(&settled(&mut w)), vec![0]);
+}
+
+#[test]
+fn a_scroll_asks_nothing_of_the_strip_and_the_strip_drops_what_it_left() {
+    let mut w = open(fixture::document(12));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    assert!(n >= 12);
+    w.run(Cmd::Thumbs { pages: (0..4).collect() });
+    assert!(!w.busy());
+    w.run(Cmd::View { pages: vec![5], zoom: 1.0 });
+    assert!(!w.busy(), "a scroll changes no page: nothing to check later");
+    w.run(Cmd::Thumbs { pages: (8..11).collect() });
+    let kept = w.thumbs_kept();
+    assert!(kept.iter().all(|i| (8 - super::doc::THUMB_KEEP..=10 + super::doc::THUMB_KEEP).contains(i)), "{kept:?}");
+    assert!(kept.contains(&8) && kept.contains(&10));
+    w.run(Cmd::Thumbs { pages: Vec::new() });
+    assert!(w.thumbs_kept().is_empty());
 }

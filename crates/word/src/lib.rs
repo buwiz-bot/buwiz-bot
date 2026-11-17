@@ -194,6 +194,18 @@ impl WordUi {
         pages[i]
     }
 
+    /// Drops the thumbnails outside the strip's window `first..=last` (and
+    /// [`doc::THUMB_KEEP`] beyond it), all with `None`: the worker keeps the
+    /// same, so what it does not resend is what is still here.
+    pub fn keep_thumbs(&self, window: Option<(usize, usize)>) {
+        for (i, t) in self.thumbs.borrow().iter().enumerate() {
+            let keep = window.is_some_and(|(a, b)| i + doc::THUMB_KEEP >= a && i <= b + doc::THUMB_KEEP);
+            if !keep && t.get_untracked().is_some() {
+                t.set(None);
+            }
+        }
+    }
+
     /// Page `i`'s thumbnail signal (made as [`Self::page`] is).
     pub fn thumb(&self, i: usize) -> Signal<Option<Thumb>> {
         let mut thumbs = self.thumbs.borrow_mut();

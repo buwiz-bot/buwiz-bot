@@ -58,14 +58,19 @@ pub fn cells(pages: &[(f32, f32)]) -> (Vec<f32>, f32) {
     (out, y)
 }
 
-/// The pages whose cells are near the strip's view: first and last.
+/// The pages whose cells are near the strip's view: first and last. The
+/// scroll is held to the content (a strip scrolled past the end of a
+/// document that got shorter shows its last cells), so the window is always
+/// the cells near the view, never the whole document.
 pub fn near(pages: &[(f32, f32)], scroll: f32, view_h: f32) -> Option<(usize, usize)> {
     if pages.is_empty() {
         return None;
     }
-    let (tops, _) = cells(pages);
+    let (tops, total) = cells(pages);
+    let scroll = scroll.clamp(0.0, (total - view_h).max(0.0));
     let (lo, hi) = (scroll - view_h * AHEAD, scroll + view_h * (1.0 + AHEAD));
-    let first = tops.iter().zip(pages).position(|(t, p)| t + cell_h(*p) >= lo).unwrap_or(0);
+    let last_page = pages.len() - 1;
+    let first = tops.iter().zip(pages).position(|(t, p)| t + cell_h(*p) >= lo).unwrap_or(last_page);
     let last = tops.iter().rposition(|t| *t <= hi).unwrap_or(first).max(first);
     Some((first, last))
 }
@@ -115,6 +120,7 @@ pub fn toggle() {
 pub fn ask(u: &WordUi) {
     if !untracked(|| shown(u)) {
         if u.thumbs_asked.take().is_some() {
+            u.keep_thumbs(None);
             send(Cmd::Thumbs { pages: Vec::new() });
         }
         return;
@@ -126,14 +132,40 @@ pub fn ask(u: &WordUi) {
         return;
     }
     u.thumbs_asked.set(Some(key));
+    u.keep_thumbs(Some((first, last)));
     send(Cmd::Thumbs { pages: (first..=last).collect() });
+}
+
+/// Where the strip scrolls to keep cell `cur` in view, if it must: its top
+/// when above the view, its bottom at the view's end when below. Nowhere
+/// before the strip has a height (it has not been measured).
+pub fn follow_to(pages: &[(f32, f32)], cur: usize, scroll: f32, view_h: f32) -> Option<f32> {
+    if view_h <= 0.0 {
+        return None;
+    }
+    let (tops, _) = cells(pages);
+    let (top, page) = tops.get(cur).zip(pages.get(cur))?;
+    let bottom = top + cell_h(*page);
+    if *top < scroll {
+        Some(*top)
+    } else if bottom > scroll + view_h {
+        Some((bottom - view_h).max(0.0))
+    } else {
+        None
+    }
 }
 
 /// Scrolls the strip so the current page's thumbnail is in view, when the
 /// current page has changed since it last did (a strip the person scrolled
-/// stays where it is until the document moves to another page).
+/// stays where it is until the document moves to another page). Nothing
+/// happens, and nothing is recorded, before the strip is measured: its own
+/// first layout follows then.
 pub fn follow(u: &WordUi) {
     if !untracked(|| shown(u)) {
+        return;
+    }
+    let (_, h) = u.strip_area.get_untracked();
+    if h <= 0.0 {
         return;
     }
     let cur = current(u);
@@ -142,19 +174,9 @@ pub fn follow(u: &WordUi) {
     }
     u.strip_followed.set(Some(cur));
     let meta = u.meta.get_untracked();
-    let (tops, _) = cells(&meta.pages);
-    let Some((top, page)) = tops.get(cur).zip(meta.pages.get(cur)) else { return };
-    let bottom = top + cell_h(*page);
-    let (_, h) = u.strip_area.get_untracked();
-    let s = u.strip_scroll.get_untracked();
-    let to = if *top < s {
-        *top
-    } else if bottom > s + h {
-        bottom - h
-    } else {
-        return;
-    };
-    scroll_to(u, to.max(0.0));
+    if let Some(to) = follow_to(&meta.pages, cur, u.strip_scroll.get_untracked(), h) {
+        scroll_to(u, to);
+    }
 }
 
 fn scroll_to(u: &WordUi, to: f32) {
@@ -253,4 +275,42 @@ fn strip_view() -> impl IntoElement {
 pub fn strip() -> impl IntoElement {
     let u = ui();
     when(move || shown(u), strip_view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pages(n: usize) -> Vec<(f32, f32)> {
+        vec![(816.0, 1056.0); n]
+    }
+
+    #[test]
+    fn a_strip_scrolled_past_the_end_of_a_shorter_document_asks_for_its_last_cells_only() {
+        let long = pages(60);
+        let (_, total) = cells(&long);
+        let (first, last) = near(&long, total - 700.0, 700.0).unwrap();
+        assert_eq!(last, 59);
+        // the strip, at the end of 60 pages, then the document loses 50 of them: the scroll stands
+        let scroll = total - 700.0;
+        let short = pages(10);
+        let (first2, last2) = near(&short, scroll, 700.0).unwrap();
+        assert_eq!(last2, 9, "the last cells, not the first");
+        assert!(last2 - first2 <= 8 && first2 > 0, "a window of the last cells ({first2}..={last2}), not the whole document");
+        assert!(last - first <= 8);
+        // far past the end of one page
+        assert_eq!(near(&pages(1), 99999.0, 700.0), Some((0, 0)));
+        assert_eq!(near(&[], 5.0, 700.0), None);
+    }
+
+    #[test]
+    fn the_follow_waits_for_a_measured_strip_and_moves_just_enough() {
+        let p = pages(5);
+        let (tops, _) = cells(&p);
+        let h = cell_h(p[0]);
+        assert_eq!(follow_to(&p, 4, 0.0, 0.0), None, "no height yet: nowhere, to be tried again");
+        assert_eq!(follow_to(&p, 0, 0.0, 300.0), None, "in view");
+        assert_eq!(follow_to(&p, 4, 0.0, 300.0), Some(tops[4] + h - 300.0), "its bottom at the view's end");
+        assert_eq!(follow_to(&p, 1, 500.0, 300.0), Some(tops[1]), "its top at the view's start");
+    }
 }

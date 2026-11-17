@@ -236,6 +236,51 @@ fn typing_200() {
     }
 }
 
+/// A reflowing edit with the strip showing eight pages far from it: the pause check
+/// brings every thumbnail up to date, a tick a page, and a key that comes right after
+/// a tick is not held up by more than that.
+#[test]
+#[ignore = "bench: run with --ignored --nocapture"]
+fn strip_reflow_200() {
+    use super::doc::{Cmd, Insert, Move, Out, Word};
+    use buwiz_office_kit::session::Document;
+    fonts::Fonts::resolve("Arial", false, false);
+    for (name, bytes) in [("with footnotes", fixture::document(200)), ("without footnotes", fixture::document_without_notes(200))] {
+        println!("-- {name}");
+        let mut w = Word::open(bytes, std::path::Path::new("a.docx")).unwrap();
+        w.tick();
+        w.tick();
+        w.run(Cmd::View { pages: vec![99, 100, 101], zoom: 1.0 });
+        w.run(Cmd::Thumbs { pages: (150..158).collect() });
+        w.run(Cmd::Click { page: 100, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+        w.run(Cmd::Move { to: Move::LineEnd, extend: false });
+        let t = Instant::now();
+        let (outs, _) = w.run(Cmd::Insert(Insert::PageBreak));
+        println!("a page break (every later page moves): the command {:.1} ms, {} thumbnails with it", ms(t), outs.iter().filter(|o| matches!(o, Out::Thumb { .. })).count());
+        std::thread::sleep(super::doc::THUMB_SETTLE);
+        let (mut steps, mut total, mut worst, mut drawn) = (0, 0.0, 0.0f64, 0);
+        while w.busy() {
+            let t = Instant::now();
+            let (outs, _) = w.tick();
+            let d = ms(t);
+            steps += 1;
+            total += d;
+            worst = worst.max(d);
+            drawn += outs.iter().filter(|o| matches!(o, Out::Thumb { .. })).count();
+        }
+        println!("the pause check: {steps} ticks, {total:.1} ms in all, worst tick {worst:.1} ms, {drawn} of 8 thumbnails drawn again");
+        // a key right after the first tick of another pass: its echo (the tick before it is the most it waits for)
+        w.run(Cmd::Type("x".into()));
+        std::thread::sleep(super::doc::THUMB_SETTLE);
+        let t = Instant::now();
+        w.tick();
+        let tick = ms(t);
+        let t = Instant::now();
+        w.run(Cmd::Type("x".into()));
+        println!("a key right after a pass's first tick: echo {:.1} ms (that tick {tick:.1} ms)", ms(t));
+    }
+}
+
 /// The same echo with the thumbnail strip showing eight pages around the
 /// caret's (three of them the pages in view).
 #[test]
@@ -277,11 +322,19 @@ fn typing(bytes: Vec<u8>, local: bool, strip: bool) {
         let (outs, _) = w.run(Cmd::Type(if k % 5 == 4 { " ".into() } else { "x".into() }));
         v.push(ms(t));
         if strip && k % 10 == 9 {
-            // a pause in the typing: the strip catches up
+            // a pause in the typing: the strip catches up, a page a tick
             std::thread::sleep(super::doc::THUMB_SETTLE);
-            let t = Instant::now();
-            let (outs, _) = w.tick();
-            println!("after a pause: the strip's check {:.1} ms ({} thumbnails drawn again)", ms(t), outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count());
+            let (mut steps, mut total, mut worst, mut drawn) = (0, 0.0, 0.0f64, 0);
+            while w.busy() {
+                let t = Instant::now();
+                let (outs, _) = w.tick();
+                let d = ms(t);
+                steps += 1;
+                total += d;
+                worst = worst.max(d);
+                drawn += outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count();
+            }
+            println!("after a pause: the strip's check {steps} ticks, {total:.1} ms in all, worst tick {worst:.1} ms, {drawn} thumbnails drawn again");
         }
         if k == 0 {
             let pages = outs.iter().filter(|o| matches!(o, super::doc::Out::Page { drawn, .. } if drawn.w > 0.0)).count();
