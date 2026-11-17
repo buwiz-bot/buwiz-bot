@@ -324,7 +324,7 @@ impl Bed {
 #[tokio::test]
 async fn an_mcp_attach_is_refused_for_a_bot_that_has_the_server_off_and_attaches_otherwise() {
     use crate::hub::library::attachments::attach;
-    let b = bed("attach").await;
+    let b = bed("attach-mcp").await;
     let ctx = b.hub.ctx().clone();
     let (key, body) = ("mcp:apps", |chat: &str| json!({"thread": chat, "token": "@apps:item:x"}));
     b.switch("b_ann", key, "off");
