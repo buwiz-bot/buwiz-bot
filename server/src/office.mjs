@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SEEDS = join(HERE, "office", "seeds");
+const SEEDS = join(HERE, "..", "..", "office", "seeds");
 const MCP_MAIN = join(HERE, "office", "mcp-main.ts");
 // the packaged app ships mcp-main bundled to .js — its SDK/zod deps are
 // inlined, so it needs no --experimental-transform-types and no node_modules

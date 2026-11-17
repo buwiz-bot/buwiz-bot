@@ -70,7 +70,7 @@ directory, where `npm run plugin-test` runs.
 
 10. **Release: the owner signs.** Hand the owner the plugin with its unsigned
     `manifest.json` and app sources. The owner adds the plugin id to
-    `approved_plugins` in `src/v1/trust.json` and signs with the Goldcoders
+    `approved_plugins` in `broker/buwiz-broker/assets/trust.json` and signs with the Goldcoders
     key from the login Keychain (key id `gc-2026-01`, the manifest's
     `publisher.key_id`):
 

@@ -28,14 +28,14 @@
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
 #                           package (both, or neither)
 #   OFFICE_DIST=<dir>       the built office editor bundle (default
-#                           server/src/office/editor/dist; built by
-#                           `npm run build:office-editor` in server/)
+#                           office/editor/dist; built by
+#                           `npm run build:office-editor` in office/)
 #   MATERIAL_SYMBOLS_TTF=<path>  the office views' icon font to package
 #                           (default: fetched once into ~/Library/Caches/Buwiz Bot,
 #                           or the copy Rox fetched into ~/Library/Caches/Rox)
 #   OFFICE_FONTS=<dir>      the @betteroffice/fonts package whose faces the
 #                           Word and sheet views draw with (default
-#                           server/node_modules/@betteroffice/fonts)
+#                           office/node_modules/@betteroffice/fonts)
 set -euo pipefail
 
 DEFAULT_APP="$HOME/Applications/Buwiz Bot.app"
@@ -79,11 +79,11 @@ cp "$ROOT/app/fonts/MaterialSymbolsOutlined-LICENSE" "$APP/Contents/Resources/fo
 # The Word and sheet views' fonts (app/src/office/fonts.rs): every face of
 # @betteroffice/fonts (OFL; Carlito for Calibri, Liberation for Arial, ...),
 # the ones the web editor measures with, with their licences, in
-# Contents/Resources/fonts/office/. Not in git: from server/'s node_modules
+# Contents/Resources/fonts/office/. Not in git: from office/'s node_modules
 # (npm ci).
-OFFICE_FONTS="${OFFICE_FONTS:-$ROOT/server/node_modules/@betteroffice/fonts}"
+OFFICE_FONTS="${OFFICE_FONTS:-$ROOT/office/node_modules/@betteroffice/fonts}"
 if [ ! -f "$OFFICE_FONTS/assets/Carlito-Regular.ttf" ]; then
-  echo "no @betteroffice/fonts at $OFFICE_FONTS: run npm ci in server/ (or set OFFICE_FONTS to the package); the Word and sheet views' fonts need it" >&2
+  echo "no @betteroffice/fonts at $OFFICE_FONTS: run npm ci in office/ (or set OFFICE_FONTS to the package); the Word and sheet views' fonts need it" >&2
   exit 1
 fi
 rm -rf "$APP/Contents/Resources/fonts/office"
@@ -165,7 +165,8 @@ chmod +x "$APP/Contents/MacOS/buwiz-bot"
 # editor's bundle and seed files, the plugin catalog and icons, the trust
 # store; the BetterOffice packages the office pages import, in
 # node_modules/ beside server/ (where the broker looks).
-SERVER="$ROOT/server"
+OFFICE="$ROOT/office"
+ASSETS="$ROOT/broker/buwiz-broker/assets"
 B="$APP/Contents/Resources/broker"
 BROKER_TARGET="${CARGO_TARGET_DIR:-$ROOT/broker/target}/release"
 if [ -z "${BUWIZ_BROKER_BIN:-}" ]; then
@@ -190,19 +191,19 @@ cp "$BUWIZ_BROKER_BIN" "$B/buwiz-broker"
 ln -s buwiz-broker "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
-cp "$SERVER/src/office/viewer.html" "$B/server/office/viewer.html"
-cp "$SERVER/src/office/editor/editor.html" "$B/server/office/editor/editor.html"
-cp -R "$SERVER/src/office/seeds" "$B/server/office/seeds"
-DIST="${OFFICE_DIST:-$SERVER/src/office/editor/dist}"
+cp "$OFFICE/viewer.html" "$B/server/office/viewer.html"
+cp "$OFFICE/editor/editor.html" "$B/server/office/editor/editor.html"
+cp -R "$OFFICE/seeds" "$B/server/office/seeds"
+DIST="${OFFICE_DIST:-$OFFICE/editor/dist}"
 if [ -f "$DIST/editor.js" ]; then
   mkdir -p "$B/server/office/editor/dist"
   cp -R "$DIST/." "$B/server/office/editor/dist/"
 else
-  echo "warning: no office editor bundle in $DIST (run npm run build:office-editor in server/, or set OFFICE_DIST); the editor won't open" >&2
+  echo "warning: no office editor bundle in $DIST (run npm run build:office-editor in office/, or set OFFICE_DIST); the editor won't open" >&2
 fi
-cp -R "$SERVER/src/plugins" "$B/server/plugins"
-cp "$SERVER/src/v1/trust.json" "$B/server/trust.json"
-cp -R "$SERVER/node_modules/@betteroffice" "$B/node_modules/@betteroffice"
+cp -R "$ASSETS/plugins" "$B/server/plugins"
+cp "$ASSETS/trust.json" "$B/server/trust.json"
+cp -R "$OFFICE/node_modules/@betteroffice" "$B/node_modules/@betteroffice"
 
 # only the real bundle answers buwiz:// links; Rox.app (rox://, withdrawn)
 # is unregistered so nothing opens it any more

@@ -6,7 +6,7 @@
 //! there.
 //!
 //! The files ship in the app bundle, not in git: `app/bundle-dev.sh`
-//! copies them from `server/node_modules/@betteroffice/fonts/assets` into
+//! copies them from `office/node_modules/@betteroffice/fonts/assets` into
 //! `Contents/Resources/fonts/office/`. Dev runs and tests read them from
 //! there, from `BUWIZ_OFFICE_FONTS`, or from the checkout's node_modules.
 //! They are registered with CoreText before the first paint ([`register`])
@@ -279,7 +279,7 @@ pub fn dir() -> Option<&'static Path> {
         if let Ok(exe) = std::env::current_exe() {
             dirs.extend(crate::bundle::exe_resources(&exe, "fonts/office"));
         }
-        dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../server/node_modules/@betteroffice/fonts/assets"));
+        dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../office/node_modules/@betteroffice/fonts/assets"));
         if let Some(home) = std::env::var_os("HOME") {
             dirs.extend(crate::bundle::installed_resources(Path::new(&home), "fonts/office"));
         }

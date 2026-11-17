@@ -31,7 +31,7 @@ npm run plugin-test -- --command node --args sdk/mini-app/hello-world/server.mjs
 | `--env KEY=VAL` | An environment variable for the plugin; repeat for more. |
 | `--sign-with <key file>` | Read the manifest the plugin serves, fill each app's fingerprint from the source it serves, sign with this key. |
 | `--key-id <id>` | With `--sign-with`: the `publisher.key_id` to sign under (default: the manifest's). |
-| `--manifest <file>` | A manifest you signed. Trusted with `--key-file`, else with the shipped `src/v1/trust.json` (see [Trust](#trust)). |
+| `--manifest <file>` | A manifest you signed. Trusted with `--key-file`, else with the shipped `broker/buwiz-broker/assets/trust.json` (see [Trust](#trust)). |
 | `--key-file <key file>` | With `--manifest`: the key it was signed with. |
 | `--manifest-env NAME` | The variable that tells the plugin where its signed manifest is (default `BUWIZ_PLUGIN_MANIFEST`, which the template reads). |
 | `--first-party` | Mark this run's own trusted key first-party, as a first-party publisher's is: what a manifest with native screens (`apps[].native`) needs. Not with `BUWIZ_TRUST_FILE`, whose store says it. |
@@ -47,7 +47,7 @@ manifest's `publisher.key_id` and puts your plugin's id on the approved list,
 for that run only. That checks the protocol, not whether a given Buwiz Bot would
 accept the plugin.
 
-Set `BUWIZ_TRUST_FILE` to a trust store (the format of `src/v1/trust.json`)
+Set `BUWIZ_TRUST_FILE` to a trust store (the format of `broker/buwiz-broker/assets/trust.json`)
 and the run uses it as it is, the way the broker does. The key must be that
 store's key under the manifest's key id, and the plugin's id must be on its
 `approved_plugins` under that key id. Otherwise MAN-01 fails with the

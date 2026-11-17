@@ -1,0 +1,3 @@
+node_modules/
+# the built editor (npm run build:office-editor)
+editor/dist

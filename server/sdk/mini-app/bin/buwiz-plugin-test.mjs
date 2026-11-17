@@ -19,7 +19,7 @@
 // 0600 file holding a base64url seed) and hands the signed copy to the
 // plugin through the --manifest-env variable (default BUWIZ_PLUGIN_MANIFEST).
 // --manifest <file>: a manifest already signed; its key is trusted from
-// --key-file, else from the shipped src/v1/trust.json.
+// --key-file, else from the shipped broker/buwiz-broker/assets/trust.json.
 //
 // Trust: by default the run trusts that one key under the manifest's key
 // id and approves the plugin's id, for this run only. With BUWIZ_TRUST_FILE
@@ -340,7 +340,7 @@ export async function runPluginTest(o) {
       writeFileSync(manifestFile, readFileSync(o.manifest));
 
       if (!store) writeTrust(trustFile, pubs, signed, o.firstParty);
-      trustFrom = o.keyFile ? "--key-file" : "the shipped src/v1/trust.json";
+      trustFrom = o.keyFile ? "--key-file" : "the shipped broker/buwiz-broker/assets/trust.json";
     }
 
     if (store) writeFileSync(trustFile, readFileSync(store));

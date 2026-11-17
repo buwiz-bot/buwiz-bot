@@ -3,7 +3,10 @@
 A native chat app in Rust on Native Shell (nsh). `app/` is the app,
 `server/` the broker it talks to (Node), `nsh/` the nsh fork it builds on
 (a submodule), `connectors/` and `blaze/` (ra-jit, a submodule) its
-helpers. `README.md` explains the build and the live loop.
+helpers. `office/` holds the office editor and viewer pages, seeds and the
+BetterOffice packages (`npm ci` there; `npm run build:office-editor` builds the
+editor the bundles ship); `broker/buwiz-broker/assets/` the templates, bundled
+plugins and trust list. `README.md` explains the build and the live loop.
 
 ## Private files
 
@@ -59,7 +62,5 @@ are lost at the next rebuild.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.
-- Package it into an app bundle with
-  `server/tools/package-server.sh <Resources dir>`.
 - A plugin's `BUWIZ_BROKER_DIR` is this `server/` directory (BIR's manifest
   signing and broker tests read `src/v1/` from it).

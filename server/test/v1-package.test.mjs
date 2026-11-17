@@ -1,4 +1,5 @@
-// The packaged server is one bundled file (tools/package-server.sh), so a
+// A server bundled into one file (as a bundler would make it) has every
+// module sharing one import.meta.url, so a
 // module's "am I the main script" check (`process.argv[1] ===
 // fileURLToPath(import.meta.url)`) is true inside it: a CLI module the
 // server imports would run its CLI instead of the server. The server's
