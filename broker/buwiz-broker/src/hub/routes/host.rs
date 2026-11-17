@@ -813,11 +813,14 @@ fn hook(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     }
 }
 
-/// `GET /v1/host/events`: plugin state and generation changes as SSE, a
+/// `GET /v1/host/events`: plugin state and generation changes as SSE
+/// (`event: plugin`), a plugin's badge changes (`event: badge`, `buwiz/badge`), `event: resync`
+/// when this reader fell behind and lost some (it reads the plugin list again), a
 /// comment line first and a ping every 25 s.
 fn events(ctx: &HubCtx) -> HubResponse {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
     let sub = ctx.plugins.as_ref().map(|h| h.events());
+    let badges = ctx.plugins.as_ref().map(|h| h.badge_events());
     tokio::spawn(async move {
         if tx.send(Bytes::from_static(b": rox broker events\n\n")).await.is_err() {
             return;
@@ -825,14 +828,21 @@ fn events(ctx: &HubCtx) -> HubResponse {
         let mut beat = tokio::time::interval(Duration::from_secs(25));
         beat.tick().await;
         let mut sub = sub;
+        let mut badges = badges;
         loop {
             let out = tokio::select! {
+                got = async { match badges.as_mut() { Some(s) => s.recv().await, None => std::future::pending().await } } => match got {
+                    Ok(b) => Bytes::from(format!("event: badge\ndata: {}\n\n", js::stringify(&b))),
+                    // this reader fell behind and lost some: it reads the plugin list again
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Bytes::from_static(b"event: resync\ndata: {}\n\n"),
+                    Err(_) => return,
+                },
                 got = async { match sub.as_mut() { Some(s) => s.recv().await, None => std::future::pending().await } } => match got {
                     Ok(s) => {
                         let e = json!({"id": s.get("id"), "state": s.get("state"), "code": s.get("code"), "generation": s.get("generation"), "enabled": s.get("enabled"), "update": s.get("update")});
                         Bytes::from(format!("event: plugin\ndata: {}\n\n", js::stringify(&e)))
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Bytes::from_static(b"event: resync\ndata: {}\n\n"),
                     Err(_) => return,
                 },
                 _ = beat.tick() => Bytes::from_static(b": ping\n\n"),

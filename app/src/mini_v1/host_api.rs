@@ -450,13 +450,18 @@ impl HttpBroker {
 
     /// Follows the broker's server-sent events (`GET /v1/host/events`):
     /// `on_event(name, data)` for each until the stream ends or
-    /// `on_event` returns false.
+    /// `on_event` returns false. Each time the stream is open it first says
+    /// `"open"` (with `{}`), so what changed while it was down can be read again.
     pub fn events(&self, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
-        self.stream("/v1/host/events", on_event)
+        self.follow("/v1/host/events", true, on_event)
     }
 
-    /// Follows the server-sent events of `route`, as [`Self::events`].
-    pub fn stream(&self, route: &str, mut on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+    /// Follows the server-sent events of `route`, as [`Self::events`] without its `"open"`.
+    pub fn stream(&self, route: &str, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+        self.follow(route, false, on_event)
+    }
+
+    fn follow(&self, route: &str, say_open: bool, mut on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
         let (mut stream, authority) = self.connect(Duration::from_secs(3600))?;
         let req = Self::head("GET", route, &authority, &[], "text/event-stream");
         stream.write_all(&req).map_err(|_| unavailable("the broker closed the connection"))?;
@@ -471,6 +476,9 @@ impl HttpBroker {
             let l = line.trim_end_matches(['\r', '\n']);
             if !in_body {
                 in_body = l.is_empty();
+                if in_body && say_open && !on_event("open", "{}") {
+                    return Ok(());
+                }
                 continue;
             }
             // a chunked stream's size lines are no field lines; skip them

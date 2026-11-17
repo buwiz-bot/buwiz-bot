@@ -34,6 +34,8 @@
 // capabilities the broker sent at initialize.
 //
 // fx_echo and fx_search answer `args.result_meta` as the result's `_meta`.
+// fx_badge answers `_meta["buwiz/badge"]` = `args.badge` (and fails when `args.fail`), with
+// `query` and `items` set so a routine may use it as its query tool.
 // fx_echo with `reload: true` first sends resources/list_changed.
 //
 // FX_STATS_FILE names a file the fixture rewrites with what fx_stats answers
@@ -330,8 +332,13 @@ const TOOLS = [
     name: "fx_query", description: "A routine's search text: {query} from args.q.", inputSchema: { type: "object", properties: { q: { type: "string" } } },
     run: (args) => ok({ query: isString(args.q) ? args.q : "from:fixture" }),
   },
+  {
+    name: "fx_badge", description: "Answer with a buwiz/badge of args.badge (a routine's query tool too).",
+    inputSchema: { type: "object", properties: { badge: {}, fail: { type: "boolean" } } },
+    run: (args) => ({ ...(args.fail ? fail("tool_error", "fx_badge failed") : ok({ badged: true, query: "from:badge", items: [] })), _meta: { "buwiz/badge": args.badge } }),
+  },
   { name: "fx_secret", description: "A tool no app may call.", inputSchema: { type: "object" }, run: () => ok({ secret: true }) },
-  { name: "fx_app_only", description: "A tool for apps only (16.4 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
+  { name: "fx_app_only", description: "A tool for apps only (16.5 audience).", inputSchema: { type: "object" }, meta: { "buwiz/audience": ["app"] }, run: () => ok({ app: true }) },
   { name: "fx_stats", description: "What the fixture was asked.", inputSchema: { type: "object" }, run: () => ok(stats()) },
   {
     name: "fx_reload", description: "Tell the host the resources changed.", inputSchema: { type: "object" },

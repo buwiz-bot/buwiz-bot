@@ -88,14 +88,11 @@ pub fn args_hash(args: &Value) -> Option<ContentHash> {
     hash_of(&jcs::signed_bytes(args).ok()?)
 }
 
-/// Whether `c` changes how a line reads without showing: control characters,
-/// bidi overrides and isolates, zero-width and other format characters, and
-/// the line separators, which would start a line nobody counted.
+/// Whether `c` changes how a line reads without showing (spec 4.2, `buwiz_protocol::text`): control
+/// characters, bidi overrides and isolates, zero-width and other format characters, and the line
+/// separators, which would start a line nobody counted.
 fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(c as u32,
-            0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F
-            | 0xFE00..=0xFE0F | 0xFEFF | 0xFFF9..=0xFFFB | 0xE0000..=0xE0FFF)
+    buwiz_protocol::text::hidden(c)
 }
 
 impl Card {
