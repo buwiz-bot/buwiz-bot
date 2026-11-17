@@ -66,28 +66,74 @@ fn press_of(actor: Option<&Value>, press: Option<&Value>) -> Option<Value> {
     matches!(serde_json::from_value(press.clone()), Ok(Ai { .. } | AiApproved { .. })).then(|| press.clone())
 }
 
+/// What a tool's `_meta["buwiz/audience"]` says about one word.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// No audience at all.
+    Absent,
+    /// An audience that is not an array: a mistake, read by no word.
+    NotAnArray,
+    /// An array, with or without the word.
+    Array(bool),
+}
+
+/// How tool `t`'s audience stands toward `word`; each reader says what it does for [`Audience::Absent`].
+pub fn audience_names(t: &Value, word: &str) -> Audience {
+    match t.pointer("/_meta/buwiz~1audience") {
+        None => Audience::Absent,
+        Some(Value::Array(a)) => Audience::Array(a.iter().any(|x| x.as_str() == Some(word))),
+        Some(_) => Audience::NotAnArray,
+    }
+}
+
 /// Whether plugin tool `t` says it is open to agents: the Hub's rule, the reverse of the model's
 /// list, so a missing or unknown audience is no.
 pub fn open_to_agents(t: &Value) -> bool {
-    t.pointer("/_meta/buwiz~1audience").and_then(Value::as_array).is_some_and(|a| a.iter().any(|x| x.as_str() == Some("agent")))
+    audience_names(t, "agent") == Audience::Array(true)
+}
+
+/// Writes `line` to the log once per `key` for the life of the process.
+pub fn log_once(key: String, line: impl FnOnce() -> String) {
+    static SEEN: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    if SEEN.get_or_init(Default::default).lock().is_ok_and(|mut seen| seen.insert(key)) {
+        eprintln!("{}", line());
+    }
 }
 
 /// What a tool may declare it does, to take the AI's press (D1). Filing never (O4), and neither
 /// voiding nor reopening.
 const PRESS_EFFECTS: [&str; 2] = ["post", "close"];
-/// Words in a tool's name that keep it out whatever it declares: a declaration is the plugin's
-/// own word, and these are the tools it must not be able to bring in by mistake or on purpose.
-const NEVER_PRESSED: [&str; 9] = ["file", "filing", "submit", "send", "queue", "pay", "paid", "void", "reopen"];
+/// Letter sequences that keep a tool out when its lowercased name has one anywhere after the
+/// plugin's `<short>_` prefix, whatever the tool declares: a declaration is the plugin's own word,
+/// and these are the tools it must not be able to bring in by mistake or on purpose. Strict on
+/// purpose: `profile_update` has `file`.
+const NEVER_PRESSED: [&str; 10] = ["file", "filing", "submit", "send", "sent", "queue", "pay", "paid", "void", "reopen"];
+
+/// Whether a tool's name keeps it from opting in: a character outside `a-z A-Z 0-9 _ . -` (a
+/// lookalike letter or an invisible one would hide a word), or a [`NEVER_PRESSED`] sequence in the
+/// part after the first `_` (the plugin's short name has no `_`; a name with none is read whole).
+fn name_never_pressed(name: &str) -> bool {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    let tool_part = lower.split_once('_').map_or(lower.as_str(), |(_, rest)| rest);
+    NEVER_PRESSED.iter().any(|w| tool_part.contains(w))
+}
 
 /// Whether plugin tool `t` lets the AI press it once a person allowed that one press (O3): the
 /// plugin's own opt-in, `_meta["buwiz/press"]`, with a clear `approved: true` and an `effect` of
-/// [`PRESS_EFFECTS`], on a tool whose name says none of [`NEVER_PRESSED`].
+/// [`PRESS_EFFECTS`], on a tool whose name passes [`name_never_pressed`]. A tool that declares
+/// `approved: true` and is refused by its name is logged once, so its author can see why.
 pub fn press_opted_in(t: &Value) -> bool {
     let effect = t.pointer("/_meta/buwiz~1press/effect").and_then(Value::as_str);
-    let name = t.get("name").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
-    t.pointer("/_meta/buwiz~1press/approved") == Some(&json!(true))
-        && effect.is_some_and(|e| PRESS_EFFECTS.contains(&e))
-        && !name.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| NEVER_PRESSED.contains(&w))
+    let name = t.get("name").and_then(Value::as_str).unwrap_or_default();
+    let declared = t.pointer("/_meta/buwiz~1press/approved") == Some(&json!(true));
+    if declared && name_never_pressed(name) {
+        log_once(format!("press\0{name}"), || format!("  v1 tool {}: buwiz/press refused: the name has a character outside a-z, 0-9, _ . - or a word the AI never presses", cap(name, 80)));
+        return false;
+    }
+    declared && effect.is_some_and(|e| PRESS_EFFECTS.contains(&e))
 }
 
 /// The read plugin tool `t` names to put a held call in plain words, if any.
@@ -155,24 +201,36 @@ pub fn strip_meta(r: &Value) -> Value {
 /// active account: `{account, label}`.
 const ACCOUNT_USE: &str = "buwiz/account_use";
 
+/// The `_meta` key that takes the place of [`ACCOUNT_USE`] when the caller may not switch
+/// accounts: the tool ran and its result stands, and this tells the Bot that the switch did not
+/// happen. Between the broker and the Bot's own app only.
+pub const ACCOUNT_USE_REFUSED: &str = "buwiz/account_use_refused";
+
 /// A tool result as the Bot gets it from an app's call: stripped, but for
 /// `_meta["buwiz/document"]`, `buwiz/open_with`, `buwiz/save` and
 /// [`ACCOUNT_USE`], the keys the Bot itself acts on. The Bot is the host's
 /// other half and judges them (`mini_v1::document`, `mini_v1::system_open`,
 /// `mini_v1::bridge`); the app and the model still never see them (16.5).
-pub fn host_result(r: &Value) -> Value {
+/// When `may_switch` is false a [`ACCOUNT_USE`] in `r` is not passed on: [`ACCOUNT_USE_REFUSED`]
+/// stands in its place, and the answer's second part is `true` (for the log).
+pub fn host_result(r: &Value, may_switch: bool) -> (Value, bool) {
     let mut out = strip_meta(r);
-    let kept: serde_json::Map<String, Value> = ["buwiz/document", "buwiz/open_with", "buwiz/save", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    let mut kept: serde_json::Map<String, Value> = ["buwiz/document", "buwiz/open_with", "buwiz/save", ACCOUNT_USE].iter().filter_map(|k| r.get("_meta").and_then(|m| get(m, k)).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    let dropped = !may_switch && kept.remove(ACCOUNT_USE).is_some();
+    if dropped {
+        kept.insert(ACCOUNT_USE_REFUSED.to_owned(), json!(true));
+    }
     if let (false, Some(o)) = (kept.is_empty(), out.as_object_mut()) {
         o.insert("_meta".to_owned(), Value::Object(kept));
     }
-    out
+    (out, dropped)
 }
 
 /// Whether a result asking for an account switch may stand: only on the
-/// person's own signed call to a first-party plugin. An agent's press, a
-/// routine or anything else the Bot might sign is refused, whatever the tool
-/// declares, so a plugin's own opt-in can't bring a switch in.
+/// person's own signed call to a first-party plugin. For an agent's press, a
+/// routine or anything else the Bot might sign, whatever the tool declares,
+/// the switch is dropped and the result goes on without it ([`host_result`]),
+/// so a plugin's own opt-in can't bring a switch in.
 fn may_use_account(actor: Option<&Value>, first_party: bool) -> bool {
     first_party && actor == Some(&json!("person"))
 }
@@ -539,10 +597,13 @@ impl Sessions {
             let limit = if preview { format!("{} MiB", js::number(((max / 1_048_576.0) * 10.0).round() / 10.0)) } else { "1 MiB".to_owned() };
             return V1Error::err("result_too_large", format!("{tool}'s result is over {limit}"));
         }
-        if r.get("_meta").and_then(|m| get(m, ACCOUNT_USE)).is_some() && !may_use_account(get(envelope, "actor"), self.host.row(&plugin).is_some_and(|row| self.host.first_party(&row))) {
-            return V1Error::err("permission_denied", "only a person's own press in a first-party plugin switches accounts");
+        // the tool has run and its result stands; a caller that may not switch accounts gets it without the switch
+        let may_switch = get(&r, "_meta").and_then(|m| get(m, ACCOUNT_USE)).is_none() || may_use_account(get(envelope, "actor"), self.host.row(&plugin).is_some_and(|row| self.host.first_party(&row)));
+        let (result, dropped) = host_result(&r, may_switch);
+        if dropped {
+            eprintln!("  v1 {plugin}: {tool} asked to switch accounts: dropped, the caller may not");
         }
-        Ok(json!({"ok": true, "result": host_result(&r)}))
+        Ok(json!({"ok": true, "result": result}))
     }
 
     // ── tickets, resolve, app source ─────────────────────────────────────
@@ -786,7 +847,40 @@ mod tests {
         for name in ["ebirforms_return_file", "fx_file_return", "fx_submit", "fx_send_form", "fx_queue", "fx_pay", "fx_void_entry", "fx_month_reopen", "FX_FILE"] {
             assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: its own word doesn't bring it in");
         }
-        assert!(press_opted_in(&tool("fx_profile_post", json!({"approved": true, "effect": "post"}))), "a word, not a part of one");
+        for name in ["ledger_payment_create", "fx_filed_report", "fx_submitted_form", "fx_sends_reminder", "mail_resend", "job_enqueue", "fx_sendmail", "fx_sent_note", "fx_profile_post", "fx_avoid_x", "fx_Payment", "fx_reopened", "fx_filings"] {
+            assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: the letters anywhere in the name keep it out");
+        }
+        for name in ["books_entry_draft", "fx_post_entry", "fx_batch", "fx_month_close", "sentry_post_note", "payroll_note_post", "files_note_post", "Fx.Post-Note"] {
+            assert!(press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}");
+        }
+        for name in ["sentry_send_note", "notes_payment_create", "payroll_pay_run", "files_file_note", "fx_sendmail", "sendmail", "fx_\u{0456}file_x", "fx_f\u{0456}le_return", "fx_fi\u{200B}le_post", "fx_post note", "fx_pöst"] {
+            assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}");
+        }
+    }
+
+    #[test]
+    fn audience_names_tells_absent_from_a_mistake_from_an_array() {
+        use super::{audience_names, Audience};
+        let of = |a: Value| json!({"_meta": {"buwiz/audience": a}});
+        assert_eq!(audience_names(&json!({}), "agent"), Audience::Absent);
+        assert_eq!(audience_names(&of(json!(["app", "agent"])), "agent"), Audience::Array(true));
+        assert_eq!(audience_names(&of(json!(["app"])), "agent"), Audience::Array(false));
+        assert_eq!(audience_names(&of(json!(["widget"])), "widget"), Audience::Array(true));
+        for a in [json!("agent"), json!({}), json!(1), Value::Null] {
+            assert_eq!(audience_names(&of(a.clone()), "agent"), Audience::NotAnArray, "{a}");
+        }
+    }
+
+    #[test]
+    fn open_to_agents_reads_only_an_array_naming_agent() {
+        use super::open_to_agents;
+        for audience in [json!(["app", "agent"]), json!(["agent"])] {
+            assert!(open_to_agents(&json!({"name": "fx_a", "_meta": {"buwiz/audience": audience.clone()}})), "{audience}");
+        }
+        for audience in [json!("agent"), json!("app"), json!({"agent": true}), json!(1), json!(true), Value::Null, json!(["app"]), json!([])] {
+            assert!(!open_to_agents(&json!({"name": "fx_a", "_meta": {"buwiz/audience": audience.clone()}})), "{audience}");
+        }
+        assert!(!open_to_agents(&json!({"name": "fx_a"})), "no audience is no here");
     }
 
     #[test]
@@ -843,11 +937,15 @@ mod tests {
     fn only_the_bots_own_keys_of_meta_reach_it() {
         let document = json!({"path": "/a/b.docx", "name": "b.docx", "mime": "x"});
         let r = json!({"content": [], "_meta": {"buwiz/document": document, "buwiz/open": {"app": "x"}, "buwiz/suggest": []}});
-        assert_eq!(host_result(&r), json!({"content": [], "_meta": {"buwiz/document": document}}));
+        assert_eq!(host_result(&r, true), (json!({"content": [], "_meta": {"buwiz/document": document}}), false));
         let switch = json!({"account": "google", "label": "work"});
-        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}})), json!({"content": [], "_meta": {"buwiz/account_use": switch}}));
-        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}})), json!({"content": []}));
-        assert_eq!(host_result(&json!({"content": []})), json!({"content": []}));
+        let asks = json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}});
+        assert_eq!(host_result(&asks, true), (json!({"content": [], "_meta": {"buwiz/account_use": switch}}), false));
+        assert_eq!(host_result(&asks, false), (json!({"content": [], "_meta": {"buwiz/account_use_refused": true}}), true), "the marker stands in for the switch");
+        let with_save = json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/save": {"a": 1}}});
+        assert_eq!(host_result(&with_save, false), (json!({"content": [], "_meta": {"buwiz/save": {"a": 1}, "buwiz/account_use_refused": true}}), true), "only the switch goes");
+        assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}}), false), (json!({"content": []}), false), "no switch asked, no marker");
+        assert_eq!(host_result(&json!({"content": []}), false), (json!({"content": []}), false));
     }
 
     #[test]
@@ -855,7 +953,7 @@ mod tests {
         let open = json!({"path": "/a/IMG_1.png"});
         let save = json!({"path": "/a/IMG_1.png", "name": "IMG_1.png"});
         let r = json!({"content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": true}, "_meta": {"buwiz/open_with": open, "buwiz/save": save, "buwiz/open": {}, "buwiz/suggest": []}});
-        let out = host_result(&r);
+        let out = host_result(&r, true).0;
         assert_eq!(out["_meta"], json!({"buwiz/open_with": open, "buwiz/save": save}));
         assert_eq!(strip_meta(&out), json!({"content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": true}}), "the rest is the result as it was");
     }

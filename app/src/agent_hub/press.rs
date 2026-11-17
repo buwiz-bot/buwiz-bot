@@ -181,6 +181,12 @@ pub fn take_refused() -> Vec<Held> {
     std::mem::take(&mut *REFUSED.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// What is refused so far, left in place (for tests that share the list).
+#[cfg(test)]
+pub fn peek_refused() -> Vec<Held> {
+    REFUSED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// A held call came to `outcome` (`allowed`, `declined`, `expired`).
 pub fn note_outcome(tool: &str, outcome: &'static str) {
     let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());

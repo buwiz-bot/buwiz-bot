@@ -911,9 +911,14 @@ impl OpenContext {
             let open_with = result.pointer("/_meta/buwiz~1open_with").cloned();
             let save = result.pointer("/_meta/buwiz~1save").cloned();
             let account = result.pointer("/_meta/buwiz~1account_use").cloned();
+            let dropped = result.pointer("/_meta/buwiz~1account_use_refused") == Some(&Value::Bool(true));
             let mut answer = tool_result(result, max)?;
-            if let Some(field) = account
-                && let Err(e) = me.use_account(&field, who.actor)
+            let switch = match account {
+                Some(field) => me.use_account(&field, who.actor),
+                None if dropped => Err(me.switch_dropped(who.actor)),
+                None => Ok(()),
+            };
+            if let Err(e) = switch
                 && let Value::Object(fields) = &mut answer
             {
                 // the tool's work stands: only the switch failed, and it says so apart
@@ -1008,10 +1013,29 @@ impl OpenContext {
         }
     }
 
+    /// The broker ran the tool and left the switch out of its result, with
+    /// `_meta["buwiz/account_use_refused"]`, because the caller may not switch
+    /// accounts. The tool's work stands: the person's own press reads why in
+    /// the answer's `account_use`, and an agent's press is told the account was
+    /// not switched, with the sentences its action reports.
+    fn switch_dropped(&self, actor: Actor) -> RoxError {
+        match actor {
+            Actor::Person => denied("Only a first-party plugin can switch accounts."),
+            Actor::Agent => {
+                let said = "The press went through, but the account was not switched: only a person's own press in a first-party plugin switches accounts.";
+                press::note_refused(press::Held::Said(said.to_owned()));
+                denied(said)
+            }
+        }
+    }
+
     /// A result's `_meta["buwiz/account_use"]`, `{account, label}`, from a call
     /// `actor` made: the person's own press in a first-party plugin makes that
     /// label the active one, and the call answers once the plugin has it. The
-    /// broker has refused anything else already; this holds whatever it did.
+    /// broker passes the field on only for such a call (it puts
+    /// `buwiz/account_use_refused` in its place otherwise, see
+    /// [`Self::switch_dropped`]), so the two checks first are a second line
+    /// that costs nothing; they hold whatever a broker did.
     /// A label that's an address is never on a plugin's list, so none can ask
     /// for one. A broker's refusal can name a label, so only its code comes back.
     fn use_account(&self, field: &Value, actor: Actor) -> Result<(), RoxError> {
