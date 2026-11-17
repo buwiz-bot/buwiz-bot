@@ -19,6 +19,8 @@
 
 use std::collections::HashSet;
 
+use crate::mini_v1::host_api::{mcp_key, v1_key};
+
 use nsh_core::prelude::*;
 
 use crate::client;
@@ -255,6 +257,7 @@ fn refresh() {
 
 /// At boot: the manifest, so a command sent first thing is known.
 pub(crate) fn boot() {
+    watch_draft();
     refresh();
 }
 
@@ -640,6 +643,7 @@ fn show_for(query: String, rows: Vec<PopRow>, head: String) {
 /// Closes the popup.
 pub(crate) fn close() {
     let st = store();
+    at_closed();
     st.complete_seq.set(st.complete_seq.get() + 1);
     batch(|| {
         st.pop_rows.set(Vec::new());
@@ -709,63 +713,111 @@ pub(crate) fn slash_menu(t: &str) -> bool {
     true
 }
 
-/// The `@` menu opened: asks the broker again which plugins and MCP servers are off for the Bot
-/// of the chat in front. What was switched off while the menu was closed is left out from here
-/// on; until the answer lands the menu lists none (the broker refuses them anyway).
+/// What the `@` menu knows of the plugins and MCP servers (`v1:<id>`, `mcp:<id>` keys) off for
+/// the Bot of one chat, for the opening it is in.
+#[derive(Clone, PartialEq, Default, Debug)]
+pub enum AtOff {
+    /// No opening, or none asked yet.
+    #[default]
+    Idle,
+    /// Asked for this chat; no answer yet.
+    Asking(String),
+    /// The broker's answer for this chat.
+    Known(String, HashSet<String>),
+    /// The broker did not answer for this chat: the menu stays empty until it opens again.
+    Failed(String),
+}
+
+/// The `@` menu opened: asks the broker which plugins and servers are off for the chat's Bot, so
+/// what was switched off while it was closed is left out. Until the answer lands the menu lists
+/// none (the broker refuses them anyway).
 pub(crate) fn at_opened() {
-    let st = store();
-    st.at_off_seq.set(st.at_off_seq.get() + 1);
-    st.at_off.replace(None);
     ask_off();
 }
 
-/// `GET /v1/host/tools/off?thread=`: the broker's own switches for the chat's Bot are the one
-/// source; the app keeps the last answer for the chat it was asked for and nothing else.
-fn ask_off() {
+/// An opening is over (the popup closed, or the draft no longer has an `@`): the next one asks
+/// again, and an answer on its way is dropped.
+pub(crate) fn at_closed() {
     let st = store();
-    let thread = st.active_id.get_untracked();
-    if thread.is_empty() {
-        return;
-    }
-    st.at_off_asking.set(true);
-    let n = st.at_off_seq.get();
-    let path = format!("/v1/host/tools/off?thread={}", client::urlenc(&thread));
-    Owner::detached().run(|| {
-        spawn(async move {
-            let got = client::get_any(&path).await;
-            let st = store();
-            if st.at_off_seq.get() != n {
-                return;
-            }
-            st.at_off_asking.set(false);
-            let Some(v) = got.filter(|v| v.get("ok").and_then(|x| x.as_bool()) == Some(true)) else { return };
-            let off = v.get("off").and_then(|x| x.as_array()).map(|l| l.iter().filter_map(|k| k.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-            st.at_off.replace(Some((thread.clone(), off)));
-            // the popup follows the answer in
-            let t = st.draft.get_untracked();
-            if st.active_id.get_untracked() == thread && t.contains('@') {
-                crate::composer::draft_changed(&t);
+    st.at_off_seq.set(st.at_off_seq.get() + 1);
+    st.at_off.replace(AtOff::Idle);
+}
+
+/// Ends the opening whenever the draft loses its last `@`, whoever cleared it.
+pub(crate) fn watch_draft() {
+    store().in_store(|| {
+        effect(move || {
+            if !store().draft.get().contains('@') {
+                at_closed();
             }
         })
     });
 }
 
-/// The keys switched off for the Bot of the chat in front, as last answered for that chat; None
-/// when not known yet (asked for, if nothing is on its way).
+/// `GET /v1/host/tools/off?thread=`: the broker's own switches for the chat's Bot are the one
+/// source; the app keeps the answer for the opening and the chat it was asked for, nothing else.
+fn ask_off() {
+    let st = store();
+    let thread = st.active_id.get_untracked();
+    let n = st.at_off_seq.get() + 1;
+    st.at_off_seq.set(n);
+    st.at_off.replace(AtOff::Asking(thread.clone()));
+    let path = format!("/v1/host/tools/off?thread={}", client::urlenc(&thread));
+    Owner::detached().run(|| {
+        spawn(async move {
+            let got = client::get_any(&path).await;
+            let st = store();
+            // a newer ask, an ended opening or another chat in front: not this one's answer
+            if st.at_off_seq.get() != n || st.active_id.get_untracked() != thread {
+                return;
+            }
+            let off = got.filter(|v| v.get("ok").and_then(|x| x.as_bool()) == Some(true)).map(|v| {
+                v.get("off").and_then(|x| x.as_array()).map(|l| l.iter().filter_map(|k| k.as_str().map(str::to_owned)).collect::<HashSet<String>>()).unwrap_or_default()
+            });
+            st.at_off.replace(match off {
+                Some(off) => AtOff::Known(thread, off),
+                None => AtOff::Failed(thread),
+            });
+            redraw_at();
+        })
+    });
+}
+
+/// The popup's rows again for the `@` being typed, once an answer has landed.
+fn redraw_at() {
+    let st = store();
+    let i = st.at_start.get_untracked();
+    let t = st.draft.get_untracked();
+    if i < 0 || (i as usize) >= t.len() || t.as_bytes()[i as usize] != b'@' {
+        return;
+    }
+    let tail = &t[i as usize + 1..];
+    if !token_menu(tail) {
+        server_menu(tail);
+    }
+}
+
+/// The keys switched off for the Bot of the chat in front, as the broker said for this opening;
+/// None when not known (asked for, unless it was asked and failed, or is on its way).
 fn off_now() -> Option<HashSet<String>> {
     let st = store();
     let thread = st.active_id.get_untracked();
-    let known = st.at_off.borrow().as_ref().filter(|(t, _)| *t == thread).map(|(_, off)| off.clone());
-    if known.is_none() && !st.at_off_asking.get() {
-        ask_off();
+    let state = st.at_off.borrow().clone();
+    match state {
+        AtOff::Known(t, off) if t == thread => Some(off),
+        AtOff::Asking(t) | AtOff::Failed(t) if t == thread => None,
+        // no opening yet, or another chat in front
+        _ => {
+            ask_off();
+            None
+        }
     }
-    known
 }
 
 /// What the `@` menu may list: the servers and plugins not in `off`.
 fn on_for_chat(off: &HashSet<String>, ms: &[Manifest], plugins: &[crate::mini_v1::load::PluginEntry]) -> (Vec<Manifest>, Vec<crate::mini_v1::load::PluginEntry>) {
-    let ms = ms.iter().filter(|m| !off.contains(&format!("mcp:{}", m.id))).cloned().collect();
-    let plugins = plugins.iter().filter(|p| !off.contains(&format!("v1:{}", p.id))).cloned().collect();
+    let ms = ms.iter().filter(|m| !off.contains(&mcp_key(&m.id))).cloned().collect();
+    let plugins = plugins.iter().filter(|p| !off.contains(&v1_key(&p.id))).cloned().collect();
     (ms, plugins)
 }
 
@@ -826,7 +878,7 @@ pub(crate) fn token_menu(tail: &str) -> bool {
         return true;
     };
     // a v1 plugin's scopes and the choices its resolve offers (9.3), when the chat's Bot has it on
-    if let Some(p) = store().v1.by_short(server).filter(|p| !off.contains(&format!("v1:{}", p.id))) {
+    if let Some(p) = store().v1.by_short(server).filter(|p| !off.contains(&v1_key(&p.id))) {
         match rest.split_once(':') {
             Some((scope, value)) => {
                 store().v1_complete(server, scope, value);
@@ -841,7 +893,7 @@ pub(crate) fn token_menu(tail: &str) -> bool {
         return true;
     }
     refresh();
-    let Some(m) = store().mcp_manifest.with_untracked(|ms| ms.iter().find(|m| m.id == server && !off.contains(&format!("mcp:{}", m.id))).cloned()) else {
+    let Some(m) = store().mcp_manifest.with_untracked(|ms| ms.iter().find(|m| m.id == server && !off.contains(&mcp_key(&m.id))).cloned()) else {
         show(Vec::new(), String::new());
         return true;
     };

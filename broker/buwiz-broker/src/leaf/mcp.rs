@@ -62,6 +62,7 @@ pub struct McpRoutes {
     passes: Mutex<HashMap<String, Instant>>,
     plugins: Option<Arc<Host>>,
     /// The hub, when this broker runs it: whose Bot a chat is, and what is switched off for that Bot.
+    /// None only for a start without the hub (no Bots, no switches); it goes with that start.
     gate: Option<Arc<crate::hub::ctx::HubCtx>>,
 }
 
@@ -148,7 +149,7 @@ fn app_of(uri: &str) -> String {
 
 impl McpRoutes {
     pub fn new(mcp: Arc<McpHost>, allowed: Vec<String>) -> Self {
-        Self { mcp, allowed, passes: Mutex::new(HashMap::new()), plugins: None, gate: None }
+        Self { mcp, allowed, passes: Mutex::new(HashMap::new()), plugins: None, gate: None /* only for a start without the hub; goes with it */ }
     }
 
     /// The plugin host whose account sign-ins come back here.
@@ -481,7 +482,7 @@ impl McpRoutes {
     pub async fn resolve(&self, b: &Value) -> Value {
         let server = text(b, "server");
         // before the server is asked anything: it must be on for the Bot of the chat this is for
-        if let Some((code, error)) = self.gate.as_ref().and_then(|ctx| crate::hub::policy::scope_refusal(ctx, &text(b, "thread"), &format!("mcp:{server}"))) {
+        if let Some((code, error)) = self.gate.as_ref().and_then(|ctx| crate::hub::policy::scope_refusal(ctx, &text(b, "thread"), &crate::hub::policy::keys::mcp_key(&server))) {
             return json!({"ok": false, "code": code, "error": error});
         }
         let row: Option<String> = self.mcp.db(|db| db.query_row("SELECT id FROM mcp_servers WHERE id=? AND enabled=1", [&server], |r| r.get(0)).optional()).ok().flatten();

@@ -43,6 +43,30 @@ pub fn plugins(b: &dyn Broker) -> Result<Vec<Value>, RoxError> {
     Ok(v.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default())
 }
 
+/// The switch key of MCP server `id` (the broker's `policy::keys::mcp_key`).
+pub fn mcp_key(id: &str) -> String {
+    format!("mcp:{id}")
+}
+
+/// The switch key of v1 plugin `id` (the broker's `policy::keys::v1_key`).
+pub fn v1_key(id: &str) -> String {
+    format!("v1:{id}")
+}
+
+/// `GET /v1/host/tools/off?thread=`: the Bot the chat belongs to (`@chats` for a plain chat) and the
+/// plugin and server keys switched off for it.
+pub fn scopes_off(b: &dyn Broker, thread: &str) -> Result<(String, Vec<String>), RoxError> {
+    let v = b.request("GET", &format!("/v1/host/tools/off?thread={}", crate::client::urlenc(thread)), None, SHORT_TIMEOUT)?;
+    let off = v.get("off").and_then(Value::as_array).map(|l| l.iter().filter_map(|k| k.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    Ok((v.get("bot").and_then(Value::as_str).unwrap_or_default().to_owned(), off))
+}
+
+/// What the person is told of a plugin that is off for the chat's Bot (the broker's sentence).
+pub fn off_sentence(title: &str, bot: &str) -> String {
+    let whose = if bot == "@chats" { "plain chats" } else { "this Bot" };
+    format!("{title} is switched off for {whose}. Turn it on in Tools to use it here.")
+}
+
 /// `POST /v1/host/apps/source`: an app's source and fingerprint.
 pub fn app_source(b: &dyn Broker, plugin: &str, app: &str) -> Result<(String, String), RoxError> {
     let v = post(b, "/v1/host/apps/source", json!({"plugin": plugin, "app": app}), SHORT_TIMEOUT)?;
@@ -596,6 +620,22 @@ mod tests {
         let e = super::resolve(&says, &ask).unwrap_err();
         assert_eq!((e.code.as_str(), e.message.as_str()), ("disabled", "Books is switched off for this Bot."));
         assert_eq!(says.0.lock().unwrap()[0]["thread"], "t7");
+    }
+
+    #[test]
+    fn a_scopes_off_answer_is_the_bots_and_its_sentence_is_the_brokers() {
+        struct Says(serde_json::Value);
+        impl super::Broker for Says {
+            fn request(&self, m: &str, route: &str, _: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::RoxError> {
+                assert_eq!((m, route), ("GET", "/v1/host/tools/off?thread=t%207"));
+                Ok(self.0.clone())
+            }
+        }
+        let says = Says(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.books", "mcp:x"]}));
+        let (bot, off) = super::scopes_off(&says, "t 7").unwrap();
+        assert_eq!((bot.as_str(), off), ("b_ann", vec![super::v1_key("app.buwiz.books"), super::mcp_key("x")]));
+        assert_eq!(super::off_sentence("Books", "b_ann"), "Books is switched off for this Bot. Turn it on in Tools to use it here.");
+        assert_eq!(super::off_sentence("Books", "@chats"), "Books is switched off for plain chats. Turn it on in Tools to use it here.");
     }
 
     #[test]

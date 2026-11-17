@@ -344,7 +344,7 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
 /// A scope's resolve or complete is for a chat, and the plugin must be on for that chat's Bot.
 fn scope_gate(ctx: &HubCtx, b: &Value) -> Result<(), V1Error> {
     let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default();
-    match crate::hub::policy::scope_refusal(ctx, text("thread"), &format!("v1:{}", text("plugin"))) {
+    match crate::hub::policy::scope_refusal(ctx, text("thread"), &crate::hub::policy::keys::v1_key(text("plugin"))) {
         Some((code, message)) => Err(V1Error::new(code, message)),
         None => Ok(()),
     }

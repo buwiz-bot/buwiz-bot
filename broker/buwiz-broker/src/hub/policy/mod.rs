@@ -183,11 +183,8 @@ pub fn owner_in(s: &crate::hub::store::State, thread: &str) -> String {
 
 /// What an `@` scope's resolve and complete ask first: the plugin or MCP server `key` (`v1:<plugin id>`,
 /// `mcp:<server id>`) must be on for the Bot of the chat `thread`. → the plain sentence when it is
-/// not, or when no chat is named (the switches are a Bot's, so there is no answer without one).
+/// not. A request naming no chat (a command run with no chat open) is the plain chats'.
 pub fn scope_refusal(ctx: &HubCtx, thread: &str, key: &str) -> Option<(&'static str, String)> {
-    if thread.is_empty() {
-        return Some(("invalid_args", "Say which chat this is for: the switches are a Bot's.".to_owned()));
-    }
     let owner = ctx.store.read(|s| owner_in(s, thread));
     if tool_state(ctx, &owner, key) != Pos::Off {
         return None;
@@ -201,11 +198,9 @@ pub fn scope_refusal(ctx: &HubCtx, thread: &str, key: &str) -> Option<(&'static 
 /// off for the chat's Bot, which the composer's `@` menu leaves out. The same switches
 /// [`scope_refusal`] reads.
 pub fn host_scopes_off(ctx: &HubCtx, thread: &str) -> Result<Value, V1Error> {
-    if thread.is_empty() {
-        return V1Error::err("invalid_args", "send ?thread=<chat>");
-    }
     let owner = ctx.store.read(|s| owner_in(s, thread));
-    let mut off: Vec<String> = off_keys(ctx, &owner).into_iter().filter(|k| k.starts_with("v1:") || k.starts_with("mcp:")).collect();
+    let (v1, mcp) = (keys::v1_key(""), keys::mcp_key(""));
+    let mut off: Vec<String> = off_keys(ctx, &owner).into_iter().filter(|k| k.starts_with(&v1) || k.starts_with(&mcp)).collect();
     off.sort();
     Ok(json!({"ok": true, "bot": owner, "off": off}))
 }

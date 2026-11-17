@@ -2772,13 +2772,11 @@ pub struct Store {
     pub mcp_loaded: std::cell::Cell<bool>,
     /// Stale `@` value completions are dropped by generation.
     pub complete_seq: std::cell::Cell<u64>,
-    /// The plugins and MCP servers (`v1:<id>`, `mcp:<id>`) the broker said are off for the Bot of
-    /// a chat (that chat's id with them); the `@` menu leaves them out (slash.rs).
-    pub at_off: std::cell::RefCell<Option<(String, std::collections::HashSet<String>)>>,
-    /// Goes up each time the `@` menu opens: an older answer is dropped.
+    /// What the broker said of the plugins and servers off for the Bot of a chat, for the `@`
+    /// menu's opening (slash.rs).
+    pub at_off: std::cell::RefCell<crate::slash::AtOff>,
+    /// Goes up with each ask and each end of an opening: an older answer is dropped.
     pub at_off_seq: std::cell::Cell<u64>,
-    /// An answer is on its way.
-    pub at_off_asking: std::cell::Cell<bool>,
     /// A picked `@` token's label (its chip shows it).
     pub token_labels: std::cell::RefCell<std::collections::HashMap<String, String>>,
 
@@ -3315,9 +3313,8 @@ impl Store {
             mcp_asked: std::cell::Cell::new(None),
             mcp_loaded: std::cell::Cell::new(false),
             complete_seq: std::cell::Cell::new(0),
-            at_off: std::cell::RefCell::new(None),
+            at_off: std::cell::RefCell::new(crate::slash::AtOff::Idle),
             at_off_seq: std::cell::Cell::new(0),
-            at_off_asking: std::cell::Cell::new(false),
             token_labels: std::cell::RefCell::new(std::collections::HashMap::new()),
             at_open: signal(false),
             sending: signal(std::collections::BTreeSet::new()),

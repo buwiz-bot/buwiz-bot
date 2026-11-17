@@ -284,6 +284,16 @@ fn change_records<R>(f: impl FnOnce(&mut Records) -> R) -> R {
     out
 }
 
+/// Whether `entry` may attach to `thread`: the broker's switches for that chat's Bot have it on.
+/// Closed when the broker does not say. The Err is what the person is told.
+fn attach_allowed(b: &dyn host_api::Broker, thread: &str, entry: &PluginEntry) -> Result<(), String> {
+    match host_api::scopes_off(b, thread) {
+        Ok((bot, off)) if off.contains(&host_api::v1_key(&entry.id)) => Err(host_api::off_sentence(&entry.title, &bot)),
+        Ok(_) => Ok(()),
+        Err(_) => Err("Couldn't check this Bot's tools. Try again.".to_owned()),
+    }
+}
+
 /// The chat a v1 app attaches to: the open one.
 struct OpenChat;
 
@@ -298,6 +308,10 @@ impl super::native::Chat for OpenChat {
         let Ok(k) = V1Key::parse(key) else { return false };
         let entry = ENTRIES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.id == k.plugin).cloned();
         let Some(entry) = entry else { return false };
+        if let Err(why) = attach_allowed(&broker(), &thread, &entry) {
+            super::to_store(move |_| crate::toast::show(why));
+            return false;
+        }
         let (token, title) = (token.to_owned(), title.to_owned());
         let added = change_records(|r| r.attach(&thread, &token, &title, &entry));
         if added {
@@ -3345,6 +3359,25 @@ mod tests {
     use super::*;
 
     const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
+
+    /// A plugin off for the chat's Bot cannot attach to that chat, and a broker that does not
+    /// say is a no: the same sentence the person gets elsewhere.
+    #[test]
+    fn a_plugin_off_for_the_chats_bot_cannot_attach_there() {
+        struct Says(Result<Value, ()>);
+        impl host_api::Broker for Says {
+            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, super::super::RoxError> {
+                assert_eq!(route, "/v1/host/tools/off?thread=t1");
+                self.0.clone().map_err(|_| super::super::RoxError::new("plugin_unavailable", "down"))
+            }
+        }
+        let books = PluginEntry { id: "app.buwiz.books".into(), title: "Books".into(), ..Default::default() };
+        let off = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.books"]})));
+        assert_eq!(attach_allowed(&off, "t1", &books).unwrap_err(), "Books is switched off for this Bot. Turn it on in Tools to use it here.");
+        let on = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.other"]})));
+        assert!(attach_allowed(&on, "t1", &books).is_ok());
+        assert!(attach_allowed(&Says(Err(())), "t1", &books).is_err(), "fails closed");
+    }
 
     /// Save that cannot send (a save of the same setup runs, or a check
     /// fails) tells its caller why, so a card that went busy is never left

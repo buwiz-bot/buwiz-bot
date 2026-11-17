@@ -198,16 +198,20 @@ async fn a_plugin_off_for_a_bot_is_refused_for_resolve_and_complete_and_never_ca
 }
 
 #[tokio::test]
-async fn a_plugin_off_for_plain_chats_is_refused_there_and_a_chat_must_be_named() {
+async fn a_plugin_off_for_plain_chats_is_refused_there_and_no_chat_named_is_plain_chats() {
     let b = bed("v1chats").await;
     b.switch("@chats", &format!("v1:{FX}"), "off");
     let (status, v) = b.resolve_v1(Some(&b.plain), false).await;
     assert_eq!((status, v["code"].as_str()), (409, Some("disabled")));
     assert_eq!(v["message"], "Scope Fixture is switched off for plain chats. Turn it on in Tools to use it here.");
     assert_eq!(b.resolve_v1(Some(&b.ann), false).await.0, 200, "a Bot's own switches are its own");
+    // no chat named (a command run with no chat open) is the plain chats': off there, refused
     let (status, v) = b.resolve_v1(None, false).await;
-    assert_eq!((status, v["code"].as_str()), (400, Some("invalid_args")), "{v}");
+    assert_eq!((status, v["code"].as_str()), (409, Some("disabled")), "{v}");
     assert_eq!(b.plugin_calls(), 1, "only Ann's was answered");
+    b.switch("@chats", &format!("v1:{FX}"), "on");
+    assert_eq!(b.resolve_v1(None, true).await.0, 200, "on for plain chats: answered");
+    assert_eq!(b.plugin_calls(), 2);
     b.done().await;
 }
 
@@ -227,9 +231,14 @@ async fn an_mcp_server_off_for_a_bot_is_refused_for_resolve_and_complete_and_nev
         assert!(v.get("choices").is_some() || v["ok"] == json!(true), "{v}");
     }
     assert_eq!(b.mcp_calls(), 2);
+    // no chat named is the plain chats': on there, answered; off there, refused
     let v = b.resolve_mcp(None, false).await;
-    assert_eq!((v["ok"].clone(), v["code"].as_str()), (json!(false), Some("invalid_args")), "{v}");
-    assert_eq!(b.mcp_calls(), 2);
+    assert!(v.get("choices").is_some() || v["ok"] == json!(true), "{v}");
+    assert_eq!(b.mcp_calls(), 3);
+    b.switch("@chats", "mcp:apps", "off");
+    let v = b.resolve_mcp(None, false).await;
+    assert_eq!((v["ok"].clone(), v["code"].as_str()), (json!(false), Some("disabled")), "{v}");
+    assert_eq!(b.mcp_calls(), 3);
     b.done().await;
 }
 
@@ -260,7 +269,8 @@ async fn the_menu_asks_which_plugins_and_servers_are_off_for_the_chats_bot() {
     // the answer is the one the refusal reads: switching it back is seen at once
     b.switch("b_ann", "mcp:apps", "on");
     assert_eq!(b.off_for(&b.ann).await.1["off"], json!([format!("v1:{FX}")]));
-    assert_eq!(b.host(Method::GET, "/v1/host/tools/off", None).await.0, 400, "a chat must be named");
+    let (_, v) = b.host(Method::GET, "/v1/host/tools/off", None).await;
+    assert_eq!(v["bot"], "@chats", "no chat named is plain chats'");
     b.done().await;
 }
 

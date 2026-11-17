@@ -16,6 +16,16 @@ pub const GROUPS: [&str; 11] = ["shell", "web", "apps", "office", "routines", "m
 const APP_TOOLS: [&str; 8] = ["app_icon", "app_details_update", "launch_app", "close_app", "promote_app", "demote_app", "set_version", "view_code"];
 const MEMORY_TOOLS: [&str; 3] = ["memory_add", "memory_list", "memory_remove"];
 
+/// The switch key of MCP server `id`.
+pub fn mcp_key(id: &str) -> String {
+    format!("mcp:{id}")
+}
+
+/// The switch key of v1 plugin `id` (its full id).
+pub fn v1_key(id: &str) -> String {
+    format!("v1:{id}")
+}
+
 /// The key of the group tool `name`, without reading any plugin or server.
 fn group_of(name: &str) -> Option<&'static str> {
     match name {
@@ -44,21 +54,21 @@ pub fn key_of(ctx: &HubCtx, name: &str, surface: Option<&Value>) -> Option<Strin
         return None;
     }
     if let Some((server, _)) = mcp::parse_mcp_name(name) {
-        return Some(format!("mcp:{server}"));
+        return Some(mcp_key(&server));
     }
     if defs::builtin_names().any(|b| b == name) {
         return None;
     }
-    v1::tool_plugin(v1::view(ctx).as_ref(), name, surface).map(|p| format!("v1:{p}"))
+    v1::tool_plugin(v1::view(ctx).as_ref(), name, surface).map(|p| v1_key(&p))
 }
 
 /// The key of a deferred app's id (`app_tools_load`'s `app`): a server's, else a v1
 /// plugin's by its short name.
 pub fn key_of_app(ctx: &HubCtx, app: &str) -> Option<String> {
     if mcp::rows(ctx, "WHERE id=?", &[&app]).first().is_some() {
-        return Some(format!("mcp:{app}"));
+        return Some(mcp_key(app));
     }
-    v1::view(ctx).rows().into_iter().find(|r| r.short == app).map(|r| format!("v1:{}", r.id))
+    v1::view(ctx).rows().into_iter().find(|r| r.short == app).map(|r| v1_key(&r.id))
 }
 
 /// A key's row: (label, sub line), or `None` for no such key.
