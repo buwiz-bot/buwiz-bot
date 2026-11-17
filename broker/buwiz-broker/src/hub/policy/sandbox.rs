@@ -126,11 +126,9 @@ fn quoted(p: &Path) -> Option<String> {
     (!s.contains(['"', '\\', '\n', '\r'])).then(|| format!("\"{s}\""))
 }
 
-/// The ports the shell may not reach: this broker's, and its Node's while one runs.
+/// The ports the shell may not reach: this broker's.
 pub fn own_ports() -> Vec<u16> {
-    let mut ports = vec![crate::hub::market::node_paths().1];
-    ports.extend(crate::node::running_port().filter(|p| !ports.contains(p)));
-    ports
+    vec![crate::hub::market::own_port()]
 }
 
 /// The home folder the shell starts in.

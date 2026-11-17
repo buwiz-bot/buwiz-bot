@@ -3,7 +3,7 @@
 
 use super::*;
 
-const TOOLS: [&str; 4] = ["fx_account_use", "fx_account_fail", "fx_account_read", "fx_echo"];
+const TOOLS: [&str; 5] = ["fx_account_use", "fx_account_fail", "fx_account_read", "fx_account_dropped", "fx_echo"];
 const USE: &str = "/v1/host/plugins/app.buwiz.fixture/accounts/google/use";
 
 /// An open whose app calls `tool` with `args` as it mounts.
@@ -124,5 +124,30 @@ fn a_result_after_the_screen_closed_switches_nothing() {
     }
     o.ctx.close();
     assert_eq!(refused(&mut o)["code"], "closed");
+    assert!(switched(&o).is_empty());
+}
+
+/// The broker ran the tool and dropped the switch, with its marker: the tool's
+/// answer stands, nothing is switched, and the person's own press reads why.
+#[test]
+fn a_switch_the_broker_dropped_keeps_the_answer_and_tells_the_person() {
+    let mut o = open(false, false, "fx_account_dropped", work());
+    let answer: Value = serde_json::from_str(&o.wait("{")).unwrap();
+    assert_eq!(answer["switched"], true, "the tool's own answer");
+    assert_eq!(answer["account_use"], json!({"code": "permission_denied", "message": "Only a first-party plugin can switch accounts."}));
+    assert!(answer.get("_meta").is_none(), "the marker is the Bot's: the app never sees it");
+    assert!(switched(&o).is_empty());
+    assert_eq!(o.broker.calls.lock().unwrap().len(), 1, "the tool ran once");
+}
+
+/// An agent's press that the broker let through to a read: the account was not
+/// switched, and the action's refused sentences say so to the model.
+#[test]
+fn a_switch_the_broker_dropped_on_the_ais_press_is_told_to_the_agent() {
+    let mut o = open(true, true, "fx_account_dropped", work());
+    let said = refused(&mut o);
+    assert_eq!(said["code"], "permission_denied");
+    assert!(said["message"].as_str().unwrap().contains("the account was not switched"), "{said}");
+    assert!(press::peek_refused().iter().any(|h| matches!(h, press::Held::Said(s) if s.contains("the account was not switched"))));
     assert!(switched(&o).is_empty());
 }

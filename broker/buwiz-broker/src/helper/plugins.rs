@@ -364,7 +364,8 @@ fn refuse<T>(code: &str, message: impl Into<String>) -> Result<T, Fail> {
 pub struct Options {
     pub db: PathBuf,
     pub keys: Keystore,
-    pub trust_file: PathBuf,
+    /// the plugin trust list; `None` trusts nothing
+    pub trust_file: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
     pub clock: Clock,
     pub timeouts: Timeouts,
@@ -375,7 +376,7 @@ pub struct Options {
 pub struct Host {
     db: Mutex<Connection>,
     keys: Keystore,
-    trust_file: PathBuf,
+    trust_file: Option<PathBuf>,
     log_dir: Option<PathBuf>,
     pub clock: Clock,
     pub timeouts: Timeouts,
@@ -432,7 +433,7 @@ impl Host {
 
     /// The trust store, read now.
     pub fn trust(&self) -> Trust {
-        Trust::load(&self.trust_file)
+        self.trust_file.as_deref().map(Trust::load).unwrap_or_default()
     }
 
     fn sql<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, V1Error> {
@@ -1775,7 +1776,7 @@ mod tests {
             let host = Host::new(Options {
                 db: root.join("app.db"),
                 keys: Keystore::from_spec(&format!("file:{}", root.join("keys").display())).unwrap(),
-                trust_file: root.join("trust.json"),
+                trust_file: Some(root.join("trust.json")),
                 log_dir: None,
                 clock: Clock::system(),
                 timeouts: Timeouts::default(),

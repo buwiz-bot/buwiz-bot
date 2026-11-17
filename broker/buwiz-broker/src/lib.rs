@@ -1,21 +1,17 @@
-//! buwiz-broker: the Rox broker's front door (the Rust broker plan, phase 1).
+//! buwiz-broker: the broker's front door.
 //!
-//! It owns the broker's port and answers `/health`, `/meta` and the routes
-//! ported so far (`leaf`, and with `BUWIZ_BROKER_HUB=1` the brain's, `hub`) itself. Every other request goes to the Node broker, which it runs on a free loopback
-//! port and restarts when it exits. Bytes, headers and streams pass through
-//! unchanged: server-sent events, long polls, ranges, raw webhook bodies. A
-//! route group moves into Rust in a later phase by answering here instead of
-//! forwarding.
+//! It owns the broker's port and answers `/health`, `/meta` and every route
+//! itself: `leaf`, the line and the MCP routes, and with `BUWIZ_BROKER_HUB=1`
+//! the brain's (`hub`). It forwards nothing.
 
 pub mod config;
+pub mod front_door;
 pub mod guard;
 pub mod helper;
 pub mod hub;
 pub mod js;
 pub mod leaf;
-pub mod node;
 pub mod office;
-pub mod proxy;
 pub mod v1;
 
 #[cfg(test)]

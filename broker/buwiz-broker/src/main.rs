@@ -1,7 +1,5 @@
-//! buwiz-broker: binds the broker's port first (a second instance exits
-//! without starting Node), then runs Node behind it and serves. With the
-//! hub on and `BUWIZ_BROKER_NO_NODE=1` it starts no Node at all: every route
-//! is Rust's or the hub's 404 (plan phase 7).
+//! buwiz-broker: binds the broker's port first (a second instance exits),
+//! then serves every route itself (`front_door`).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,8 +13,7 @@ use buwiz_broker::helper::mcp_servers::McpHost;
 use buwiz_broker::helper::plugins::{Clock, Host, Options, Timeouts};
 use buwiz_broker::hub::{ctx::HubCtx, Hub};
 use buwiz_broker::leaf::Leaf;
-use buwiz_broker::node::{self, Node};
-use buwiz_broker::proxy::FrontDoor;
+use buwiz_broker::front_door::FrontDoor;
 
 #[tokio::main]
 async fn main() {
@@ -42,6 +39,7 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    buwiz_broker::hub::market::init_paths(&config);
     // read once: a setting this build can't use stops it here, and nothing
     // downstream carries on without one or falls back to the real Google
     let accounts = match buwiz_broker::helper::plugins::AccountsConfig::from_env(config.port) {
@@ -51,13 +49,10 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // read once: the plugin trust list the broker's plugin hosts use
+    let trust_env = std::env::var("BUWIZ_TRUST_FILE").ok();
+    let trust = config.trust_file(trust_env.as_deref());
     let hub_on = buwiz_protocol::env::var("BUWIZ_BROKER_HUB").as_deref() == Some("1");
-    // `--no-node` (the broker inside Rox.app, 7.1) or BUWIZ_BROKER_NO_NODE=1
-    let no_node = config.no_node || buwiz_protocol::env::var("BUWIZ_BROKER_NO_NODE").as_deref() == Some("1");
-    if no_node && !hub_on {
-        eprintln!("buwiz-broker: --no-node (BUWIZ_BROKER_NO_NODE=1) needs BUWIZ_BROKER_HUB=1 (the hub answers what Node would)");
-        std::process::exit(2);
-    }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", config.port)).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -71,8 +66,7 @@ async fn main() {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let own_port = config.port;
     let busy = move || own_port != buwiz_protocol::broker_dir::OWNER_PORT && buwiz_protocol::broker_dir::port_answers(buwiz_protocol::broker_dir::OWNER_PORT);
-    let chunks = std::env::var("NSH_CHUNK_DIR").ok();
-    match config.settle_owner_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref(), chunks.as_deref(), &home, &busy) {
+    match config.settle_owner_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref(), &home, &busy) {
         None | Some(buwiz_protocol::broker_dir::Move::Nothing | buwiz_protocol::broker_dir::Move::AlreadyThere) => {}
         Some(buwiz_protocol::broker_dir::Move::Moved { backup, rewritten, linked }) => {
             eprintln!(
@@ -87,8 +81,8 @@ async fn main() {
         }
         Some(m) => eprintln!("buwiz-broker: {} not moved to {} this time ({m:?}); using it", buwiz_protocol::broker_dir::OLD_DIR_NAME, buwiz_protocol::broker_dir::DIR_NAME),
     }
-    // what this broker hosts behind the line, for Node (BUWIZ_LINE_HOSTS):
-    // v1 plugins (phase 3) and v0 MCP servers (phase 4), each switched on
+    // what this broker hosts behind the line: v1 plugins and v0 MCP
+    // servers, each switched on
     let hosts: Vec<&str> = [("v1", "BUWIZ_BROKER_V1_HOST"), ("mcp", "BUWIZ_BROKER_MCP_HOST")]
         .into_iter()
         .filter(|(_, var)| buwiz_protocol::env::var(var).as_deref() == Some("1"))
@@ -98,29 +92,23 @@ async fn main() {
         None
     } else {
         let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
-        let trust = config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
-        match (plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
+        match (plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust.clone(), false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
+                // nothing receives this token now that Node is gone; the line is a leftover that goes with the Node code
                 let token = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
-                config.node_env.push(("BUWIZ_V1_LINE".to_owned(), format!("http://127.0.0.1:{}", config.port)));
-                config.node_env.push(("BUWIZ_V1_LINE_TOKEN".to_owned(), token.clone()));
-                config.node_env.push(("BUWIZ_LINE_HOSTS".to_owned(), hosts.join(",")));
                 Some(Arc::new(Line::new(host, mcp, token)))
             }
             (Err(e), _) | (_, Err(e)) => {
-                eprintln!("buwiz-broker: the line: {e}; Node hosts everything");
+                eprintln!("buwiz-broker: the line: {e}; it hosts nothing");
                 None
             }
         }
     };
     let allowed = buwiz_broker::guard::allowed_origins(config.port, buwiz_protocol::env::var("BUWIZ_ALLOWED_ORIGINS").as_deref());
-    // the hub (plan phase 5, D30): the brain's routes answered here, and
-    // Node in its office role, holding none of the brain's state; so this
-    // broker hosts the v1 plugins and MCP servers the brain calls, the
-    // line's when it has them, else its own
+    // the hub: the brain's routes answered here, hosting the v1 plugins and
+    // MCP servers the brain calls, the line's when it has them, else its own
     let hub = hub_on.then(|| {
-        config.node_env.push(("BUWIZ_NODE_ROLE".to_owned(), "office".to_owned()));
         let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
         let db = data.join("generated").join("app.db");
         let mut ctx = HubCtx::new(data.clone(), Clock::system());
@@ -132,7 +120,7 @@ async fn main() {
             ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
         }
         if ctx.plugins.is_none() {
-            match plugin_host(&data, &db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), accounts.clone()) {
+            match plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust.clone(), false, Some(data.join("v1").join("apps")), accounts.clone()) {
                 Ok(host) => {
                     ctx.sessions = Some(buwiz_broker::helper::sessions::Sessions::new(host.clone()));
                     ctx.plugins = Some(host);
@@ -150,13 +138,7 @@ async fn main() {
         hub.start();
         hub
     });
-    // no Node: nothing started, not even `node --version` for /meta
-    let node = Arc::new(if no_node { Node::absent() } else { Node::default() });
-    let _ = node.version.set(if no_node { String::new() } else { node::version_of(&config.node) });
-    let supervisor = (!no_node).then(|| tokio::spawn(node::supervise(config.clone(), node.clone())));
-    let leaf = (buwiz_protocol::env::var("BUWIZ_BROKER_FORWARD_ALL").as_deref() != Some("1"))
-        .then(|| Leaf::new(config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref()), allowed.clone()));
-    let door = FrontDoor::new(node.clone(), leaf);
+    let door = FrontDoor::new(Leaf::new(config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref()), allowed.clone()));
     let door = match &line {
         // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
         Some(line) if hosts.contains(&"mcp") => {
@@ -181,6 +163,12 @@ async fn main() {
         None => door,
     });
     eprintln!("buwiz-broker on http://127.0.0.1:{}", config.port);
+    let off = config.off_without_assets(trust_env.as_deref());
+    if !off.is_empty() {
+        eprintln!("buwiz-broker: started without --assets, so off: {}", off.join(", "));
+    } else if config.assets_lack_a_trust_list(trust_env.as_deref()) {
+        eprintln!("buwiz-broker: --assets has no trust.json and BUWIZ_TRUST_FILE is not set, so off: the plugin trust list");
+    }
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
     let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT handler");
@@ -216,11 +204,6 @@ async fn main() {
         if let Some(mcp) = &ctx.mcp {
             mcp.stop_all().await;
         }
-    }
-    // inside the 3 s a caller gives before SIGKILL (the broker's tests do)
-    node.stop(Duration::from_millis(2500)).await;
-    if let Some(supervisor) = supervisor {
-        let _ = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
     }
     eprintln!("buwiz-broker: stopped");
 }
@@ -320,7 +303,7 @@ fn data_keystore(data: &std::path::Path) -> Result<buwiz_broker::helper::keystor
 
 /// The v1 plugin host on `db`, its keystore that of data dir `data`;
 /// `accounts` where its sign-ins go.
-fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: std::path::PathBuf, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
+fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std::path::PathBuf>, trust_file: Option<std::path::PathBuf>, manual_clock: bool, apps_dir: Option<std::path::PathBuf>, accounts: buwiz_broker::helper::plugins::AccountsConfig) -> Result<Arc<Host>, String> {
     let keys = data_keystore(data)?;
     let mut timeouts = Timeouts::default();
     // BUWIZ_V1_CALL_TIMEOUT_MS shortens the 120 s call limit (tests)
@@ -365,8 +348,8 @@ async fn helper(args: &[String]) -> i32 {
         eprintln!("{usage} (with BUWIZ_LINE_TOKEN set)");
         return 2;
     };
-    let trust = std::env::var("BUWIZ_TRUST_FILE").map(std::path::PathBuf::from).unwrap_or_else(|_| "src/v1/trust.json".into());
-    // the redirect OAuth flows name: the front door's (Node's PUBLIC_PORT)
+    let trust = std::env::var("BUWIZ_TRUST_FILE").ok().filter(|f| !f.is_empty()).map(std::path::PathBuf::from);
+    // the redirect OAuth flows name: the front door's
     let public = ["BUWIZ_PUBLIC_PORT", "PORT"].iter().find_map(|k| buwiz_protocol::env::var(k)?.parse::<u16>().ok()).unwrap_or(8787);
     let accounts = match buwiz_broker::helper::plugins::AccountsConfig::from_env(public) {
         Ok(accounts) => accounts,
