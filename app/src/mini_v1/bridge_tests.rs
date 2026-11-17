@@ -143,13 +143,14 @@ impl host_api::Broker for FakeBroker {
                         }
                         r
                     }
-                    "fx_account_use" | "fx_account_fail" | "fx_account_read" => {
+                    "fx_account_use" | "fx_account_fail" | "fx_account_read" | "fx_account_dropped" => {
                         std::thread::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0)));
                         let mut r = match env["tool"].as_str().unwrap() {
                             "fx_account_fail" => json!({"isError": true, "content": [{"type": "text", "text": "no"}]}),
                             _ => json!({"content": [{"type": "text", "text": "switched"}], "structuredContent": {"switched": true}}),
                         };
-                        r["_meta"] = json!({"buwiz/account_use": args["field"]});
+                        // as the broker passes it on when the caller may not switch
+                        r["_meta"] = if env["tool"] == "fx_account_dropped" { json!({"buwiz/account_use_refused": true}) } else { json!({"buwiz/account_use": args["field"]}) };
                         if !args["document"].is_null() {
                             r["_meta"]["buwiz/document"] = args["document"].clone();
                         }
@@ -166,7 +167,7 @@ impl host_api::Broker for FakeBroker {
             }
             "/v1/host/ui/press" => Ok(match body["tool"].as_str() {
                 Some("fx_echo" | "fx_slow" | "fx_document") => json!({"allow": true, "effect": "draft"}),
-                Some("fx_read" | "fx_account_read") => json!({"allow": true, "effect": "read"}),
+                Some("fx_read" | "fx_account_read" | "fx_account_dropped") => json!({"allow": true, "effect": "read"}),
                 Some("fx_post") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_card"}),
                 Some("fx_long") => json!({"allow": false, "hold": true, "effect": "write", "describe": "fx_long_card"}),
                 Some("fx_refused_draft") => json!({"allow": false, "hold": true, "effect": "draft", "describe": "fx_no_card"}),

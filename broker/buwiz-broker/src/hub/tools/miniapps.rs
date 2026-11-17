@@ -1971,7 +1971,10 @@ mod tests {
         }
 
         async fn call(&self, actor: Value, tool: &str, field: Option<Value>) -> Result<Value, crate::v1::V1Error> {
-            let args = field.map_or(json!({}), |f| json!({"result_meta": {"buwiz/account_use": f}}));
+            let mut args = json!({"query": "q1"});
+            if let Some(f) = field {
+                args["result_meta"] = json!({"buwiz/account_use": f});
+            }
             let envelope = json!({
                 "v": 1, "typ": "buwiz-call", "plugin": FX, "app": "board", "open_id": self.open_id, "tool": tool, "args": args, "actor": actor,
                 "ts": crate::hub::store::now_ms(), "nonce": buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<16>()),
@@ -1989,33 +1992,47 @@ mod tests {
 
     /// B7: only the person's signed call carries a switch to the Bot. For the
     /// AI's press, a routine or a plugin that isn't first-party the call stands
-    /// (the tool ran once and its result comes back) without the switch, so a
-    /// retry repeats nothing. `fx_search` is a read, so everyone reaches it.
+    /// (the tool ran once and its own result comes back unchanged) and the
+    /// switch is replaced by a marker that says it was dropped, so a retry
+    /// repeats nothing. `fx_search` is a read, so everyone reaches it.
     #[tokio::test]
     async fn a_switch_stands_only_on_the_persons_signed_call_to_a_first_party_plugin() {
         let b = accounts_bed("acctuse", HostClock::system()).await;
         let board = Board::open(&b).await;
         let field = json!({"account": "google", "label": "work"});
+        // what fx_search answers for query q1, as the fixture builds it
+        let own = json!({"content": [{"type": "text", "text": "{\"items\":[{\"id\":\"q1\"}]}"}], "structuredContent": {"items": [{"id": "q1"}]}});
+        let with_meta = |meta: Value| {
+            let mut r = own.clone();
+            r["_meta"] = meta;
+            r
+        };
         let out = board.call(json!("person"), "fx_echo", Some(field.clone())).await.unwrap();
         assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use": field}));
         let out = board.call(json!("person"), "fx_search", Some(field.clone())).await.unwrap();
-        assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use": field}));
+        assert_eq!(out["result"], with_meta(json!({"buwiz/account_use": field})));
         let mut runs = ran(&b, "fx_search").await;
         for actor in [json!("agent"), json!("routine"), json!("app"), json!("Person"), json!(true), Value::Null] {
+            // a session takes 20 calls a second
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
             let out = board.call(actor.clone(), "fx_search", Some(field.clone())).await.unwrap_or_else(|e| panic!("{actor}: {} {}", e.code, e.message));
             assert_eq!(out["ok"], true, "{actor}");
-            assert!(out["result"].get("_meta").is_none(), "{actor}: the result stands without the switch");
-            assert!(out["result"]["content"].is_array() || out["result"]["structuredContent"].is_object(), "{actor}: the tool's own result comes back");
+            assert_eq!(out["result"], with_meta(json!({"buwiz/account_use_refused": true})), "{actor}: the tool's own result, the switch swapped for the marker");
             runs += 1;
             assert_eq!(ran(&b, "fx_search").await, runs, "{actor}: the tool ran once");
-            assert!(board.call(actor, "fx_search", None).await.unwrap()["result"].get("_meta").is_none(), "a plain read still goes");
+            // a retry runs the tool once more, one run per call, and answers the same
+            let again = board.call(actor.clone(), "fx_search", Some(field.clone())).await.unwrap();
+            assert_eq!(again["result"], out["result"], "{actor}: a retry");
+            runs += 1;
+            assert_eq!(ran(&b, "fx_search").await, runs, "{actor}: a retry is one more run");
+            assert_eq!(board.call(actor, "fx_search", None).await.unwrap()["result"], own, "a plain read has no marker");
             runs += 1;
         }
         assert_eq!(board.call(json!("agent"), "fx_echo", Some(field.clone())).await.unwrap_err().message, "fx_echo is a person's to run");
         revoke(&b);
         let before = ran(&b, "fx_echo").await;
         let out = board.call(json!("person"), "fx_echo", Some(field)).await.unwrap();
-        assert!(out["result"].get("_meta").is_none(), "a plugin that isn't first-party switches nothing");
+        assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use_refused": true}), "a plugin that isn't first-party switches nothing");
         assert_eq!(ran(&b, "fx_echo").await, before + 1, "and its tool ran once");
         assert!(board.call(json!("person"), "fx_echo", None).await.is_ok());
         b.host.stop_all().await;
