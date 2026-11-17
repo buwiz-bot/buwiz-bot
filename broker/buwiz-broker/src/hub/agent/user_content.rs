@@ -74,7 +74,7 @@ pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
 async fn render(ctx: &HubCtx, p: &Path) -> Option<Value> {
     let files = ctx.store.gen_dir().join("files");
     let rel = p.strip_prefix(&files).ok()?.to_string_lossy().into_owned();
-    let port = crate::hub::market::node_paths().1;
+    let port = crate::hub::market::own_port();
     let url = url::Url::parse(&format!("http://127.0.0.1:{port}/file/render?path={}", crate::hub::library::botctx::encode_uri_component(&rel))).ok()?;
     let r = crate::helper::http::send(&crate::helper::http::Req::get(url)).await.ok()?;
     serde_json::from_str(&r.text().await.ok()?).ok()
