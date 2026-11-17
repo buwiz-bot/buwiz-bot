@@ -244,7 +244,7 @@ it is not running.
    `backups/<time>/` dir holding `app.db` and `buwiz-broker/`.
 3. `scripts/broker-live use-bundled`. Check that it ends with
    `Buwiz Bot.app's buwiz-broker on 8787`. If the broker doesn't come up, the
-   script says so and exits 1; nothing holds the port then.
+   script stops the broker it started, says so and exits 1; nothing holds the port then.
 4. `scripts/broker-live status`. Check:
    - `health: 200` and `mode: bundled`;
    - every `plugin:` line is running;

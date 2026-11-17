@@ -52,21 +52,46 @@ impl crate::hub::library::botctx::PluginCatalog for BotCatalog {
     }
 }
 
-/// The folder of the static files: `--assets`, read as main.rs reads it, made
-/// absolute. `None` without the flag: nothing is looked for anywhere else.
+/// What the running broker's start settled once: the assets folder and the
+/// port it answers on.
+struct Paths {
+    assets: Option<PathBuf>,
+    port: u16,
+}
+
+static PATHS: std::sync::OnceLock<Paths> = std::sync::OnceLock::new();
+
+fn resolve(config: Option<&crate::config::Config>) -> Paths {
+    let assets = config.and_then(|c| c.assets_dir()).map(|dir| std::env::current_dir().map(|d| d.join(dir)).unwrap_or_else(|_| dir.to_owned()));
+    let port = buwiz_protocol::env::var("BUWIZ_PUBLIC_PORT").and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787);
+    Paths { assets, port }
+}
+
+/// `main` hands over what it parsed; the first call wins. Without it (a unit
+/// test), the first read works the same out of the process's own arguments
+/// and environment. Code that needs other values takes them as parameters
+/// (`Market::load`, `mock_files`), as the tests do.
+pub fn init_paths(config: &crate::config::Config) {
+    let _ = PATHS.set(resolve(Some(config)));
+}
+
+fn paths() -> &'static Paths {
+    PATHS.get_or_init(|| {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        resolve(crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok().as_ref())
+    })
+}
+
+/// The folder of the static files: `--assets`, made absolute. `None` without
+/// the flag: nothing is looked for anywhere else.
 pub fn assets_dir() -> Option<PathBuf> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok()?;
-    let dir = config.assets_dir()?.to_owned();
-    Some(std::env::current_dir().map(|d| d.join(&dir)).unwrap_or(dir))
+    paths().assets.clone()
 }
 
 /// The port this broker answers on (what `BUWIZ_PUBLIC_PORT` says, else
-/// `--port`, `PORT`, 8787), read as main.rs reads it.
+/// `--port`, `PORT`, 8787).
 pub fn own_port() -> u16 {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok();
-    buwiz_protocol::env::var("BUWIZ_PUBLIC_PORT").and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787)
+    paths().port
 }
 
 /// The tables the market writes, as state.mjs makes them (IF NOT EXISTS,

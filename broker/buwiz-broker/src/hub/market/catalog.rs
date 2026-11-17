@@ -229,8 +229,8 @@ pub fn catalog_file(server: &Path) -> PathBuf {
 
 /// What the market reads once: the catalog file, and where installs go.
 pub struct Market {
-    /// the assets folder (`--assets`); empty without one, and then the catalog is too
-    pub server: PathBuf,
+    /// the assets folder (`--assets`); `None` without one: no catalog and no bundled plugins
+    pub server: Option<PathBuf>,
     /// `<data>/plugins`
     pub plugins: PathBuf,
     /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`, old name `${ROX_FILES_DIR}`)
@@ -258,16 +258,16 @@ impl Market {
     /// hints, `fields`, …). No file, or no plugins in it, is an empty
     /// catalog.
     pub fn load(server: &Path, data: &Path, port: u16) -> Self {
-        Self::from_catalog(read_json(&catalog_file(server)), server, data, port)
+        Self::from_catalog(read_json(&catalog_file(server)), Some(server), data, port)
     }
 
     /// No `--assets`: no catalog (not even one `BUWIZ_PLUGIN_CATALOG` names)
     /// and no bundled plugins.
     pub fn without_assets(data: &Path, port: u16) -> Self {
-        Self::from_catalog(None, Path::new(""), data, port)
+        Self::from_catalog(None, None, data, port)
     }
 
-    fn from_catalog(file: Option<Value>, server: &Path, data: &Path, port: u16) -> Self {
+    fn from_catalog(file: Option<Value>, server: Option<&Path>, data: &Path, port: u16) -> Self {
         let file = file.unwrap_or_else(|| json!({ "plugins": [] }));
         let owner = at(file.get("owner"), "name").filter(|v| js::truthy(v)).map(js::string_of);
         let mut out: Vec<Value> = Vec::new();
@@ -300,7 +300,7 @@ impl Market {
             by_key.entry(e.get("key").map(js::string_of).unwrap_or_else(|| "undefined".into())).or_insert(i);
         }
         Self {
-            server: server.to_owned(),
+            server: server.map(Path::to_owned),
             plugins: data.join("plugins"),
             out_dir: data.join("generated").join("files"),
             port,
@@ -392,7 +392,8 @@ impl Market {
         let path = at(src, "path");
         if text(at(src, "type")) == Some("local") || (truthy(path) && !truthy(at(src, "url"))) {
             let rel = js::string_of(path.unwrap_or(&Value::Null));
-            let root = super::join(&self.server.join("plugins"), rel.strip_prefix("./").unwrap_or(&rel));
+            // no assets folder, no bundled plugins
+            let root = super::join(&self.server.as_ref()?.join("plugins"), rel.strip_prefix("./").unwrap_or(&rel));
             return root.exists().then_some(root);
         }
         let dir = self.plugins.join(js::string_of(p.get("name").unwrap_or(&Value::Null)));
@@ -929,5 +930,26 @@ mod tests {
             Value::Object(adjust_servers(Some(&s))),
             json!({ "d": { "url": "https://drivemcp.googleapis.com/mcp/v1", "type": "http" }, "c": { "url": "https://api.cursor.com/x", "unavailable": "Hosted by Cursor — it signs in through a Cursor account, which Buwiz Bot doesn't have" }, "k": { "command": "x" } })
         );
+    }
+
+    /// A fresh data folder under the temp dir.
+    fn data(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("buwiz-market-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("generated")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn mkt_without_assets_has_no_catalog_and_no_bundled_plugins() {
+        let dir = data("no-assets");
+        let mut m = Market::without_assets(&dir, 9);
+        assert!(m.server.is_none() && m.entries.is_empty());
+        // a vendored plugin the catalog would name: with no assets folder its files are nowhere
+        m.sourced.insert("vendored".into(), json!({ "name": "vendored", "source": { "type": "local", "path": "./external_plugins/vendored" } }));
+        let ctx = HubCtx::new(dir.clone(), crate::helper::plugins::Clock::manual());
+        crate::hub::market::schema(&ctx).unwrap();
+        assert_eq!(m.plugin_root(&ctx, "vendored"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

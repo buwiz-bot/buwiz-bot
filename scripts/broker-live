@@ -20,6 +20,7 @@
 # BUWIZ_LOG: its log (default ~/Library/Logs/Buwiz Bot/broker.log, the app's).
 # (ROX_APP and ROX_LOG, the old names, still work.)
 # PORT: default 8787.
+# BUWIZ_HEALTH_TRIES: how many half-seconds to wait for the broker (default 120).
 set -euo pipefail
 # old_name NEW OLD: NEW takes OLD's value (with a warning) when only OLD is set
 old_name() {
@@ -57,7 +58,7 @@ listener() { lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || tru
 health() { curl -s -o /dev/null -w '%{http_code}' -m 5 "$URL/health" 2>/dev/null || true; }
 
 wait_health() {
-  for _ in $(seq 1 120); do
+  for _ in $(seq 1 "${BUWIZ_HEALTH_TRIES:-120}"); do
     [ "$(health)" = 200 ] && return 0
     sleep 0.5
   done
@@ -90,17 +91,34 @@ rox_missing() {
 # the data dir's chunks, the bundle's nsh, without Rox's automation
 # variables; cwd /, its own process group (Rox's start), stdin closed.
 start_rox() {
+  local PIDFILE
   [ -n "$(listener)" ] && { echo "$PORT is taken by $(listener)" >&2; return 1; }
   [ -z "$(rox_missing)" ] || { echo "Buwiz Bot.app's broker is incomplete: $(rox_missing | tr '\n' ' ')" >&2; return 1; }
   mkdir -p "$(dirname "$BUWIZ_LOG")" "$GS"
+  PIDFILE=$(mktemp "${TMPDIR:-/tmp}/broker-live-pid.XXXXXX")
   (cd / && exec env -u GPUI_AGENT -u GPUI_AGENT_TOKEN -u GPUI_AGENT_TOKEN_FILE -u GPUI_AGENT_ADDR -u GPUI_AGENT_ALLOW_RELEASE -u GPUI_AGENT_ACTOR \
     -u PORT -u BUWIZ_PUBLIC_PORT -u ROX_PUBLIC_PORT BUWIZ_BROKER_HUB=1 ROX_BROKER_HUB=1 \
     BUWIZ_BROKER_V1_HOST=1 ROX_BROKER_V1_HOST=1 BUWIZ_BROKER_MCP_HOST=1 ROX_BROKER_MCP_HOST=1 \
     BUWIZ_BROKER_DATA_DIR="$GS" GROK_DATA_DIR="$GS" NSH="$RB/bin/nsh" NSH_HOST="$RB/bin/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
     nohup /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV or die "$ARGV[0]: $!\n"' \
     "$RB_BIN" --port "$PORT" --data "$GS" --assets "$RB/server" --no-node \
-    >>"$BUWIZ_LOG" 2>&1 </dev/null &)
-  wait_health && echo "Buwiz Bot.app's buwiz-broker on $PORT (log $BUWIZ_LOG)"
+    >>"$BUWIZ_LOG" 2>&1 </dev/null &
+    echo $! >"$PIDFILE")
+  local started
+  started=$(cat "$PIDFILE" 2>/dev/null || true)
+  rm -f "$PIDFILE"
+  if wait_health; then
+    echo "Buwiz Bot.app's buwiz-broker on $PORT (log $BUWIZ_LOG)"
+  else
+    # stop what this call started (that pid only), so nothing holds the port
+    if [ -n "$started" ] && kill -0 "$started" 2>/dev/null; then
+      kill -TERM "$started" 2>/dev/null || true
+      for _ in $(seq 1 40); do kill -0 "$started" 2>/dev/null || break; sleep 0.25; done
+      kill -0 "$started" 2>/dev/null && kill -KILL "$started" 2>/dev/null || true
+      echo "stopped the broker it started (pid $started)" >&2
+    fi
+    return 1
+  fi
 }
 
 # Which broker holds the port: bundled (Buwiz Bot.app's), or none, or whatever else.

@@ -83,6 +83,12 @@ impl Config {
         }
     }
 
+    /// `--assets` was given, no `BUWIZ_TRUST_FILE` is, and the assets folder
+    /// has no `trust.json`: the broker starts and trusts nothing.
+    pub fn assets_lack_a_trust_list(&self, trust_env: Option<&str>) -> bool {
+        trust_env.is_none_or(str::is_empty) && self.assets_dir().is_some_and(|dir| !dir.join("trust.json").is_file())
+    }
+
     /// What this start leaves off for want of `--assets`: the plugin catalog
     /// and its bundled plugins, the office pages and seeds, and (unless
     /// `BUWIZ_TRUST_FILE` names one) the trust list. Empty when it was given.
@@ -181,6 +187,22 @@ mod tests {
         assert_eq!(d.off_without_assets(Some("/t/trust.json")), ["the plugin catalog", "the office pages and seeds"]);
         let c = Config::parse(&args(&["--assets", "/a"]), None).unwrap();
         assert!(c.off_without_assets(None).is_empty());
+    }
+
+    #[test]
+    fn assets_with_no_trust_list_are_noticed() {
+        let dir = std::env::temp_dir().join(format!("buwiz-broker-config-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let c = Config::parse(&args(&["--assets", dir.to_str().unwrap()]), None).unwrap();
+        assert!(c.assets_lack_a_trust_list(None));
+        assert!(c.assets_lack_a_trust_list(Some("")));
+        assert!(!c.assets_lack_a_trust_list(Some("/t/trust.json")), "a named file is the environment's to answer for");
+        std::fs::write(dir.join("trust.json"), "{}").unwrap();
+        assert!(!c.assets_lack_a_trust_list(None));
+        // no --assets is the other case, listed by off_without_assets
+        assert!(!Config::parse(&args(&[]), None).unwrap().assets_lack_a_trust_list(None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A temp home, removed when dropped.

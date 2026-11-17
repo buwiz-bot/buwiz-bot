@@ -166,12 +166,32 @@ fn a_named_trust_file_is_not_listed_as_off() {
 }
 
 #[test]
-fn with_assets_it_says_nothing_is_off() {
+fn with_assets_and_a_trust_list_it_says_nothing_is_off() {
     let assets = std::env::temp_dir().join(format!("buwiz-broker-test-assets-{}", std::process::id()));
     std::fs::create_dir_all(&assets).unwrap();
+    std::fs::write(assets.join("trust.json"), "{}").unwrap();
     let b = start_args("assets", &["--assets", assets.to_str().unwrap()]);
-    assert!(!b.stderr().contains("without --assets"), "{}", b.stderr());
+    assert!(!b.stderr().contains("so off"), "{}", b.stderr());
     assert_eq!(get(b.port, "/health").unwrap().0, 200);
+    let _ = std::fs::remove_dir_all(&assets);
+}
+
+/// `--assets` with no `trust.json` in it starts, trusts nothing and says so,
+/// as its own case: the folder is there, the list is not.
+#[test]
+fn assets_with_no_trust_list_say_so_once() {
+    let assets = std::env::temp_dir().join(format!("buwiz-broker-test-assets-notrust-{}", std::process::id()));
+    std::fs::create_dir_all(&assets).unwrap();
+    let b = start_args("assets-no-trust", &["--assets", assets.to_str().unwrap()]);
+    let log = b.stderr();
+    let line = "buwiz-broker: --assets has no trust.json and BUWIZ_TRUST_FILE is not set, so off: the plugin trust list";
+    assert_eq!(log.matches(line).count(), 1, "{log}");
+    assert!(!log.contains("without --assets"), "{log}");
+    assert_eq!(get(b.port, "/health").unwrap().0, 200);
+    // a named trust file is the environment's: no line
+    let trust = assets.join("named.json");
+    let named = start_env("assets-named-trust", &["--assets", assets.to_str().unwrap()], &[("BUWIZ_TRUST_FILE", trust.to_str().unwrap())]);
+    assert!(!named.stderr().contains("so off"), "{}", named.stderr());
     let _ = std::fs::remove_dir_all(&assets);
 }
 

@@ -39,6 +39,7 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    buwiz_broker::hub::market::init_paths(&config);
     // read once: a setting this build can't use stops it here, and nothing
     // downstream carries on without one or falls back to the real Google
     let accounts = match buwiz_broker::helper::plugins::AccountsConfig::from_env(config.port) {
@@ -48,6 +49,9 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // read once: the plugin trust list the broker's plugin hosts use
+    let trust_env = std::env::var("BUWIZ_TRUST_FILE").ok();
+    let trust = config.trust_file(trust_env.as_deref());
     let hub_on = buwiz_protocol::env::var("BUWIZ_BROKER_HUB").as_deref() == Some("1");
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", config.port)).await {
         Ok(listener) => listener,
@@ -88,10 +92,10 @@ async fn main() {
         None
     } else {
         let data = config.data_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref());
-        let trust = config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
         let db = data.join("generated").join("app.db");
-        match (plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust, false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
+        match (plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust.clone(), false, Some(data.join("v1").join("apps")), accounts.clone()), McpHost::new(&db, config.port)) {
             (Ok(host), Ok(mcp)) => {
+                // nothing receives this token now that Node is gone; the line is a leftover that goes with the Node code
                 let token = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<32>());
                 Some(Arc::new(Line::new(host, mcp, token)))
             }
@@ -116,7 +120,7 @@ async fn main() {
             ctx.mcp = hosts.contains(&"mcp").then(|| line.mcp().clone());
         }
         if ctx.plugins.is_none() {
-            match plugin_host(&data, &db, Some(data.join("v1").join("logs")), config.trust_file(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref()), false, Some(data.join("v1").join("apps")), accounts.clone()) {
+            match plugin_host(&data, &db, Some(data.join("v1").join("logs")), trust.clone(), false, Some(data.join("v1").join("apps")), accounts.clone()) {
                 Ok(host) => {
                     ctx.sessions = Some(buwiz_broker::helper::sessions::Sessions::new(host.clone()));
                     ctx.plugins = Some(host);
@@ -159,9 +163,11 @@ async fn main() {
         None => door,
     });
     eprintln!("buwiz-broker on http://127.0.0.1:{}", config.port);
-    let off = config.off_without_assets(std::env::var("BUWIZ_TRUST_FILE").ok().as_deref());
+    let off = config.off_without_assets(trust_env.as_deref());
     if !off.is_empty() {
         eprintln!("buwiz-broker: started without --assets, so off: {}", off.join(", "));
+    } else if config.assets_lack_a_trust_list(trust_env.as_deref()) {
+        eprintln!("buwiz-broker: --assets has no trust.json and BUWIZ_TRUST_FILE is not set, so off: the plugin trust list");
     }
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
