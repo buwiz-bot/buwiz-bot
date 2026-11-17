@@ -123,8 +123,7 @@ const up = () => request("GET", "/health", { timeout: 2000 }).then((r) => r.stat
 const withOld = (k) => [k, k === "BUWIZ_BROKER_DATA_DIR" ? "GROK_DATA_DIR" : k === "BUWIZ_ALLOWED_ORIGINS" ? "GROK_ALLOWED_ORIGINS" : k.replace(/^BUWIZ_/, "ROX_")];
 
 /** The environment startServer gives the broker: this process's, the test
- *  defaults (PORT, BUWIZ_BROKER_DATA_DIR, MOCK=1, the hub and the plugin and
- *  MCP hosts on, no Keychain, no extra origins, a HOME of its own), then
+ *  defaults (PORT, BUWIZ_BROKER_DATA_DIR, MOCK=1, no Keychain, no extra origins, a HOME of its own), then
  *  `env` over them; a key set to `undefined` is removed, by its old name too
  *  (`{MOCK: undefined}` turns MOCK off). */
 export function serverEnv(dataDir, env = {}) {
@@ -133,7 +132,7 @@ export function serverEnv(dataDir, env = {}) {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GEN_|ANTHROPIC_|OPENAI_|OPENROUTER_|GEMINI_|OPENCODEX_|LINEAR_)/.test(k)));
   const out = {
     ...inherited, HOME: home, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "",
-    BUWIZ_BROKER_HUB: "1", BUWIZ_BROKER_V1_HOST: "1", BUWIZ_BROKER_MCP_HOST: "1", BUWIZ_NO_KEYCHAIN: "1",
+    BUWIZ_NO_KEYCHAIN: "1",
   };
 
   for (const [k, v] of Object.entries(env)) {

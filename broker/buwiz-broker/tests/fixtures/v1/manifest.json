@@ -31,7 +31,7 @@
       "props": { "type": "object", "properties": { "ticket": { "type": "string", "maxLength": 30 }, "page": { "type": "integer", "minimum": 1, "maximum": 99 } } },
       "placement": ["full"],
       "permissions": {
-        "tools": ["fx_echo", "fx_slow", "fx_fail", "fx_big", "fx_search", "fx_open"],
+        "tools": ["fx_echo", "fx_slow", "fx_fail", "fx_big", "fx_search", "fx_open", "fx_badge"],
         "open": { "apps": ["card"], "external": ["https://example.com"] },
         "attach": ["item"],
         "pick_file": { "extensions": [".xlsx", ".csv"], "max_bytes": 26214400, "multiple": false },

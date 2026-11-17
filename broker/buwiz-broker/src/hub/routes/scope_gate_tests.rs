@@ -147,7 +147,7 @@ impl Bed {
 
     /// `/mcp/resolve` for the fixture server's scope, as the route's handler takes it.
     async fn resolve_mcp(&self, thread: Option<&str>, complete: bool) -> Value {
-        let routes = McpRoutes::new(self.hub.ctx().mcp.clone().unwrap(), Vec::new()).with_gate(self.hub.ctx().clone());
+        let routes = McpRoutes::new(self.hub.ctx().mcp.clone().unwrap(), Vec::new(), self.hub.ctx().clone());
         let mut b = json!({"server": "apps", "name": "item", "args": "x", "complete": complete});
         if let Some(t) = thread {
             b["thread"] = json!(t);
@@ -317,4 +317,30 @@ impl Bed {
             Err(e) => (400, json!({"error": e})),
         }
     }
+}
+
+/// `POST /mcp/attach` follows the Bot too: refused, with the same sentence, when the server is
+/// off for the Bot of the chat (or for plain chats, which `chats` names), and attached when on.
+#[tokio::test]
+async fn an_mcp_attach_is_refused_for_a_bot_that_has_the_server_off_and_attaches_otherwise() {
+    use crate::hub::library::attachments::attach;
+    let b = bed("attach").await;
+    let ctx = b.hub.ctx().clone();
+    let (key, body) = ("mcp:apps", |chat: &str| json!({"thread": chat, "token": "@apps:item:x"}));
+    b.switch("b_ann", key, "off");
+    let refused = attach(&ctx, &body(&b.ann)).await.unwrap_err();
+    assert!(refused.contains("is switched off for this Bot"), "{refused}");
+    assert_eq!(b.mcp_calls(), 0, "the server was not asked");
+    let on = attach(&ctx, &body(&b.bo)).await.unwrap();
+    assert_eq!(on["existing"], json!(false), "{on}");
+    // plain chats have their own switch
+    b.switch(crate::hub::policy::CHATS, key, "off");
+    let refused = attach(&ctx, &body(&b.plain)).await.unwrap_err();
+    assert!(refused.contains("is switched off for plain chats"), "{refused}");
+    b.switch(crate::hub::policy::CHATS, key, "on");
+    assert_eq!(attach(&ctx, &body(&b.plain)).await.unwrap()["existing"], json!(false));
+    // Ann, switched back on
+    b.switch("b_ann", key, "on");
+    assert_eq!(attach(&ctx, &body(&b.ann)).await.unwrap()["existing"], json!(false));
+    b.done().await;
 }

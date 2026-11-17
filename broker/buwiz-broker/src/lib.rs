@@ -1,8 +1,7 @@
 //! buwiz-broker: the broker's front door.
 //!
 //! It owns the broker's port and answers `/health`, `/meta` and every route
-//! itself: `leaf`, the line and the MCP routes, and with `BUWIZ_BROKER_HUB=1`
-//! the brain's (`hub`). It forwards nothing.
+//! itself: `leaf`, the MCP routes and the brain's (`hub`). It forwards nothing.
 
 pub mod config;
 pub mod front_door;

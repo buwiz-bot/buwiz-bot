@@ -1,6 +1,5 @@
 //! The `/mcp/*` routes Rox calls (plan 4.3), answered here when this broker
-//! hosts the MCP servers (`BUWIZ_BROKER_MCP_HOST=1`), as routes/market.mjs
-//! answered them: the same shapes, status codes and texts. Three stay
+//! hosts the MCP servers, as routes/market.mjs answered them: the same shapes, status codes and texts. Three stay
 //! Node's until the chats move (phase 5), since they touch its in-memory
 //! chats: `POST /mcp/attach`, `GET /mcp/attachments` and `POST
 //! /mcp/servers`.
@@ -61,9 +60,8 @@ pub struct McpRoutes {
     allowed: Vec<String>,
     passes: Mutex<HashMap<String, Instant>>,
     plugins: Option<Arc<Host>>,
-    /// The hub, when this broker runs it: whose Bot a chat is, and what is switched off for that Bot.
-    /// None only for a start without the hub (no Bots, no switches); it goes with that start.
-    gate: Option<Arc<crate::hub::ctx::HubCtx>>,
+    /// The hub: whose Bot a chat is, and what is switched off for that Bot.
+    gate: Arc<crate::hub::ctx::HubCtx>,
 }
 
 /// A body field as JS's `String(x || "")`.
@@ -148,19 +146,14 @@ fn app_of(uri: &str) -> String {
 }
 
 impl McpRoutes {
-    pub fn new(mcp: Arc<McpHost>, allowed: Vec<String>) -> Self {
-        Self { mcp, allowed, passes: Mutex::new(HashMap::new()), plugins: None, gate: None /* only for a start without the hub; goes with it */ }
+    /// `gate` is the hub whose per-Bot switches a scope's resolve and complete answer to.
+    pub fn new(mcp: Arc<McpHost>, allowed: Vec<String>, gate: Arc<crate::hub::ctx::HubCtx>) -> Self {
+        Self { mcp, allowed, passes: Mutex::new(HashMap::new()), plugins: None, gate }
     }
 
     /// The plugin host whose account sign-ins come back here.
     pub fn with_plugins(mut self, host: Arc<Host>) -> Self {
         self.plugins = Some(host);
-        self
-    }
-
-    /// The hub whose per-Bot switches a scope's resolve and complete answer to.
-    pub fn with_gate(mut self, ctx: Arc<crate::hub::ctx::HubCtx>) -> Self {
-        self.gate = Some(ctx);
         self
     }
 
@@ -482,7 +475,7 @@ impl McpRoutes {
     pub async fn resolve(&self, b: &Value) -> Value {
         let server = text(b, "server");
         // before the server is asked anything: it must be on for the Bot of the chat this is for
-        if let Some((code, error)) = self.gate.as_ref().and_then(|ctx| crate::hub::policy::scope_refusal(ctx, &text(b, "thread"), &crate::hub::policy::keys::mcp_key(&server))) {
+        if let Some((code, error)) = crate::hub::policy::scope_refusal(&self.gate, &text(b, "thread"), &crate::hub::policy::keys::mcp_key(&server)) {
             return json!({"ok": false, "code": code, "error": error});
         }
         let row: Option<String> = self.mcp.db(|db| db.query_row("SELECT id FROM mcp_servers WHERE id=? AND enabled=1", [&server], |r| r.get(0)).optional()).ok().flatten();
@@ -643,7 +636,8 @@ mod tests {
     fn an_app_links_pass_works_once_while_fresh() {
         let dir = std::env::temp_dir().join(format!("buwiz-open-pass-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let routes = McpRoutes::new(McpHost::new(&dir.join("app.db"), 8798).unwrap(), Vec::new());
+        let gate = Arc::new(crate::hub::ctx::HubCtx::new(dir.clone(), crate::helper::plugins::Clock::system()));
+        let routes = McpRoutes::new(McpHost::new(&dir.join("app.db"), 8798).unwrap(), Vec::new(), gate);
         let url = routes.with_pass("buwiz://app/bir/forms?props=%7B%7D");
         let pass = url.rsplit_once("&buwiz_pass=").map(|(_, p)| p.to_owned()).unwrap_or_default();
         assert!(url.starts_with("buwiz://app/bir/forms?props=%7B%7D&buwiz_pass=") && pass.len() == 22, "{url}");
