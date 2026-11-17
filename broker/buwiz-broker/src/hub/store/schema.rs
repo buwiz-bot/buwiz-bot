@@ -1,5 +1,4 @@
-//! app.db's tables as Node creates them (state.mjs :124-232, then
-//! groups.mjs), in the same order: CREATE TABLE IF NOT EXISTS, then each
+//! app.db's tables, in order: CREATE TABLE IF NOT EXISTS, then each
 //! ALTER TABLE tried and its "duplicate column" error ignored. Migrations
 //! only add (R6). Other tracks create their own tables (routines, v1,
 //! agents) from their own files.
@@ -41,7 +40,7 @@ const CREATE: &str = "
     clock_in TEXT NOT NULL, clock_out TEXT);
 ";
 
-/// Each statement on its own, its error ignored (Node's `try {…} catch {}`).
+/// Each statement on its own, its error ignored.
 const TRIED: &[&str] = &[
     "ALTER TABLE turns ADD COLUMN meta TEXT",
     "ALTER TABLE versions ADD COLUMN label TEXT",
@@ -95,7 +94,7 @@ const TRIED: &[&str] = &[
     "ALTER TABLE threads ADD COLUMN hidden INTEGER DEFAULT 0",
     "ALTER TABLE threads ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE threads ADD COLUMN routine TEXT",
-    // groups.mjs, imported after state.mjs
+    // groups
     "CREATE TABLE IF NOT EXISTS groups(
     id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL,
     ord INTEGER NOT NULL DEFAULT 0, collapsed INTEGER DEFAULT 0, created_at INTEGER);
@@ -185,11 +184,11 @@ pub fn ensure(conn: &Connection) -> Result<(), String> {
     migrate_names(conn).map(|_| ())
 }
 
-/// `meta` key marking [`migrate_names`] done (names-migration.mjs's MARKER).
+/// `meta` key marking [`migrate_names`] done.
 pub const NAMES_MARKER: &str = "names_buwiz";
 
 /// The rox names a stored chat, link, pin or _meta may hold, and their
-/// buwiz ones (names-migration.mjs's RENAMES).
+/// buwiz ones.
 pub const RENAMES: [(&str, &str); 7] = [
     ("rox-app://", "buwiz-app://"),
     ("rox://", "buwiz://"),
@@ -202,7 +201,7 @@ pub const RENAMES: [(&str, &str); 7] = [
 
 /// Protocol 1.0 routes and reads only the buwiz names: every text column
 /// of every table (keys, `meta` and the v1 install records excepted) is
-/// rewritten once, as Node's names-migration.mjs does. Rows changed; 0
+/// rewritten once. Rows changed; 0
 /// when the marker is there. Idempotent: no old name survives it.
 pub fn migrate_names(conn: &Connection) -> Result<usize, String> {
     let err = |e: rusqlite::Error| e.to_string();

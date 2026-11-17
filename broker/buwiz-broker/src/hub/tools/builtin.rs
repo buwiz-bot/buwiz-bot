@@ -1,5 +1,5 @@
 //! The tools that need nothing but the network, the shell or the chat
-//! (tools.mjs `toolFetchUrl`, `toolShell`, `toolQuerySource`,
+//! (`toolFetchUrl`, `toolShell`, `toolQuerySource`,
 //! `toolWebSearch`, `toolReact`).
 
 use std::process::Stdio;

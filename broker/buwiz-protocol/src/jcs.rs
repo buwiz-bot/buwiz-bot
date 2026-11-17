@@ -1,8 +1,8 @@
 //! JSON Canonicalization Scheme (RFC 8785) for the objects the mini app
 //! protocol signs: session certificates, call envelopes and permissions
-//! digests. The broker's canonicalizer (`server/v1/jcs.mjs`) must produce
-//! the same bytes, so both are tested against one set of vectors
-//! (`jcs-vectors.json`, copied here from grok-shell).
+//! digests. The broker's canonicalizer must produce
+//! the same bytes as the SDK's, so both are tested against one set of
+//! vectors (`jcs-vectors.json`).
 //!
 //! Signed objects carry integers only (spec 4, design §5): a number that is
 //! not a safe integer is refused rather than trusting two float printers to
@@ -183,7 +183,7 @@ impl<'de> serde::de::Visitor<'de> for StrictVisitor {
 
 #[cfg(test)]
 mod tests {
-    /// The vectors grok-shell's `server/v1/jcs.mjs` is tested against.
+    /// The shared RFC 8785 vectors.
     const VECTORS: &str = include_str!("jcs-vectors.json");
 
     #[test]

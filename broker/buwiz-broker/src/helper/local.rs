@@ -1,5 +1,5 @@
-//! The hub's local tools on this Mac (rule R7): a command run as Node's
-//! `execFile` runs it, found on the broker's PATH (so the test stubs stand
+//! The hub's local tools on this Mac (rule R7): a command run as
+//! `execFile` runs it (no shell), found on the broker's PATH (so the test stubs stand
 //! in), its environment the broker's plus the command's own.
 
 use std::process::Stdio;
@@ -98,7 +98,7 @@ pub fn command(program: &str, args: &[&str]) -> LocalCommand {
     LocalCommand { program: program.into(), args: args.iter().map(|a| (*a).to_owned()).collect(), ..Default::default() }
 }
 
-/// Runs it: `Ok(stdout)` on exit 0, else Node's error message
+/// Runs it: `Ok(stdout)` on exit 0, else the error message
 /// (`Command failed: <cmd> <args>\n<stderr>`, or `spawn <cmd> ENOENT`).
 pub async fn exec(ctx: &HubCtx, cmd: LocalCommand) -> Result<String, String> {
     let shown = std::iter::once(cmd.program.clone()).chain(cmd.args.iter().cloned()).collect::<Vec<_>>().join(" ");

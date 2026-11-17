@@ -1,5 +1,5 @@
 //! `_meta["buwiz/badge"]` against a real host and the fixture plugin (plain
-//! Node): read on every path a tool can be called by, kept, collapsed, sent.
+//! JavaScript run by node): read on every path a tool can be called by, kept, collapsed, sent.
 
 use std::path::PathBuf;
 use std::sync::Arc;

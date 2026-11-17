@@ -1,5 +1,5 @@
-//! v1 plugin routines (`v1/routines.mjs`, spec 19.1 "A run",
-//! 19.2 "params"; `v1/broker.mjs`'s `routineTurn`).
+//! v1 plugin routines (spec 19.1 "A run",
+//! 19.2 "params").
 //!
 //! A routine is declared in a plugin's manifest; what runs is an instance
 //! of it (`v1_instances`): plugin, routine, instance id, the chat it
@@ -1324,7 +1324,7 @@ fn said(r: Res<String>) -> ToolResult {
     }
 }
 
-/// A routine's agent turn in its own thread (`routineTurn`, v1/broker.mjs):
+/// A routine's agent turn in its own thread:
 /// the turn runner's, with the job naming the routine and its surface.
 async fn routine_turn(ctx: &Arc<HubCtx>, host: &dyn RoutineHost, turn: TurnRequest) -> Result<crate::hub::traits::TurnDone, String> {
     if host.thread(&turn.turn.thread).is_none() {

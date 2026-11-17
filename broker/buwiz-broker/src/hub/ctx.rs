@@ -17,7 +17,7 @@ use crate::helper::plugins::Host;
 use crate::helper::sessions::Sessions;
 
 pub struct HubCtx {
-    /// Node's data dir (`BUWIZ_BROKER_DATA_DIR`)
+    /// The data dir (`BUWIZ_BROKER_DATA_DIR`)
     pub data: PathBuf,
     pub db: Db,
     /// threads, turns, bots (5.1): `store/mod.rs` documents its API
@@ -83,8 +83,8 @@ impl Ext {
     }
 }
 
-/// app.db, opened on first use with the busy timeout Node uses (5 s), its
-/// journal mode left as Node set it. Statements run inside `with`, so no
+/// app.db, opened on first use with a busy timeout (5 s), its
+/// journal mode left as set. Statements run inside `with`, so no
 /// lock is held across an await.
 pub struct Db {
     path: PathBuf,

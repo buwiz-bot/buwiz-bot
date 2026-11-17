@@ -1,12 +1,10 @@
-//! The manifest verifier against Node's answers (Appendix C.1; the cases of
-//! the old `server/test/v1-manifest.test.mjs`), pinned in
+//! The manifest verifier against pinned answers, in
 //! `tests/pins/v1_manifest/cases.json`.
 //!
 //! A case is small: the fixture `tests/fixtures/v1/manifest.json` (with
-//! `publisher.key_id` set to `test-key`), a list of edits, and what Node
-//! answered. The test applies the edits, signs the result with a fixed
-//! key (32 bytes of 3; the board and card fingerprints filled, as Node's
-//! `signManifest` did), and asks `buwiz-broker manifest <op>` (here
+//! `publisher.key_id` set to `test-key`), a list of edits, and the pinned
+//! answer. The test applies the edits, signs the result with a fixed
+//! key (32 bytes of 3; the board and card fingerprints filled), and asks `buwiz-broker manifest <op>` (here
 //! `v1::cli::run`, the same entry) the question.
 //!
 //! The case fields, in the order they apply:
@@ -28,12 +26,12 @@
 //! - `trust`: `default` (the fixture and the two long plugin ids approved) or
 //!   `first` (the key is first-party).
 //!
-//! `expect` is what Node answered: `{ok: true, sha256}` for a manifest it
+//! `expect` is the pinned answer: `{ok: true, sha256}` for a manifest it
 //! verified (the hash is of the canonical form, so it also proves the
 //! signature bytes), `{ok: true, value}` for the other ops, `{ok: false,
-//! code, message}` for a refusal, `{signError}` for a manifest Node could not
-//! sign. For the cases Node refused as not I-JSON, only the code and the
-//! prefix `manifest: is not I-JSON: ` are Node's (the two parsers word the rest
+//! code, message}` for a refusal, `{signError}` for a manifest that could not
+//! be signed. For the cases refused as not I-JSON, only the code and the
+//! prefix `manifest: is not I-JSON: ` are pinned (parsers word the rest
 //! differently); this broker's own full message for each is pinned apart, in
 //! `v1_manifest/parse_messages.json`. To change a case on purpose, edit the pin; `BUWIZ_REFRESH_PINS=1`
 //! rewrites the whole file from the Rust answers and fails (review `git diff`).
@@ -255,7 +253,7 @@ fn pinned_form(answer: Value, op: &str) -> Value {
     out
 }
 
-/// This broker's own full message for a case Node refused as not I-JSON.
+/// This broker's own full message for a case refused as not I-JSON.
 fn parse_message(case: &Value) -> String {
     let text = text_of(case).unwrap();
     let a = cli::run("verify", &json!({"text": text, "trust": trust("default")})).unwrap();
@@ -318,7 +316,7 @@ fn every_manifest_case_answers_as_node_did() {
         case["expect"] = got;
     }
     // the two parsers word a parse error differently: for those refusals only the code and the
-    // prefix are compared with Node, and the full wording of this broker is pinned on its own
+    // prefix are compared with the pin, and the full wording of this broker is pinned on its own
     let parse: Map<String, Value> = ours["cases"].as_array().unwrap().iter().filter(|c| c["expect"]["message"] == PARSE).map(|c| (c["id"].as_str().unwrap().to_owned(), json!(parse_message(c)))).collect();
     assert!(!parse.is_empty());
     assert!(ours["cases"].as_array().unwrap().len() >= 200, "the pin holds {} cases", ours["cases"].as_array().unwrap().len());
@@ -330,7 +328,7 @@ fn every_manifest_case_answers_as_node_did() {
         std::fs::write(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pins").join(format!("{PIN}.json")), compact(&ours)).unwrap();
         pins::rewritten(PIN, "json");
     }
-    assert!(differ.is_empty(), "{} manifest case(s) answer differently from Node's recorded answer:\n  {}", differ.len(), differ.join("\n  "));
+    assert!(differ.is_empty(), "{} manifest case(s) answer differently from the pinned answer:\n  {}", differ.len(), differ.join("\n  "));
 }
 
 #[test]
@@ -377,7 +375,7 @@ fn the_grammars_accept_and_refuse_as_node_did() {
     assert_eq!(json!({"short": short, "scope": scope, "ticket": ticket}), other["canonical"]);
 }
 
-// the sign-manifest command: a 0600 key file, --app fingerprints, and the bytes Node wrote
+// the sign-manifest command: a 0600 key file, --app fingerprints, and the bytes written
 #[test]
 fn sign_manifest_writes_the_bytes_node_wrote() {
     use std::os::unix::fs::PermissionsExt;

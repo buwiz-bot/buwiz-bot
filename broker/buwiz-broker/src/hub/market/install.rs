@@ -17,7 +17,7 @@ use super::{at, entries, nn, parse, posix_dirname, truthy};
 use crate::hub::ctx::HubCtx;
 use crate::js;
 
-/// config.mjs's `git(args)`: 120 s; stdout, or execFile's error message.
+/// Runs `git` with `args`: 120 s; stdout, or the error message.
 pub async fn git(args: &[String]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -227,7 +227,7 @@ pub fn remove_plugin_files(m: &Market, key: &str) {
     }
 }
 
-/// plugins.mjs's `frontDesc` (`skillDescription`): a SKILL.md's
+/// `frontDesc` (`skillDescription`): a SKILL.md's
 /// frontmatter description, folded or plain.
 pub fn front_desc(head: &str) -> String {
     static FOLDED: OnceLock<Regex> = OnceLock::new();

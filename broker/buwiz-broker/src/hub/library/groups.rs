@@ -1,4 +1,4 @@
-//! The sidebar's user-made groups (groups.mjs): a group holds bots, chats,
+//! The sidebar's user-made groups: a group holds bots, chats,
 //! artifacts and server mini apps in the user's order; rows written one
 //! change at a time. An artifact member's Library record is the Library's
 //! (5.7b, track C): the [`ArtifactRecords`] seam in `ctx.ext`; without it
@@ -17,7 +17,7 @@ use crate::hub::store::{now_ms, State};
 use crate::hub::types::BoxFuture;
 use crate::js;
 
-/// artifacts.mjs `artifactRecords(items, origin)`: for each `(id, thread)`
+/// For each `(id, thread)`,
 /// its Library record (with `title` and `origin.thread`), or `None`.
 pub type RecordsFn = dyn Fn(Arc<HubCtx>, Vec<(String, Option<String>)>, String) -> BoxFuture<'static, Vec<Option<Value>>> + Send + Sync;
 

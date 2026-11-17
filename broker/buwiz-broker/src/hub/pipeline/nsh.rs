@@ -13,10 +13,10 @@ use tokio::io::AsyncReadExt;
 use crate::hub::traits::Nsh;
 use crate::hub::types::BoxFuture;
 
-/// Node's execFile timeout for nsh.
+/// The timeout for an nsh run.
 pub const TIMEOUT: Duration = Duration::from_secs(90);
 
-/// The nsh binary as Node runs it.
+/// The nsh binary.
 #[derive(Clone, Debug)]
 pub struct NshCli {
     pub bin: PathBuf,
@@ -26,7 +26,7 @@ pub struct NshCli {
 }
 
 impl NshCli {
-    /// config.mjs's NSH: `$NSH`, else `nsh`.
+    /// `$NSH`, else `nsh`.
     pub fn from_env() -> Self {
         let bin = std::env::var("NSH").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "nsh".to_owned());
         Self { bin: PathBuf::from(bin), timeout: TIMEOUT, env: Vec::new() }

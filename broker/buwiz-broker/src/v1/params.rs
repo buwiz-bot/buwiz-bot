@@ -1,4 +1,4 @@
-//! A routine's `params` schema (spec 19.2; `v1/params.mjs`): the settings
+//! A routine's `params` schema (spec 19.2): the settings
 //! one instance of a routine runs with, as a small JSON Schema. The
 //! manifest check needs [`schema_problem`]; instances come with routines.
 

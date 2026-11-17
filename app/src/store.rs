@@ -1595,8 +1595,8 @@ pub struct ModelDef {
     pub subscription: bool,
 }
 
-/// One Library artifact of a thread (`GET /thread/apps` — the server's
-/// `artifacts.mjs` record). `app` is its id: `R<n>` for a mini app or an
+/// One Library artifact of a thread (`GET /thread/apps` — the broker's
+/// artifact record). `app` is its id: `R<n>` for a mini app or an
 /// image card, `file:<path>` for a file a reply made.
 #[derive(Clone, PartialEq, Default)]
 pub struct RoxApp {
@@ -1722,7 +1722,7 @@ impl ArtStorage {
 }
 
 impl RoxApp {
-    /// One `artifacts.mjs` record (`/thread/apps`' rows, a group's
+    /// One artifact record (`/thread/apps`' rows, a group's
     /// artifact members).
     fn from_json(a: &serde_json::Value) -> Self {
         let meta = ArtMeta::of(a.get("meta"));
@@ -5810,7 +5810,7 @@ impl Store {
                     self.plain_review.set(Some(*r));
                     self.push_nav("review", &name, "");
                 }
-                // the Node rollback has no review: Add installs as before
+                // a broker without a review: Add installs in one step
                 Ok(crate::plugin_review::Inspected::NoReview) => {
                     self.plain_review.set(None);
                     self.plugin_busy.set(String::new());
@@ -5824,7 +5824,7 @@ impl Store {
         });
     }
 
-    /// The one-step Add of the Node rollback (before the review): a plugin with
+    /// The one-step Add (no review): a plugin with
     /// setup fields opens its Setup page first.
     fn install_unreviewed(&'static self, name: &str) {
         let needs_setup = self.plugins.get_untracked().iter().any(|p| p.name == name && p.setup);
@@ -5934,7 +5934,7 @@ impl Store {
                 // installs only what the review staged (D2)
                 let review = self.plain_review.get_untracked().filter(|r| r.name == name);
                 let Some(r) = review else {
-                    // no review: the Node rollback's one-step install
+                    // no review: the one-step install
                     let r = client::post("/plugins/install", crate::plugin_review::legacy_install_body(&name, Some(&vals))).await;
                     self.plugin_busy.set(String::new());
                     match r {

@@ -40,9 +40,9 @@ impl Verb {
 pub enum Pattern {
     /// the whole path
     Exact(&'static str),
-    /// the path starts with it (Node's `req.url.startsWith`)
+    /// the path starts with it
     Prefix(&'static str),
-    /// `/`-separated segments, `*` one non-empty segment (Node's `([^/]+)`)
+    /// `/`-separated segments, `*` one non-empty segment (`[^/]+`)
     Segments(&'static str),
 }
 
@@ -75,7 +75,7 @@ impl Pattern {
 /// A request as a hub handler gets it, its body read in full.
 pub struct HubRequest {
     pub method: Method,
-    /// the path and query as sent (Node's `req.url`)
+    /// the path and query as sent
     pub url: String,
     pub headers: HeaderMap,
     pub body: Bytes,
@@ -110,7 +110,7 @@ pub fn not_ported() -> HubResponse {
     json(StatusCode::NOT_IMPLEMENTED, &serde_json::json!({ "ok": false, "code": "not_ported" }))
 }
 
-/// A thread's model choice (Node's `modelCtx`): opencodex's model, its
+/// A thread's model choice (`modelCtx`): opencodex's model, its
 /// effort, whether to take its `--fast` variant, and the bot whose thread
 /// it is (status labels credit it: `labelOf`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -121,24 +121,23 @@ pub struct ModelChoice {
     pub name: Option<String>,
 }
 
-/// What a turn runs under, passed explicitly where Node's rides
-/// AsyncLocalStorage (`modelCtx`, `actingBot`) and the job object.
+/// What a turn runs under, passed explicitly (`modelCtx`, `actingBot`) and the job object.
 #[derive(Clone, Debug, Default)]
 pub struct TurnCtx {
     /// the thread's `t<n>` id
     pub thread: String,
     pub job: Option<JobId>,
-    /// the bot a delivery turn answers as (Node's `actingBot`, and the
-    /// job's `agentBot`: agents-wire.mjs sets both, to the same bot)
+    /// the bot a delivery turn answers as (`actingBot`, and the
+    /// job's `agentBot`: both the same bot)
     pub acting_bot: Option<String>,
-    /// how many relays deep an agent's delivery turn is (Node's
-    /// `job.agentHop`); its agent tools send at one more
+    /// how many relays deep an agent's delivery turn is
+    /// (`job.agentHop`); its agent tools send at one more
     pub agent_hop: Option<i64>,
     pub model: Option<ModelChoice>,
-    /// a v1 routine's surface, when the turn may use only its tools (Node's
-    /// `job.v1Surface`: `{plugin, routine, instance, params, reads, writes}`)
+    /// a v1 routine's surface, when the turn may use only its tools (`job.v1Surface`:
+    /// `{plugin, routine, instance, params, reads, writes}`)
     pub surface: Option<serde_json::Value>,
-    /// the routine a turn runs for (Node's `job.routine`: a v0 routine's
+    /// the routine a turn runs for (`job.routine`: a v0 routine's
     /// id, or `<plugin>/<routine>`); its turn gets no routine tools
     pub routine: Option<String>,
     /// a person's yes on a waiting card, for the one turn it starts (`policy::ask`)
@@ -148,7 +147,7 @@ pub struct TurnCtx {
     pub delivery: Option<crate::hub::agents::Delivery>,
 }
 
-/// A tool's answer as the model gets it (Node's `{content, is_error}`).
+/// A tool's answer as the model gets it (`{content, is_error}`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolResult {
     pub content: Value,

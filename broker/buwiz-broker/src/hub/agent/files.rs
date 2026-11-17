@@ -1,4 +1,4 @@
-//! A reply's files as the model side of files.mjs makes them: `fileMeta`,
+//! A reply's files as the model side makes them: `fileMeta`,
 //! `fileRecord` (sizes through `sips`, posters through Quick Look, audio
 //! through `afinfo`/`afconvert`, a feed derivative), `isAnimated`,
 //! `feedVariant`, and the deterministic mock media (`pngEncode`,
@@ -138,7 +138,7 @@ fn or(a: f64, b: f64) -> f64 {
     }
 }
 
-/// An SVG's `viewBox="… w h"`, as files.mjs's lazy regex reads it.
+/// An SVG's `viewBox="… w h"`, read with a lazy regex.
 fn view_box(head: &str) -> Option<(f64, f64)> {
     let at = head.find("viewBox=\"")? + "viewBox=\"".len();
     let body = &head[at..at + head[at..].find('"')?];
@@ -220,7 +220,7 @@ async fn audio_info(ctx: &HubCtx, path: &Path) -> Map<String, Value> {
         let buf = std::fs::read(&tmp).ok()?;
         let data = buf.windows(4).position(|w| w == b"data").map(|i| i as i64).unwrap_or(-1);
         let off = data + 8;
-        // an Int16Array at an odd offset throws (Node's RangeError)
+        // an Int16Array at an odd offset is not allowed
         if off % 2 != 0 || off < 0 || off as usize > buf.len() {
             return None;
         }

@@ -1,5 +1,4 @@
-//! The agent's mini app tools (drafts' install contract, part 2): Rust's
-//! own, not in `defs.json` (which stays Node's, DEFS-01). `app_install`
+//! The agent's mini app tools (DEFS-01): not in `defs.json`. `app_install`
 //! fetches and verifies a GitHub release (`helper::release`), inspects it
 //! and posts an `app_install` card in the chat: only the user's Install
 //! installs it. `app_uninstall` posts an `app_uninstall` card the same way,
@@ -461,7 +460,7 @@ mod tests {
         base
     }
 
-    /// The fixture plugin: its manifest, its app sources and server.mjs (plain Node).
+    /// The fixture plugin: its manifest, its app sources and server.mjs (run by node).
     fn server_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v1")
     }

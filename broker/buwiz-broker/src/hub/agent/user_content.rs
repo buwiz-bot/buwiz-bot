@@ -1,10 +1,10 @@
-//! The model's view of a user turn (agent.mjs `userContent`,
+//! The model's view of a user turn (`userContent`,
 //! `artifactBlocks`, `fileBody`): the quoted reply, the text, attached
 //! images as image blocks, documents inlined, a `module://` card's source
 //! (or its image).
 //!
-//! Plan D31: a workbook's or a Word file's text comes from Node's office
-//! role (`GET /file/render`, through the front door), which reads only the
+//! A workbook's or a Word file's text comes from the office
+//! routes (`GET /file/render`, through the front door), which reads only the
 //! files dir; a deck's markdown export (`officeMarkdown`) has no route
 //! there, so a deck, and a workbook or Word file outside the files dir,
 //! reads as a binary file until 6.1.
@@ -32,7 +32,7 @@ pub fn img_type(ext: &str) -> Option<&'static str> {
     })
 }
 
-/// files.mjs `parseDelimited(text, sep)`.
+/// Delimited text (`sep`) as rows.
 pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
     let cs: Vec<char> = text.chars().collect();
     let (mut rows, mut row, mut cell, mut q) = (Vec::new(), Vec::new(), String::new(), false);
@@ -70,7 +70,7 @@ pub(crate) fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
     rows
 }
 
-/// Node's office role's `GET /file/render?path=<rel>` (D31).
+/// The office routes' `GET /file/render?path=<rel>`.
 async fn render(ctx: &HubCtx, p: &Path) -> Option<Value> {
     let files = ctx.store.gen_dir().join("files");
     let rel = p.strip_prefix(&files).ok()?.to_string_lossy().into_owned();

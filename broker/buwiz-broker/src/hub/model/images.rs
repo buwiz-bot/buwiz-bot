@@ -1,4 +1,4 @@
-//! Images (the image side of avatars.mjs): which chat models may draw
+//! Images: which chat models may draw
 //! (`imageModels`, `imageCapable`, from opencodex's `/v1/models`, a minute's
 //! cache), `generateImage` (opencodex's images relay, then Gemini, then
 //! OpenAI with keys from `keyOf`, then an SVG the chat model draws,
@@ -24,8 +24,7 @@ const GEMINI: &str = "https://generativelanguage.googleapis.com/v1beta/models/ge
 const OPENAI_IMAGES: &str = "https://api.openai.com/v1/images/generations";
 const CACHE: Duration = Duration::from_secs(60);
 
-/// A model id → whether it draws, per opencodex URL (Node's `drawers`,
-/// one per process; keyed here so tests on their own fakes stay apart).
+/// A model id → whether it draws, per opencodex URL (one per process; keyed here so tests on their own fakes stay apart).
 type Drawers = HashMap<String, (Option<Instant>, HashMap<String, bool>)>;
 
 fn drawers() -> &'static Mutex<Drawers> {
@@ -116,7 +115,7 @@ pub async fn key_of(local: &dyn LocalTools, name: &str) -> String {
     }
 }
 
-/// `execFileSync(program, args)`: `Err` with Node's "Command failed: …".
+/// `execFileSync(program, args)`: `Err` with "Command failed: …".
 async fn run(local: &dyn LocalTools, program: &str, args: &[&str]) -> Result<(), String> {
     let cmd = LocalCommand { program: program.to_owned(), args: args.iter().map(|a| a.to_string()).collect(), ..Default::default() };
     match local.run(cmd).await {
@@ -125,7 +124,7 @@ async fn run(local: &dyn LocalTools, program: &str, args: &[&str]) -> Result<(),
     }
 }
 
-/// `Buffer.from(s, "base64")`: lenient, as Node decodes.
+/// `Buffer.from(s, "base64")`: lenient.
 fn b64(s: &str) -> Vec<u8> {
     let clean: String = s
         .chars()
@@ -176,7 +175,7 @@ pub async fn edit_image(settings: &Settings, local: &dyn LocalTools, src: &Path,
     Ok("chatgpt".to_owned())
 }
 
-/// avatar-design.mjs `editAvatarImage(src, prompt, out)`: the opencodex
+/// The opencodex
 /// image relay first, then Gemini's image model when a key is configured.
 pub async fn edit_avatar_image(settings: &Settings, local: &dyn LocalTools, src: &Path, prompt: &str, out: &Path) -> Result<String, String> {
     let mut errs: Vec<String> = Vec::new();

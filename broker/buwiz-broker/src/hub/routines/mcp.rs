@@ -1,5 +1,4 @@
-//! What v0 routines read of the MCP servers (mcp.mjs through the line,
-//! now `helper::mcp_servers::McpHost` in process): the enabled rows,
+//! What v0 routines read of the MCP servers (`helper::mcp_servers::McpHost`): the enabled rows,
 //! `ensureClient`'s tools, `callToolJson`, `readManifest` and `statusOf`.
 //! Tests hand a fake.
 

@@ -1,7 +1,6 @@
-//! [`RoutineHost`] on the hub's store (`ctx.store`, track A) and jobs
-//! table (`ctx.jobs`): what routine-threads.mjs, routines.mjs and
-//! state.mjs do to `store.list`, `store.bots` and `jobs`, through the
-//! store's scoped writes (D33). Node's `writeIndex()` after a change is
+//! [`RoutineHost`] on the hub's store (`ctx.store`) and jobs
+//! table (`ctx.jobs`): what routines do to `store.list`, `store.bots` and `jobs`, through the
+//! store's scoped writes. `writeIndex()` after a change is
 //! `Store::write` (the rows) then `Store::write_index` (generated/index.tsx,
 //! rewritten only when the modules changed).
 //!
@@ -138,7 +137,7 @@ impl RoutineHost for StoreHost {
                 true
             }
             Ok(None) => false,
-            // the turn stays in memory (Node's `save()` throwing after the
+            // the turn stays in memory (a failed save after the
             // push), and the next write retries it
             Err(e) => {
                 eprintln!("buwiz-broker: routines: the store's write: {e}");
@@ -192,7 +191,7 @@ impl RoutineHost for StoreHost {
         })
     }
 
-    /// Node holds the job object itself; a job the table no longer has
+    /// The job object is held itself; a job the table no longer has
     /// (only `/chat`'s cap of 25 drops one) counts as done.
     fn job_done(&self, job: JobId) -> bool {
         self.ctx().and_then(|c| c.jobs.with(job, |j| j.done)).unwrap_or(true)

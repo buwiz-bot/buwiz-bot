@@ -1,7 +1,7 @@
-//! The model's prompt texts, byte for byte as model.mjs writes them
+//! The model's prompt texts, byte for byte
 //! (`systemFor`, `contractFor`, the classifier's and the
 //! chat reply's system prompts, the generator's follow-ups). The long
-//! texts sit beside this file as dumped from Node; `{{NAME}}`,
+//! texts sit beside this file; `{{NAME}}`,
 //! `{{SOURCES}}` and `{{CONTRACT}}` mark what is filled in.
 
 const SYSTEM: &str = include_str!("prompts/system.txt");

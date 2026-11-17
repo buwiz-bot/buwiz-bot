@@ -1,6 +1,5 @@
-//! v0 routine templates servers announce (routines.mjs "templates servers
-//! announce"): a connected server's `buwiz://manifest` may carry `routines:
-//! [{id, name, description, every_s, needs, query: {tool, field, args?},
+//! v0 routine templates servers announce: a connected server's `buwiz://manifest` may carry
+//! `routines: [{id, name, description, every_s, needs, query: {tool, field, args?},
 //! prompt}]`. `needs: "gmail"` makes the check a Gmail search through
 //! whichever connected server has a search tool; `query` is a cheap tool
 //! on the announcing server whose result's `field` is that search. The

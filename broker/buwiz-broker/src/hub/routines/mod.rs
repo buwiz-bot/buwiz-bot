@@ -56,7 +56,7 @@ impl Routines {
         Arc::new(Routines { host, v0, v1, token: Mutex::new(None), scheduled })
     }
 
-    /// The hub's start, as app-server.mjs's listen callback: the host
+    /// The hub's start, as the broker listens: the host
     /// token, the v0 timers, the v1 plugins, the v1 poll.
     pub fn start(self: &Arc<Self>, ctx: &Arc<HubCtx>) {
         super::routes::host::init_token(self, &ctx.data);

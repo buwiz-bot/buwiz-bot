@@ -5,8 +5,7 @@
 //! session's paragraph save plan (each changed paragraph patched into its
 //! source XML) written by `docx-parse`'s package writer.
 //!
-//! Node forks the session for a proposal's render/export/verify and adopts
-//! the fork's update on accept; here a draft is the source seeded again with
+//! A draft is the source seeded again with
 //! every accepted edit replayed (seeding is deterministic for one client
 //! id), and an accept adopts the draft it was applied to.
 
@@ -594,7 +593,7 @@ impl Docx {
     }
 
     /// A copy of the session: the source seeded again with every accepted
-    /// edit replayed (Node's `fork`).
+    /// edit replayed.
     fn fork(&mut self) -> Res<EditingDoc> {
         self.index()?;
         let draft = seeded(&self.source)?;
@@ -637,9 +636,8 @@ impl Docx {
         Ok(json!({ "id": id, "status": "rejected" }))
     }
 
-    /// `render(page, proposal)`: Node renders through its canvas renderer
-    /// (render.ts); this broker has none (see `office/mod.rs`), as Node
-    /// itself answers when render.ts fails to load.
+    /// `render(page, proposal)`: this broker has no
+    /// page renderer (see `office/mod.rs`).
     pub fn render(&mut self, page: f64) -> Res<(Value, Vec<u8>)> {
         integer(page, 1.0, 100000.0, "page")?;
         Err(ToolError::new("UNSUPPORTED", "No renderer configured. Supply a DocumentRenderer or use the MCP server."))

@@ -5,8 +5,8 @@
 //! Install sends `POST /plugins/install {name, staging, approve: true,
 //! values?}`. The broker refuses an install without both.
 //!
-//! The review needs the Rust broker: the Node rollback has no
-//! `/plugins/inspect` (it answers 404), and there Add installs as before
+//! A broker without `/plugins/inspect` (it answers 404) gives no
+//! review, and there Add installs in one step
 //! ([`Inspected::NoReview`]).
 //!
 //! The requests go through a `post` function (the app's `client`), so the
@@ -196,12 +196,12 @@ pub fn install_body(review: &PlainReview, values: &BTreeMap<String, String>) -> 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inspected {
     Review(Box<PlainReview>),
-    /// The broker has no `/plugins/inspect` (the Node rollback): Add
-    /// installs in one step, as before the review.
+    /// The broker has no `/plugins/inspect` (it answers 404): Add
+    /// installs in one step.
     NoReview,
 }
 
-/// The one-step install body of the Node rollback (no review): `{name}`,
+/// The one-step install body (no review): `{name}`,
 /// or from the Setup page `{name, values}` with every typed value.
 pub fn legacy_install_body(name: &str, values: Option<&BTreeMap<String, String>>) -> Value {
     match values {
@@ -257,7 +257,7 @@ mod tests {
     struct Fake {
         sent: Mutex<Vec<(String, Value)>>,
         install: Mutex<Option<Value>>,
-        /// The Node rollback: no `/plugins/inspect` (404 "not found").
+        /// No `/plugins/inspect` (404 "not found").
         node: bool,
     }
 

@@ -1,4 +1,4 @@
-//! Google Drive files the AI made or changed (drive.mjs, the tool loop's
+//! Google Drive files the AI made or changed (the tool loop's
 //! half): a successful google-workspace write leaves a link on the reply
 //! (`{provider: "gdrive", id, name, mime, link, action, at, account?}`, one
 //! per file, merged within the turn); names come from the write's own

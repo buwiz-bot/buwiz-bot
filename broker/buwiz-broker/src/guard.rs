@@ -1,5 +1,4 @@
-//! Who may call a route answered here: server/src/guard.mjs, the same
-//! checks Node runs before any of its routes.
+//! Who may call a route: the checks the broker runs before any route.
 //!
 //! A request whose `Origin` is not on the list comes from a web page and is
 //! refused (403); a body sent with a body method must be JSON (415).

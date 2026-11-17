@@ -88,7 +88,7 @@ pub fn turn_row(seq: usize, u: &Turn) -> Row {
 /// A bot's row: name, shape, color, thread_id, ord, pinned, section,
 /// hidden, image, crop, model, effort, fast, label, description,
 /// instructions, memories, integrations, extra, outline and art (a custom
-/// shape's only, as Node's `persist()` writes them).
+/// shape's only).
 pub fn bot_row(ord: usize, b: &super::Bot) -> Row {
     vec![
         text(&b.name),

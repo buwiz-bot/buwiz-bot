@@ -1,6 +1,6 @@
 //! ```mermaid fences drawn natively: Pele ported to Rust (hexuria/pele-rs) lays the
 //! diagram out off the UI thread, and nsh's canvas draws the scene in
-//! Rox's palette — no Node, no web view. A diagram Pele does not draw
+//! Buwiz Bot's palette — no web view. A diagram Pele does not draw
 //! shows Pele's message instead.
 
 mod draw;

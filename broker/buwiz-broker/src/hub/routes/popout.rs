@@ -1,5 +1,4 @@
-//! Pop-out windows (plan 6.3; `POST /popout` in routes/apps.mjs and
-//! windows.mjs): a module, or a pinned version of it, in a window of its
+//! Pop-out windows (`POST /popout`): a module, or a pinned version of it, in a window of its
 //! own. The route writes a mount wrapper (`windows/pop-<name>[-<v>].tsx`),
 //! builds it once with `nsh build -o` (the bundle is cached by a key over
 //! the wrapper, the module it mounts and the nsh binaries; [`build_key`])
@@ -8,12 +7,12 @@
 //! One window per key (`R1`, `R1@v2`): a second press raises the open one,
 //! a newer head replaces it. `/app/version` reopens an open window on the
 //! new head and the `close_app` tool ends an app's windows, both through
-//! [`Windows`], the table Node kept in `openWindows`.
+//! [`Windows`], the table of open windows.
 //!
-//! AeroSpace is kept (6.3): Rox's "Open in Window" relies on it. It floats
+//! AeroSpace: "Open in Window" relies on it. It floats
 //! a new pop-out (AeroSpace tiles every new window) and raising an open
-//! one is AeroSpace-only, as in windows.mjs; without AeroSpace each call
-//! fails and is ignored. Pinned by server/test/popout.test.mjs (POP-xx).
+//! one is AeroSpace-only; without AeroSpace each call
+//! fails and is ignored.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -36,7 +35,7 @@ use crate::hub::types::{HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 use crate::js;
 
-/// The wrapper's text, copied from routes/apps.mjs, with its `${…}`s.
+/// The wrapper's text, with its `${…}`s.
 const WRAPPER: &str = include_str!("popout_wrapper.tsx");
 /// The `source()` helper the wrapper imports before the module, with its `${url}`.
 const SOURCE_HELPER: &str = include_str!("popout_source.tsx");
@@ -60,7 +59,7 @@ pub(crate) fn capabilities(name: &str, call: &str, port: u16) -> Value {
     })
 }
 
-/// An open window: Node's child process with the fields it hung on it.
+/// An open window: its child process and the fields kept on it.
 struct Win {
     id: u64,
     pid: u32,
@@ -92,8 +91,8 @@ impl Win {
 pub struct Windows {
     open: Mutex<HashMap<String, Win>>,
     next: AtomicU64,
-    /// Node's handler ran synchronously from the wrapper to the spawn: one
-    /// press at a time
+    /// The wrapper's write to the spawn runs as one step: one press at a
+    /// time
     serial: tokio::sync::Mutex<()>,
 }
 
@@ -112,7 +111,7 @@ pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
     routes.route(Verb::Post, Pattern::Exact("/popout"), popout);
 }
 
-/// The `close_app` tool (tools.mjs): ends every window of `name`, pinned
+/// The `close_app` tool: ends every window of `name`, pinned
 /// or not; its answer text.
 pub fn close_app(ctx: &HubCtx, name: &str) -> String {
     let mut n = 0;
@@ -197,7 +196,7 @@ fn env_or(k: &str, default: &str) -> String {
     buwiz_protocol::env::var(k).filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
 }
 
-/// config.mjs: `NSH`, and `NSH_HOST`, else `nsh-macos-host` beside NSH
+/// `NSH`, and `NSH_HOST`, else `nsh-macos-host` beside NSH
 /// when NSH is a path, else on PATH.
 fn nsh_bins() -> (String, String) {
     let nsh = env_or("NSH", "nsh");
@@ -261,7 +260,7 @@ fn host_log(log: &Path) -> (Stdio, Stdio) {
 }
 
 /// `execFileSync(bin, args, {encoding: "utf8"})`: stdout, or `None` where
-/// Node threw (no binary, a non-zero exit).
+/// threw (no binary, a non-zero exit).
 async fn exec(bin: &str, args: &[&str]) -> Option<String> {
     let out = tokio::process::Command::new(bin).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().await.ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -293,7 +292,7 @@ async fn window_id(title: &str) -> Option<String> {
 
 /// `raiseWidget(title)`: pull an open pop-out onto the focused workspace
 /// and focus it. AeroSpace-only, every failure ignored. (A title
-/// `widget · R1` also finds `widget · R12`, as in Node.)
+/// `widget · R1` also finds `widget · R12`.)
 async fn raise(title: &str) {
     let Some(wid) = window_id(title).await else { return };
     let Some(ws) = exec("aerospace", &["list-workspaces", "--focused"]).await else { return };
@@ -540,8 +539,7 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
         .stderr(stderr)
         .process_group(0)
         .spawn();
-    // Node's spawn emits an unhandled 'error' here and the broker dies
-    // after answering {ok: true}; this answers the failure instead (D8)
+    // a failed spawn answers the failure
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => return reply(&json!({"ok": false, "error": format!("spawn {host}: {e}")})),

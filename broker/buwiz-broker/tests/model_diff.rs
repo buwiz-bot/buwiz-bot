@@ -1,6 +1,6 @@
-//! The model client's pinned test (plan 5.3): the calls Node's model.mjs
-//! made against one scripted fake opencodex (tests/fixtures/fake-opencodex.mjs,
-//! served by tests/fixtures/fake-opencodex-driver.mjs) are pinned under
+//! The model client's pinned test: the calls made against one scripted
+//! fake opencodex (tests/fixtures/fake-opencodex.mjs, served by
+//! tests/fixtures/fake-opencodex-driver.mjs) are pinned under
 //! tests/pins/model_diff/, one file per call: the requests it sent (method,
 //! path, the headers opencodex reads, the body) and the result (the module,
 //! the classification, the reply, the message, the error text). The hub's
@@ -106,8 +106,8 @@ fn settings(mode: &str, url: &str) -> Settings {
 }
 
 /// The data sources the prompt lists, as the registry builds them for the test's setup: an
-/// Apple system, no connected apps, and a Linear key when `linear` (Node's text is the
-/// same lines, written by hand in server/src/model.mjs).
+/// Apple system, no connected apps, and a Linear key when `linear` (the pinned text is the
+/// same lines).
 async fn sources_for(data: &Path, linear: bool) -> String {
     let mut ctx = HubCtx::new(data.to_path_buf(), Clock::manual());
     ctx.local = Some(Arc::new(Stubs));

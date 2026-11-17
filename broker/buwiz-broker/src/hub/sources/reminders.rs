@@ -64,7 +64,7 @@ pub(super) fn local(ctx: &HubCtx) -> std::sync::Arc<dyn crate::hub::traits::Loca
     crate::helper::local::tools(ctx)
 }
 
-/// `jxa(script, env)` (state.mjs): `osascript -l JavaScript -e <script>`
+/// `jxa(script, env)`: `osascript -l JavaScript -e <script>`
 /// with a 15 s timeout, its output parsed as JSON, or `{error, hint}`.
 async fn jxa(ctx: &HubCtx, script: &str, env: Vec<(String, String)>) -> Value {
     let cmd = LocalCommand { program: "osascript".into(), args: vec!["-l".into(), "JavaScript".into(), "-e".into(), script.into()], env, stdin: None, timeout: Some(Duration::from_secs(15)) };
@@ -98,7 +98,7 @@ pub async fn list(ctx: &HubCtx) -> Value {
 }
 
 /// `add {name, list?, due?}` and `complete {name}`. `Err` is the TypeError
-/// Node throws when the body is `null`.
+/// A `null` body throws.
 pub async fn change(ctx: &HubCtx, completing: bool, b: &Value) -> Result<Value, String> {
     let mut env = Vec::new();
     for (key, name) in [("REM_NAME", "name"), ("REM_LIST", "list"), ("REM_DUE", "due")] {

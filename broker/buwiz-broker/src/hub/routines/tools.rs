@@ -1,4 +1,4 @@
-//! The agent's routine tools (routines.mjs `toolRoutine`): routine_create,
+//! The agent's routine tools: routine_create,
 //! routine_list, routine_run, routine_update, routine_delete, over v0
 //! routines and the plugin routine instances of the chats the agent speaks
 //! for. Their schemas are the tool loop's (`ROUTINE_TOOLS`); a routine's

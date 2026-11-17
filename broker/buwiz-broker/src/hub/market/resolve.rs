@@ -1,4 +1,4 @@
-//! plugin_resolve.mjs: find a catalog entry's plugin inside its repository
+//! Find a catalog entry's plugin inside its repository
 //! (a marketplace.json entry, a manifest by name, the catalog skills'
 //! directory, or the repo's root) and read what it ships.
 

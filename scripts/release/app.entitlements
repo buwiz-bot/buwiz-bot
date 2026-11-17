@@ -20,7 +20,7 @@
 
   Not here, on purpose: allow-jit and allow-unsigned-executable-memory (no
   in-process JIT: QuickJS is the interpreter, WKWebView's JIT runs in
-  WebKit's own processes, and the bundled broker runs with no Node);
+  WebKit's own processes, and the bundled broker is native code);
   disable-library-validation (no dylibs outside the system's are loaded).
 -->
 <plist version="1.0">

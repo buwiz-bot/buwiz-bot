@@ -5,7 +5,7 @@
 
 use serde_json::{json, Map, Value};
 
-/// `DocumentToolError`, or a Node system error (`code` like `ENOENT`).
+/// `DocumentToolError`, or a system error (`code` like `ENOENT`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolError {
     pub code: String,
@@ -22,7 +22,7 @@ impl ToolError {
         Self { code: code.to_owned(), message: message.into(), details: Some(details) }
     }
 
-    /// A Node `fs` error as `failure()` reports it: no details.
+    /// A file-system error as `failure()` reports it: no details.
     pub fn system(code: &str, message: impl Into<String>) -> Self {
         Self { code: code.to_owned(), message: message.into(), details: None }
     }

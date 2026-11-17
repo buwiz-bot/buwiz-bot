@@ -5,9 +5,7 @@
 //! computes what the broker gives and calls `check` or `check_text`, which
 //! compares it with the pin and fails with the first difference.
 //!
-//! The pins were recorded from the old Node broker's own modules, which these
-//! tests used to run as the reference. To change one on purpose, after a
-//! deliberate change in Rust, run the test with `BUWIZ_REFRESH_PINS=1`. A
+//! To change one on purpose, after a deliberate change, run the test with `BUWIZ_REFRESH_PINS=1`. A
 //! refresh never turns a difference into a pass: if the output equals the
 //! pin the test passes; if it differs (or the pin is missing) the pin is
 //! rewritten from the Rust output and the test FAILS, naming the file. Review
