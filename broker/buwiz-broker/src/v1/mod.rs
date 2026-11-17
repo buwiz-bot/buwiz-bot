@@ -2,7 +2,7 @@
 //! `server/src/v1`: manifests and trust so far. Values arrive as JSON and
 //! are judged as Node's v1 code judges them, down to the message text, so
 //! a plugin author sees the same refusal from either broker
-//! (`server/test/v1-rust.mjs` runs both on every case).
+//! (`tests/manifest_pins.rs` holds Node's answers for every case).
 
 pub mod cli;
 pub mod manifest;

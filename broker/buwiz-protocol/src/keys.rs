@@ -141,6 +141,9 @@ mod tests {
         let other = super::SessionKey::generate();
         assert!(super::verify(&other.public(), &v, &sig).is_err());
         assert!(k.sign(&json!({"a": 0.5})).is_err());
+        // anything that is not a raw base64url key verifies nothing
+        assert!(super::verify("not a key", &v, &sig).is_err());
+        assert!(super::verify(&format!("{}=", k.public()), &v, &sig).is_err());
     }
 
     #[test]

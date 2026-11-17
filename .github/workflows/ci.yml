@@ -99,10 +99,17 @@ jobs:
       # plain `node`, no packages: the broker's tests run a few small Node
       # scripts as stand-ins (the fake model, the PATH stubs, the MCP and
       # plugin fixtures under broker/buwiz-broker/tests), and the HTTP tests
-      # under broker/buwiz-broker/tests/http are Node scripts too
+      # under broker/buwiz-broker/tests/http are Node scripts too. Only the
+      # office tests there need packages: the office pages' BetterOffice
+      # engines, which the broker looks for beside its static files.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: office/package-lock.json
+      - name: npm ci (office)
+        working-directory: office
+        run: npm ci
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -111,7 +118,9 @@ jobs:
         working-directory: broker
         run: cargo test --locked
       # the HTTP tests: each starts the broker the step above built on its own
-      # data dir and port, and speaks HTTP to it. Plain `node`, no packages.
+      # data dir and port, and speaks HTTP to it. Plain `node`, no packages of
+      # its own; the office tests lay out office/'s pages and node_modules as
+      # the release bundle does.
       - name: HTTP tests
         run: broker/buwiz-broker/tests/http/run.sh broker/target/debug/buwiz-broker
       # the stub sign-in of a test-google broker, which only a harness that

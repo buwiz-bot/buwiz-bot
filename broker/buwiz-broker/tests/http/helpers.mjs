@@ -1,7 +1,7 @@
 // Shared by the HTTP tests: a buwiz-broker on its own port and data
 // directory (MOCK by default, so no model calls; a test can turn it off
 // through startServer's env), and raw HTTP requests to it. Plain `node`,
-// no packages: run.sh passes the broker binary as BUWIZ_BROKER_BIN.
+// no packages (only office.test.mjs needs office/'s, see run.sh): run.sh passes the broker binary as BUWIZ_BROKER_BIN.
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
