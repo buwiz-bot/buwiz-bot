@@ -207,47 +207,61 @@ pub(crate) fn reads_as_command(text: &str) -> bool {
     text.trim_start().starts_with('/')
 }
 
-/// The candidates of `items` the typed `/<typed>` offers, in the order the popup lists them: the
-/// ones whose name starts with it first, then (from 2 typed characters on) the ones that contain
-/// it elsewhere in the name, each group in the order `items` came in. Case is ignored. `key` gives
-/// a candidate's name and, for a plugin's command, its qualified form `short:name`, which counts
-/// for a start match only (the short is matched by its start, as before).
-fn offer<T>(typed: &str, items: Vec<T>, key: impl Fn(&T) -> (String, Option<String>)) -> Vec<T> {
+/// The candidates of `items` the typed `/<typed>` offers, in the order the popup lists them, and
+/// how many of them are start matches. The ones whose name starts with what was typed come first,
+/// then (from 2 typed characters on) the ones that contain it elsewhere in the name, each group
+/// in the order `items` came in. Case is ignored. An item is `(candidate, name, short)`; a
+/// plugin's command also has its `short`, whose start counts for a start match (`short:name` is
+/// matched by its start, as before) but never mid-word.
+fn offer<T>(typed: &str, items: Vec<(T, &str, Option<&str>)>) -> (Vec<T>, usize) {
     let q = typed.to_lowercase();
     let mid = q.chars().count() >= 2;
     let (mut start, mut inside) = (Vec::new(), Vec::new());
-    for item in items {
-        let (name, qualified) = key(&item);
+    for (item, name, short) in items {
         let name = name.to_lowercase();
-        if name.starts_with(&q) || qualified.is_some_and(|f| f.to_lowercase().starts_with(&q)) {
+        if name.starts_with(&q) || short.is_some_and(|s| s.to_lowercase().starts_with(&q)) {
             start.push(item);
         } else if mid && name.contains(&q) {
             inside.push(item);
         }
     }
+    let starts = start.len();
     start.append(&mut inside);
-    start
+    (start, starts)
 }
 
-/// The rows of `/<typed>` (no space yet): the built-ins, then the MCP servers' commands, then the
-/// v1 plugins' (each in the form that reaches it), ordered by [`offer`].
-fn command_rows_for(typed: &str, ms: &[Manifest], entries: &[crate::mini_v1::load::PluginEntry]) -> Vec<PopRow> {
-    let mut all: Vec<(PopRow, String, Option<String>)> = BUILTINS
-        .iter()
-        .map(|b| {
-            let row = PopRow {
+/// A command the `/` popup may list, before its row is built.
+enum Cand<'a> {
+    Builtin(&'static Builtin),
+    Server(&'a Manifest, &'a Entry),
+    /// A v1 plugin's command: its plugin's place in the lists, and its name.
+    Plugin(usize, &'a str),
+}
+
+/// The rows of `/<typed>` (no space yet) and how many of them lead as start matches: the
+/// built-ins, then the MCP servers' commands, then the v1 plugins' (each in the form that reaches
+/// it), ordered by [`offer`]. A row is built only for a candidate that is kept.
+fn command_rows_for(typed: &str, ms: &[Manifest], entries: &[crate::mini_v1::load::PluginEntry]) -> (Vec<PopRow>, usize) {
+    let mut all: Vec<(Cand, &str, Option<&str>)> = BUILTINS.iter().map(|b| (Cand::Builtin(b), b.name, None)).collect();
+    for m in ms {
+        all.extend(m.commands.iter().map(|c| (Cand::Server(m, c), c.name.as_str(), None)));
+    }
+    let known = crate::mini_v1::ui::commands(entries);
+    for (i, p) in known.iter().enumerate().filter(|(_, p)| p.enabled) {
+        all.extend(p.commands.iter().map(|c| (Cand::Plugin(i, c.as_str()), c.as_str(), Some(p.short.as_str()))));
+    }
+    let (kept, starts) = offer(typed, all);
+    let rows = kept
+        .into_iter()
+        .map(|cand| match cand {
+            Cand::Builtin(b) => PopRow {
                 pick: Pick::Builtin(b.name),
                 label: format!("/{}", b.name),
                 hint: b.args.to_owned(),
                 detail: b.description.to_owned(),
                 bot: String::new(),
-            };
-            (row, b.name.to_owned(), None)
-        })
-        .collect();
-    for m in ms {
-        for c in &m.commands {
-            let row = PopRow {
+            },
+            Cand::Server(m, c) => PopRow {
                 pick: Pick::Command(m.id.clone(), c.name.clone()),
                 label: format!("/{}", c.name),
                 hint: c.args.clone(),
@@ -257,29 +271,27 @@ fn command_rows_for(typed: &str, ms: &[Manifest], entries: &[crate::mini_v1::loa
                     .collect::<Vec<_>>()
                     .join(" · "),
                 bot: String::new(),
-            };
-            all.push((row, c.name.clone(), None));
-        }
-    }
-    // v1 plugins' commands, each in the form that reaches it (3.1)
-    for (label, plugin, name) in crate::mini_v1::tokens::command_rows("", &crate::mini_v1::ui::commands(entries)) {
-        let p = entries.iter().find(|p| p.id == plugin);
-        let c = p.and_then(|p| p.commands.iter().find(|c| c.get("name").and_then(|n| n.as_str()) == Some(name.as_str())));
-        let qualified = p.map(|p| format!("{}:{name}", p.short));
-        let row = PopRow {
-            pick: Pick::V1Command(label.trim_start_matches('/').to_owned()),
-            hint: c.map(|c| js(c, "args")).unwrap_or_default(),
-            detail: [c.map(|c| js(c, "description")).unwrap_or_default(), p.map(|p| p.title.clone()).unwrap_or_default()]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · "),
-            label,
-            bot: String::new(),
-        };
-        all.push((row, name, qualified));
-    }
-    offer(typed, all, |(_, name, qualified)| (name.clone(), qualified.clone())).into_iter().map(|(row, ..)| row).collect()
+            },
+            Cand::Plugin(i, name) => {
+                // each in the form that reaches it (3.1)
+                let label = crate::mini_v1::tokens::command_label(&known[i], name, &known);
+                let p = &entries[i];
+                let c = p.commands.iter().find(|c| c.get("name").and_then(|n| n.as_str()) == Some(name));
+                PopRow {
+                    pick: Pick::V1Command(label.trim_start_matches('/').to_owned()),
+                    hint: c.map(|c| js(c, "args")).unwrap_or_default(),
+                    detail: [c.map(|c| js(c, "description")).unwrap_or_default(), p.title.clone()]
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                    label,
+                    bot: String::new(),
+                }
+            }
+        })
+        .collect();
+    (rows, starts)
 }
 
 /// `GET /mcp/manifest`, then `then`.
@@ -697,6 +709,7 @@ fn show_for(query: String, rows: Vec<PopRow>, head: String) {
         st.pop_rows.set(rows);
         st.pop_head.set(head);
         st.pop_sel.set(0);
+        st.pop_armed.set(true);
     });
 }
 
@@ -718,8 +731,10 @@ pub(crate) fn rows() -> Vec<PopRow> {
 }
 
 /// `/<q>` being typed (no space yet): the commands starting with it, then
-/// (from 2 characters) those containing it, the built-ins first in each group; past the space, a built-in's own `menu`. False when
-/// `t` is something else.
+/// (from 2 characters) those containing it, the built-ins first in each
+/// group. With no start match, no row is selected: Enter sends what is
+/// typed, and a row is picked deliberately (arrow keys, a click). Past
+/// the space, a built-in's own `menu`. False when `t` is something else.
 pub(crate) fn slash_menu(t: &str) -> bool {
     let Some(q) = t.strip_prefix('/') else { return false };
     if let Some((name, rest)) = q.split_once(char::is_whitespace)
@@ -733,10 +748,12 @@ pub(crate) fn slash_menu(t: &str) -> bool {
         return false;
     }
     refresh();
-    let ms = store().mcp_manifest.with_untracked(|ms| ms.clone());
     let entries = store().v1.entries.get_untracked();
-    let rows = command_rows_for(q, &ms, &entries);
-    show(rows, String::new());
+    let (rows, starts) = store().mcp_manifest.with_untracked(|ms| command_rows_for(q, ms, &entries));
+    batch(|| {
+        show(rows, String::new());
+        store().pop_armed.set(starts > 0);
+    });
     true
 }
 
@@ -1170,9 +1187,20 @@ pub(crate) fn pick_shown(n: usize) {
 pub(crate) fn step(d: i64) {
     let st = store();
     let n = untracked(rows).len() as i64;
-    if n > 0 {
+    if n > 0 && !st.pop_armed.get_untracked() {
+        // nothing was selected: the first arrow selects the first row (the last one going up)
+        batch(|| {
+            st.pop_sel.set(if d < 0 { n as usize - 1 } else { 0 });
+            st.pop_armed.set(true);
+        });
+    } else if n > 0 {
         st.pop_sel.update(|i| *i = ((*i as i64 + n + d) % n) as usize);
     }
+}
+
+/// Whether a row of the popup is selected (tracked): Enter and Tab take it only then.
+pub(crate) fn armed() -> bool {
+    store().pop_armed.get()
 }
 
 /// What Enter does with the popup open.
@@ -1286,23 +1314,23 @@ mod tests {
 
     #[test]
     fn avatars_is_a_builtin_the_slash_menu_lists() {
-        let rows = super::command_rows_for("av", &[], &[]);
+        let rows = super::command_rows_for("av", &[], &[]).0;
         assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["/avatars"]);
     }
 
     #[test]
     fn tools_is_a_builtin_the_slash_menu_lists() {
-        let rows = super::command_rows_for("to", &[], &[]);
+        let rows = super::command_rows_for("to", &[], &[]).0;
         assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["/tools"]);
         assert!(rows[0].pick == Pick::Builtin("tools"));
-        assert!(super::command_rows_for("", &[], &[]).iter().any(|r| r.label == "/tools"), "`/` alone lists it");
+        assert!(super::command_rows_for("", &[], &[]).0.iter().any(|r| r.label == "/tools"), "`/` alone lists it");
         // it opens the sheet (`tools::sheet_for` is tested there)
         assert_eq!(super::BUILTINS.iter().find(|b| b.name == "tools").map(|b| b.args), Some(""));
     }
 
     #[test]
     fn computer_is_a_builtin_with_a_menu() {
-        let rows = super::command_rows_for("comp", &[], &[]);
+        let rows = super::command_rows_for("comp", &[], &[]).0;
         assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["/computer"]);
         let b = super::BUILTINS.iter().find(|b| b.name == "computer").unwrap();
         assert!(b.menu.is_some() && b.args.contains("default <home>"));
@@ -1432,7 +1460,7 @@ mod tests {
     }
 
     fn names(typed: &str, items: &[&str]) -> Vec<String> {
-        offer(typed, items.iter().map(|s| s.to_string()).collect(), |s| (s.clone(), None))
+        offer(typed, items.iter().map(|s| (s.to_string(), *s, None)).collect()).0
     }
 
     #[test]
@@ -1440,6 +1468,8 @@ mod tests {
         let items = ["bir-uptime", "uptime-log", "downtime", "uptimes"];
         assert_eq!(names("uptime", &items), ["uptime-log", "uptimes", "bir-uptime"]);
         assert_eq!(names("bir", &items), ["bir-uptime"]);
+        let (rows, starts) = offer("uptime", items.iter().map(|s| (*s, *s, None)).collect());
+        assert_eq!((rows.len(), starts), (3, 2), "the count of start matches comes with the rows");
     }
 
     #[test]
@@ -1465,16 +1495,13 @@ mod tests {
 
     #[test]
     fn offer_matches_a_plugins_short_by_its_start_only() {
-        let items = vec![("bir", "uptime"), ("bir", "status"), ("ops", "bir-check")];
-        let got = offer("bir", items, |(short, name)| (name.to_string(), Some(format!("{short}:{name}"))));
+        let run = |q: &str, items: &[(&'static str, &'static str)]| {
+            offer(q, items.iter().map(|(short, name)| ((*short, *name), *name, Some(*short))).collect()).0
+        };
         // both `bir:` commands start-match through their short; the name containing `bir` follows
-        assert_eq!(got, [("bir", "uptime"), ("bir", "status"), ("ops", "bir-check")]);
-        let items = vec![("ops", "status"), ("bir", "x-ops")];
-        let got = offer("ops", items, |(short, name)| (name.to_string(), Some(format!("{short}:{name}"))));
-        assert_eq!(got, [("ops", "status"), ("bir", "x-ops")]);
-        let items = vec![("a-bir", "x"), ("c", "d")];
-        let got = offer("bir", items, |(short, name)| (name.to_string(), Some(format!("{short}:{name}"))));
-        assert!(got.is_empty(), "a short is not matched mid-word");
+        assert_eq!(run("bir", &[("bir", "uptime"), ("bir", "status"), ("ops", "bir-check")]), [("bir", "uptime"), ("bir", "status"), ("ops", "bir-check")]);
+        assert_eq!(run("ops", &[("ops", "status"), ("bir", "x-ops")]), [("ops", "status"), ("bir", "x-ops")]);
+        assert!(run("bir", &[("a-bir", "x"), ("c", "d")]).is_empty(), "a short is not matched mid-word");
     }
 
     fn v1_with_commands(short: &str, commands: &[&str]) -> PluginEntry {
@@ -1487,18 +1514,16 @@ mod tests {
     #[test]
     fn the_slash_popup_offers_a_plugin_command_mid_name_after_the_start_matches() {
         let ps = [v1_with_commands("ebir", &["bir-uptime", "uptime-log"])];
-        let labels = |q: &str| super::command_rows_for(q, &[], &ps).into_iter().map(|r| r.label).collect::<Vec<_>>();
+        let labels = |q: &str| super::command_rows_for(q, &[], &ps).0.into_iter().map(|r| r.label).collect::<Vec<_>>();
         assert_eq!(labels("uptime"), ["/uptime-log", "/bir-uptime"]);
         assert_eq!(labels("bir"), ["/bir-uptime"]);
         assert!(labels("u").iter().all(|l| l.starts_with("/u")), "one character: starts only");
-        // a built-in that merely contains the text comes after a plugin command that starts with it
+        // a plugin command that starts with the text comes before a built-in that only contains it
         let ps = [v1_with_commands("ebir", &["omp-x"])];
-        let labels = labels_of("omp", &ps);
-        assert_eq!(labels, ["/omp-x", "/computer"]);
-    }
-
-    fn labels_of(q: &str, ps: &[PluginEntry]) -> Vec<String> {
-        super::command_rows_for(q, &[], ps).into_iter().map(|r| r.label).collect()
+        assert_eq!(super::command_rows_for("omp", &[], &ps).0.into_iter().map(|r| r.label).collect::<Vec<_>>(), ["/omp-x", "/computer"]);
+        assert_eq!(super::command_rows_for("omp", &[], &ps).1, 1, "one start match");
+        // only mid-name matches: none starts with it
+        assert_eq!(super::command_rows_for("at", &[], &[]).1, 0);
     }
 
     fn command_row(name: &str) -> PopRow {

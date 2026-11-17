@@ -1,49 +1,22 @@
 //! The composer's `/` popup through the real composer path on a headless engine: a command
 //! typed mid-name (`/uptime` for a plugin's `bir-uptime`) is offered after the commands that
-//! start with it, and picking it completes the whole command.
-//!
-//! The store is one per process, so each test runs in a child of its own.
+//! start with it, and is never taken by Enter or Tab unless the person selected it.
 
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
-use std::sync::Mutex;
 
 use nsh_core::element::Root;
-use nsh_core::platform::{FetchEvent, HttpHead, HttpRequest};
+use nsh_core::platform::HttpRequest;
 use nsh_core::prelude::*;
 use nsh_engine::{App, EngineConfig, FetchEvents, FetchTask, Network};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use buwiz_office_kit::testing::{Headless, run};
 
 use crate::live::store;
-
-const CHILD: &str = "BUWIZ_SLASH_MENU_UI_TEST";
+use crate::ui_test_support::{Stage, finish, on, wait_until};
 
 fn in_child(name: &str) -> bool {
-    if std::env::var_os(CHILD).is_some() {
-        return true;
-    }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([&format!("slash_menu_ui_tests::{name}"), "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD, "1")
-        .env("BUWIZ_BACKEND", "http://127.0.0.1:1")
-        .output()
-        .expect("run the test's child");
-    let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    println!("{log}");
-    assert!(out.status.success() && log.contains("1 passed"), "{name} failed in its child:\n{log}");
-    false
-}
-
-struct Done;
-
-impl FetchTask for Done {
-    fn send(&mut self, _: Vec<u8>) {}
-    fn finish(&mut self) {}
-    fn pause(&mut self, _: bool) {}
-    fn cancel(self: Box<Self>) {}
+    crate::ui_test_support::in_child("slash_menu_ui_tests", name)
 }
 
 /// A stand-in broker: the servers' manifest lists none; everything else is `ok`.
@@ -60,69 +33,14 @@ impl Network for Broker {
     }
 }
 
-fn finish(mut events: FetchEvents, answer: Value) -> Box<dyn FetchTask> {
-    events(FetchEvent::Head(HttpHead { status: 200, ..Default::default() }));
-    events(FetchEvent::Data(answer.to_string().into_bytes()));
-    events(FetchEvent::End);
-    Box::new(Done)
-}
-
-/// How long a test waits for what it expects before it fails: generous, for a loaded runner.
-const PATIENCE: Duration = Duration::from_secs(60);
-
-/// `app` pumped until `done()` (run on the engine thread) says so.
-fn wait_until(app: &mut Headless, what: &str, done: impl Fn() -> bool + Send + Clone + 'static) {
-    let until = Instant::now() + PATIENCE;
-    while Instant::now() < until {
-        if on(app, done.clone()) {
-            return;
-        }
-        app.pump(Duration::from_millis(10));
-    }
-    panic!("waited for {what}");
-}
-
-fn start() -> (Headless, Arc<Broker>) {
-    let seen = Arc::new(Broker);
+fn start() -> Headless {
     let mut config = EngineConfig::new(App::Rust(Root::new::<Stage>(|| ())));
     config.viewport = nsh_core::geometry::Size::new(px(1000.0), px(800.0));
-    config.network = Some(seen.clone());
+    config.network = Some(Arc::new(Broker));
     let mut app = run(config);
     on(&mut app, crate::slash::boot);
     wait_until(&mut app, "the manifest", || store().mcp_loaded.get());
-    (app, seen)
-}
-
-/// What the Stage's `job` press runs next.
-static JOB: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
-
-/// `f` on the engine thread, where the store's signals live.
-fn on<R: Send + 'static>(app: &mut Headless, f: impl FnOnce() -> R + Send + 'static) -> R {
-    let (tx, rx) = std::sync::mpsc::channel();
-    *JOB.lock().unwrap() = Some(Box::new(move || {
-        let _ = tx.send(f());
-    }));
-    app.press("job");
-    let until = Instant::now() + PATIENCE;
-    while Instant::now() < until {
-        if let Ok(r) = rx.try_recv() {
-            return r;
-        }
-        app.pump(Duration::from_millis(5));
-    }
-    panic!("the job never ran");
-}
-
-#[component]
-fn Stage() -> impl IntoElement {
-    Owner::detached().run(|| {
-        let _ = store();
-    });
-    view().size_full().child(text("probe ready=1")).child(crate::toast::layer()).child(view().label("job").w(px(40.0)).h(px(24.0)).on_press(|| {
-        if let Some(job) = JOB.lock().unwrap().take() {
-            job();
-        }
-    }))
+    app
 }
 
 /// A plugin whose commands are `bir-uptime` and `home-menu`.
@@ -147,14 +65,13 @@ fn menu(app: &mut Headless, typed: &'static str) -> Vec<String> {
 }
 
 /// `/uptime` offers the plugin's `bir-uptime`; `/bir` offers it as a start match; one character
-/// offers what it always did; start matches come before mid-name ones; the built-ins stay first
-/// among start matches.
+/// offers what it always did; start matches come before mid-name ones.
 #[test]
 fn the_slash_popup_offers_a_command_mid_name_after_the_ones_that_start_with_it() {
     if !in_child("the_slash_popup_offers_a_command_mid_name_after_the_ones_that_start_with_it") {
         return;
     }
-    let (mut app, _) = start();
+    let mut app = start();
     install_plugin(&mut app);
     assert_eq!(menu(&mut app, "/uptime"), ["/bir-uptime"]);
     assert_eq!(menu(&mut app, "/UPTIME"), ["/bir-uptime"], "case is ignored");
@@ -166,22 +83,59 @@ fn the_slash_popup_offers_a_command_mid_name_after_the_ones_that_start_with_it()
     assert_eq!(menu(&mut app, "/").len(), 9, "nothing typed: every command");
 }
 
-/// Picking the mid-name row completes the whole command; sending `/uptime` typed by hand is no
-/// command here, as before.
+/// Whether the keymap binds `keys` now.
+fn binds(app: &mut Headless, keys: &'static str) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.key(keys))).is_ok()
+}
+
+/// The draft now.
+fn draft(app: &mut Headless) -> String {
+    on(app, || store().draft.get_untracked())
+}
+
+/// With only mid-name matches, nothing is selected: Enter and Tab are left to the field (Enter
+/// sends what was typed, as it did when the popup was empty), and nothing is completed.
 #[test]
-fn picking_the_mid_name_row_completes_the_full_command_and_a_partial_name_still_is_no_command() {
-    if !in_child("picking_the_mid_name_row_completes_the_full_command_and_a_partial_name_still_is_no_command") {
+fn enter_and_tab_leave_a_popup_of_mid_name_matches_alone() {
+    if !in_child("enter_and_tab_leave_a_popup_of_mid_name_matches_alone") {
         return;
     }
-    let (mut app, _) = start();
+    let mut app = start();
+    install_plugin(&mut app);
+    for typed in ["/uptime", "/at"] {
+        let rows = menu(&mut app, typed);
+        assert!(!rows.is_empty(), "{typed} lists mid-name rows: {rows:?}");
+        assert!(!binds(&mut app, "enter"), "{typed}: the popup takes Enter");
+        assert!(!binds(&mut app, "tab"), "{typed}: the popup takes Tab");
+        assert_eq!(draft(&mut app), typed, "nothing was completed");
+    }
+    // an empty popup is the same to the keys
+    assert!(menu(&mut app, "/zz").is_empty());
+    assert!(!binds(&mut app, "enter"));
+    // with a start match the first row is selected, as before
+    menu(&mut app, "/bir");
+    assert!(binds(&mut app, "enter"));
+    assert_eq!(draft(&mut app), "/bir-uptime ", "Enter completes a start match");
+}
+
+/// The person picks a mid-name row deliberately: an arrow key selects it, then Enter completes
+/// the whole command; so does a click (which runs `slash::pick`).
+#[test]
+fn a_mid_name_row_is_picked_with_the_arrow_keys_or_a_click() {
+    if !in_child("a_mid_name_row_is_picked_with_the_arrow_keys_or_a_click") {
+        return;
+    }
+    let mut app = start();
     install_plugin(&mut app);
     assert_eq!(menu(&mut app, "/uptime"), ["/bir-uptime"]);
-    let draft = on(&mut app, || {
-        crate::slash::enter();
-        store().draft.get_untracked()
-    });
-    assert_eq!(draft, "/bir-uptime ");
-    // typed in full and sent by hand, `/uptime` is not taken as a command: left to the chat as before
+    assert!(binds(&mut app, "down"), "the arrow keys work on the popup");
+    assert!(binds(&mut app, "enter"), "a row is selected now");
+    assert_eq!(draft(&mut app), "/bir-uptime ");
+    // a click on the row
+    assert_eq!(menu(&mut app, "/uptime"), ["/bir-uptime"]);
+    let row = on(&mut app, || store().pop_rows.get_untracked().remove(0));
+    on(&mut app, move || crate::slash::pick(&row));
+    assert_eq!(draft(&mut app), "/bir-uptime ");
+    // typing `/uptime` by hand is no command, as before
     assert!(!on(&mut app, || crate::slash::dispatch("/uptime", true)));
-    assert!(on(&mut app, || crate::slash::names_a_builtin("/status").is_some()));
 }

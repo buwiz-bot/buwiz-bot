@@ -181,18 +181,20 @@ pub fn route(cmd: &Slash, plugins: &[Commands]) -> Route {
     }
 }
 
-/// The composer's rows for `/<q>`: every candidate, each in the form that
-/// reaches it (`/name` when unique, else `/short:name`), with its plugin.
-pub fn command_rows(q: &str, plugins: &[Commands]) -> Vec<(String, String, String)> {
+/// How the composer lists `p`'s command `name`: `/name` when it reaches only `p`, else
+/// `/short:name`.
+pub fn command_label(p: &Commands, name: &str, plugins: &[Commands]) -> String {
+    let unique = route(&Slash { short: None, name, args: "" }, plugins) == Route::Plugin { plugin: p.plugin.clone(), short: p.short.clone() };
+    if unique { format!("/{name}") } else { format!("/{}:{name}", p.short) }
+}
+
+/// Every candidate command of the enabled plugins, each in the form that reaches it
+/// ([`command_label`]), with its plugin: (label, plugin, name).
+pub fn command_rows(plugins: &[Commands]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for p in plugins.iter().filter(|p| p.enabled) {
-        for c in p.commands.iter().filter(|c| c.starts_with(q) || format!("{}:{c}", p.short).starts_with(q)) {
-            let unique = route(&Slash { short: None, name: c, args: "" }, plugins) == Route::Plugin {
-                plugin: p.plugin.clone(),
-                short: p.short.clone(),
-            };
-            let label = if unique { format!("/{c}") } else { format!("/{}:{c}", p.short) };
-            out.push((label, p.plugin.clone(), c.clone()));
+        for c in &p.commands {
+            out.push((command_label(p, c, plugins), p.plugin.clone(), c.clone()));
         }
     }
     out
@@ -480,10 +482,13 @@ mod tests {
         assert_eq!(go("/off:ledger"), Route::Unknown);
         assert_eq!(go("/nope"), Route::Unknown);
         // the composer lists every candidate in the form that reaches it
-        let rows: Vec<String> = command_rows("re", &ps).into_iter().map(|r| r.0).collect();
+        let rows: Vec<String> = command_rows(&ps).into_iter().map(|r| r.0).filter(|l| l.contains("re")).collect();
         assert_eq!(rows, ["/bir:report", "/acc:report"]);
-        let rows: Vec<String> = command_rows("tax", &ps).into_iter().map(|r| r.0).collect();
+        let rows: Vec<String> = command_rows(&ps).into_iter().map(|r| r.0).filter(|l| l.contains("tax")).collect();
         assert_eq!(rows, ["/taxform", "/taxprofile"]);
+        let one = ps.iter().find(|p| p.short == "bir").unwrap();
+        assert_eq!(command_label(one, "taxform", &ps), "/taxform");
+        assert_eq!(command_label(one, "report", &ps), "/bir:report");
     }
 
     #[test]
