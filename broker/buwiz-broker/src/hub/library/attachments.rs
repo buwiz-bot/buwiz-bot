@@ -342,6 +342,12 @@ mod tests {
         assert_eq!(parse_token("@Apps:item:1"), None);
         assert_eq!(parse_token("@apps:item:"), None);
         assert_eq!(parse_token("@apps:item:a b"), None);
+        assert_eq!(parse_token("  @my-srv-2:Tax_Profile:a:b/c  "), Some(("my-srv-2".into(), "Tax_Profile".into(), "a:b/c".into())));
+        for bad in ["@bir_x:tin:1", "@bir:bad.scope:1", "@bir:tin", "@:tin:1", "@bir::1", ""] {
+            assert_eq!(parse_token(bad), None, "{bad:?}");
+        }
+        assert_eq!(tokens_in("see @bir:tin:123/0000 and @cal:day:2026-10-28, ok"), vec![("bir".into(), "tin".into()), ("cal".into(), "day".into())]);
+        assert!(tokens_in("@bir:tin: nothing").is_empty());
         assert_eq!(tokens_in("see @a:b:1 and @c:d:2."), vec![("a".into(), "b".into()), ("c".into(), "d".into())]);
         assert_eq!(tokens_in("@a:b:1,@c:d:2"), vec![("a".into(), "b".into())]);
         assert_eq!(key_of_open("buwiz://app/apps/hello").unwrap(), "mcp:apps/hello");

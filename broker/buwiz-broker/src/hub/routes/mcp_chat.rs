@@ -270,6 +270,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn server_ids_are_lowercase_letters_digits_and_dashes() {
+        assert!(is_server_id("bir-2"));
+        for bad in ["Bir", "a b", "", "a_b", "a.b"] {
+            assert!(!is_server_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn mcp_chat_names_and_slugs() {
         assert_eq!(mcp_name("my-fixture", "echo"), "mcp_my-fixture_echo");
         assert_eq!(mcp_name("a", "b.c d"), "mcp_a_b_c_d");
