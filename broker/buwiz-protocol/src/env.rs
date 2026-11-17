@@ -1,7 +1,6 @@
 //! Buwiz Bot's environment variables by their Buwiz names, the old Rox and
-//! Grok names still read. [`NAMES`] is the whole table, (new, old); the
-//! Node broker keeps the same table in `server/src/env.mjs` (a test here
-//! checks they match).
+//! Grok names still read. [`NAMES`] is the whole table, (new, old); a test
+//! here pins it in tests/pins/env_names.json.
 //!
 //! A read takes the new name when it has a value, else the old one when it
 //! is set (an empty new name gives way to a non-empty old one), and then
@@ -45,28 +44,17 @@ pub const NAMES: &[(&str, &str)] = &[
     ("BUWIZ_PILL", "ROX_PILL"),
     ("BUWIZ_OVERLAY", "ROX_OVERLAY"),
     // the broker
-    ("BUWIZ_BROKER_HUB", "ROX_BROKER_HUB"),
-    ("BUWIZ_BROKER_V1_HOST", "ROX_BROKER_V1_HOST"),
-    ("BUWIZ_BROKER_MCP_HOST", "ROX_BROKER_MCP_HOST"),
-    ("BUWIZ_BROKER_NO_NODE", "ROX_BROKER_NO_NODE"),
-    ("BUWIZ_BROKER_FORWARD_ALL", "ROX_BROKER_FORWARD_ALL"),
     ("BUWIZ_BROKER_DATA_DIR", "GROK_DATA_DIR"),
     ("BUWIZ_ALLOWED_ORIGINS", "GROK_ALLOWED_ORIGINS"),
     ("BUWIZ_BUNDLE_ID", "GROK_BUNDLE_ID"),
     ("BUWIZ_PUBLIC_PORT", "ROX_PUBLIC_PORT"),
-    ("BUWIZ_NODE_ROLE", "ROX_NODE_ROLE"),
     ("BUWIZ_PLUGIN_CATALOG", "ROX_PLUGIN_CATALOG"),
-    ("BUWIZ_V1_LINE", "ROX_V1_LINE"),
-    ("BUWIZ_V1_LINE_TOKEN", "ROX_V1_LINE_TOKEN"),
-    ("BUWIZ_LINE_HOSTS", "ROX_LINE_HOSTS"),
-    ("BUWIZ_LINE_TOKEN", "ROX_LINE_TOKEN"),
     ("BUWIZ_V1_CALL_TIMEOUT_MS", "ROX_V1_CALL_TIMEOUT_MS"),
-    ("BUWIZ_V1_MANUAL_CLOCK", "ROX_V1_MANUAL_CLOCK"),
+    // read by bridge/rox-bridge.mjs, which keeps its own copy of the read rule
     ("BUWIZ_BRIDGE_URL", "ROX_BRIDGE_URL"),
     ("BUWIZ_BRIDGE_TOKEN", "ROX_BRIDGE_TOKEN"),
     // tests
     ("BUWIZ_STUB_LOG", "ROX_STUB_LOG"),
-    ("BUWIZ_DEFS_WRITE", "ROX_DEFS_WRITE"),
     // scripts
     ("BUWIZ_APP", "ROX_APP"),
     ("BUWIZ_LOG", "ROX_LOG"),
@@ -198,8 +186,8 @@ mod tests {
         }
     }
 
-    /// The Node broker kept the same table (`NAMES` in its env.mjs); it is
-    /// pinned in tests/pins/env_names.json.
+    /// The table is pinned in tests/pins/env_names.json: a change to it is
+    /// deliberate (refresh the pin the way test-support/pins.rs says).
     #[test]
     fn the_table_is_the_pinned_one() {
         let rust: Vec<Vec<&str>> = NAMES.iter().map(|(n, o)| vec![*n, *o]).collect();

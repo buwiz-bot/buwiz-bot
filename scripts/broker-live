@@ -97,11 +97,10 @@ start_rox() {
   mkdir -p "$(dirname "$BUWIZ_LOG")" "$GS"
   PIDFILE=$(mktemp "${TMPDIR:-/tmp}/broker-live-pid.XXXXXX")
   (cd / && exec env -u GPUI_AGENT -u GPUI_AGENT_TOKEN -u GPUI_AGENT_TOKEN_FILE -u GPUI_AGENT_ADDR -u GPUI_AGENT_ALLOW_RELEASE -u GPUI_AGENT_ACTOR \
-    -u PORT -u BUWIZ_PUBLIC_PORT -u ROX_PUBLIC_PORT BUWIZ_BROKER_HUB=1 ROX_BROKER_HUB=1 \
-    BUWIZ_BROKER_V1_HOST=1 ROX_BROKER_V1_HOST=1 BUWIZ_BROKER_MCP_HOST=1 ROX_BROKER_MCP_HOST=1 \
+    -u PORT -u BUWIZ_PUBLIC_PORT -u ROX_PUBLIC_PORT \
     BUWIZ_BROKER_DATA_DIR="$GS" GROK_DATA_DIR="$GS" NSH="$RB/bin/nsh" NSH_HOST="$RB/bin/nsh-macos-host" NSH_CHUNK_DIR="$GS/chunks" \
     nohup /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV or die "$ARGV[0]: $!\n"' \
-    "$RB_BIN" --port "$PORT" --data "$GS" --assets "$RB/server" --no-node \
+    "$RB_BIN" --port "$PORT" --data "$GS" --assets "$RB/server" \
     >>"$BUWIZ_LOG" 2>&1 </dev/null &
     echo $! >"$PIDFILE")
   local started
