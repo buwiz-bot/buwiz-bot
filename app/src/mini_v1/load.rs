@@ -25,7 +25,7 @@ pub const SDK1_NSH: &[&str] = &[
 ];
 
 /// What `buwiz` exports: the bridge and its error class.
-const BUWIZ_EXPORTS: &[&str] = &["buwiz", "MiniError"];
+const BUWIZ_EXPORTS: &[&str] = &["buwiz", "BuwizError"];
 
 /// The shim prepended to every v1 app.
 pub const SHIM: &str = include_str!("shim.js");
@@ -401,7 +401,7 @@ fn bind_buwiz_imports(js: &str) -> Result<String, String> {
             if type_only {
                 continue;
             }
-            let global = if imported == "MiniError" { "MiniError" } else { "buwiz" };
+            let global = if imported == "BuwizError" { "BuwizError" } else { "buwiz" };
             bind.push_str(&format!("const {local} = globalThis.{global};"));
         }
         out.push_str(&js[at..imp.start]);
@@ -789,7 +789,7 @@ mod tests {
             "import { buwiz } from \"buwiz\";",
             "import type { Foo, Bar } from \"nsh\";",
             "import { type ViewStyle, signal as s } from \"nsh\";",
-            "import buwiz, { MiniError } from \"buwiz\";",
+            "import buwiz, { BuwizError } from \"buwiz\";",
             "const s = \"import x from 'nsh/device'\"; // import { host } from \"nsh\"",
             "/* import fs from \"fs\" */ const t = `import(${1})`;",
         ];
@@ -844,7 +844,6 @@ mod tests {
         let js = build("card", "Card", "import { buwiz, BuwizError as E } from \"buwiz\";\nimport { Text } from \"nsh\";\nexport default function Card() { return <Text>{buwiz.app.app + String(E)}</Text>; }").unwrap();
         assert!(js.contains("const buwiz = globalThis.buwiz;const E = globalThis.BuwizError;"), "{js}");
         assert!(!js.contains("from \"buwiz\""), "{js}");
-        assert_eq!(check_source_imports("import { BuwizError } from \"buwiz\";"), Err("BuwizError from buwiz".to_owned()));
     }
 
     #[test]
