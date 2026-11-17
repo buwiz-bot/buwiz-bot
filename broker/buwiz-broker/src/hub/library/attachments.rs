@@ -20,7 +20,7 @@ pub fn parse_token(s: &str) -> Option<(String, String, String)> {
     let rest = s.strip_prefix('@')?;
     let (server, rest) = rest.split_once(':')?;
     let (scope, value) = rest.split_once(':')?;
-    let server_ok = !server.is_empty() && server.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let server_ok = crate::hub::routes::mcp_chat::is_server_id(server);
     let scope_ok = crate::helper::mcp_servers::is_name(scope);
     let value_ok = !value.is_empty() && !value.chars().any(|c| js::is_space(c) || matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'));
     (server_ok && scope_ok && value_ok).then(|| (server.into(), scope.into(), value.into()))

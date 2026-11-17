@@ -249,7 +249,7 @@ test("AVD-17 /avatar/picture over the wire: the picked model draws SVG; a refuse
   assert.ok(fake.requests.some((q) => q.path === "/v1/images/edits"));
 });
 
-test("AVD-21 /avatar/image/import copies a file the app's open panel chose into the avatar folder", async () => {
+test("AVD-24 /avatar/image/import copies a file the app's open panel chose into the avatar folder", async () => {
   const src = join(dir, "picked-by-panel.png");
   writeFileSync(src, Buffer.from(PNG_B64, "base64"));
   const r = await postJson("/avatar/image/import", { path: src });

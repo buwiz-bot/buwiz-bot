@@ -79,7 +79,7 @@ async fn list(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
 }
 
 /// grammar.mjs `isServerId`.
-fn is_server_id(s: &str) -> bool {
+pub fn is_server_id(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 

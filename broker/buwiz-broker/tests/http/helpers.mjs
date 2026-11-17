@@ -82,8 +82,9 @@ let hostToken = "";
 
 /** One request: {status, headers, text, json}. `headers` as given (an
  *  Origin is sent as is); `body` a string or a Buffer; `noToken` keeps the
- *  host token off a locked route. */
-export function request(method, path, { headers = {}, body, noToken = false } = {}) {
+ *  host token off a locked route; a broker that does not answer in `timeout`
+ *  ms fails the request. */
+export function request(method, path, { headers = {}, body, noToken = false, timeout = 60000 } = {}) {
   const route = path.split("?")[0];
   const locked = method === "POST" ? LOCKED.has(route) : method === "GET" && LOCKED_READS.has(route);
 
@@ -105,6 +106,7 @@ export function request(method, path, { headers = {}, body, noToken = false } = 
       });
     });
 
+    req.setTimeout(timeout, () => req.destroy(new Error(`${method} ${path}: no answer from the broker in ${timeout} ms`)));
     req.on("error", reject);
 
     if (body !== undefined) req.write(body);
@@ -116,7 +118,7 @@ export function request(method, path, { headers = {}, body, noToken = false } = 
 export const postJson = (path, obj) =>
   request("POST", path, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
 
-const up = () => request("GET", "/health").then((r) => r.status === 200, () => false);
+const up = () => request("GET", "/health", { timeout: 2000 }).then((r) => r.status === 200, () => false);
 
 const withOld = (k) => [k, k === "BUWIZ_BROKER_DATA_DIR" ? "GROK_DATA_DIR" : k === "BUWIZ_ALLOWED_ORIGINS" ? "GROK_ALLOWED_ORIGINS" : k.replace(/^BUWIZ_/, "ROX_")];
 
@@ -127,8 +129,10 @@ const withOld = (k) => [k, k === "BUWIZ_BROKER_DATA_DIR" ? "GROK_DATA_DIR" : k =
  *  (`{MOCK: undefined}` turns MOCK off). */
 export function serverEnv(dataDir, env = {}) {
   const home = join(dataDir, "home");
+  // no model provider's setting of the caller's reaches a broker
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GEN_|ANTHROPIC_|OPENAI_|OPENROUTER_|GEMINI_|OPENCODEX_|LINEAR_)/.test(k)));
   const out = {
-    ...process.env, HOME: home, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "",
+    ...inherited, HOME: home, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "",
     BUWIZ_BROKER_HUB: "1", BUWIZ_BROKER_V1_HOST: "1", BUWIZ_BROKER_MCP_HOST: "1", BUWIZ_NO_KEYCHAIN: "1",
   };
 
@@ -177,7 +181,8 @@ export async function startServer(dataDir, { env, args = [] } = {}) {
     clearTimeout(t);
   };
 
-  for (let i = 0; i < 300 && !(await up()); i++) {
+  // a broker built a moment ago can take a minute to start the first time (the OS scans a new binary)
+  for (let i = 0; i < 1200 && !(await up()); i++) {
     if (child.exitCode !== null) throw new Error(`broker exited early:\n${log}`);
     await new Promise((r) => setTimeout(r, 100));
   }

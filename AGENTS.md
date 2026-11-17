@@ -55,10 +55,14 @@ are lost at the next rebuild.
 ## Working on the broker (`server/`)
 
 - The broker holds chats, model calls, routines, v1 plugin hosting and
-  agent messaging. Code is in `server/src/`, tests in `server/test/`.
-- Test with `cd server && npm test` (after `npm ci`). Each test starts its
-  own broker on `TEST_PORT` (8797 by default) with a temp data dir; pick
-  another port when one is taken.
+  agent messaging. Code is in `server/src/`.
+- The broker's HTTP tests are in `broker/buwiz-broker/tests/http/` (plain
+  `node`, no packages). Run them with `broker/buwiz-broker/tests/http/run.sh
+  <built buwiz-broker>`; each test starts the broker on `TEST_PORT` (8797 by
+  default) with a temp data dir, from a clean environment. CI's broker job runs
+  them. `server/test/` keeps only what has no Rust twin yet (the in-process
+  plugin host suites, `v1-manifest`, `office`, the rich avatar cases; #262);
+  `cd server && npm test` (after `npm ci`) runs those.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
   Never point a test or bench at it: give it its own data dir.

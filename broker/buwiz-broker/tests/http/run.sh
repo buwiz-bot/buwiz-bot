@@ -14,13 +14,23 @@ shift
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BUWIZ_BROKER_BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 export BUWIZ_BROKER_BIN
-# no Keychain, whatever a test's broker is asked
-BUWIZ_NO_KEYCHAIN=1
-export BUWIZ_NO_KEYCHAIN
-# the Mac tools the broker shells out to (osascript, open, secret, nsh, ...)
-# are the stubs in tests/fixtures/bin, ahead of the real ones
-PATH="$(cd "$HERE/../fixtures/bin" && pwd):$PATH"
-export PATH
+# Everything below runs from a clean environment: nothing of the caller's
+# (a model provider's URL or key, a proxy, a token) reaches a test, its broker
+# or the stand-ins it starts. Only what is named here is passed.
+if [ -z "${BUWIZ_HTTP_CLEAN:-}" ]; then
+  NODE="$(node -p process.execPath)" || exit 2
+  GIT="$(command -v git || true)"
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/buwiz-http-run.XXXXXX")" || exit 2
+  trap 'rm -rf "$WORK"' EXIT
+  # the stubs (osascript, open, secret, nsh, ...) come first, ahead of any real tool
+  TOOLS="$(cd "$HERE/../fixtures/bin" && pwd):$(dirname "$NODE")${GIT:+:$(dirname "$GIT")}:/usr/bin:/bin:/usr/sbin:/sbin"
+  mkdir -p "$WORK/home" "$WORK/tmp"
+  env -i PATH="$TOOLS" HOME="$WORK/home" TMPDIR="$WORK/tmp" LANG=C.UTF-8 \
+    TEST_PORT="${TEST_PORT:-8797}" ${TEST_SINK_PORT:+TEST_SINK_PORT="$TEST_SINK_PORT"} \
+    BUWIZ_NO_KEYCHAIN=1 BUWIZ_HTTP_CLEAN=1 BUWIZ_BROKER_BIN="$BUWIZ_BROKER_BIN" \
+    sh "$0" "$BIN" "$@"
+  exit $?
+fi
 cd "$HERE" || exit 2
 [ $# -gt 0 ] || set -- ./*.test.mjs
 node --test --test-concurrency=1 "$@"
