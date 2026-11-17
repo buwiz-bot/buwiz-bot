@@ -98,7 +98,8 @@ jobs:
           submodules: recursive
       # plain `node`, no packages: the broker's tests run a few small Node
       # scripts as stand-ins (the fake model, the PATH stubs, the MCP and
-      # plugin fixtures under broker/buwiz-broker/tests)
+      # plugin fixtures under broker/buwiz-broker/tests), and the HTTP tests
+      # under broker/buwiz-broker/tests/http are Node scripts too
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -109,6 +110,10 @@ jobs:
       - name: Test
         working-directory: broker
         run: cargo test --locked
+      # the HTTP tests: each starts the broker the step above built on its own
+      # data dir and port, and speaks HTTP to it. Plain `node`, no packages.
+      - name: HTTP tests
+        run: broker/buwiz-broker/tests/http/run.sh broker/target/debug/buwiz-broker
       # the stub sign-in of a test-google broker, which only a harness that
       # asks for that feature builds; a plain broker refuses BUWIZ_TEST_GOOGLE
       - name: Test (test-google)
