@@ -10,7 +10,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { oauthServer } from "./fixtures/oauth-server.mjs";
+import { oauthServer } from "../../broker/buwiz-broker/tests/fixtures/oauth-server.mjs";
 import { HUB, PORT, ROOT, env, tempDir } from "./helpers.mjs";
 
 // Node-only under the hub (BUWIZ_BROKER_HUB=1): tools.mjs and routines.mjs in this process; with the hub the Rust ports run them (MAGT-01…04)
@@ -19,7 +19,7 @@ const NODE_ONLY = { skip: HUB && "Node-only: tools.mjs and routines.mjs in this 
 const dataDir = tempDir("mcp-agent");
 const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
-const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
+const APPS = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "mcp-apps-server.mjs");
 // (not under the hub, where every case here is skipped: no helper to start)
 const RUST = !HUB && process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1" ? process.env.BUWIZ_BROKER_CMD.trim().split(/\s+/)[0] : "";
 

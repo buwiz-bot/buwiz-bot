@@ -1,0 +1,38 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer test-key"
+      },
+      "body": {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "this"
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "data:image/png;base64,AAAA"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "[[script:oai-chat]] look"
+          }
+        ],
+        "max_tokens": 1024
+      }
+    }
+  ],
+  "result": "Hi from the fake."
+}

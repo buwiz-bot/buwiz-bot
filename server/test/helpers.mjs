@@ -41,7 +41,7 @@ export const tempDir = (label) => mkdtempSync(join(tmpdir(), `grok-test-${label}
 // nsh-macos-host beside it, pbcopy, open, osascript, sips, qlmanage,
 // secret, aerospace): each file's header says what it does and which env
 // vars steer it.
-export const STUB_BIN = join(ROOT, "test", "fixtures", "bin");
+export const STUB_BIN = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "bin");
 
 /** The env that puts the stubs first on the broker's PATH, NSH at the nsh
  *  stub, and their call log at `log` (BUWIZ_STUB_LOG). */
@@ -80,8 +80,8 @@ export function dbRows(dataDir, sql, ...args) {
   }
 }
 
-/** The env for a broker that talks to a fake opencodex (fixtures/
- *  fake-opencodex.mjs) with MOCK off: every provider URL at the fake, the
+/** The env for a broker that talks to a fake opencodex (broker/buwiz-broker/tests/
+ *  fixtures/fake-opencodex.mjs) with MOCK off: every provider URL at the fake, the
  *  provider keys and model overrides of this shell removed, the stubs on
  *  PATH. `extra` goes over it. */
 export const modelEnv = (fake, log, extra = {}) => ({

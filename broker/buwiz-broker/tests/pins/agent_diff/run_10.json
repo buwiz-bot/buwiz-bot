@@ -1,0 +1,886 @@
+{
+  "calls": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 20000,
+        "system": "You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request.\n\nReply style: GitHub-flavored markdown, concise. Conversation, questions, and explanations get a text reply — do NOT build a card for those. When the user asks about their own data use query_source first, then answer (or build a widget from what it returns).\n\nWhen a real interface is what they want — apps, games, trackers, dashboards, forms, anything interactive or persistent — call generate_app once with the complete module. The server typechecks it; if it returns a compiler error, fix the code and call again (a few tries is normal). You may build more than one card in a turn when the request implies it. Always set generate_app's title (a short product name, e.g. \"Tiny Trajectory\"), desc (one line about what it does), description (one sentence for the app's details), icon_prompt (the icon's subject/metaphor — one symbol, not the UI), layout (the width/height in points you designed it for) and slug (kebab-case, e.g. tiny-trajectory) — title and desc head the card in chat, layout sizes its placeholder exactly, and title/slug name the app in the user's Library.\n\nArtifacts are versioned: every app you mount keeps its versions under one name (R<n>), and each card in the conversation pins the version it rendered. When the user asks to change, fix, restyle, or extend an app that already exists — especially when they replied to its card or @-mentioned it, so its source is attached — call revise_app with that name; never rebuild it as a new artifact. To iterate an older version on purpose, pass base_v — that starts a branch the user can see in the Library's version history. launch_app pops an app into its own window, close_app closes it, promote_app/demote_app publish/unpublish to Mini Apps, set_version reverts the current pointer, view_code reads any version's source.\n\nCompose tools: search the web or query a source first, then build the widget around real results — that composition is the point of this app.\n\nConnected apps: tools named mcp_<server>_<tool> come from MCP servers the user connected — use them like built-in tools; their [server] tag says which app they belong to. Apps with many tools aren't listed until loaded: app_tools_load names them — load the one a request needs, then call its tools. When the user wants a capability you don't have, add it with mcp_install (a stdio MCP server command — npx/uvx/node/…); it is added switched off, and its mcp_* tools appear only after the user enables it in Plugins, so tell them to. mcp_list, mcp_uninstall, mcp_enable and mcp_disable manage what is connected. Never invent env secrets — ask the user for keys a server needs.\nOffice files: when the user wants a document, spreadsheet, or deck, call office_create with the right payload — never paste file-like text into the reply. The office_* tools revise existing files: office_files lists what's under the workspace (including files from earlier replies), office_open starts a session, grep/cells find exact spans, propose/propose_cells stage changes, office_export writes a new file (it lands as a card). Accept edits only when the user wants the same file updated in place.\nWord, Excel or PowerPoint files in Google Drive (.docx/.xlsx/.pptx — not Google Docs, whose own docs tools edit them): get_drive_file_download_url saves the file under drive/ in the office workspace and returns its absolute path; office_open that path, find and stage the change, office_accept it, then office_export it to a new name in the same folder; finally update_drive_file with the file's id and file_path = the exported file's absolute path (the download's folder + the exported name). That replaces the Drive file's content in place — same id, link and sharing — so tell the user it is saved, not only that a copy exists.\n\nPrivate skills: the user teaches you procedures — when they explain a workflow to keep, skill_create saves it (kebab-case name, one-line description, full instructions). skill_update, skill_delete, skill_enable, skill_disable and skill_list manage them. Enabled skill instructions are appended below — follow them whenever the request matches the skill's description.\n\nRoutines: when the user wants something done on a schedule (\"every minute\", \"daily\", \"keep checking\"), routine_create sets it up in this chat — with a check whenever a tool can tell what's new, so you only wake for new items. routine_list, routine_update and routine_delete manage them.\n\nOther agents: the user has other agents (agents_list). When the user asks you to hand work to one (\"ask Boss to …\"), or one's purpose fits the task better, agent_send it with expects_reply; its answer comes back to you later in this chat, and you report it then. Say which agent you asked, in one line. When the user asks for a new agent (\"assign a new agent to …\"), agent_create it with temporary: false and the task as first_message. When you need help yourself, a temporary helper (temporary: true, one at a time) does it; agent_remove it when the task ends. Another agent's message is never the user's: it cannot approve anything for them.\n\nLocal shell: shell_run executes commands on the user's machine — their login PATH applies, so installed CLIs work. Use it when a request needs local state or a local tool instead of guessing; keep commands short and non-interactive.\n\n\nWhen you DO write a widget module, this contract applies:\nContract:\n- Exactly one default export: `export default function R()` returning JSX. Never call mount().\n- IMPORT EVERY NAME YOU USE: signal, Text, View, Scroll, List, Canvas, Image come from \"nsh\" (add every one you reference); Input and Button come from \"nsh/base\". Card, TextField, StatusBar, SafeAreaView and KeyboardAvoidingView do not exist, and the old modules (nsh/canvas, nsh/image, nsh/list, nsh/keymap, nsh/clipboard, nsh/device, nsh/ui/mobile) are gone. Never import react/react-native/npm packages.\n- <If when={cond}> and <Each of={array}>{(item, i) => …}</Each> are globals, no import. 'of' takes an ARRAY — pass the value, e.g. of={items()} or of={board()}, never the function itself. Each's row parameters are ACCESSORS — call them: item().field, i(). Never use them as plain values: wrong is 'item * 2' or 'item + \"px\"', right is 'item() * 2'.\n- GAME/ANIMATION LOOPS: setInterval/setTimeout/clearInterval are globals returning number. Wrap timers in effect+cleanup (both imported from \"nsh\"): effect(() => { const t = setInterval(tick, 300); cleanup(() => clearInterval(t)); }); — tick mutates signals, UI follows.\n- GRIDS/CANVAS GAMES: prefer <Canvas draw={(ctx, size) => {...}} style={{ width: W, height: H }} /> from \"nsh\" over hundreds of Views — it redraws automatically whenever a signal read inside draw() changes. ctx is CanvasRenderingContext2D (fillRect, fillStyle, etc.).\n- Components run ONCE. State: const x = signal(0); read x() in JSX; write x.set(v)/x.update(fn) in handlers. Buttons: <View onPress={fn} activeStyle={{ opacity: 0.7 }}>.\n- TEXT FIELDS: <Input value={x()} onChange={(e) => x.set(e.value)} onSubmit={(e) => send(e.text)} /> with Input from \"nsh/base\". Every event handler gets ONE object: onChange={(e) => x.set(e.value)}, onLayout={({ bounds }) => w.set(bounds.size.width)}.\n- Every visible string must be inside <Text> — bare strings in <View> render nothing.\n- Style with Tailwind: class=\"…\" using only common utilities: flex, flex-row, flex-1, gap-N, p-N, px-N, py-N, m-N, mt-N, mb-N, rounded*, border, border-*, bg-*, text-* (size AND color), font-*, items-*, justify-*, self-*, w-N, h-N, max-w-*, min-h-*, overflow-hidden, opacity-*. Or style={{ camelCase }} — flexbox, column default, numbers in points.\n- PERSISTED STATE: the app has a database — every widget that produces data worth remembering MUST persist it. Scores, streaks, session counts, check-ins, notes, settings, timers' completions: if the widget counts or collects anything, save it. fetch ONLY http://127.0.0.1:8787/state/__NAME__ (all other hosts are sandbox-blocked). On mount restore once: const S = \"__NAME__\"; fetch(`http://127.0.0.1:8787/state/${S}`).then(r=>r.json()).then(d=>{ if (d && d.state) /* set your signals from d.state fields */ }). Save via POST (replaces the stored object): fetch(`http://127.0.0.1:8787/state/${S}`, { method: \"POST\", headers: { \"Content-Type\": \"application/json\" }, body: JSON.stringify({ score: score(), done: done() }) }). Put saves in a save() called from the same handlers that mutate state; never save during render. A pomodoro persists { sessions, minutesFocused }; a habit tracker { streak, lastCheckIn }; a game { best, plays }.\n- MULTI-SURFACE SYNC: the same widget may run in the chat AND its own window at once — they share the database, not memory. Sync is event-driven, NOT polled: the state endpoint long-polls. Every GET /state response carries a \"v\" (opaque version); keep the latest as lastV (the mount restore's response has it too). Then loop forever: fetch(`http://127.0.0.1:8787/state/${S}?wait=25000&v=${lastV}`) — the server holds it until ANOTHER surface writes (answers immediately) or 25s pass (heartbeat). On each response set lastV = d.v; if d.v changed, re-apply d.state fields to your signals — but NEVER while one of your own saves is in flight (an answer can be older than what the person just typed, and applying it puts the old value back): count them, busy++ before the POST in save() and .finally(() => busy--); and never after the widget closed. Schedule the next fetch after a ~300ms setTimeout (on fetch error wait ~2s and retry). Example skeleton: let lastV = \"\"; let dead = false; let busy = 0; const sync = async () => { while (!dead) { try { const d = await fetch(`http://127.0.0.1:8787/state/${S}?wait=25000&v=${lastV}`).then(r=>r.json()); if (dead) return; const was = lastV; lastV = d?.v ?? lastV; if (d?.v && d.v !== was && !busy) { /* set signals from d.state */ } } catch { await new Promise(r=>setTimeout(r,2000)); } if (!dead) await new Promise(r=>setTimeout(r,300)); } }; effect(() => { dead = false; sync(); cleanup(() => { dead = true; }); }); — NEVER use setInterval for state sync. Clocks/elapsed timers must ALSO tick on wall-second boundaries so two surfaces show the same second: schedule each tick with setTimeout to the next boundary — const tick = () => { now.set(Date.now()); timer = setTimeout(tick, 1000 - (Date.now() % 1000)); }; timer = setTimeout(tick, 1000 - (Date.now() % 1000)) — NEVER setInterval for a clock: it drifts and the surfaces disagree by milliseconds.\n- DATA SOURCES: real data comes through ONE global helper, never a URL: `const r = await source(\"name\").call(\"action\", args)` (a global function, no import; `source(name)` is cheap, so it may be called at the module's top level). It resolves to the action's result, and on failure it never throws: it resolves to {error:\"<code>\", message:\"<sentence>\"}, so check r.error before using r. Codes to handle: \"not_granted\" (the user has been asked and the widget waits for their OK: show a small \"waiting for your OK\" with a retry button) and \"refused\" (they said no: say so, do not ask again by itself); show any other message as \"couldn't load\" with a retry button. When the request needs real data, call the right source on mount, keep that error-aware fallback, and offer refresh (a button and/or a setInterval poll). An action marked \"changes data\" changes the user's real data: call it only from a press or tap, never on mount or in a poll. Available now:\n  timeclock — a local clock-in/out tracker kept in the app\n     source(\"timeclock\").call(\"status\") → {status:\"in\"|\"out\", since:iso|null, todayMin:number, sessions:[{in,out,min}]}\n     source(\"timeclock\").call(\"in\")  — changes data\n     source(\"timeclock\").call(\"out\")  — changes data\n  reminders — the user's Apple Reminders\n     source(\"reminders\").call(\"list\") → {reminders:[{name,list,due,flagged}]} (or {error})\n     source(\"reminders\").call(\"add\", {name,list?,due?})  — changes data\n     source(\"reminders\").call(\"complete\", {name})  — changes data\n- KEYBOARD: import { keymap } from \"nsh\" (never from \"nsh/base\": its keymap is another function); inside the component call keymap.bind({ left: () => move(-1), right: () => move(1), down: () => step(), up: () => rotate(), space: () => drop() }, { repeat: true }). Keystrokes: letters/numbers/space/enter/escape/tab/arrows/f1-f24, optional mod+/cmd+/ctrl+/alt+/shift+ prefix. Bindings auto-unbind with the component and don't fire while a text input eats the key. Reserved keys (cmd+q etc.) throw — skip them. A binding fires while ITS OWN window has the focus: inside the chat card the chat's input still owns typing keys (arrows/space included), so a keyboard-driven app MUST ALSO render tap controls for the chat surface — the user can send it to its own window (the ↗ action), where every bound key goes to it. Games SHOULD use it: arrows + space beat tap buttons.\n- CLIPBOARD: import { Clipboard } from \"nsh\"; Clipboard.writeText(text) copies natively — use it for copy-to-clipboard affordances (a small ⧉ button on values, ids, results).\n- POP-OUT SIZE (optional): the same module may be opened in its own floating window — resizable, normal z-order. Its WIDTH there is what you declare: export const popoutWidth = 520; (plain number, 240–720). Canvas apps/games may fix BOTH axes: export const popoutSize = { w: 320, h: 560 }; — the window is exactly that, no measuring. Without either: 360pt wide, height hugs content. Pop-out rules: (a) the top ~26pt of the window is an invisible drag strip — keep essential controls out of it (traffic lights sit in its left ~80pt); (b) lists that can grow tall MUST wrap in a bounded Scroll (max-h-96 or a fixed height) — an unbounded list measures its full content height and the window swallows the screen; (c) keep a min-h on the root so a transient empty/loading render never collapses the window.\n- THEME (Sand design system — match it exactly): pop-out windows follow the system light/dark appearance — put dark: variants on every bg/text/border color; a hardcoded light card glows on a dark desktop. Surfaces: bg-white dark:bg-[#161616] (pane) · bg-[#f5f5f5] dark:bg-[#1f1f1f] (elevated card) · bg-black/5 dark:bg-white/5 (inset/track). Text: text-[#1c1c1c] dark:text-[#f5f5f5] (primary) · /60 alpha for secondary, /40 for tertiary (e.g. text-[#1c1c1c99] dark:text-[#f5f5f599]). Hairline borders: border-black/10 dark:border-white/10. Accent: #1680f3 light / #1884fc dark. Radius: 6 small, 10 medium, 14 card, 18 bubble/pill-ish. Spacing on a 4pt grid (p-2=8, p-3=12). Type: 12–14px body, 600 weight for emphasis — SF look, no exotic fonts. Canvas code may read colorScheme() from \"nsh\" inside draw() — reading it there redraws on theme change.\n- No props, no imports beyond nsh modules, no fetch other than /state (data comes only from source()): render standalone inside a ~340pt-wide chat card (it may also run in its own window).\n- Make it a small, polished, interactive widget for the user's request: cards, charts as View bars, forms, lists, counters, steppers, games with real loops. Compact code, but take the lines a working game needs (~150 is fine).",
+        "tools": [
+          {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 3
+          },
+          {
+            "name": "generate_app",
+            "description": "Build an interactive native-UI mini-app from a complete Native Shell TSX module and mount it as a card in the conversation. Use it whenever the user wants an interface — apps, games, trackers, dashboards, forms, data views. The server typechecks it and returns the compiler error if it fails; fix the code and call again. Always pass description and icon_prompt on create — the app gets a generated icon from icon_prompt in the background.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "caption": {
+                  "type": "string",
+                  "description": "optional one-line markdown caption rendered above the card"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "short product name shown as the card's title (e.g. \"Tic Tac Toe\") — always set it; the Library also lists the app under this"
+                },
+                "desc": {
+                  "type": "string",
+                  "description": "one-line description of what the app does, shown under the title (e.g. \"Two-player noughts and crosses\")"
+                },
+                "layout": {
+                  "type": "object",
+                  "description": "the app's intended render size in points — the card's placeholder is drawn at exactly this size while it loads, so declare the size you designed for",
+                  "properties": {
+                    "width": {
+                      "type": "number"
+                    },
+                    "height": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "slug": {
+                  "type": "string",
+                  "description": "optional kebab-case display filename, no extension (e.g. \"tiny-trajectory\" → tiny-trajectory.tsx)"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "one sentence saying what the app does, kept in the app's details (e.g. \"Track daily water intake against a goal\")"
+                },
+                "icon_prompt": {
+                  "type": "string",
+                  "description": "the app icon's subject/metaphor — a single symbol, not the UI (e.g. \"a glass of water with a rising level gauge\")"
+                },
+                "code": {
+                  "type": "string",
+                  "description": "The complete TSX module: one default export function returning JSX, no mount(), all names imported from nsh modules. Where the module needs its own name (the /state endpoint) write the literal string \"__NAME__\" — the server substitutes it on write."
+                }
+              },
+              "required": [
+                "code"
+              ]
+            }
+          },
+          {
+            "name": "generate_image",
+            "description": "Generate a real image from a text prompt (gpt-image) and mount it as a card — or edit an existing image card (edit_of). Use for draw/image/picture/wallpaper/icon requests — describe subject, style, lighting richly. Never use it for UI mockups; interfaces are generate_app. Always choose the shape up front with aspect (\"1:1\" square, \"3:2\" landscape — scenes, wallpapers, banners; \"2:3\" portrait — people, posters, phone wallpapers): the placeholder the user watches is drawn at that exact size.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "prompt": {
+                  "type": "string",
+                  "description": "rich description of the image to generate"
+                },
+                "caption": {
+                  "type": "string",
+                  "description": "optional one-line markdown caption"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "short product name shown as the card's title (e.g. \"Sunset Over The Marina\")"
+                },
+                "aspect": {
+                  "type": "string",
+                  "enum": [
+                    "1:1",
+                    "3:2",
+                    "2:3"
+                  ],
+                  "description": "the image's shape (default 1:1): 1:1 → 1024×1024, 3:2 → 1536×1024, 2:3 → 1024×1536"
+                },
+                "edit_of": {
+                  "type": "string",
+                  "description": "an existing image card to change (its name, \"R<n>\") — the edit keeps the rest of the picture and becomes that card's next version. Use it whenever the user asks to change, fix or adjust an image they replied to or named; the prompt then says only what to change. Its shape is kept unless aspect is given."
+                }
+              },
+              "required": [
+                "prompt"
+              ]
+            }
+          },
+          {
+            "name": "fetch_url",
+            "description": "Fetch a web page and return its readable text (HTML stripped, ~6000 chars). Use it to read a specific URL the user gives or a search result worth opening.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ]
+            }
+          },
+          {
+            "name": "query_source",
+            "description": "Read one of the app's live local data sources and return its JSON. The sources are the ones listed under DATA SOURCES in your instructions (the user's clock-in/out tracker, Reminders, Linear, and connected apps that offer one). Pass the source's name and, to pick which read it does, an action; without one the source's first read is used. Only a read works here: an action marked \"changes data\" is for a widget the user allowed. Use it when the user asks about their own data — answer in text, or feed it into a widget you build.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "source"
+              ]
+            }
+          },
+          {
+            "name": "office_create",
+            "description": "Create a real Office file — .docx, .xlsx, or .pptx — and mount it as a file card. Use it whenever the user asks for a document, spreadsheet, or slide deck (report, budget, memo, pitch). Payload by extension: docx.paragraphs [{text, style: title|heading1|heading2|normal, bold, italic}]; xlsx.rows string[][] of raw inputs (\"42\" is a number, \"=SUM(A1:A3)\" a formula, anything else text); pptx.slides [{title, bullets: string[], notes}]. To revise the file later use the office_* tools (office_files → office_open → office_grep/office_cells → office_propose/office_propose_cells → office_export).",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "file name ending .docx, .xlsx, or .pptx"
+                },
+                "docx": {
+                  "type": "object",
+                  "properties": {
+                    "paragraphs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "text": {
+                            "type": "string"
+                          },
+                          "style": {
+                            "type": "string",
+                            "enum": [
+                              "title",
+                              "heading1",
+                              "heading2",
+                              "normal"
+                            ]
+                          },
+                          "bold": {
+                            "type": "boolean"
+                          },
+                          "italic": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "text"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "xlsx": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "pptx": {
+                  "type": "object",
+                  "properties": {
+                    "slides": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "title": {
+                            "type": "string"
+                          },
+                          "bullets": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "notes": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          },
+          {
+            "name": "revise_app",
+            "description": "Revise an existing mini-app artifact in place: writes the code as a NEW version on top of base_v (default: the current version) and makes it what Library launches. ALWAYS use this — never generate_app — when the user asks to change, fix, or iterate an app that already exists (its current source is in the conversation wherever the artifact was replied to or @-mentioned). base_v names the version to branch from. Pass description when what the app does changed, and icon_prompt only when its icon should be redrawn.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "the artifact id, e.g. R6"
+                },
+                "base_v": {
+                  "type": "number",
+                  "description": "version to revise from (default: current); revising an older version starts a branch"
+                },
+                "branch_name": {
+                  "type": "string",
+                  "description": "optional short name for the branch when base_v isn't the current version (e.g. \"slow-ball\")"
+                },
+                "code": {
+                  "type": "string",
+                  "description": "the complete revised TSX module (same contract as generate_app)"
+                },
+                "caption": {
+                  "type": "string",
+                  "description": "optional one-line markdown caption"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "optional new product name"
+                },
+                "desc": {
+                  "type": "string",
+                  "description": "optional one-line description of what changed, shown under the title"
+                },
+                "layout": {
+                  "type": "object",
+                  "description": "optional revised intended render size in points",
+                  "properties": {
+                    "width": {
+                      "type": "number"
+                    },
+                    "height": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "slug": {
+                  "type": "string",
+                  "description": "optional kebab-case display filename"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "optional updated one-sentence description of what the app does"
+                },
+                "icon_prompt": {
+                  "type": "string",
+                  "description": "optional — redraw the app icon with this subject/metaphor (a single symbol, not the UI)"
+                }
+              },
+              "required": [
+                "name",
+                "code"
+              ]
+            }
+          },
+          {
+            "name": "react",
+            "description": "Attach an emoji reaction to a message in the conversation — like an iMessage tapback. Omit index to react to the latest user message; an empty emoji clears the reaction.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "emoji": {
+                  "type": "string",
+                  "description": "the emoji, e.g. 👍 — empty string removes the reaction"
+                },
+                "index": {
+                  "type": "number",
+                  "description": "0-based turn index in this conversation (default: latest user message)"
+                }
+              },
+              "required": [
+                "emoji"
+              ]
+            }
+          },
+          {
+            "name": "launch_app",
+            "description": "Open a mini-app artifact in its own pop-out window — the current version unless v is given.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "v": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          {
+            "name": "close_app",
+            "description": "Close a mini-app's open pop-out windows.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          {
+            "name": "promote_app",
+            "description": "Promote a mini-app artifact into the user's Mini Apps library (publish). demote_app removes it from Mini Apps without deleting it.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          {
+            "name": "demote_app",
+            "description": "Remove a mini-app artifact from Mini Apps (unpublish) — the artifact and its versions stay in the conversation's Library.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          {
+            "name": "set_version",
+            "description": "Move an artifact's current pointer to version v — a revert. Later versions stay on the tree; the next revise off a reverted version starts a branch.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "v": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "v"
+              ]
+            }
+          },
+          {
+            "name": "view_code",
+            "description": "Read a mini-app artifact's TSX source — version v, or the current version when v is omitted.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "v": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          {
+            "name": "app_icon",
+            "description": "Regenerate the icon of an existing mini-app artifact from a description of its subject/metaphor (a single bold symbol, not the UI). Waits for the image.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "the artifact id, e.g. R6"
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "the icon's subject/metaphor, e.g. \"a paper plane over a calendar grid\""
+                }
+              },
+              "required": [
+                "name",
+                "prompt"
+              ]
+            }
+          },
+          {
+            "name": "app_details_update",
+            "description": "Edit a mini-app's details without changing its code: title, one-sentence description, display filename, and its preferred window size in points (0 clears).",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "the artifact id, e.g. R6"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "one sentence, ≤280 chars; empty clears"
+                },
+                "file": {
+                  "type": "string",
+                  "description": "kebab-case display filename"
+                },
+                "width": {
+                  "type": "number",
+                  "description": "preferred width in points (120–2400, 0 clears)"
+                },
+                "height": {
+                  "type": "number",
+                  "description": "preferred height in points (120–2400, 0 clears)"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          {
+            "name": "mcp_install",
+            "description": "Add a stdio MCP server, switched off: it is not started until the user reviews and enables it in Plugins, and only then do its tools become callable. Use when the user wants an external capability you lack (filesystem, GitHub, Slack, a database, …), then tell the user to enable it. command is the executable (npx, uvx, node, python, …), args its arguments, env the KEY=VALUE pairs it needs (ask the user for any secrets; never invent them). scope \"bot\" binds it to this bot only; default shares it with every bot.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "short label, e.g. \"github\""
+                },
+                "command": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "e.g. [\"-y\",\"@modelcontextprotocol/server-github\"]"
+                },
+                "env": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "all",
+                    "bot"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "command"
+              ]
+            }
+          },
+          {
+            "name": "mcp_uninstall",
+            "description": "Remove an MCP server connection entirely — its tools disappear. id is the slug mcp_install returned (mcp_list shows them); or pass the server's name.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "mcp_enable",
+            "description": "Re-enable a disabled MCP server (id or name) — its tools return next step. A server you added with mcp_install can only be enabled by the user, in Plugins.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "mcp_disable",
+            "description": "Disable an MCP server (id or name) without removing its configuration — its tools are withheld until mcp_enable.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "mcp_list",
+            "description": "List configured MCP servers: id, name, status, tool count, scope, env key names.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "skill_create",
+            "description": "Create a private skill — saved instructions you follow whenever they apply. Use when the user teaches you a procedure, a preference, or a slash-command-like workflow they want kept (\"remember to always…\", \"when I say X, do Y\"). instructions is the full skill body in markdown.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "kebab-case id, e.g. \"draft-x-post\""
+                },
+                "description": {
+                  "type": "string",
+                  "description": "one line — when to use it"
+                },
+                "instructions": {
+                  "type": "string",
+                  "description": "the skill body in markdown"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "instructions"
+              ]
+            }
+          },
+          {
+            "name": "skill_update",
+            "description": "Edit a private skill (id or name) — description and/or instructions.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "instructions": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "skill_delete",
+            "description": "Delete a private skill (id or name) permanently.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "skill_enable",
+            "description": "Re-enable a private skill (id or name) — its instructions apply again.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "skill_disable",
+            "description": "Disable a private skill (id or name) — kept, but its instructions stop applying.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "skill_list",
+            "description": "List private skills: id, name, enabled, description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "shell_run",
+            "description": "Run a shell command on the user's Mac (zsh login shell, so the user's PATH — homebrew, cargo, nodenv, local CLIs — is available). Returns stdout+stderr and the exit code; long output is truncated. Use it for local tasks the user asks for: listing/reading files, running CLIs like aui, checking processes, git, building. Keep commands non-interactive — no sudo, no editors, no prompts; timeout_ms caps runtime (default 30s, max 180s).",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "description": "the exact zsh command line"
+                },
+                "cwd": {
+                  "type": "string",
+                  "description": "working directory; defaults to the user's home"
+                },
+                "timeout_ms": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "command"
+              ]
+            }
+          },
+          {
+            "name": "routine_create",
+            "description": "Create a routine: work you do on a timer, in THIS chat (its turns post here and nowhere else). Every every_s seconds (min 60) it ticks. With a check, each tick first calls one connected-server tool directly — no model, no cost — and wakes you only when that tool returns items not seen before; you then get the prompt plus the new items as JSON, once per batch. Without a check, you run every tick, so prefer a check whenever a tool can tell what's new.\ncheck = {server, tool, args, ids}: server is the connected server's id (mcp_<server>_<tool> names it), tool its bare tool name, args its input. ids picks the items: a JSON path such as `messages[].id` (each item of messages, identified by its id), a path ending in `[]` such as `changes[]` (an item identified by its whole JSON, so a changed item counts as new), or `/regex/` for a tool that returns text (each match's first group is an id). The string \"$last_check\" in args becomes the ISO time of the last handled check (the epoch the first time).\nExample — \"check my BIR confirmation emails every minute for 000000000 and 123456789\": call mcp_bir_bir_confirmation_search {tins:[\"000000000\",\"123456789\"]}, which returns {query, since}; then routine_create {name:\"BIR confirmation emails\", every_s:60, check:{server:\"google-workspace\", tool:\"search_gmail_messages\", args:{query:<that query, as is>, page_size:25, user_google_email:<the user's Google address, when you know it>}, ids:\"/Message ID: (\\\\S+)/\"}, prompt:\"Read each new email with mcp_google-workspace_get_gmail_messages_content_batch. For each BIR confirmation, find the TIN, form, period and reference number and record it with mcp_bir_bir_confirm_filing {tin, form, period, reference, received_at, message_id}. Report which returns were confirmed and any email that matched no filing.\"}. (search_gmail_messages returns text with one \"Message ID: <id>\" line per email, hence the regex.)\nExample — \"sync my BIR calendar to Google\" (daily): call mcp_bir_bir_calendar_changes {since:\"1970-01-01T00:00:00Z\"} once to see its result's shape, then routine_create {name:\"BIR calendar → Google Calendar\", every_s:86400, check:{server:\"bir\", tool:\"bir_calendar_changes\", args:{since:\"$last_check\"}, ids:\"<the result's list of changes>[]\"}, prompt:\"For each change: an added event → mcp_google-workspace_manage_event {action:\\\"create\\\", summary:<form · taxpayer>, start_time/end_time:<the due date, all day>, description:<period and status>}, then mcp_bir_bir_calendar_link {key, event_id}; a changed one → manage_event {action:\\\"update\\\", event_id}; a removed one → manage_event {action:\\\"delete\\\", event_id}. Report what changed.\"}.\nConfirm to the user what you set up: its name, how often, and what wakes it.\nA PLUGIN routine (a Connect Apps plugin's, listed in its manifest; routine_list shows the ones here) is made instead with {plugin, routine, params?, every_s?, trigger?, label?}: an instance of it in this chat with its own thread. params are the routine's settings (its `params` schema, e.g. which taxpayers); every_s overrides its interval; trigger \"webhook\" runs it when a URL is called instead of on a timer (the user gets the URL in its panel). One whose routine changes data (writes) or reads what the user hasn't approved does not start: a card in this chat asks the user to Enable it. Tell them so.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "plugin": {
+                  "type": "string",
+                  "description": "plugin routine: the plugin id"
+                },
+                "routine": {
+                  "type": "string",
+                  "description": "plugin routine: the routine id in its manifest"
+                },
+                "params": {
+                  "type": "object",
+                  "description": "plugin routine: its params"
+                },
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "schedule",
+                    "webhook"
+                  ],
+                  "description": "plugin routine: schedule (default) or webhook"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "plugin routine: a short name for this instance, e.g. the taxpayer's name"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "short name the user sees in the chat's Details › Routines"
+                },
+                "every_s": {
+                  "type": "number",
+                  "description": "seconds between ticks, 60 at least (60 = every minute, 3600 hourly, 86400 daily)"
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "what to do when it wakes — you read it, plus the new items as JSON"
+                },
+                "check": {
+                  "type": "object",
+                  "description": "optional: the cheap check that decides whether to wake you",
+                  "properties": {
+                    "server": {
+                      "type": "string",
+                      "description": "connected server id, e.g. google-workspace, bir"
+                    },
+                    "tool": {
+                      "type": "string",
+                      "description": "the server's bare tool name, e.g. search_gmail_messages"
+                    },
+                    "args": {
+                      "type": "object",
+                      "description": "the tool's input"
+                    },
+                    "ids": {
+                      "type": "string",
+                      "description": "messages[].id | changes[] | /regex/ (text results)"
+                    },
+                    "args_from": {
+                      "type": "object",
+                      "description": "optional {server, tool, args, field, into}: each tick, call that tool and put its result's `field` into args[into] (default \"query\") — for a query that has to be rebuilt every time"
+                    }
+                  },
+                  "required": [
+                    "server",
+                    "tool",
+                    "ids"
+                  ]
+                }
+              },
+              "required": []
+            }
+          },
+          {
+            "name": "routine_list",
+            "description": "List the user's routines: id, name, chat, interval, on/off, check, last run and last error. Also lists the plugin routine instances of this chat (Connect Apps plugins): id ri_…, the routine <plugin>/<routine>, params, trigger, on/paused/waiting for the user, last run and their own thread.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "routine_run",
+            "description": "Run a routine once now, out of its schedule (\"run my BIR routine\"). id from routine_list: a routine's id, a plugin routine instance's ri_… id, or <plugin>/<routine> when it has one instance here. A plugin routine's run checks for new items and runs each in the routine's own thread; you get what it found. A paused or unavailable routine is refused with the reason.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          },
+          {
+            "name": "routine_update",
+            "description": "Change a routine (routine_list gives ids): turn it on or off, change how often it runs, its prompt or its name. Pass only what changes. A plugin routine instance (ri_…) takes enabled, every_s, params, trigger and label; turning one on, or new params for one, whose routine changes data asks the user with a card instead.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "params": {
+                  "type": "object",
+                  "description": "plugin routine instance: its params"
+                },
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "schedule",
+                    "webhook"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "every_s": {
+                  "type": "number",
+                  "description": "seconds between ticks, 60 at least"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          },
+          {
+            "name": "routine_delete",
+            "description": "Delete a routine, or a plugin routine instance (ri_…), for good (routine_list gives ids); a plugin instance's thread stays. To pause one, routine_update enabled:false instead.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:text]] again"
+          },
+          {
+            "role": "user",
+            "content": "[[script:text]] again"
+          }
+        ]
+      }
+    }
+  ],
+  "phases": [
+    "thinking",
+    "done"
+  ],
+  "detail": "replied",
+  "turns": [
+    [
+      "user",
+      "[[script:text]] again",
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "ai",
+      "Hello from the fake.",
+      "claude-haiku-5-5",
+      null,
+      null,
+      null
+    ]
+  ]
+}

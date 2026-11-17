@@ -1,0 +1,29 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "claude-x",
+        "max_tokens": 8,
+        "system": "Classify the user message for a generative-UI chat app. Reply with exactly one word: UI or CHAT.\nUI = the user wants an interface, widget, app, card, or game built/rendered — including terse requests that name a thing to build (\"pomodoro timer\", \"make a calculator\").\nCHAT = greetings, questions, discussion, feedback, or anything that only wants a text answer.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:mod]] make a timer"
+          }
+        ],
+        "output_config": {
+          "effort": "high"
+        },
+        "reasoning_effort": "high"
+      }
+    }
+  ],
+  "result": "ui"
+}

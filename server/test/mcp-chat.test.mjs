@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import { FIXTURE, ROOT, dbRows, nodeIn, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("mcp-chat");
-const APPS = join(ROOT, "test", "fixtures", "mcp-apps-server.mjs");
+const APPS = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "mcp-apps-server.mjs");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 let server;

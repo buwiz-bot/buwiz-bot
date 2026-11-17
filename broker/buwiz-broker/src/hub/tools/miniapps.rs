@@ -461,8 +461,9 @@ mod tests {
         base
     }
 
+    /// The fixture plugin: its manifest, its app sources and server.mjs (plain Node).
     fn server_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server/src/v1/fixture")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v1")
     }
 
     fn node() -> String {

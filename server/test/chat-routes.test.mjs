@@ -1,6 +1,6 @@
 // The chat routes (Rust broker plan, phase 5 item 5.2), as Node answers
 // them today: threads, turns, reactions, retry, /status, /chat's refusals,
-// copy and share. MOCK on; the Mac tools are PATH stubs (fixtures/bin) and
+// copy and share. MOCK on; the Mac tools are PATH stubs (broker/buwiz-broker/tests/fixtures/bin) and
 // every model URL points at a closed port.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";

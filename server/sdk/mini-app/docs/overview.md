@@ -54,7 +54,7 @@ tool with `_meta["buwiz/caller"]` saying who asked (spec 14).
 | `sdk/mini-app/lib/buwiz-plugin.mjs` | The reserved tools of spec 10, done once: `startPlugin`, `ticketStore`, `ok`, `fail` |
 | `sdk/mini-app/bin/buwiz-plugin-test.mjs` | The test runner (`npm run plugin-test`), see [testing.md](testing.md) |
 | `src/v1/sign-manifest.mjs` | Fills fingerprints and signs a manifest |
-| `src/v1/fixture/` | The conformance fixture: every feature, used by the broker's own suite |
+| `broker/buwiz-broker/tests/fixtures/v1/` | The conformance fixture: every feature, used by the broker's own suite |
 
 ## Read next
 

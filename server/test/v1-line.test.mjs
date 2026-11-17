@@ -78,7 +78,7 @@ test("a Node restart leaves buwiz-broker's plugin running; Node, back, lists it 
   const inst = await req("POST", "/v1/host/plugins/install", token, { ...fixtureSpec(b), manifest_sha256: i.json.manifest_sha256 });
 
   assert.equal(inst.json.state, "running");
-  const plugin = children(broker.pid).find((p) => commandOf(p).includes("fixture/server.mjs"));
+  const plugin = children(broker.pid).find((p) => commandOf(p).includes("fixtures/v1/server.mjs"));
   const node = children(broker.pid).find((p) => commandOf(p).includes("app-server.mjs"));
 
   assert.ok(plugin && node, "the plugin and Node are both buwiz-broker's children");
