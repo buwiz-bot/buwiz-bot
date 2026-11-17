@@ -1980,9 +1980,16 @@ mod tests {
         }
     }
 
-    /// B7: only the person's signed call carries a switch to the Bot. The AI's
-    /// press or a routine is refused even on a tool it may reach, and `fx_search`
-    /// is a read, so everyone reaches it.
+    /// How many times the fixture ran `tool`.
+    async fn ran(b: &Bed, tool: &str) -> u64 {
+        let r = b.host.call_tool(FX, "fx_stats", &json!({}), None, None).await.unwrap();
+        r["structuredContent"]["calls"][tool].as_u64().unwrap_or(0)
+    }
+
+    /// B7: only the person's signed call carries a switch to the Bot. For the
+    /// AI's press, a routine or a plugin that isn't first-party the call stands
+    /// (the tool ran once and its result comes back) without the switch, so a
+    /// retry repeats nothing. `fx_search` is a read, so everyone reaches it.
     #[tokio::test]
     async fn a_switch_stands_only_on_the_persons_signed_call_to_a_first_party_plugin() {
         let b = accounts_bed("acctuse", HostClock::system()).await;
@@ -1992,15 +1999,23 @@ mod tests {
         assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use": field}));
         let out = board.call(json!("person"), "fx_search", Some(field.clone())).await.unwrap();
         assert_eq!(out["result"]["_meta"], json!({"buwiz/account_use": field}));
+        let mut runs = ran(&b, "fx_search").await;
         for actor in [json!("agent"), json!("routine"), json!("app"), json!("Person"), json!(true), Value::Null] {
-            let e = board.call(actor.clone(), "fx_search", Some(field.clone())).await.unwrap_err();
-            assert_eq!(e.code, "permission_denied", "{actor}");
-            assert_eq!(e.message, "only a person's own press in a first-party plugin switches accounts", "{actor}");
+            let out = board.call(actor.clone(), "fx_search", Some(field.clone())).await.unwrap_or_else(|e| panic!("{actor}: {} {}", e.code, e.message));
+            assert_eq!(out["ok"], true, "{actor}");
+            assert!(out["result"].get("_meta").is_none(), "{actor}: the result stands without the switch");
+            assert!(out["result"]["content"].is_array() || out["result"]["structuredContent"].is_object(), "{actor}: the tool's own result comes back");
+            runs += 1;
+            assert_eq!(ran(&b, "fx_search").await, runs, "{actor}: the tool ran once");
             assert!(board.call(actor, "fx_search", None).await.unwrap()["result"].get("_meta").is_none(), "a plain read still goes");
+            runs += 1;
         }
         assert_eq!(board.call(json!("agent"), "fx_echo", Some(field.clone())).await.unwrap_err().message, "fx_echo is a person's to run");
         revoke(&b);
-        assert_eq!(board.call(json!("person"), "fx_echo", Some(field)).await.unwrap_err().code, "permission_denied");
+        let before = ran(&b, "fx_echo").await;
+        let out = board.call(json!("person"), "fx_echo", Some(field)).await.unwrap();
+        assert!(out["result"].get("_meta").is_none(), "a plugin that isn't first-party switches nothing");
+        assert_eq!(ran(&b, "fx_echo").await, before + 1, "and its tool ran once");
         assert!(board.call(json!("person"), "fx_echo", None).await.is_ok());
         b.host.stop_all().await;
         let _ = std::fs::remove_dir_all(&b.dir);

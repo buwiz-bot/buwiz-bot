@@ -169,6 +169,18 @@ pub fn host_result(r: &Value) -> Value {
     out
 }
 
+/// `result` without its [`ACCOUNT_USE`]; an empty `_meta` goes too.
+fn without_account_use(result: &mut Value) {
+    if let Some(o) = result.as_object_mut() {
+        if let Some(m) = o.get_mut("_meta").and_then(Value::as_object_mut) {
+            m.remove(ACCOUNT_USE);
+            if m.is_empty() {
+                o.remove("_meta");
+            }
+        }
+    }
+}
+
 /// Whether a result asking for an account switch may stand: only on the
 /// person's own signed call to a first-party plugin. An agent's press, a
 /// routine or anything else the Bot might sign is refused, whatever the tool
@@ -539,10 +551,13 @@ impl Sessions {
             let limit = if preview { format!("{} MiB", js::number(((max / 1_048_576.0) * 10.0).round() / 10.0)) } else { "1 MiB".to_owned() };
             return V1Error::err("result_too_large", format!("{tool}'s result is over {limit}"));
         }
+        let mut result = host_result(&r);
+        // the tool has run and its result stands; a caller that may not switch accounts gets it without the switch
         if r.get("_meta").and_then(|m| get(m, ACCOUNT_USE)).is_some() && !may_use_account(get(envelope, "actor"), self.host.row(&plugin).is_some_and(|row| self.host.first_party(&row))) {
-            return V1Error::err("permission_denied", "only a person's own press in a first-party plugin switches accounts");
+            without_account_use(&mut result);
+            eprintln!("  v1 {plugin}: {tool} asked to switch accounts: dropped, the caller may not");
         }
-        Ok(json!({"ok": true, "result": host_result(&r)}))
+        Ok(json!({"ok": true, "result": result}))
     }
 
     // ── tickets, resolve, app source ─────────────────────────────────────
@@ -846,6 +861,12 @@ mod tests {
         assert_eq!(host_result(&r), json!({"content": [], "_meta": {"buwiz/document": document}}));
         let switch = json!({"account": "google", "label": "work"});
         assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/open": {}}})), json!({"content": [], "_meta": {"buwiz/account_use": switch}}));
+        let mut kept = host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch, "buwiz/save": {"a": 1}}}));
+        without_account_use(&mut kept);
+        assert_eq!(kept, json!({"content": [], "_meta": {"buwiz/save": {"a": 1}}}), "only the switch goes");
+        let mut alone = host_result(&json!({"content": [], "_meta": {"buwiz/account_use": switch}}));
+        without_account_use(&mut alone);
+        assert_eq!(alone, json!({"content": []}));
         assert_eq!(host_result(&json!({"content": [], "_meta": {"buwiz/open": {}}})), json!({"content": []}));
         assert_eq!(host_result(&json!({"content": []})), json!({"content": []}));
     }
