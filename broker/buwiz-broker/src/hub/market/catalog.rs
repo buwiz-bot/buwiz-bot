@@ -218,7 +218,7 @@ pub fn encode_component(s: &str) -> String {
     out
 }
 
-/// The catalog file: `plugins/catalog.json` beside Node's code, or the
+/// The catalog file: `plugins/catalog.json` in the assets folder, or the
 /// file `BUWIZ_PLUGIN_CATALOG` names.
 pub fn catalog_file(server: &Path) -> PathBuf {
     match buwiz_protocol::env::var("BUWIZ_PLUGIN_CATALOG") {
@@ -229,7 +229,7 @@ pub fn catalog_file(server: &Path) -> PathBuf {
 
 /// What the market reads once: the catalog file, and where installs go.
 pub struct Market {
-    /// Node's SERVER_DIR (server/src)
+    /// the assets folder (`--assets`); empty without one, and then the catalog is too
     pub server: PathBuf,
     /// `<data>/plugins`
     pub plugins: PathBuf,
@@ -258,7 +258,17 @@ impl Market {
     /// hints, `fields`, …). No file, or no plugins in it, is an empty
     /// catalog.
     pub fn load(server: &Path, data: &Path, port: u16) -> Self {
-        let file = read_json(&catalog_file(server)).unwrap_or_else(|| json!({ "plugins": [] }));
+        Self::from_catalog(read_json(&catalog_file(server)), server, data, port)
+    }
+
+    /// No `--assets`: no catalog (not even one `BUWIZ_PLUGIN_CATALOG` names)
+    /// and no bundled plugins.
+    pub fn without_assets(data: &Path, port: u16) -> Self {
+        Self::from_catalog(None, Path::new(""), data, port)
+    }
+
+    fn from_catalog(file: Option<Value>, server: &Path, data: &Path, port: u16) -> Self {
+        let file = file.unwrap_or_else(|| json!({ "plugins": [] }));
         let owner = at(file.get("owner"), "name").filter(|v| js::truthy(v)).map(js::string_of);
         let mut out: Vec<Value> = Vec::new();
         let mut sourced = HashMap::new();

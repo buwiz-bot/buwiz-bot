@@ -1,6 +1,6 @@
-//! The broker as Rox.app carries it (plan 7.1): `--no-node` with the hub
-//! on, its static files from `--assets` (the bundle's `broker/server`,
-//! `node_modules` beside it) instead of Node's server dir.
+//! The broker as the app carries it: `--no-node` with the hub on, its static
+//! files from `--assets` (the bundle's `broker/server`, `node_modules` beside
+//! it).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -38,15 +38,14 @@ fn write(path: &Path, text: &str) {
 }
 
 #[test]
-fn a_bundled_broker_runs_without_node_and_serves_its_assets() {
+fn a_bundled_broker_serves_its_assets() {
     let root = std::env::temp_dir().join(format!("buwiz-broker-bundle-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (assets, data) = (root.join("broker/server"), root.join("data"));
     write(&assets.join("office/viewer.html"), "<!doctype html><title>viewer fixture</title>");
     std::fs::create_dir_all(&data).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_buwiz-broker"))
-        // a Node that can't start: --no-node must never try it
-        .args(["--port", &PORT.to_string(), "--no-node", "--node", "/nonexistent/node", "--node-script", "/nonexistent/server/app-server.mjs", "--assets"])
+        .args(["--port", &PORT.to_string(), "--no-node", "--assets"])
         .arg(&assets)
         .arg("--data")
         .arg(&data)
@@ -73,7 +72,6 @@ fn a_bundled_broker_runs_without_node_and_serves_its_assets() {
             Err(e) => panic!("buwiz-broker on {PORT} never answered: {e}"),
         }
     };
-    // up with no Node to wait for
     assert_eq!(health.0, 200, "{}", health.1);
     assert!(health.1.contains(r#""ok":true"#), "{}", health.1);
     let (status, body) = request(PORT, "/office/").unwrap();

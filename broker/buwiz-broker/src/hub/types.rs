@@ -11,7 +11,7 @@ use hyper::{Method, Response, StatusCode};
 use serde_json::Value;
 
 use super::jobs::JobId;
-use crate::proxy::Body;
+use crate::front_door::Body;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

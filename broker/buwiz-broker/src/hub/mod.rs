@@ -1,8 +1,7 @@
 //! The hub (plan phase 5): the brain's routes answered in Rust behind
-//! `BUWIZ_BROKER_HUB=1` (D30), with Node kept for the office routes
-//! (`BUWIZ_NODE_ROLE=office`). `routes` says which routes are the hub's; the
+//! `BUWIZ_BROKER_HUB=1` (D30). `routes` says which routes are the hub's; the
 //! `Registry` maps method and path to the handler a track ported; a hub
-//! route with no handler answers 501 `not_ported` and never reaches Node.
+//! route with no handler answers 501 `not_ported`.
 //!
 //! Each track adds its routes, tools, seams and startup work from its own
 //! files through one `install` call below; this file, `types`, `ctx`,

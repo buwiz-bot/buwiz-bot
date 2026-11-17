@@ -12,8 +12,8 @@
 //! - `GET /office/caps`: which kinds have their package;
 //! - `GET /file/render?path=<a .docx, .xlsx or .pptx>`: the viewer's payload.
 //!
-//! The pages and bundles are static browser files; the server dir is
-//! Node's (`--node-script`'s), where they are packaged today.
+//! The pages and bundles are static browser files from `--assets`; without
+//! it there are none, and the page routes say so.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,9 +28,9 @@ use crate::hub::ctx::HubCtx;
 use crate::hub::types::{json as json_response, HubRequest, HubResponse, Pattern, Verb};
 use crate::hub::Registry;
 
-/// Node's `src` dir: what `serverFile()` resolves against.
-fn src_dir() -> PathBuf {
-    crate::hub::market::node_paths().0
+/// The assets folder (`--assets`), if the broker was given one.
+fn assets() -> Option<PathBuf> {
+    crate::hub::market::assets_dir()
 }
 
 fn respond(status: StatusCode, body: Vec<u8>, content_type: Option<&str>, no_cache: bool) -> HubResponse {
@@ -65,7 +65,7 @@ fn vendor_package(key: &str) -> Option<&'static str> {
 
 /// `pkgRootDir(name)`: the installed package's dir, if it is installed.
 fn package_root(name: &str) -> Option<PathBuf> {
-    let dir = src_dir().join("..").join("node_modules").join(name);
+    let dir = assets()?.join("..").join("node_modules").join(name);
     let dir = std::fs::canonicalize(dir).ok()?;
     dir.join("package.json").is_file().then_some(dir)
 }
@@ -86,8 +86,8 @@ fn ext_of(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
-fn editor_bundle() -> PathBuf {
-    src_dir().join("office").join("editor").join("dist").join("editor.js")
+fn editor_bundle() -> Option<PathBuf> {
+    Some(assets()?.join("office").join("editor").join("dist").join("editor.js"))
 }
 
 fn mtime_ms(p: &Path) -> Option<u64> {
@@ -106,18 +106,21 @@ async fn office(req: HubRequest) -> HubResponse {
     let path = req.path();
     if path == "/office/" || path.starts_with("/office/editor/") {
         let editing = path.starts_with("/office/editor/");
-        let page = src_dir().join("office").join(if editing { "editor/editor.html" } else { "viewer.html" });
+        let Some(assets) = assets() else {
+            return json_response(StatusCode::NOT_FOUND, &json!({ "error": "the office pages are off: this broker started without --assets" }));
+        };
+        let page = assets.join("office").join(if editing { "editor/editor.html" } else { "viewer.html" });
         let Ok(mut html) = std::fs::read_to_string(&page) else {
             return json_response(StatusCode::INTERNAL_SERVER_ERROR, &json!({ "error": format!("ENOENT: no such file or directory, open '{}'", page.display()) }));
         };
         if editing {
-            let v = mtime_ms(&editor_bundle()).unwrap_or(0);
+            let v = editor_bundle().and_then(|b| mtime_ms(&b)).unwrap_or(0);
             html = html.replace("/office/dist/editor.js", &format!("/office/dist/editor.js?v={v}"));
         }
         return respond(StatusCode::OK, html.into_bytes(), Some("text/html; charset=utf-8"), true);
     }
     if url.starts_with("/office/dist/") {
-        let dir = src_dir().join("office").join("editor").join("dist");
+        let Some(dir) = assets().map(|a| a.join("office").join("editor").join("dist")) else { return not_found() };
         let Some(p) = file_under(&dir, &rest_of(url, "/office/dist/")) else { return not_found() };
         let ext = ext_of(&p);
         let t = match ext.as_str() {
@@ -185,10 +188,13 @@ fn office_url(rel: &str, ext: &str) -> Option<String> {
     if rel.is_empty() || caps()[kind] != json!(true) {
         return None;
     }
-    let bundle = editor_bundle();
-    let editing = bundle.exists();
+    let bundle = editor_bundle().filter(|b| b.exists());
+    let editing = bundle.is_some();
     let page = if editing { "/office/editor/" } else { "/office/" };
-    let v = if editing { format!("&v={}", mtime_ms(&bundle).unwrap_or(0)) } else { String::new() };
+    let v = match &bundle {
+        Some(bundle) => format!("&v={}", mtime_ms(bundle).unwrap_or(0)),
+        None => String::new(),
+    };
     let path: Vec<String> = rel.split('/').map(|s| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>().replace('+', "%20")).map(|s| encode_component(&s)).collect();
     Some(format!("{page}?path={}&kind={kind}{v}", path.join("/")))
 }

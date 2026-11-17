@@ -41,7 +41,7 @@ use super::mcp_servers::McpHost;
 use super::plugins::Host;
 use super::sessions::Sessions;
 use crate::js;
-use crate::proxy::Body;
+use crate::front_door::Body;
 use crate::v1::{get, tpl, V1Error};
 
 const BODY_MAX: usize = 2 * 1024 * 1024;

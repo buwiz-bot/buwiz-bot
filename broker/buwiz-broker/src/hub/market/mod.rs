@@ -24,8 +24,10 @@ use crate::js;
 /// Adds the market's routes and the six skill tools, and makes its tables
 /// at start (Node's DDL; the store's schema (5.1) makes them too).
 pub fn install(routes: &mut Registry, ctx: &mut HubCtx) {
-    let (server, port) = node_paths();
-    let market = Arc::new(Market::load(&server, &ctx.data, port));
+    let market = Arc::new(match assets_dir() {
+        Some(server) => Market::load(&server, &ctx.data, own_port()),
+        None => Market::without_assets(&ctx.data, own_port()),
+    });
     super::routes::market::register(routes, market.clone());
     // the tool loop's system prompt reads its plugin skills (5.4)
     ctx.ext.insert(market.clone());
@@ -50,15 +52,21 @@ impl crate::hub::library::botctx::PluginCatalog for BotCatalog {
     }
 }
 
-/// Node's SERVER_DIR (`--assets`, else the folder of `--node-script`,
-/// default `src/app-server.mjs`) and the broker's port, read as main.rs
-/// reads them.
-pub fn node_paths() -> (PathBuf, u16) {
+/// The folder of the static files: `--assets`, read as main.rs reads it, made
+/// absolute. `None` without the flag: nothing is looked for anywhere else.
+pub fn assets_dir() -> Option<PathBuf> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok()?;
+    let dir = config.assets_dir()?.to_owned();
+    Some(std::env::current_dir().map(|d| d.join(&dir)).unwrap_or(dir))
+}
+
+/// The port this broker answers on (what `BUWIZ_PUBLIC_PORT` says, else
+/// `--port`, `PORT`, 8787), read as main.rs reads it.
+pub fn own_port() -> u16 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = crate::config::Config::parse(&args, std::env::var("PORT").ok().as_deref()).ok();
-    let server = config.as_ref().map(|c| c.server_dir()).unwrap_or_else(|| PathBuf::from("src"));
-    let server = std::env::current_dir().map(|d| d.join(&server)).unwrap_or(server);
-    (server, buwiz_protocol::env::var("BUWIZ_PUBLIC_PORT").and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787))
+    buwiz_protocol::env::var("BUWIZ_PUBLIC_PORT").and_then(|p| p.parse().ok()).or(config.map(|c| c.port)).unwrap_or(8787)
 }
 
 /// The tables the market writes, as state.mjs makes them (IF NOT EXISTS,
