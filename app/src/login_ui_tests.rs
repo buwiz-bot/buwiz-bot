@@ -806,6 +806,109 @@ fn the_logins_page_adds_edits_shares_and_deletes_and_never_shows_a_secret() {
     no_mark(&app);
 }
 
+/// What the `log` crate was given, for the test of what a shown password reaches.
+struct Lines(Mutex<Vec<String>>);
+
+impl log::Log for Lines {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        self.0.lock().unwrap().push(format!("{} {} {}", record.level(), record.target(), record.args()));
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGED: Lines = Lines(Mutex::new(Vec::new()));
+
+/// Every file under `dir`, with where it is, whose bytes hold `needle`.
+fn files_holding(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => found.extend(files_holding(&path, needle)),
+            Ok(t) if t.is_file() => {
+                if std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes())) {
+                    found.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Show, through the page's own button and the test owner in place of Touch ID: the password is
+/// on screen but out of the accessibility tree (what a program with the access right, and the dev
+/// agent's snapshot, read), and it is in no log, no debug print of what holds it, no request to the
+/// broker and no file in the test's home. Hide takes it off the screen.
+#[test]
+fn a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file() {
+    if !in_child("a_shown_password_is_out_of_the_tree_and_reaches_no_log_request_or_file") {
+        return;
+    }
+    assert!(matches!(crate::vault::keychain::kind(), crate::vault::keychain::Kind::Memory(_)), "the test store, never the Keychain");
+    log::set_logger(&LOGGED).expect("no other logger yet");
+    log::set_max_level(log::LevelFilter::Trace);
+    log::info!("log capture probe");
+    let (mut app, seen) = start(submitted("submitted"));
+    on(&mut app, || save_shared("kid@example.com", &[]));
+    typed(&mut app, "/vault");
+    app.wait_for("Show");
+    no_mark(&app);
+    let asks = crate::vault::owner_asks();
+
+    app.press("Show");
+    let mut on_screen = false;
+    for _ in 0..250 {
+        app.pump(Duration::from_millis(20));
+        if app.texts().iter().any(|t| *t == MARK) {
+            on_screen = true;
+            break;
+        }
+    }
+    assert!(on_screen, "the password never showed: {:?}", app.texts());
+    settle(&mut app);
+    assert_eq!(crate::vault::owner_asks(), asks + 1, "one confirmation, from the test owner");
+    assert!(app.has("Hide"), "{:?}", app.texts());
+
+    // out of the accessibility tree while it's on screen
+    assert!(app.texts().contains(&MARK), "the screen shows it");
+    assert!(!app.readable_texts().iter().any(|t| t.contains(MARK)), "a program reading the tree gets the password: {:?}", app.readable_texts());
+    assert!(!app.labels.iter().any(|(_, l)| l.contains(MARK)) && !app.has(MARK));
+
+    // in no log, and in nothing that prints the state holding it
+    let logged = LOGGED.0.lock().unwrap().join("\n");
+    assert!(logged.contains("log capture probe"), "the log capture isn't working: {logged}");
+    assert!(!logged.contains(MARK), "a shown password reached the log:\n{logged}");
+    let state = on(&mut app, crate::vault::shown_debug);
+    assert!(state.contains("Some") && !state.contains(MARK), "{state}");
+    let held = on(&mut app, || {
+        let v = crate::vault::vault();
+        let row = v.list().pop().unwrap();
+        format!("{:?} {:?} {:?}", row, v.unlock(&row, "test"), crate::vault::Secret::new(MARK))
+    });
+    assert!(!held.contains(MARK), "{held}");
+
+    // in nothing sent to the broker
+    let sent: String = seen.log.lock().unwrap().iter().map(|(p, b, t)| format!("{p} {b} {t}\n")).collect();
+    assert!(!sent.contains(MARK), "{sent}");
+
+    // in no file under the test's home (its data folder, its logs)
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+    assert!(home.join("data").is_dir());
+    assert_eq!(files_holding(&home, MARK), Vec::<std::path::PathBuf>::new(), "a file holds the shown password");
+
+    app.press("Hide");
+    settle(&mut app);
+    assert!(!app.texts().iter().any(|t| t.contains(MARK)), "Hide leaves it on screen: {:?}", app.texts());
+    assert!(app.has("Show"));
+    assert!(!LOGGED.0.lock().unwrap().join("\n").contains(MARK));
+}
+
 /// Each `/vault` line, typed: the page, share and unshare with a Bot, asking which of two logins,
 /// share all on and off, and an add line carrying more than a site refused with nothing kept.
 /// Deleting a Bot takes its shares.

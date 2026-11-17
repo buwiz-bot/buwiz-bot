@@ -267,6 +267,12 @@ fn show(row: SiteLogin) {
     });
 }
 
+/// What the page's own state prints with `{:?}`, for a test that a shown password isn't in it.
+#[cfg(test)]
+pub(crate) fn shown_debug() -> String {
+    format!("{:?}", ui().shown.get_untracked())
+}
+
 fn delete(id: String) {
     let u = ui();
     if u.confirm.get_untracked() != id {
@@ -577,7 +583,7 @@ fn kind_word(kind: &str) -> &'static str {
 fn detail(row: SiteLogin) -> impl IntoElement {
     let u = ui();
     let id = row.id.clone();
-    let (id_shown, id_conf, id_del) = (id.clone(), id.clone(), id.clone());
+    let (id_shown, id_hidden, id_conf, id_del) = (id.clone(), id.clone(), id.clone(), id.clone());
     let has = vault().has_secret(&row);
     let secretless = row.kind == KIND_PASSKEY;
     let what = if row.kind == KIND_CODE { "Code" } else { "Password" };
@@ -618,7 +624,10 @@ fn detail(row: SiteLogin) -> impl IntoElement {
                         .min_w(px(0.0))
                         .number_of_lines(1)
                         .text_size(px(13.0))
-                        .text_color(theme::TEXT),
+                        .text_color(theme::TEXT)
+                        // a password on screen is not in the accessibility tree (what any
+                        // program with the access right, and the dev agent's snapshot, reads)
+                        .accessibility_elements_hidden(move || u.shown.with(|s| s.as_ref().is_some_and(|(i, _)| *i == id_hidden))),
                     )
                     .when(has, move |v| {
                         let id = id.clone();
