@@ -972,3 +972,11 @@ async fn w_15_allow_on_a_card_with_nothing_to_write_is_a_read_and_the_state_is_s
     let t = ticket::ticket(&fx.ctx, "R37").unwrap();
     assert!(t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "{t}");
 }
+
+#[test]
+fn a_tool_is_for_the_model_in_a_source_only_by_an_audience_array_naming_agent() {
+    for (audience, open) in [(json!(["widget", "agent"]), true), (json!(["widget"]), false), (json!("agent"), false), (json!({"agent": 1}), false), (json!(7), false), (Value::Null, false)] {
+        assert_eq!(plugin::for_agent(&json!({"_meta": {"buwiz/audience": audience.clone()}})), open, "{audience}");
+    }
+    assert!(!plugin::for_agent(&json!({})), "no audience is no here");
+}

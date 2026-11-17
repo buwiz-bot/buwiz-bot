@@ -75,19 +75,20 @@ pub fn open_to_agents(t: &Value) -> bool {
 /// What a tool may declare it does, to take the AI's press (D1). Filing never (O4), and neither
 /// voiding nor reopening.
 const PRESS_EFFECTS: [&str; 2] = ["post", "close"];
-/// Words in a tool's name that keep it out whatever it declares: a declaration is the plugin's
-/// own word, and these are the tools it must not be able to bring in by mistake or on purpose.
-const NEVER_PRESSED: [&str; 9] = ["file", "filing", "submit", "send", "queue", "pay", "paid", "void", "reopen"];
+/// Letter sequences that keep a tool out when its lowercased name has one anywhere, whatever the
+/// tool declares: a declaration is the plugin's own word, and these are the tools it must not be
+/// able to bring in by mistake or on purpose. Strict on purpose: `profile_update` has `file`.
+const NEVER_PRESSED: [&str; 10] = ["file", "filing", "submit", "send", "sent", "queue", "pay", "paid", "void", "reopen"];
 
 /// Whether plugin tool `t` lets the AI press it once a person allowed that one press (O3): the
 /// plugin's own opt-in, `_meta["buwiz/press"]`, with a clear `approved: true` and an `effect` of
-/// [`PRESS_EFFECTS`], on a tool whose name says none of [`NEVER_PRESSED`].
+/// [`PRESS_EFFECTS`], on a tool whose name has none of [`NEVER_PRESSED`] in it.
 pub fn press_opted_in(t: &Value) -> bool {
     let effect = t.pointer("/_meta/buwiz~1press/effect").and_then(Value::as_str);
     let name = t.get("name").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
     t.pointer("/_meta/buwiz~1press/approved") == Some(&json!(true))
         && effect.is_some_and(|e| PRESS_EFFECTS.contains(&e))
-        && !name.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| NEVER_PRESSED.contains(&w))
+        && !NEVER_PRESSED.iter().any(|w| name.contains(w))
 }
 
 /// The read plugin tool `t` names to put a held call in plain words, if any.
@@ -786,7 +787,24 @@ mod tests {
         for name in ["ebirforms_return_file", "fx_file_return", "fx_submit", "fx_send_form", "fx_queue", "fx_pay", "fx_void_entry", "fx_month_reopen", "FX_FILE"] {
             assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: its own word doesn't bring it in");
         }
-        assert!(press_opted_in(&tool("fx_profile_post", json!({"approved": true, "effect": "post"}))), "a word, not a part of one");
+        for name in ["ledger_payment_create", "filed_report", "submitted_form", "sends_reminder", "mail_resend", "job_enqueue", "sendmail", "fx_sent_note", "fx_profile_post", "fx_avoid_x", "fx_Payment", "fx_reopened", "fx_filings"] {
+            assert!(!press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}: the letters anywhere in the name keep it out");
+        }
+        for name in ["books_entry_draft", "fx_post_entry", "fx_batch", "fx_month_close"] {
+            assert!(press_opted_in(&tool(name, json!({"approved": true, "effect": "post"}))), "{name}");
+        }
+    }
+
+    #[test]
+    fn open_to_agents_reads_only_an_array_naming_agent() {
+        use super::open_to_agents;
+        for audience in [json!(["app", "agent"]), json!(["agent"])] {
+            assert!(open_to_agents(&json!({"name": "fx_a", "_meta": {"buwiz/audience": audience.clone()}})), "{audience}");
+        }
+        for audience in [json!("agent"), json!("app"), json!({"agent": true}), json!(1), json!(true), Value::Null, json!(["app"]), json!([])] {
+            assert!(!open_to_agents(&json!({"name": "fx_a", "_meta": {"buwiz/audience": audience.clone()}})), "{audience}");
+        }
+        assert!(!open_to_agents(&json!({"name": "fx_a"})), "no audience is no here");
     }
 
     #[test]

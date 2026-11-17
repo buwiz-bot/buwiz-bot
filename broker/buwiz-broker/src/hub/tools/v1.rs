@@ -60,11 +60,16 @@ fn in_surface(surface: Option<&Value>, plugin: &str, name: &str) -> bool {
         .any(|x| x.get("plugin").and_then(Value::as_str) == Some(plugin) && x.get("tools").and_then(Value::as_array).is_some_and(|t| t.iter().any(|n| n.as_str() == Some(name))))
 }
 
-/// 16.4: a tool whose `buwiz/audience` leaves out "agent" serves apps only.
-fn for_agent(t: &Value) -> bool {
+/// 16.4: a tool whose `buwiz/audience` leaves out "agent" serves apps only, and so does one whose
+/// audience is present but not an array: that is a mistake, and the safe side is off the list.
+fn for_agent(plugin: &str, t: &Value) -> bool {
     match t.pointer("/_meta/buwiz~1audience") {
         Some(Value::Array(a)) => a.iter().any(|x| x.as_str() == Some("agent")),
-        _ => true,
+        Some(_) => {
+            eprintln!("  v1 {plugin}: tool {} has a buwiz/audience that is not an array: kept off the model's list", js::slice_utf16(&t.get("name").map(js::string_of).unwrap_or_default(), 80));
+            false
+        }
+        None => true,
     }
 }
 
@@ -78,7 +83,7 @@ pub fn v1_tools(p: &dyn PluginView, taken: &[String], surface: Option<&Value>) -
             if crate::v1::is_v1("reservedTool", t.get("name")) || off.contains(&name) || taken.contains(&name) || builtin_prefix(&name) || !name.starts_with(&format!("{}_", row.short)) {
                 continue;
             }
-            if !in_surface(surface, &row.id, &name) || !for_agent(&t) {
+            if !in_surface(surface, &row.id, &name) || !for_agent(&row.id, &t) {
                 continue;
             }
             let desc = t.get("description").filter(|d| js::truthy(d)).map(js::string_of).unwrap_or_else(|| name.clone());
