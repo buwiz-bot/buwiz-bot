@@ -692,6 +692,7 @@ mod tests {
 
     struct Fixture {
         hub: Hub,
+        market: Arc<Market>,
         root: PathBuf,
         plugins: PathBuf,
     }
@@ -741,9 +742,9 @@ mod tests {
         std::fs::create_dir_all(data.join("generated")).unwrap();
         let market = Arc::new(Market::load(&server, &data, 9));
         let ctx = HubCtx::new(data.clone(), Clock::manual());
-        let hub = Hub::with(ctx, Vec::new(), |routes, _| register(routes, market));
+        let hub = Hub::with(ctx, Vec::new(), |routes, _| register(routes, market.clone()));
         crate::hub::market::schema(hub.ctx()).unwrap();
-        Fixture { hub, root, plugins: data.join("plugins") }
+        Fixture { hub, market, root, plugins: data.join("plugins") }
     }
 
     /// A POST from the app: with the host token (the locked routes want it).
@@ -856,6 +857,36 @@ mod tests {
         assert_eq!(v["code"], "review_expired");
     }
 
+    /// MKT-14: an installed plugin's skills are the agent's index, one line each
+    /// with the skill's file; a plugin not installed adds nothing.
+    #[tokio::test]
+    async fn mkt_14_installed_plugin_skills_are_the_agents_index() {
+        let f = fixture("inject");
+        assert_eq!(crate::hub::market::install::plugin_skills_inject(&f.market, f.hub.ctx()), "", "nothing installed, nothing said");
+        let (_, v) = post(&f, "/plugins/inspect", json!({ "name": "demo" })).await;
+        let token = v["staging"].as_str().unwrap().to_owned();
+        let (status, v) = post(&f, "/plugins/install", json!({ "name": "demo", "staging": token, "approve": true, "values": { "DEMO_API_KEY": "k" } })).await;
+        assert_eq!(status, 200, "{v}");
+        let said = crate::hub::market::install::plugin_skills_inject(&f.market, f.hub.ctx());
+        let file = f.plugins.join("demo/skills/hello/SKILL.md");
+        assert!(said.contains("Plugin skills (installed)"), "{said}");
+        assert!(said.contains(&format!("- demo/hello: Says hello. (file: {})", file.display())), "{said}");
+        assert!(!said.contains("vend/"), "{said}");
+    }
+
+    /// MKT-15: the catalog the broker ships lists the three vendored plugins in
+    /// order, each with its files.
+    #[test]
+    fn mkt_15_the_bundled_catalog_lists_the_three_vendored_plugins() {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let market = Market::load(&assets, &std::env::temp_dir().join(format!("buwiz-mkt-15-{}", std::process::id())), 9);
+        let keys: Vec<(&str, &str)> = market.entries.iter().map(|e| (e["key"].as_str().unwrap_or(""), e["displayName"].as_str().unwrap_or(""))).collect();
+        assert_eq!(keys, [("calcom", "Cal.com"), ("neon", "Neon"), ("google-workspace", "Google Workspace")]);
+        for name in ["calcom", "neon", "google-workspace"] {
+            assert!(assets.join("plugins/external_plugins").join(name).join(".mcp.json").exists(), "{name}");
+        }
+    }
+
     #[tokio::test]
     async fn mkt_review_staging_expires_after_30_minutes_and_on_the_next_inspect() {
         let f = fixture("expiry");
@@ -907,9 +938,9 @@ mod tests {
         let empty = root_without_catalog(&f);
         let market = Arc::new(Market::load(&empty, &f.root.join("data"), 9));
         assert!(market.entries.is_empty());
-        let hub = Hub::with(HubCtx::new(f.root.join("data"), Clock::manual()), Vec::new(), |routes, _| register(routes, market));
+        let hub = Hub::with(HubCtx::new(f.root.join("data"), Clock::manual()), Vec::new(), |routes, _| register(routes, market.clone()));
         crate::hub::market::schema(hub.ctx()).unwrap();
-        let g = Fixture { hub, root: f.root.join("nocat-view"), plugins: f.plugins.clone() };
+        let g = Fixture { hub, market, root: f.root.join("nocat-view"), plugins: f.plugins.clone() };
         let meta = json!({ "root": "old/plug", "catalogId": "1", "mcp": ["old-web"], "created": ["old-web"] });
         g.hub.ctx().db.with(|db| {
             db.execute("INSERT INTO installed_plugins(name, meta, created_at) VALUES('old', ?, 1)", [meta.to_string()])?;

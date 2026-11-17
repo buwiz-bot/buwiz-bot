@@ -144,6 +144,11 @@ async fn ensure(ctx: &HubCtx, id: &str) -> Option<(Vec<Value>, bool)> {
 /// it (with its `annotations`).
 pub async fn tool_def(ctx: &HubCtx, name: &str) -> Option<Value> {
     let (server, tool) = parse_mcp_name(name)?;
+    // a switched-off server (one the agent installed and the user has not enabled, say) is
+    // never started to read a hint: the call to it is refused as switched off
+    if !enabled_server(ctx, &server) {
+        return None;
+    }
     let (tools, _) = ensure(ctx, &server).await?;
     tools.into_iter().find(|t| t.get("name").and_then(Value::as_str) == Some(tool.as_str()))
 }
