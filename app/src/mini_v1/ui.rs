@@ -288,8 +288,10 @@ fn change_records<R>(f: impl FnOnce(&mut Records) -> R) -> R {
 /// Closed when the broker does not say. The Err is what the person is told.
 fn attach_allowed(b: &dyn host_api::Broker, thread: &str, entry: &PluginEntry) -> Result<(), String> {
     match host_api::scopes_off(b, thread) {
-        Ok((bot, off)) if off.contains(&host_api::v1_key(&entry.id)) => Err(host_api::off_sentence(&entry.title, &bot)),
-        Ok(_) => Ok(()),
+        Ok(said) => match said.get(&buwiz_protocol::switches::v1_key(&entry.id)) {
+            Some(sentence) => Err(sentence.clone()),
+            None => Ok(()),
+        },
         Err(_) => Err("Couldn't check this Bot's tools. Try again.".to_owned()),
     }
 }
@@ -3372,9 +3374,9 @@ mod tests {
             }
         }
         let books = PluginEntry { id: "app.buwiz.books".into(), title: "Books".into(), ..Default::default() };
-        let off = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.books"]})));
+        let off = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.books"], "said": {"v1:app.buwiz.books": "Books is switched off for this Bot. Turn it on in Tools to use it here."}})));
         assert_eq!(attach_allowed(&off, "t1", &books).unwrap_err(), "Books is switched off for this Bot. Turn it on in Tools to use it here.");
-        let on = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.other"]})));
+        let on = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.other"], "said": {"v1:app.buwiz.other": "x"}})));
         assert!(attach_allowed(&on, "t1", &books).is_ok());
         assert!(attach_allowed(&Says(Err(())), "t1", &books).is_err(), "fails closed");
     }

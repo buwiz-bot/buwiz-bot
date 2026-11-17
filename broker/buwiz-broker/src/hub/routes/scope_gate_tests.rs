@@ -69,6 +69,7 @@ async fn bed(label: &str) -> Bed {
     let manifest = json!({"protocol": "1.0.0", "id": FX, "short": "scopefx", "version": "1.0.0", "title": "Scope Fixture", "description": "A plugin with a scope.",
         "publisher": {"id": "app.buwiz", "key_id": "scopefx-test-01", "name": "Fixture"},
         "scopes": [{"name": "item", "description": "An item", "resolve": "scopefx_find"}],
+        "commands": [{"name": "look", "description": "Look something up", "resolve": "scopefx_find"}],
         "apps": [{"id": "home", "title": "Home", "description": "An app to open.", "entry": "buwiz-app://home", "mime": "text/x-nsh-tsx", "sdk": "1",
             "fingerprint": format!("sha256:{}", "0".repeat(64)), "placement": ["full"], "permissions": {}}]});
     let signed = crate::v1::signing::sign_manifest(&manifest, &buwiz_protocol::keys::b64(&SEED), &[("home".to_owned(), b"x".to_vec())]).unwrap();
@@ -162,13 +163,28 @@ impl Bed {
         std::fs::read_to_string(self.dir.join("mcp-calls")).map(|t| t.lines().count()).unwrap_or(0)
     }
 
-    async fn done(self) {
-        if let Some(h) = &self.hub.ctx().plugins {
-            h.stop_all().await;
-        }
-        if let Some(m) = &self.hub.ctx().mcp {
-            m.stop_all().await;
-        }
+    /// The end of a test that got there; `Drop` does the same for one that did not.
+    async fn done(self) {}
+}
+
+impl Drop for Bed {
+    /// A failing assertion unwinds through here too: the plugin and server processes stop and the
+    /// folder goes.
+    fn drop(&mut self) {
+        let (plugins, mcp) = (self.hub.ctx().plugins.clone(), self.hub.ctx().mcp.clone());
+        // on a runtime of its own: this may be running inside the test's, which cannot block
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+            rt.block_on(async {
+                if let Some(h) = plugins {
+                    h.stop_all().await;
+                }
+                if let Some(m) = mcp {
+                    m.stop_all().await;
+                }
+            });
+        })
+        .join();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -194,6 +210,20 @@ async fn a_plugin_off_for_a_bot_is_refused_for_resolve_and_complete_and_never_ca
     b.switch("b_ann", &key, "on");
     assert_eq!(b.resolve_v1(Some(&b.ann), false).await.0, 200);
     assert_eq!(b.plugin_calls(), 3);
+    b.done().await;
+}
+
+#[tokio::test]
+async fn a_slash_command_of_a_plugin_that_is_off_for_the_bot_still_answers_but_its_scope_does_not() {
+    let b = bed("v1cmd").await;
+    b.switch("b_ann", &format!("v1:{FX}"), "off");
+    let body = json!({"plugin": FX, "kind": "command", "name": "look", "value": "x", "complete": false, "context": {"attached": []}, "thread": b.ann});
+    let (status, v) = b.host(Method::POST, "/v1/host/resolve", Some(body)).await;
+    assert_eq!((status, v["result"].as_str()), (200, Some("choices")), "a command is the person's own act: {v}");
+    assert_eq!(b.plugin_calls(), 1);
+    let (status, v) = b.resolve_v1(Some(&b.ann), false).await;
+    assert_eq!((status, v["code"].as_str()), (409, Some("disabled")), "{v}");
+    assert_eq!(b.plugin_calls(), 1, "the scope was not called");
     b.done().await;
 }
 
@@ -266,6 +296,7 @@ async fn the_menu_asks_which_plugins_and_servers_are_off_for_the_chats_bot() {
     assert_eq!(b.off_for(&b.bo).await.1["off"], json!(["mcp:apps"]));
     let (_, v) = b.off_for(&b.plain).await;
     assert_eq!((v["bot"].as_str(), v["off"].clone()), (Some("@chats"), json!([])), "plain chats have their own");
+    assert_eq!(b.off_for(&b.ann).await.1["said"]["mcp:apps"], "Apps is switched off for this Bot. Turn it on in Tools to use it here.", "the sentence the refusal says");
     // the answer is the one the refusal reads: switching it back is seen at once
     b.switch("b_ann", "mcp:apps", "on");
     assert_eq!(b.off_for(&b.ann).await.1["off"], json!([format!("v1:{FX}")]));

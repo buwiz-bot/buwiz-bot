@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 
-use crate::mini_v1::host_api::{mcp_key, v1_key};
+use buwiz_protocol::switches::{mcp_key, v1_key};
 
 use nsh_core::prelude::*;
 

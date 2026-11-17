@@ -44,8 +44,8 @@
 //!
 //! The composer's `@` menu follows the Bot of the chat in front: `GET /v1/host/tools/off?thread=<chat>`
 //! lists the plugins and MCP servers (`v1:<id>`, `mcp:<id>`) switched off for that chat's Bot, and
-//! `POST /v1/host/resolve` (and `/mcp/resolve`) takes the chat as `thread` and refuses a scope of one
-//! that is (`disabled`) before the plugin or server is asked anything.
+//! `POST /v1/host/resolve` (a scope, not a command) and `/mcp/resolve` take the chat as `thread` and
+//! refuse a scope of one that is (`disabled`) before the plugin or server is asked anything.
 //!
 //! Widget data sources (`hub::sources`): `POST /v1/host/widget/open {name}` (a widget's
 //! ticket and call path), `POST /v1/host/widget/grant {id, answer}` (the person's answer on
@@ -342,7 +342,11 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
 }
 
 /// A scope's resolve or complete is for a chat, and the plugin must be on for that chat's Bot.
+/// A command (`kind: "command"`) is the person's own act and is not gated.
 fn scope_gate(ctx: &HubCtx, b: &Value) -> Result<(), V1Error> {
+    if b.get("kind").and_then(Value::as_str) != Some("scope") {
+        return Ok(());
+    }
     let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default();
     match crate::hub::policy::scope_refusal(ctx, text("thread"), &crate::hub::policy::keys::v1_key(text("plugin"))) {
         Some((code, message)) => Err(V1Error::new(code, message)),

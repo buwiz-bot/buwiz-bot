@@ -16,15 +16,7 @@ pub const GROUPS: [&str; 11] = ["shell", "web", "apps", "office", "routines", "m
 const APP_TOOLS: [&str; 8] = ["app_icon", "app_details_update", "launch_app", "close_app", "promote_app", "demote_app", "set_version", "view_code"];
 const MEMORY_TOOLS: [&str; 3] = ["memory_add", "memory_list", "memory_remove"];
 
-/// The switch key of MCP server `id`.
-pub fn mcp_key(id: &str) -> String {
-    format!("mcp:{id}")
-}
-
-/// The switch key of v1 plugin `id` (its full id).
-pub fn v1_key(id: &str) -> String {
-    format!("v1:{id}")
-}
+pub use buwiz_protocol::switches::{mcp_key, v1_key};
 
 /// The key of the group tool `name`, without reading any plugin or server.
 fn group_of(name: &str) -> Option<&'static str> {
