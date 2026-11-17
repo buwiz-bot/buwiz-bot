@@ -56,12 +56,12 @@ after(async () => {
 test("tools/list names the four tools", async () => {
   const { tools } = (await rpc("tools/list", {})).result;
 
-  assert.deepEqual(tools.map((t) => t.name), ["rox_agents_list", "rox_send", "rox_receive", "rox_conversations"]);
+  assert.deepEqual(tools.map((t) => t.name), ["buwiz_agents_list", "buwiz_send", "buwiz_receive", "buwiz_conversations"]);
 });
 
 test("a call reaches its route with the bearer token, and ok is dropped from the answer", async () => {
   reply = { status: 200, body: JSON.stringify({ ok: true, agents: [] }) };
-  const r = await call("rox_agents_list");
+  const r = await call("buwiz_agents_list");
 
   assert.equal(r.isError, undefined);
   assert.equal(r.content[0].text, '{"agents":[]}');
@@ -82,7 +82,7 @@ test("a name no tool has is refused, an inherited object name too", async () => 
 
 test("a 200 whose body is JSON null is an empty answer, not an unreachable broker", async () => {
   reply = { status: 200, body: "null" };
-  const r = await call("rox_conversations");
+  const r = await call("buwiz_conversations");
 
   assert.equal(r.isError, undefined);
   assert.equal(r.content[0].text, "{}");
@@ -90,7 +90,7 @@ test("a 200 whose body is JSON null is an empty answer, not an unreachable broke
 
 test("a refusal says its code and message", async () => {
   reply = { status: 401, body: JSON.stringify({ ok: false, code: "unauthorized", message: "the bridge token is missing or wrong" }) };
-  const r = await call("rox_agents_list");
+  const r = await call("buwiz_agents_list");
 
   assert.equal(r.isError, true);
   assert.equal(r.content[0].text, "unauthorized: the bridge token is missing or wrong");

@@ -537,7 +537,7 @@ impl Externals {
         out
     }
 
-    /// `rox_receive`: what the bridge's agent sent it, oldest first,
+    /// `buwiz_receive`: what the bridge's agent sent it, oldest first,
     /// waiting up to `wait_s` (at most 30) when there is nothing yet.
     pub async fn receive(&self, r: &EpRow, body: &Value) -> Value {
         let conv = body.get("conversation").filter(|c| js::truthy(c));
