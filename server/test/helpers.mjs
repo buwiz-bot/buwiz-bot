@@ -14,7 +14,6 @@ export { env };
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const PORT = Number(process.env.TEST_PORT || 8797);
-export const FIXTURE = join(ROOT, "test", "fixtures", "mcp-server.mjs");
 
 /** The broker the HTTP tests start: `BUWIZ_BROKER_CMD` (a command line,
  *  relative paths from server/) when set, else Node as it ships. The tests

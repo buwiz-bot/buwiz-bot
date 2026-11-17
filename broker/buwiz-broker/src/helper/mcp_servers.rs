@@ -579,6 +579,14 @@ mod tests {
     use super::tool_path;
 
     #[test]
+    fn scope_and_command_names_are_letters_digits_underscores_and_dashes() {
+        assert!(super::is_name("Tax_Profile-1"));
+        for bad in ["bad.scope", "x:y", ""] {
+            assert!(!super::is_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn auth_errors_read_as_mcp_mjs_reads_them() {
         use super::auth_error;
         for t in ["HTTP 401", "401 Unauthorized", "invalid_grant", "Invalid token", "please re-authenticate", "Login required", "UNAUTHENTICATED"] {
