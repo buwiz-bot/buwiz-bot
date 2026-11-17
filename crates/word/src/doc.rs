@@ -23,6 +23,26 @@ use super::layout::Layout;
 use super::save;
 use buwiz_office_kit::session::Document;
 
+/// A thumbnail's width, points: the strip's drawings are made at this scale.
+pub const THUMB_W: f32 = 96.0;
+/// How long after the last edit the strip's thumbnails are checked and
+/// drawn again: the keys come first (the echo carries no thumbnail work).
+pub const THUMB_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+/// Thumbnails kept beyond either end of the strip's window (both here and in
+/// the view), so a small scroll back draws nothing again.
+pub const THUMB_KEEP: usize = 2;
+/// How many of the strip's pages a `Thumbs` command draws itself (enough that
+/// the strip does not show empty); the rest come a page a tick.
+pub const THUMB_NOW: usize = 3;
+
+/// Whether the thumbnail of page `i` is kept while the strip's window is
+/// `window` (first and last page): the window and [`THUMB_KEEP`] beyond it.
+/// The worker and the view both ask this, so they never disagree on what is
+/// still drawn.
+pub fn thumb_kept(i: usize, window: Option<(usize, usize)>) -> bool {
+    window.is_some_and(|(a, b)| i + THUMB_KEEP >= a && i <= b + THUMB_KEEP)
+}
+
 // the menu bar's commands (Insert, Format, Page Setup, Watermark)
 #[path = "commands.rs"]
 mod commands;
@@ -75,6 +95,9 @@ pub enum Cmd {
     /// The pages in and near view at `zoom`: drawn when not yet drawn for
     /// this layout and zoom.
     View { pages: Vec<usize>, zoom: f32 },
+    /// The pages the thumbnail strip shows: each drawn small, from its
+    /// display list, when not yet drawn for its content.
+    Thumbs { pages: Vec<usize> },
     /// A click at (`x`, `y`) on page `page` (page pixels); `extend` moves
     /// only the selection's head; `clicks` 2 selects a word, 3 a paragraph.
     Click { page: usize, x: f32, y: f32, extend: bool, clicks: u8 },
@@ -182,6 +205,9 @@ pub enum Out {
     Meta(Box<Meta>),
     /// Page `index` drawn for layout `rev` at the zoom it was asked at.
     Page { index: usize, rev: u64, zoom: f32, drawn: Arc<Drawn> },
+    /// Page `index`'s thumbnail, [`THUMB_W`] wide: its content changed (or
+    /// it was not drawn yet).
+    Thumb { index: usize, drawn: Arc<Drawn> },
     Caret(Caret),
     /// Picture bytes by (part, relationship id), once each.
     Media(Vec<(MediaKey, Arc<Vec<u8>>)>),
@@ -189,6 +215,17 @@ pub enum Out {
     /// The document as HTML to print.
     Print(String),
     Note(String),
+}
+
+/// A strip page's thumbnail against the page as laid out now.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThumbState {
+    /// The page's display list is not built: it has no content to compare.
+    Unbuilt,
+    /// The drawn thumbnail came from this very list.
+    Current,
+    /// The list differs from the one drawn (or none was drawn).
+    Changed,
 }
 
 pub struct Word {
@@ -208,6 +245,20 @@ pub struct Word {
     want: Vec<usize>,
     /// What was drawn of each page: its list as drawn, the layout and the zoom.
     drawn: HashMap<usize, (Arc<DisplayPage>, u64, f32)>,
+    /// The pages the strip shows, and what was drawn of each thumbnail: the
+    /// list as drawn, the layout it was last found current in, and the
+    /// drawing (a page that moved in the text, its list's offsets changed,
+    /// is drawn the same: only a different drawing is sent).
+    thumb_want: Vec<usize>,
+    thumbs: HashMap<usize, (Arc<DisplayPage>, u64, Arc<Drawn>)>,
+    /// When the built thumbnails are looked at again after an edit or a
+    /// scroll: a pause in the typing, not each key ([`THUMB_SETTLE`]).
+    thumbs_due: Option<std::time::Instant>,
+    /// The strip's pages still to bring up to date once the keys paused:
+    /// one a tick, so a key that comes meanwhile waits for one page at most.
+    thumb_todo: Vec<usize>,
+    /// A build for the strip failed (logged once).
+    thumb_build_failed: bool,
     /// Pictures already sent.
     media_sent: std::collections::HashSet<MediaKey>,
     media: Option<Vec<(String, Vec<u8>)>>,
@@ -277,6 +328,11 @@ impl Word {
             zoom: 1.0,
             want: vec![0],
             drawn: HashMap::new(),
+            thumb_want: Vec::new(),
+            thumbs: HashMap::new(),
+            thumbs_due: None,
+            thumb_todo: Vec::new(),
+            thumb_build_failed: false,
             media_sent: Default::default(),
             media: None,
             found: Vec::new(),
@@ -415,6 +471,7 @@ impl Word {
             }
         }
         self.rev += 1;
+        self.thumbs_changed();
         self.edited = true;
         // a tracked deletion keeps its text: the index is read again
         if self.mode == EditMode::Suggesting {
@@ -454,6 +511,7 @@ impl Word {
             self.undo = UndoSession::new();
             self.undo.track(self.layout.engine.doc());
             self.drawn.clear();
+            self.thumbs.clear();
         }
         let window = self.window();
         if let Err(e) = self.layout.full(window) {
@@ -462,6 +520,7 @@ impl Word {
         self.layout.engine.set_windowed_incremental_builds(true);
         self.complete = true;
         self.rev += 1;
+        self.thumbs_changed();
         self.index = None;
         self.review = None;
         outs.push(Out::Meta(Box::new(self.meta())));
@@ -507,6 +566,124 @@ impl Word {
             outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(drawn) });
         }
         self.send_media(pictures, outs);
+    }
+
+    /// The document changed: the strip's thumbnails are brought up to date
+    /// once the keys pause (a scroll or a zoom changes no page's content).
+    pub(crate) fn thumbs_changed(&mut self) {
+        self.thumb_todo.clear();
+        self.thumbs_due = (!self.thumb_want.is_empty()).then(|| std::time::Instant::now() + THUMB_SETTLE);
+    }
+
+    /// Whether page `i`'s thumbnail is the page as it is now.
+    fn thumb_state(&self, i: usize) -> ThumbState {
+        self.layout
+            .with_pages(|ps| match ps.get(i) {
+                Some(p) if !p.unbuilt => {
+                    if self.thumbs.get(&i).is_some_and(|(old, _, _)| **old == *p) {
+                        ThumbState::Current
+                    } else {
+                        ThumbState::Changed
+                    }
+                }
+                _ => ThumbState::Unbuilt,
+            })
+            .unwrap_or(ThumbState::Unbuilt)
+    }
+
+    /// Page `i`'s thumbnail, drawn again if the page changed. The drawing is
+    /// the page's display list at the thumbnail's scale: no layout. With
+    /// `build`, a page whose list is not built (and was not found current
+    /// in this layout) is built first. Only a different drawing is sent: a
+    /// page that moved in the text has other offsets in its list and draws
+    /// the same.
+    fn thumb_page(&mut self, i: usize, build: bool, outs: &mut Vec<Out>) {
+        if i >= self.layout.page_count() {
+            return;
+        }
+        if build
+            && self.thumb_state(i) == ThumbState::Unbuilt
+            && self.thumbs.get(&i).is_none_or(|(_, rev, _)| *rev != self.rev)
+            && let Err(e) = self.layout.build(&[i])
+        {
+            self.thumb_build_failed(&format!("{i}: {e}"));
+        }
+        match self.thumb_state(i) {
+            ThumbState::Unbuilt => {}
+            ThumbState::Current => {
+                if let Some(t) = self.thumbs.get_mut(&i) {
+                    t.1 = self.rev;
+                }
+            }
+            ThumbState::Changed => {
+                let Some(page) = self.layout.page(i) else { return };
+                let drawn = self.thumb_drawing(&page);
+                let page = Arc::new(page);
+                match self.thumbs.get_mut(&i) {
+                    Some(t) if t.2.drawing == drawn.drawing && t.2.w == drawn.w && t.2.h == drawn.h => {
+                        t.0 = page;
+                        t.1 = self.rev;
+                    }
+                    _ => {
+                        let drawn = Arc::new(drawn);
+                        self.thumbs.insert(i, (page, self.rev, drawn.clone()));
+                        outs.push(Out::Thumb { index: i, drawn });
+                    }
+                }
+            }
+        }
+    }
+
+    /// A page's thumbnail drawing: its display list at the strip's scale.
+    fn thumb_drawing(&self, page: &DisplayPage) -> Drawn {
+        let k = THUMB_W / (page.width.as_f64().unwrap_or(816.0) as f32).max(1.0);
+        draw::page(page, &self.layout.fonts, k)
+    }
+
+    /// A build for the strip failed: said once, and not tried again here (the
+    /// pages are left for the next pause pass, which asks each once).
+    fn thumb_build_failed(&mut self, what: &str) {
+        if !std::mem::replace(&mut self.thumb_build_failed, true) {
+            log::warn!("word: building thumbnails {what}");
+        }
+    }
+
+    /// The strip asks for `pages`: what it kept beyond them is dropped, the
+    /// first [`THUMB_NOW`] are brought up to date now (their lists built in
+    /// one call), and the rest a page a tick, so a key never waits for a
+    /// whole window.
+    fn want_thumbs(&mut self, pages: Vec<usize>, outs: &mut Vec<Out>) {
+        self.thumbs_due = None;
+        let window = pages.iter().copied().min().zip(pages.iter().copied().max());
+        self.thumbs.retain(|i, _| thumb_kept(*i, window));
+        self.thumb_want = pages;
+        let count = self.layout.page_count();
+        let want: Vec<usize> = self.thumb_want.iter().copied().filter(|p| *p < count).collect();
+        let now = want.len().min(THUMB_NOW);
+        let unbuilt: Vec<usize> = want[..now].iter().copied().filter(|i| self.thumb_state(*i) == ThumbState::Unbuilt && self.thumbs.get(i).is_none_or(|(_, rev, _)| *rev != self.rev)).collect();
+        if !unbuilt.is_empty()
+            && let Err(e) = self.layout.build(&unbuilt)
+        {
+            self.thumb_build_failed(&format!("{unbuilt:?}: {e}"));
+            // not drawn now: left for the pause pass
+            self.thumbs_due = Some(std::time::Instant::now() + THUMB_SETTLE);
+        }
+        for &i in &want[..now] {
+            self.thumb_page(i, false, outs);
+        }
+        self.thumb_todo = want[now..].to_vec();
+    }
+
+    /// One more of the strip's pages, once the keys have paused.
+    fn thumbs_step(&mut self, outs: &mut Vec<Out>) {
+        if self.thumbs_due.is_some_and(|t| std::time::Instant::now() >= t) {
+            self.thumbs_due = None;
+            self.thumb_todo = self.thumb_want.clone();
+        }
+        if self.thumbs_due.is_none() && !self.thumb_todo.is_empty() {
+            let i = self.thumb_todo.remove(0);
+            self.thumb_page(i, true, outs);
+        }
     }
 
     /// The bytes of pictures not sent yet.
@@ -895,6 +1072,21 @@ impl Word {
         self.index().paras == fresh.paras
     }
 
+    /// Page `i`'s thumbnail drawn afresh from the page as laid out now (its
+    /// list built if it was not).
+    pub fn fresh_thumb(&mut self, i: usize) -> Option<Drawn> {
+        self.layout.build(&[i]).ok()?;
+        let page = self.layout.page(i)?;
+        Some(self.thumb_drawing(&page))
+    }
+
+    /// The pages whose thumbnails are kept.
+    pub fn thumbs_kept(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self.thumbs.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
     /// Page `i`'s display list as laid out now.
     pub fn page(&self, i: usize) -> Option<DisplayPage> {
         self.layout.page(i)
@@ -1004,7 +1196,7 @@ impl Document for Word {
         // `viewing-mode` and `suggesting-unsupported` gates)
         let reads = matches!(
             cmd,
-            Cmd::View { .. } | Cmd::Click { .. } | Cmd::Move { .. } | Cmd::SelectAll | Cmd::Find { .. } | Cmd::Copy { cut: false } | Cmd::SaveTo(_) | Cmd::Print | Cmd::Mode(_) | Cmd::Table(TableOp::SelectTable)
+            Cmd::View { .. } | Cmd::Thumbs { .. } | Cmd::Click { .. } | Cmd::Move { .. } | Cmd::SelectAll | Cmd::Find { .. } | Cmd::Copy { cut: false } | Cmd::SaveTo(_) | Cmd::Print | Cmd::Mode(_) | Cmd::Table(TableOp::SelectTable)
         );
         if self.mode == EditMode::Viewing && !reads {
             return (vec![Out::Note(format::VIEWING.to_owned())], false);
@@ -1017,7 +1209,7 @@ impl Document for Word {
         if self.mode == EditMode::Suggesting && !tracked {
             return (vec![Out::Note(format::NOT_SUGGESTED.to_owned())], false);
         }
-        if !matches!(cmd, Cmd::View { .. } | Cmd::Table(_) | Cmd::Format(_) | Cmd::Copy { cut: false } | Cmd::Print | Cmd::SaveTo(_)) {
+        if !matches!(cmd, Cmd::View { .. } | Cmd::Thumbs { .. } | Cmd::Table(_) | Cmd::Format(_) | Cmd::Copy { cut: false } | Cmd::Print | Cmd::SaveTo(_)) {
             self.whole_table = false;
         }
         let story = self.head.story.clone();
@@ -1088,6 +1280,10 @@ impl Document for Word {
                 if zoomed {
                     outs.push(self.caret(false));
                 }
+                false
+            }
+            Cmd::Thumbs { pages } => {
+                self.want_thumbs(pages, &mut outs);
                 false
             }
             Cmd::Click { page, x, y, extend, clicks } => {
@@ -1222,6 +1418,7 @@ impl Document for Word {
 
     fn tick(&mut self) -> (Vec<Out>, bool) {
         let mut outs = Vec::new();
+        self.thumbs_step(&mut outs);
         if !self.meta_sent {
             // the first page, then the rest on the next tick
             self.meta_sent = true;
@@ -1236,7 +1433,7 @@ impl Document for Word {
     }
 
     fn busy(&self) -> bool {
-        !self.meta_sent || !self.complete
+        !self.meta_sent || !self.complete || self.thumbs_due.is_some() || !self.thumb_todo.is_empty()
     }
 
     fn save(&mut self, path: &Path) -> Result<(Vec<u8>, PathBuf), String> {

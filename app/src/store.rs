@@ -2764,6 +2764,9 @@ pub struct Store {
     pub pop_rows: Signal<Vec<crate::slash::PopRow>>,
     pub pop_head: Signal<String>,
     pub pop_sel: Signal<usize>,
+    /// Whether a row is selected. False while the popup lists only mid-name matches of a typed
+    /// command: Enter then sends the text, and ↑ ↓ select a row.
+    pub pop_armed: Signal<bool>,
     /// The composer text the popup's rows were computed for: Return takes
     /// a row only while that is still the text (D20, slash.rs).
     pub pop_query: std::cell::RefCell<String>,
@@ -3312,6 +3315,7 @@ impl Store {
             pop_rows: signal(Vec::new()),
             pop_head: signal(String::new()),
             pop_sel: signal(0),
+            pop_armed: signal(true),
             pop_query: std::cell::RefCell::new(String::new()),
             mcp_asked: std::cell::Cell::new(None),
             mcp_loaded: std::cell::Cell::new(false),
