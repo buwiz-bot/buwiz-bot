@@ -1,17 +1,17 @@
-// The tool loop (Rust broker plan, phase 5 item 5.4) as Node runs it, with
-// MOCK off against the scripted fake opencodex (broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs)
-// and nsh at the PATH stub: replies, tool rounds and what the model is sent
+// The tool loop, with MOCK off against the scripted fake opencodex
+// (tests/fixtures/fake-opencodex.mjs) and nsh at the PATH stub: replies, tool rounds and what the model is sent
 // back, the generate_app placeholder and card, revise, the eighth round,
 // pause_turn, the web-search and streaming fallbacks, API errors, deferred
 // apps, a routine's surface, /status and a bot's tools. The streaming and
 // server-search switches are process-wide and sticky, so the cases that
 // turn them off run on brokers of their own.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
-import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
-import { FIXTURE, dbRows, modelEnv, nodeIn, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
+import { say, startFakeOpencodex, use } from "../fixtures/fake-opencodex.mjs";
+import { FIXTURE, allow, dbRows, modelEnv, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
 
 const MODEL = "claude-haiku-5-5";
 const CODE = 'import { Text } from "nsh";\n\nexport default function R() {\n  return <Text>hi</Text>;\n}\n';
@@ -25,18 +25,13 @@ const log = join(dir, "stubs.log");
 
 let fake;
 let server;
-// Node's own tool definitions (the P7 contract), read from its modules
+// the tool definitions the broker pins (its defs.json)
+const DEFS_FILE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "hub", "tools", "defs.json");
 let DEFS;
 
 before(async () => {
   fake = await startFakeOpencodex();
-  DEFS = JSON.parse(nodeIn(tempDir("agent-loop-defs"), `
-    const { TOOLS, CLIENT_SEARCH } = await import("./src/tools.mjs");
-    const { ROUTINE_TOOLS } = await import("./src/routines.mjs");
-    const { BOT_TOOLS } = await import("./src/botctx.mjs");
-    const { AGENT_TOOLS } = await import("./src/agents-tools.mjs");
-    console.log(JSON.stringify({ TOOLS, CLIENT_SEARCH, ROUTINE_TOOLS, BOT_TOOLS, AGENT_TOOLS }));
-  `));
+  DEFS = JSON.parse(readFileSync(DEFS_FILE, "utf8"));
   server = await startServer(dir, { env: modelEnv(fake, log) });
 });
 
@@ -63,6 +58,8 @@ const ask = async (prompt, thread) => status(await send(prompt, thread));
 const turnsOf = async (thread) => (await request("GET", `/turns?thread=${thread}`)).json.turns;
 const newThread = async () => (await postJson("/thread/new", {})).json.id;
 const names = (call) => call.body.tools.map((t) => t.name);
+// the definitions of `defs` as a request carries them, found by name
+const pick = (call, defs) => defs.map((d) => call.body.tools.find((t) => t.name === d.name));
 const last = (call) => call.body.messages.at(-1);
 
 test("LOOP-01 a text reply: one streamed call with the system prompt and tools; the reply lands as the thread's answer", async () => {
@@ -77,11 +74,9 @@ test("LOOP-01 a text reply: one streamed call with the system prompt and tools; 
   assert.deepEqual([call.body.model, call.body.max_tokens, call.body.stream], [MODEL, 20000, true]);
   assert.match(call.body.system, /^You are the assistant inside a generative-UI chat app: a chat where you answer in text OR native UI, whichever fits the request\.\n/);
   assert.deepEqual(call.body.tools[0], { type: "web_search_20250305", name: "web_search", max_uses: 3 });
-  // Node's TOOLS then ROUTINE_TOOLS, byte for byte
-  const n = DEFS.TOOLS.length;
-
-  assert.equal(JSON.stringify(call.body.tools.slice(1, 1 + n)), JSON.stringify(DEFS.TOOLS));
-  assert.equal(JSON.stringify(call.body.tools.slice(1 + n, 1 + n + DEFS.ROUTINE_TOOLS.length)), JSON.stringify(DEFS.ROUTINE_TOOLS));
+  // each pinned definition, byte for byte (the broker's tool list also has tools no pin names)
+  assert.equal(JSON.stringify(pick(call, DEFS.TOOLS)), JSON.stringify(DEFS.TOOLS));
+  assert.equal(JSON.stringify(pick(call, DEFS.ROUTINE_TOOLS)), JSON.stringify(DEFS.ROUTINE_TOOLS));
   // BUG: the new prompt goes twice — once as the history's last turn (the
   // user turn is pushed before agentTurn reads the history) and once as
   // the message itself
@@ -153,8 +148,8 @@ test("LOOP-04 generate_app: a placeholder titled and sized from the streamed inp
   cardThread = await newThread();
   const input = { title: "Tiny Tip", desc: "Splits a bill", layout: { width: 320, height: 200 }, slug: "tiny-tip", description: "Splits a restaurant bill.", code: CODE };
 
-  // BUG: nothing in Node makes <data>/chunks, so on a data dir without it
-  // every chunk copy fails silently (emitChunk); made here to see the copy
+  // the app makes <data>/chunks; on a data dir without it every chunk copy
+  // fails silently, so it is made here to see the copy
   assert.ok(!existsSync(join(dir, "chunks")));
   mkdirSync(join(dir, "chunks"));
   fake.script("gen", [use("generate_app", input, { chunks: 8, delay: 120 }), say("Built it.")]);
@@ -184,7 +179,11 @@ test("LOOP-04 generate_app: a placeholder titled and sized from the streamed inp
   assert.deepEqual(last(fake.calls()[1]).content, [{ type: "tool_result", tool_use_id: "toolu_generate_app", content: `mounted as ${card.name} v1 — the card is live in the conversation. Library now launches v1; earlier versions stay on the tree.` }]);
   assert.deepEqual(st.events.map((e) => e.phase), ["thinking", "coding", "coding", "checking", "working", "streaming", "done"]);
   const stage = join(dir, ".stage");
-  const nsh = stubCalls(log).slice(n).filter((c) => c.bin === "nsh").map((c) => c.argv);
+  // the two chunk builds start after the job is done
+  const nshCalls = () => stubCalls(log).slice(n).filter((c) => c.bin === "nsh").map((c) => c.argv);
+
+  await waitFor(() => nshCalls().length >= 4);
+  const nsh = nshCalls();
 
   assert.deepEqual(nsh.slice(0, 2), [
     ["build", join(stage, `check-${card.name}.tsx`), "--out", join(stage, `out-${card.name}`)],
@@ -310,6 +309,7 @@ test("LOOP-12 an app over 80 tools waits behind app_tools_load; loading it puts 
 test("LOOP-13 a routine's turn has no routine tools; the chat shows its note and the model reads its prompt", async () => {
   const thread = await newThread();
 
+  allow(dir, thread, "routines");
   fake.script("mk-routine", [use("routine_create", { name: "Daily check", every_s: 3600, prompt: "[[script:routine-run]] report" }), say("Set up.")]);
   fake.script("routine-run", [say("Routine report.")]);
   await ask("[[script:mk-routine]] check daily", thread);
@@ -349,7 +349,7 @@ test("LOOP-14 /status walks thinking, the tool's activity, a working phrase, typ
   assert.deepEqual([st.phase, st.detail, st.done, st.result, st.open], ["done", "replied", true, "reply", null]);
 });
 
-test("LOOP-15 a bot's thread gets BOT_TOOLS and AGENT_TOOLS after ROUTINE_TOOLS, byte for byte, and its section in the system prompt", async () => {
+test("LOOP-15 a bot's thread gets BOT_TOOLS and AGENT_TOOLS, byte for byte, and its section in the system prompt", async () => {
   const bot = (await postJson("/bot/new", { name: "Ada" })).json.bot;
   const plain = await newThread();
 
@@ -357,11 +357,12 @@ test("LOOP-15 a bot's thread gets BOT_TOOLS and AGENT_TOOLS after ROUTINE_TOOLS,
   await ask("[[script:text]] hi Ada", bot.threadId);
   await ask("[[script:text]] hi nobody", plain);
   const [mine, theirs] = fake.calls();
-  const at = 1 + DEFS.TOOLS.length + DEFS.ROUTINE_TOOLS.length;
+  assert.equal(JSON.stringify(pick(mine, DEFS.BOT_TOOLS)), JSON.stringify(DEFS.BOT_TOOLS));
+  assert.equal(JSON.stringify(pick(mine, DEFS.AGENT_TOOLS)), JSON.stringify(DEFS.AGENT_TOOLS));
+  // a chat with no Bot keeps shared memories and can read and message agents, but has no profile, integrations or agent management
+  const shared = names(theirs).filter((n) => DEFS.BOT_TOOLS.some((t) => t.name === n) || DEFS.AGENT_TOOLS.some((t) => t.name === n));
 
-  assert.equal(JSON.stringify(mine.body.tools.slice(at, at + DEFS.BOT_TOOLS.length)), JSON.stringify(DEFS.BOT_TOOLS));
-  assert.equal(JSON.stringify(mine.body.tools.slice(at + DEFS.BOT_TOOLS.length, at + DEFS.BOT_TOOLS.length + DEFS.AGENT_TOOLS.length)), JSON.stringify(DEFS.AGENT_TOOLS));
-  assert.ok(!names(theirs).some((n) => DEFS.BOT_TOOLS.some((t) => t.name === n) || DEFS.AGENT_TOOLS.some((t) => t.name === n)));
+  assert.deepEqual(shared, ["memory_add", "memory_list", "memory_remove", "agents_list", "agent_send", "agent_conversations", "agent_read"]);
   assert.ok(mine.body.system.endsWith(
     "\n\n## Who you are\nYou are Ada. Ada is a personal assistant bot in Buwiz Bot.\n\nInstructions:\nStay in character as Ada. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.\n\nYour profile and memories are yours to maintain: memory_add / memory_list / memory_remove, bot_profile_update, integrations_list.",
   ));
@@ -416,7 +417,7 @@ test("LOOP-10 a stream that dies before its first event falls back to a plain cr
   assert.deepEqual(fake.calls().map((c) => c.stream), [false]);
 });
 
-test("LOOP-11 an API error ends the job with the error as its detail; the prompt stays, no reply", async () => {
+test("LOOP-11 an API error ends the job with the error as its detail; a notice in the chat says so", async () => {
   fake.script("too-long", [{ status: 400, error: "prompt is too long" }]);
   fake.reset();
   const st = await ask("[[script:too-long]] a lot", streamThread);
@@ -425,5 +426,5 @@ test("LOOP-11 an API error ends the job with the error as its detail; the prompt
   assert.equal(fake.calls().length, 1, "a 400 is not retried");
   assert.deepEqual([st.phase, st.detail, st.done, st.result], ["done", err, true, null]);
   assert.deepEqual(st.events.map((e) => e.phase), ["thinking", "done"]);
-  assert.deepEqual((await turnsOf(streamThread)).slice(-1).map((t) => [t.role, t.text]), [["user", "[[script:too-long]] a lot"]]);
+  assert.deepEqual((await turnsOf(streamThread)).slice(-1).map((t) => [t.role, t.text]), [["notice", "The model call failed, so this message wasn't answered (prompt is too long). Try again, or pick another model."]]);
 });

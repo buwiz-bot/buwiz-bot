@@ -1,29 +1,27 @@
-// The chat routes (Rust broker plan, phase 5 item 5.2), as Node answers
-// them today: threads, turns, reactions, retry, /status, /chat's refusals,
-// copy and share. MOCK on; the Mac tools are PATH stubs (broker/buwiz-broker/tests/fixtures/bin) and
+// The chat routes: threads, turns, reactions, retry, /status, /chat's refusals,
+// copy and share. MOCK on; the Mac tools are PATH stubs (tests/fixtures/bin) and
 // every model URL points at a closed port.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { dbRows, nodeIn, offlineEnv, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
+import { dbRows, offlineEnv, postJson, request, seedDb, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("chat-routes");
 const log = join(dir, "stubs.log");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 let server;
-// an agents' conversation, seeded through Node's store before the start
+// an agents' conversation, written to the store before the start
 let agentsThread;
 
 before(async () => {
-  agentsThread = nodeIn(dir, `
-    const { store, nextThreadSeq, uuidv7, writeIndex } = await import("./src/state.mjs");
-    const id = "t" + nextThreadSeq();
-    store.list.push({ id, uid: uuidv7(), title: "Q3 payments", turns: [], agents: { subject: "Q3 payments", participants: ["scout", "boss"] } });
-    writeIndex();
-    console.log(id);
-  `);
+  const db = await seedDb(dir, { env: offlineEnv(log) });
+
+  agentsThread = "t2";
+  db.prepare("INSERT INTO threads(id, title, ord, agents, uid) VALUES(?,?,?,?,?)").run(agentsThread, "Q3 payments", 1, JSON.stringify({ subject: "Q3 payments", participants: ["scout", "boss"] }), randomUUID());
+  db.close();
   server = await startServer(dir, { env: offlineEnv(log) });
 });
 
@@ -272,7 +270,7 @@ test("CHAT-11 /copy and /share/thread go through pbcopy; /share reveals the modu
     "hello clipboard",
     "",
     // BUG: a text reply (no module) is shared as "Gen UI (undefined.tsx via
-    // <label>):" with an empty body — Node's behaviour today
+    // <label>):" with an empty body 
     `You: make a counter\n\nGen UI (${card.name}.tsx via mock):\n${code}\n\nYou: /upload\n\nGen UI (undefined.tsx via upload):\n`,
   ]);
 });

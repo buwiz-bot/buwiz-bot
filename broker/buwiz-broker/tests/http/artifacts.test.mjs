@@ -1,15 +1,13 @@
-// The Library and mini-app routes over HTTP on a seeded data dir (the Rust
-// broker plan, phase 5 item 5.7b): /module, /app/*, /apps/meta,
+// The Library and mini-app routes over HTTP on a seeded data dir: /module, /app/*, /apps/meta,
 // /artifacts, /artifact/*, /widgets, /publish, /unpublish, /reuse,
 // /catalog, /widget-meta and /sources. Where a route writes, the rows it
-// changed are pinned with tools/db-diff.mjs (a snapshot before and after,
+// changed are pinned with db-diff.mjs (a snapshot before and after,
 // timestamps, uids and rowids left out). nsh, sips and secret are the PATH
 // stubs; Drive is a stub MCP server named google-workspace (no Google
-// call). Not here: /app/icon/gen (an image model; the route list of 5.7b
-// given to this file leaves it out) and the generate tools (5.4/5.7a).
+// call). Not here: /app/icon/gen (an image model) and the generate tools.
 //
 // The seed: chat "Builds" with R1 (two versions, a size hint), R2 (a
-// declared popoutSize, reads /data/), R3 (an image card), a reply file
+// declared popoutSize, calls a data source), R3 (an image card), a reply file
 // (files/mabc123/report.md) and a Drive link; R4.tsx alone, from before
 // versions.
 //
@@ -32,12 +30,13 @@
 //   ART-16 POST /app/delete: rows, tombstone, transcript, files
 //   ART-17 GET /sources
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { dbDiff } from "../tools/db-diff.mjs";
-import { PORT, dbRows, nodeIn, offlineEnv, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
+import { dbDiff } from "./db-diff.mjs";
+import { PORT, dbRows, offlineEnv, postJson, request, seedDb, startServer, stubCalls, tempDir, waitFor, writeVersion } from "./helpers.mjs";
 
 const dataDir = tempDir("artifacts");
 const GEN = join(dataDir, "generated");
@@ -49,7 +48,7 @@ const DRIVE_ID = "1AbCdEfGhIjK";
 const CODE = {
   R1v1: 'import { Text } from "nsh";\n\nexport default function R() {\n  return <Text>count</Text>;\n}\n',
   R1v2: 'import { Text } from "nsh";\n\nexport default function R() {\n  return <Text color="blue">count</Text>;\n}\n',
-  R2: 'import { Text } from "nsh";\n\nexport const popoutSize = { w: 500, h: 420 };\n// reads /data/timeclock\nexport default function R() {\n  return <Text>timer</Text>;\n}\n',
+  R2: 'import { Text } from "nsh";\n\nexport const popoutSize = { w: 500, h: 420 };\n// reads source("timeclock")\nexport default function R() {\n  return <Text>timer</Text>;\n}\n',
   R3: 'import { Image } from "nsh";\n\nexport default function R() {\n  return <Image src="asset:/generated/assets/img-cat.png" />;\n}\n',
   R4: 'import { Text } from "nsh";\n\nexport default function R() {\n  return <Text>legacy</Text>;\n}\n',
 };
@@ -133,46 +132,47 @@ const mtime = (p) => Math.round(statSync(p).mtimeMs);
 const versions = (name) => dbRows(dataDir, "SELECT v, parent, created_at, label FROM versions WHERE name=? ORDER BY v", name);
 
 before(async () => {
-  // Node never makes chunks/ (Rox's app does): without it every chunk copy
+  // the app makes chunks/, the broker does not: without it every chunk copy
   // fails quietly and each start builds them all again
   mkdirSync(join(dataDir, "chunks"), { recursive: true });
-  chat = nodeIn(dataDir, `
-    const { store, nextThreadSeq, uuidv7, writeIndex } = await import("./src/state.mjs");
-    const { writeVersion } = await import("./src/pipeline.mjs");
-    const { GEN_DIR, OUT_DIR, ASSETS_DIR } = await import("./src/config.mjs");
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const C = ${JSON.stringify(CODE)};
-    writeVersion("R1", C.R1v1, null, "make a counter");
-    writeVersion("R1", C.R1v2, 1, "make it blue");
-    writeVersion("R2", C.R2, null, "make a timer");
-    mkdirSync(ASSETS_DIR, { recursive: true });
-    writeFileSync(join(ASSETS_DIR, "img-cat.png"), Buffer.from(${JSON.stringify(PNG.toString("base64"))}, "base64"));
-    writeVersion("R3", C.R3, null, "draw a cat");
-    writeFileSync(join(GEN_DIR, "R4.tsx"), C.R4);
-    mkdirSync(join(OUT_DIR, "mabc123"), { recursive: true });
-    writeFileSync(join(OUT_DIR, "mabc123", "report.md"), "# Q3\\n");
-    const tid = "t" + nextThreadSeq();
-    const u = (o) => ({ id: uuidv7(), ...o });
-    store.list.push({ id: tid, uid: uuidv7(), title: "Builds", turns: [
-      u({ role: "user", text: "make a counter" }),
-      u({ role: "ai", name: "R1", label: "mock", caption: "Counter", art: { title: "Counter", desc: "Counts clicks", w: 400, h: 300 }, v: 1 }),
-      u({ role: "user", text: "make it blue" }),
-      u({ role: "ai", name: "R1", label: "mock", caption: "Counter", v: 2 }),
-      u({ role: "user", text: "make a timer" }),
-      u({ role: "ai", name: "R2", label: "mock", caption: "Timer" }),
-      u({ role: "user", text: "draw a cat" }),
-      u({ role: "ai", name: "R3", label: "image", art: { kind: "image", file: "img-cat.png", w: 64, h: 64, title: "Cat" } }),
-      u({ role: "user", text: "write the report" }),
-      u({ role: "ai", text: "", label: "mock", files: [${JSON.stringify(REPORT)}] }),
-      u({ role: "user", text: "make a plan doc" }),
-      u({ role: "ai", text: "Made it.", label: "mock", links: [${JSON.stringify(LINK)}] }),
-    ] });
-    store.active = tid;
-    writeIndex();
-    await new Promise((r) => setTimeout(r, 300));
-    console.log(tid);
-  `, env());
+  const db = await seedDb(dataDir, { env: env() });
+  const ASSETS_DIR = join(GEN, "assets");
+  const OUT_DIR = join(GEN, "files");
+
+  writeVersion(dataDir, db, "R1", CODE.R1v1, null, "make a counter");
+  writeVersion(dataDir, db, "R1", CODE.R1v2, 1, "make it blue");
+  writeVersion(dataDir, db, "R2", CODE.R2, null, "make a timer");
+  mkdirSync(ASSETS_DIR, { recursive: true });
+  writeFileSync(join(ASSETS_DIR, "img-cat.png"), PNG);
+  writeVersion(dataDir, db, "R3", CODE.R3, null, "draw a cat");
+  writeFileSync(join(GEN, "R4.tsx"), CODE.R4);
+  mkdirSync(join(OUT_DIR, "mabc123"), { recursive: true });
+  writeFileSync(join(OUT_DIR, "mabc123", "report.md"), "# Q3\n");
+  chat = "t2";
+  db.prepare("INSERT INTO threads(id, title, ord, uid) VALUES(?,?,?,?)").run(chat, "Builds", 1, randomUUID());
+  // [role, text, name, label, caption, v, meta]
+  const rows = [
+    ["user", "make a counter"],
+    ["ai", null, "R1", "mock", "Counter", 1, { art: { title: "Counter", desc: "Counts clicks", w: 400, h: 300 } }],
+    ["user", "make it blue"],
+    ["ai", null, "R1", "mock", "Counter", 2],
+    ["user", "make a timer"],
+    ["ai", null, "R2", "mock", "Timer"],
+    ["user", "draw a cat"],
+    ["ai", null, "R3", "image", null, null, { art: { kind: "image", file: "img-cat.png", w: 64, h: 64, title: "Cat" } }],
+    ["user", "write the report"],
+    ["ai", "", null, "mock", null, null, { files: [REPORT] }],
+    ["user", "make a plan doc"],
+    ["ai", "Made it.", null, "mock", null, null, { links: [LINK] }],
+  ];
+
+  rows.forEach(([role, text, name, label, caption, v, meta], seq) => {
+    db.prepare("INSERT INTO turns(thread_id, seq, role, text, name, label, caption, v, meta, uid) VALUES(?,?,?,?,?,?,?,?,?,?)").run(
+      chat, seq, role, text ?? null, name ?? null, label ?? null, caption ?? null, v ?? null, meta ? JSON.stringify(meta) : null, randomUUID(),
+    );
+  });
+  db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES('active', ?), ('seq', '2')").run(chat);
+  db.close();
   server = await startServer(dataDir, { env: env() });
 });
 
@@ -461,7 +461,7 @@ test("ART-11 GET /artifact/info: an image, a reply file, a Drive file, an app; 4
   for (const id of ["R9", "file:nope.md", "gdrive:nope", "attach:nope", ""]) {
     const r = await request("GET", `/artifact/info?id=${encodeURIComponent(id)}`);
 
-    assert.equal(r.status, 404, id);
+    assert.equal(r.status, 404, `id ${JSON.stringify(id)}`);
     assert.equal(r.json.ok, false);
   }
   assert.equal((await request("GET", "/artifact/info?id=R9")).json.error, "no such app R9", "an R-name without an image is an app");
@@ -611,10 +611,12 @@ test("ART-16 POST /app/delete: rows, tombstone, the transcript, and the files 70
   assert.deepEqual(await postJson("/app/delete", { name: "x" }).then((r) => [r.status, r.json]), [400, { ok: false, error: "no such module x" }]);
 });
 
-test("ART-17 GET /sources: timeclock and reminders (linear only with a key)", async () => {
+test("ART-17 GET /sources: timeclock and reminders ready, linear not without a key", async () => {
   const r = await request("GET", "/sources");
 
-  assert.equal(r.text, '{"sources":[{"name":"timeclock"},{"name":"reminders"}]}');
+  // the registry lists every source with its title, actions and whether it is ready
+  // (src/hub/sources/ checks those); linear is listed but not ready without a key
+  assert.deepEqual(r.json.sources.map((x) => [x.name, x.ready]), [["timeclock", true], ["reminders", true], ["linear", false]]);
   assert.match(r.headers["content-type"], /^application\/json/);
 });
 

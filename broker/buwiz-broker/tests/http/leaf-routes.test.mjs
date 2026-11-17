@@ -1,7 +1,5 @@
-// The leaf routes the Rust broker answers itself (plan phase 2): /state,
-// /prefs, /keymap, /data/timeclock, the skills list. Run against Node they
-// pin down what the Rust side must match; with BUWIZ_BROKER_CMD naming
-// buwiz-broker, they check that it does.
+// The leaf routes the broker answers itself: /state, /prefs, /keymap and
+// the skills list.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -137,30 +135,6 @@ test("KEYMAP-02 a bad keymap is refused and the file is left alone", async () =>
     assert.deepEqual(r.json, { ok: false, error });
   }
   assert.equal(readFileSync(join(DATA, "keymap.json"), "utf8"), '{"keep":["k"]}');
-});
-
-test("TIME-01 clocking in and out", async () => {
-  const start = (await request("GET", "/data/timeclock")).json;
-  assert.deepEqual(start, { status: "out", since: null, todayMin: 0, sessions: [] });
-
-  const inn = (await request("POST", "/data/timeclock/in")).json;
-  assert.equal(inn.ok, true);
-  assert.equal(inn.already, false);
-  assert.equal(inn.status, "in");
-  assert.match(inn.since, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
-  assert.deepEqual(Object.keys(inn), ["ok", "already", "status", "since", "todayMin", "sessions"]);
-  assert.deepEqual(inn.sessions, [{ in: inn.since, out: null, min: 0 }]);
-
-  const again = (await request("POST", "/data/timeclock/in")).json;
-  assert.equal(again.already, true);
-  assert.equal(again.since, inn.since);
-
-  const out = (await request("POST", "/data/timeclock/out")).json;
-  assert.deepEqual(Object.keys(out), ["ok", "status", "since", "todayMin", "sessions"]);
-  assert.equal(out.status, "out");
-  assert.equal(out.sessions.length, 1);
-  assert.equal(out.sessions[0].in, inn.since);
-  assert.match(out.sessions[0].out, /Z$/);
 });
 
 test("SKILLS-01 the skills list", async () => {

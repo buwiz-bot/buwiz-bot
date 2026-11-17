@@ -1,10 +1,6 @@
-// GET /file/render for every kind but the office ones (those are
-// office.test's OFF-21), and GET / (Rust broker plan phase 7: the last
-// routes Node's office role answered). Pinned on Node; buwiz-broker's hub
-// answers the same JSON.
+// GET /file/render for every kind but the office ones, and GET /.
 //
-// Code lines: Node colours them with Shiki, buwiz-broker with syntect and
-// the same two themes (tools/tmtheme.mjs). The grammars differ, so these
+// Code lines are coloured with syntect and the two themes below. So these
 // cases pin the shape exactly (lines, each token [text, dark, light], the
 // tokens joining to the line, colours from the two palettes) and the
 // colour of tokens both engines agree on; not every token's colour or
@@ -15,8 +11,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { cursorThemes } from "../src/files.mjs";
-import { ROOT, offlineEnv, request, startServer, tempDir } from "./helpers.mjs";
+import { offlineEnv, request, startServer, tempDir } from "./helpers.mjs";
 
 let server;
 const DATA = tempDir("render");
@@ -51,9 +46,9 @@ const meta = (name, ext, size, kind, variant) => ({ name, ext, size, kind, varia
 
 // ————— code lines —————
 
-const colours = (i) => new Set(cursorThemes()[i].tokenColors.map((r) => r.settings.foreground).concat(cursorThemes()[i].colors["editor.foreground"]).map((c) => c.toUpperCase()));
-const DARK = colours(0);
-const LIGHT = colours(1);
+// the two palettes (the editor's dark and light themes: every token colour and the foreground)
+const DARK = new Set(["#E4E4E45E", "#82D2CE", "#E394DC", "#EBC88C", "#F8C762", "#EFB080", "#D6D6DD", "#87C3FF"]);
+const LIGHT = new Set(["#141414AD", "#B3003F", "#9E94D5", "#B8448B", "#206595", "#DB704B", "#141414EB"]);
 
 /** Shiki's lines: split at \r\n and \n. */
 const shikiLines = (code) => code.split(/\r\n|\n/);
@@ -330,6 +325,3 @@ test("RENDER-11 GET /: the broker's one-line status", async () => {
   }
 });
 
-test("RENDER-12 the tmTheme files buwiz-broker colours with are files.mjs's themes", () => {
-  execFileSync(process.execPath, [join(ROOT, "tools", "tmtheme.mjs"), "--check"], { stdio: "pipe" });
-});

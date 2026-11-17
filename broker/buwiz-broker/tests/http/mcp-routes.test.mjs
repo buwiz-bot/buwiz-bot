@@ -1,38 +1,28 @@
-// The /mcp routes Rox calls that no other test covers (Rust broker plan
-// 4.3): resolve, detach, attachment rename, open and its one-time pass,
-// apps, manifest, tools, and a server switched off and deleted. Written
-// against Node; the same file runs through buwiz-broker, which answers them
-// itself when it hosts MCP (BUWIZ_BROKER_MCP_HOST=1).
+// The /mcp routes the app calls that no other test covers: resolve,
+// detach, attachment rename, open and its one-time pass, apps, manifest, tools, and a server switched off and deleted.
 //
 // `open` on the broker's PATH is a stub that records what it was handed, so
 // no link reaches the system.
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
-import { oauthServer } from "../../broker/buwiz-broker/tests/fixtures/oauth-server.mjs";
-import { PORT, ROOT, env, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { oauthServer } from "../fixtures/oauth-server.mjs";
+import { postJson, request, seedDb, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp-routes");
 const bin = tempDir("mcp-routes-bin");
 const opened = join(bin, "opened");
 const mark = join(dataDir, "apps-spawned");
 const offMark = join(dataDir, "off-spawned");
-const APPS = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "mcp-apps-server.mjs");
+const APPS = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "mcp-apps-server.mjs");
 
-process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
-process.env.MOCK = "1";
-process.env.PORT = String(PORT);
 writeFileSync(join(bin, "open"), `#!/bin/sh\necho "$@" >> '${opened}'\n`);
 chmodSync(join(bin, "open"), 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
-const { db } = await import("../src/state.mjs");
-
-// buwiz-broker hosting MCP answers these routes itself, and flags a remote
-// server's sign-in from any call (Node did only in the model's calls)
-const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1";
-
+let db;
 let server;
 let fx;
 let thread = "";
@@ -57,6 +47,7 @@ function addAttachment(id, server, token, threadId) {
 
 before(async () => {
   fx = await oauthServer();
+  db = await seedDb(dataDir);
   addRow("apps", { command: process.execPath, args: JSON.stringify([APPS]), env: JSON.stringify({ FIXTURE_MARK: mark }) });
   addRow("offapps", { command: process.execPath, args: JSON.stringify([APPS]), env: JSON.stringify({ FIXTURE_MARK: offMark }), enabled: 0 });
   server = await startServer(dataDir);
@@ -65,6 +56,7 @@ before(async () => {
 });
 
 after(async () => {
+  db?.close();
   await server?.stop();
   await fx?.close();
 });
@@ -196,7 +188,7 @@ test("switching a server off stops it, on starts it; deleting drops the row and 
   assert.equal(await listed("apps"), undefined);
 });
 
-test("a remote server whose call fails as signed out shows needs-auth", { skip: !MCP_IN_RUST && "buwiz-broker hosting MCP (BUWIZ_BROKER_MCP_HOST=1) only" }, async () => {
+test("a remote server whose call fails as signed out shows needs-auth", async () => {
   addRow("remote", { url: `${fx.base}/open` });
   assert.equal((await request("GET", "/mcp/tools?id=remote")).json.status, "connected");
   const c = await postJson("/mcp/call", { server: "remote", tool: "denied", args: {} });

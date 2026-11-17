@@ -1,11 +1,9 @@
-// Agent messaging over HTTP (the Rust broker plan, phase 5 item 5.6): the
+// Agent messaging over HTTP: the
 // agents host routes, the outside endpoints, an `ah_` webhook (signature,
 // staleness, replays, size, rate), the outgoing webhook's outbox against a
 // local receiver (5xx retried, 4xx dropped), the Claude Code bridge's
 // refusals and its long poll, and delivery with MOCK turns: the recipient
-// answers with the fixed mock reply. agents.test.mjs and
-// agents-external.test.mjs cover the modules (A2A-*, HOOK-*) and BRG-01
-// through rox-bridge; this file pins the HTTP side.
+// answers with the fixed mock reply.
 //
 // Timing: the outbox's first retry waits 30 s (setTimeout, no seam), so the
 // retry is shown by its row (attempts, next_at) and by a restart, which
@@ -28,13 +26,15 @@
 //          agents list, a refused send
 //   AGH-08 the bridge's long poll wakes when its agent's reply comes
 import assert from "node:assert/strict";
+import { createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { signature } from "../src/agents-external.mjs";
-import { PORT, dbRows, nodeIn, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { PORT, dbRows, offlineEnv, postJson, request, seedDb, startServer, tempDir, waitFor } from "./helpers.mjs";
 
+/** The X-Buwiz-Signature value: the HMAC-SHA256 of "<t>.<body>" under the endpoint's secret. */
+const signature = (secret, body, t = Math.floor(Date.now() / 1000)) => `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
 const MOCK_REPLY = "_(mock reply — no model configured)_";
 const RECV_PORT = PORT + 1;
 const dataDir = tempDir("agents-http");
@@ -60,15 +60,14 @@ const bridge = (method, path, tok, obj) =>
   request(method, path, { headers: { ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...(obj ? { "Content-Type": "application/json" } : {}) }, body: obj ? JSON.stringify(obj) : undefined });
 
 before(async () => {
-  nodeIn(dataDir, `
-    const { store, nextThreadSeq, uuidv7, writeIndex } = await import("./src/state.mjs");
-    for (const name of ["Scout", "Boss"]) {
-      const tid = "t" + nextThreadSeq();
-      store.list.push({ id: tid, uid: uuidv7(), title: name, turns: [] });
-      store.bots.push({ id: name.toLowerCase(), name, shape: "blob", color: "#FFFFFF", threadId: tid, memories: [], integrations: [] });
-    }
-    writeIndex();
-  `);
+  const db = await seedDb(dataDir, { env: env() });
+
+  ["Scout", "Boss"].forEach((name, k) => {
+    db.prepare("INSERT INTO threads(id, title, ord, uid) VALUES(?,?,?,?)").run(`t${k + 2}`, name, k + 1, randomUUID());
+    db.prepare("INSERT INTO bots(id, name, shape, color, thread_id, ord, memories, integrations) VALUES(?,?,?,?,?,?,?,?)").run(name.toLowerCase(), name, "blob", "#FFFFFF", `t${k + 2}`, k, "[]", "[]");
+  });
+  db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES('seq', '3')").run();
+  db.close();
   receiver = createServer((req, res) => {
     let body = "";
 
@@ -242,7 +241,7 @@ test("AGH-04 a hook takes 60 calls an hour, then 429", async () => {
   assert.equal((await hook(ep, envelope(), { sig: null })).status, 401);
 });
 
-test("AGH-05 accepts, archive, resume: refusals, a hook's agent that takes no messages, 20 an hour pauses", async () => {
+test("AGH-05 accepts, archive, resume: refusals, a hook still reaches the agent that takes no messages, 20 an hour pauses", async () => {
   const is = async (path, body, message) => assert.deepEqual(await host(path, body).then((r) => [r.status, r.json]), [400, refusal("invalid_args", message)], path);
 
   await is("/v1/host/agents/accepts", { bot: "nobody", accepts: "all" }, "no such agent");
@@ -250,11 +249,15 @@ test("AGH-05 accepts, archive, resume: refusals, a hook's agent that takes no me
   await is("/v1/host/agents/accepts", { bot: "boss", accepts: [1] }, 'accepts is "all", "none" or a list of agent ids');
   await is("/v1/host/agents/archive", { conversation: "conv_nope" }, "no such conversation");
   await is("/v1/host/agents/resume", {}, "no such conversation");
-  assert.equal((await host("/v1/host/agents/accepts", { bot: "boss", accepts: "none" })).text, '{"ok":true}');
-  assert.equal((await threads()).bots.find((b) => b.id === "boss").accepts, "none");
-  const no = await hook(ci, envelope());
+  // the change comes back with its words and an undo
+  const none = (await host("/v1/host/agents/accepts", { bot: "boss", accepts: "none" })).json;
 
-  assert.deepEqual([no.status, no.json], [400, refusal("invalid_args", "no agent to send to")]);
+  assert.deepEqual([none.ok, none.text, typeof none.undo], [true, "Boss hears from nobody now.", "string"]);
+  assert.equal((await threads()).bots.find((b) => b.id === "boss").accepts, "none");
+  // a Bot's own webhook reaches it whatever it accepts
+  const own = await hook(ci, envelope());
+
+  assert.equal(own.status, 202, own.text);
   assert.equal((await host("/v1/host/agents/accepts", { bot: "boss", accepts: ["scout"] })).status, 200);
   assert.deepEqual((await threads()).bots.find((b) => b.id === "boss").accepts, ["scout"]);
   assert.equal((await host("/v1/host/agents/accepts", { bot: "boss", accepts: "all" })).status, 200);

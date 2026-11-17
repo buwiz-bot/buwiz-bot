@@ -1,32 +1,27 @@
-// Remote MCP servers and their OAuth sign-in (Rust broker plan 4.2): the
-// flow as the user runs it, against a fake server and authorization server
-// (broker/buwiz-broker/tests/fixtures/oauth-server.mjs). Written against Node first; the same cases
-// then run through buwiz-broker (BUWIZ_BROKER_CMD, BUWIZ_BROKER_MCP_HOST=1).
+// Remote MCP servers and their OAuth sign-in: the flow as the user runs
+// it, against a fake server and authorization server
+// (tests/fixtures/oauth-server.mjs).
 //
 // No browser opens: `open` on the broker's PATH is a stub that records its
 // arguments, and every sign-in here asks for the authorize URL instead
-// (open:false). With OAUTH_LOG set, the fixture's requests are written
-// there, so a Node run and a Rust run can be compared.
+// (open:false).
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { STATIC, oauthServer } from "../../broker/buwiz-broker/tests/fixtures/oauth-server.mjs";
+import { STATIC, oauthServer } from "../fixtures/oauth-server.mjs";
 import { PORT, postJson, request, startServer, tempDir } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp-oauth");
 const bin = tempDir("mcp-oauth-bin");
 const opened = join(bin, "opened");
 
-process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
-process.env.MOCK = "1";
-process.env.PORT = String(PORT);
 writeFileSync(join(bin, "open"), `#!/bin/sh\necho "$@" >> '${opened}'\n`);
 chmodSync(join(bin, "open"), 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
-const { db } = await import("../src/state.mjs");
-
+let db;
 let server;
 let fx;
 
@@ -74,11 +69,12 @@ const tabs = () => (existsSync(opened) ? readFileSync(opened, "utf8").split("\n"
 before(async () => {
   fx = await oauthServer();
   server = await startServer(dataDir);
+  db = new DatabaseSync(join(dataDir, "generated", "app.db"), { timeout: 5000 });
 });
 
 after(async () => {
+  db?.close();
   await server?.stop();
-  if (process.env.OAUTH_LOG) writeFileSync(process.env.OAUTH_LOG, JSON.stringify(fx.log, null, 1));
   await fx?.close();
 });
 

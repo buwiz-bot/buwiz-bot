@@ -1,4 +1,4 @@
-// Pop-out windows (the Rust broker plan, item 6.3): POST /popout writes a
+// Pop-out windows: POST /popout writes a
 // mount wrapper for a module, builds it once with `nsh build -o` and
 // starts `nsh-macos-host` on the bundle, one window per module (or pinned
 // version); a second press raises the open window, a newer head replaces
@@ -20,8 +20,8 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startFakeOpencodex, say, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
-import { modelEnv, nodeIn, postJson, request, startServer, stubCalls, stubEnv, tempDir, waitFor } from "./helpers.mjs";
+import { startFakeOpencodex, say, use } from "../fixtures/fake-opencodex.mjs";
+import { modelEnv, postJson, request, seedDb, startServer, stubCalls, stubEnv, tempDir, waitFor, writeVersion } from "./helpers.mjs";
 
 const dir = tempDir("popout");
 const stubs = tempDir("popout-stubs");
@@ -59,20 +59,16 @@ const hostOf = (pid) => waitFor(() => hosts().find((h) => h.pid === pid));
 
 before(async () => {
   fake = await startFakeOpencodex();
-  nodeIn(dir, `
-    const { writeVersion } = await import("./src/pipeline.mjs");
-    const { setAppCols } = await import("./src/appmeta.mjs");
-    const { db } = await import("./src/state.mjs");
-    const C = ${JSON.stringify(CODE)};
-    writeVersion("R1", C.R1v1, null, "one");
-    writeVersion("R1", C.R1v2, 1, "two");
-    setAppCols("R1", { title: "Counter" });
-    writeVersion("R2", C.R2, null, "timer");
-    db.prepare("UPDATE versions SET label=? WHERE name=? AND v=?").run("first", "R2", 1);
-    writeVersion("R3", C.R3, null, "plain");
-    writeVersion("R9", C.R9, null, "broken");
-    console.log("ok");
-  `, stubEnv(LOG));
+  const db = await seedDb(dir, { env: stubEnv(LOG) });
+
+  writeVersion(dir, db, "R1", CODE.R1v1, null, "one");
+  writeVersion(dir, db, "R1", CODE.R1v2, 1, "two");
+  db.prepare("INSERT OR REPLACE INTO apps(name, title) VALUES(?,?)").run("R1", "Counter");
+  writeVersion(dir, db, "R2", CODE.R2, null, "timer");
+  db.prepare("UPDATE versions SET label=? WHERE name=? AND v=?").run("first", "R2", 1);
+  writeVersion(dir, db, "R3", CODE.R3, null, "plain");
+  writeVersion(dir, db, "R9", CODE.R9, null, "broken");
+  db.close();
   writeFileSync(WINDOWS, "4242 widget · R1\n");
   server = await startServer(dir, { env: modelEnv(fake, LOG, { AEROSPACE_STUB_WINDOWS: WINDOWS, AEROSPACE_STUB_WORKSPACE: "3" }) });
 });
@@ -107,23 +103,24 @@ test("POP-02 the head: its wrapper, built once, the host on the bundle at the mo
   const wrapper = join(WIN, "pop-R1.tsx");
   const src = readFileSync(wrapper, "utf8");
 
-  assert.match(src, /^import \{ mount, Text, View \} from "nsh";\n/);
+  assert.match(src, /^import \{ colorScheme, mount, Text, View \} from "nsh";\n/);
   assert.match(src, /\nimport R, \* as mod from "\.\.\/generated\/R1";\n/);
   assert.match(src, /neither → 360pt wide, hugged height\./);
   assert.match(src, /\?\? 360\)\)\);\nconst capH = 675;\n/);
-  assert.match(src, /Window\.setTitle\("widget · " \+ "R1"\);/);
+  assert.match(src, /title: "widget · " \+ "R1",/);
   assert.match(src, /\nlet lastH = 0, pendingH = 0/);
-  assert.match(src, /\{"v2" \? \(/);
-  // the build directory is named for the wrapper's sha1: the same bytes
-  // whichever broker wrote them
+  assert.match(src, /\nconst BADGE: string = "v2";\n/);
+  // the build directory is named for a hash of the wrapper, the module and the two binaries
   const [b] = builds();
+  const built = join(WIN, b.argv[3].split("/").at(-1));
 
-  assert.deepEqual(b.argv, ["build", wrapper, "-o", join(WIN, ".pop-R1-d3567deb6f")]);
-  assert.ok(existsSync(join(WIN, ".pop-R1-d3567deb6f", "bundle.nshc")));
+  assert.match(built, /\/\.pop-R1-[0-9a-f]{16}$/);
+  assert.deepEqual(b.argv, ["build", wrapper, "-o", built]);
+  assert.ok(existsSync(join(built, "bundle.nshc")));
   const h = await hostOf(r.json.pid);
 
   assert.equal(hosts().length, 1);
-  assert.deepEqual(h.argv, ["--bundle", join(WIN, ".pop-R1-d3567deb6f", "bundle.nshc"), "--name", "Counter · v2", "--app-id", "dev.goldcoders.grokshell.widget", "--window-size", "400x506"]);
+  assert.deepEqual(h.argv, ["--bundle", join(built, "bundle.nshc"), "--name", "Counter · v2", "--app-id", "dev.goldcoders.grokshell.widget", "--window-size", "400x506"]);
   assert.ok(alive(h.pid));
   // the screen's height, asked once
   assert.equal(calls("osascript").filter((c) => c.argv.join(" ").includes("bounds of window of desktop")).length, 1);
@@ -164,15 +161,15 @@ test("POP-04 sizes: a popoutSize module pinned to a labelled version, and a call
   const slug = readdirSync(join(dir, "generated", "R2")).find((f) => f.endsWith(".v1.tsx")).slice(0, -4);
 
   assert.ok(src.includes(`import R, * as mod from "../generated/R2/${slug}";`));
-  assert.ok(src.includes('Window.setTitle("widget · " + "R2@1");'));
+  assert.ok(src.includes('title: "widget · " + "R2@1",'));
   assert.ok(src.includes("?? 300)));\nconst capH = 675;"));
   assert.ok(src.includes("\nlet lastH = 420, pendingH = 0"));
-  assert.ok(src.includes('{"v1 · first" ? ('));
+  assert.ok(src.includes('const BADGE: string = "v1 · first";'));
   let h = await hostOf(r2.json.pid);
 
   assert.equal(arg(h.argv, "--name"), "R2 · v1");
   assert.equal(arg(h.argv, "--window-size"), "500x446");
-  assert.match(arg(h.argv, "--bundle"), /\/windows\/\.pop-R2-1-[0-9a-f]{10}\/bundle\.nshc$/);
+  assert.match(arg(h.argv, "--bundle"), /\/windows\/\.pop-R2-1-[0-9a-f]{16}\/bundle\.nshc$/);
   // no declared size: the hints, clamped (width 240–720, height 120–¾ screen)
   const r3 = await pop({ name: "R3", w: 512.4, h: 1000 });
 
@@ -184,7 +181,7 @@ test("POP-04 sizes: a popoutSize module pinned to a labelled version, and a call
 
   assert.ok(src3.includes("?? 512.4)));\nconst capH = 675;"));
   assert.ok(src3.includes("\nlet lastH = 675, pendingH = 0"));
-  assert.ok(src3.includes('{"v1" ? ('));
+  assert.ok(src3.includes('const BADGE: string = "v1";'));
 });
 
 test("POP-05 a window that closed opens again from its cached bundle", async () => {
@@ -215,7 +212,7 @@ test("POP-06 /app/version: the open window is replaced by one on the new head, a
 
   // v1 declares no width and the first press sent no hints: POP_W x POP_H
   assert.deepEqual([arg(h.argv, "--name"), arg(h.argv, "--window-size")], ["Counter · v1", "360x506"]);
-  assert.match(readFileSync(join(WIN, "pop-R1.tsx"), "utf8"), /\{"v1" \? \(/);
+  assert.match(readFileSync(join(WIN, "pop-R1.tsx"), "utf8"), /\nconst BADGE: string = "v1";\n/);
   // a version the window already shows: nothing reopens
   assert.deepEqual((await postJson("/app/version", { name: "R1", v: 1 })).json, { ok: true, v: 1 });
   await new Promise((r) => setTimeout(r, 300));

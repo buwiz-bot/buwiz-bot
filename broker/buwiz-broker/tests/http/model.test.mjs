@@ -1,14 +1,13 @@
-// The model client (Rust broker plan, phase 5 item 5.3) as Node drives it,
-// with MOCK off against the scripted fake opencodex
-// (broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs): routing and effort, /models, the legacy
+// The model client, with MOCK off against the scripted fake opencodex
+// (tests/fixtures/fake-opencodex.mjs): routing and effort, /models, the legacy
 // generate path (compiler-error, truncation and no-module retries), the
 // OpenAI-compatible path, the SDK's retries and the error text a job
-// shows. The recorded requests are the contract a port must send too.
+// shows. 
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
+import { say, startFakeOpencodex, use } from "../fixtures/fake-opencodex.mjs";
 import { modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const MODEL = "claude-haiku-5-5";
@@ -287,7 +286,8 @@ test("MODEL-05 the SDK retries 429 and 5xx twice; a stream that keeps failing tu
     assert.deepEqual(fake.calls().map((c) => c.stream), [true, true, true, false, false, false]);
     assert.deepEqual([st.phase, st.detail, st.result], ["done", `generator error — ${err}`, null]);
     assert.deepEqual(st.events.at(-1), { seq: st.seq, phase: "done", detail: `generator error — ${err}` });
-    assert.deepEqual((await turnsOf(thread)).at(-1).text, "[[script:error-500]] hi", "the prompt stays, no reply");
+    // the failed turn leaves a notice in the chat, with the API's reason
+    assert.deepEqual((await turnsOf(thread)).at(-1).text, "The model call failed, so this message wasn't answered (upstream exploded). Try again, or pick another model.");
     fake.reset();
     await ask("[[script:text]] again", thread);
     assert.deepEqual(fake.calls().map((c) => c.stream), [false]);

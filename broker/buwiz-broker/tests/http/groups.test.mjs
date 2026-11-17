@@ -1,10 +1,11 @@
-// The sidebar's groups (Rust broker plan, phase 5 item 5.2): /groups and
-// /group/new|update|delete|item as Node answers them, and the one-time
+// The sidebar's groups: /groups and
+// /group/new|update|delete|item, and the one-time
 // migration of bot sections and pinned Mini Apps into groups. MOCK on.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { dbRows, nodeIn, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { dbRows, offlineEnv, postJson, request, seedDb, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("groups");
 const COLORS = ["#1884fc", "#32bb78", "#f2994a", "#eb5757", "#9b51e0", "#2d9cdb", "#f2c94c", "#8e8e93"];
@@ -170,24 +171,17 @@ test("GRP-07 /group/delete removes the group and renumbers the rest; its members
 test("GRP-08 the first start makes each bot section a group and the pinned Mini Apps one more, once", async () => {
   await server.stop();
   const old = tempDir("groups-migrate");
-  const bots = JSON.parse(nodeIn(old, `
-    const { store, nextThreadSeq, uuidv7, writeIndex, db } = await import("./src/state.mjs");
-    const mk = (id, name, section) => {
-      const t = "t" + nextThreadSeq();
-      store.list.push({ id: t, uid: uuidv7(), title: name, turns: [] });
-      store.bots.push({ id, name, shape: "blob", color: "#1084FE", threadId: t, section, memories: [], integrations: [] });
-    };
-    mk("bwork1", "Ann", "Work");
-    mk("bhome1", "Ben", "Home");
-    mk("bwork2", "Cal", "Work");
-    mk("bnone1", "Dan", "");
-    store.sections = ["Home", "Work"];
-    writeIndex();
-    db.prepare("INSERT INTO kv(name,data) VALUES('rox-pinned-apps',?)").run(JSON.stringify({ apps: [{ app: "R3@v2", thread: "t1" }, { app: "" }, { app: "R4" }] }));
-    console.log(JSON.stringify(store.bots.map((b) => b.id)));
-  `));
+  // a store from before groups: four bots (three in sections) and pinned Mini Apps, no groups yet
+  const db = await seedDb(old, { env: offlineEnv(join(old, "stubs.log")) });
 
-  assert.equal(bots.length, 4);
+  db.exec("DELETE FROM threads; DELETE FROM groups; DELETE FROM group_items; DELETE FROM meta WHERE k='groups_migrated'; DELETE FROM kv");
+  [["bwork1", "Ann", "Work"], ["bhome1", "Ben", "Home"], ["bwork2", "Cal", "Work"], ["bnone1", "Dan", ""]].forEach(([id, name, section], k) => {
+    db.prepare("INSERT INTO threads(id, title, ord, uid) VALUES(?,?,?,?)").run(`t${k + 1}`, name, k, randomUUID());
+    db.prepare("INSERT INTO bots(id, name, shape, color, thread_id, ord, section, memories, integrations) VALUES(?,?,?,?,?,?,?,?,?)").run(id, name, "blob", "#1084FE", `t${k + 1}`, k, section, "[]", "[]");
+  });
+  db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES('sections', ?), ('active', 't1'), ('seq', '4')").run(JSON.stringify(["Home", "Work"]));
+  db.prepare("INSERT INTO kv(name,data) VALUES('rox-pinned-apps',?)").run(JSON.stringify({ apps: [{ app: "R3@v2", thread: "t1" }, { app: "" }, { app: "R4" }] }));
+  db.close();
   server = await startServer(old, { env: offlineEnv(join(old, "stubs.log")) });
   assert.deepEqual(dbRows(old, "SELECT name, color, ord FROM groups ORDER BY ord"), [
     { name: "Home", color: COLORS[0], ord: 0 },

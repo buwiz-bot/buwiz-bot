@@ -1,21 +1,17 @@
-// buwiz-broker with no Node at all (Rust broker plan phase 7):
-// BUWIZ_BROKER_HUB=1 with BUWIZ_BROKER_NO_NODE=1 starts no Node child, and
-// answers what Node would have: /health, /, the CORS preflight, the 404 of a
-// route nobody has. The preflight case is pinned on Node too (it ignores
-// both variables); the rest needs buwiz-broker (BUWIZ_BROKER_CMD).
+// buwiz-broker with no Node at all: no Node child runs, and the broker
+// answers /health, /meta, /, the CORS preflight and the 404 of a route
+// nobody has.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { basename } from "node:path";
 import { after, before, test } from "node:test";
-import { PORT, brokerCommand, request, serverEnv, startServer, tempDir } from "./helpers.mjs";
+import { PORT, request, startServer, tempDir } from "./helpers.mjs";
 
-const RUST = !!(process.env.BUWIZ_BROKER_CMD || "").trim();
-const BROKER_NAMES = ["buwiz-broker", "rox-broker"];
-const RUST_ONLY = { skip: !RUST && "buwiz-broker only (BUWIZ_BROKER_CMD)" };
 const DATA = tempDir("no-node");
 let server;
 
 before(async () => {
-  server = await startServer(DATA, { env: { BUWIZ_BROKER_HUB: "1", BUWIZ_BROKER_NO_NODE: "1", OPENCODEX_URL: "http://127.0.0.1:9", ANTHROPIC_BASE_URL: "http://127.0.0.1:9" } });
+  server = await startServer(DATA, { env: { OPENCODEX_URL: "http://127.0.0.1:9", ANTHROPIC_BASE_URL: "http://127.0.0.1:9" } });
 });
 
 after(async () => {
@@ -30,22 +26,20 @@ const group = (pgid) =>
     .filter((m) => m && Number(m[2]) === pgid)
     .map((m) => ({ pid: Number(m[1]), command: m[3] }));
 
-test("NONODE-01 no Node process runs, and the front door says it is up", RUST_ONLY, async () => {
+test("NONODE-01 no Node process runs, and the front door says it is up", async () => {
   const procs = group(server.pid);
 
   assert.deepEqual(procs.map((p) => p.pid), [server.pid], JSON.stringify(procs));
-  assert.ok(!/\bnode\b|app-server/.test(procs[0].command), procs[0].command);
+  assert.equal(basename(procs[0].command.split(" ")[0]), "buwiz-broker", procs[0].command);
   const health = await request("GET", "/health");
 
   assert.equal(health.status, 200);
-  // "rox-broker" is the name a broker built before the rename answers with
-  // (BUWIZ_BROKER_CMD may name one); both are the Rust broker
-  assert.deepEqual({ ...health.json, broker: BROKER_NAMES.includes(health.json.broker) }, { ok: true, broker: true }, JSON.stringify(health.json));
+  assert.deepEqual(health.json, { ok: true, broker: "buwiz-broker" });
   const meta = await request("GET", "/meta");
 
-  assert.ok(BROKER_NAMES.includes(meta.json.broker), meta.json.broker);
+  assert.equal(meta.json.broker, "buwiz-broker");
   assert.equal(meta.json.node_version, "");
-  // a few hub routes, Node's last resort, and a route deleted in 6.2
+  // a few routes, and one that no longer exists
   assert.match((await request("GET", "/")).text, /^app-server ok — \d+ threads, model=mock\n$/);
   assert.equal((await request("GET", "/threads")).status, 200);
   for (const [m, p] of [["GET", "/nope"], ["POST", "/highlight"]]) {
@@ -75,12 +69,4 @@ test("NONODE-02 a CORS preflight: 204 with the origin echoed, a foreign origin r
 
   assert.equal(evil.status, 403);
   assert.equal(evil.json.ok, false);
-});
-
-test("NONODE-03 BUWIZ_BROKER_NO_NODE=1 without the hub is refused at start", RUST_ONLY, () => {
-  const [bin, args] = brokerCommand();
-  const r = spawnSync(bin, args, { env: serverEnv(DATA, { BUWIZ_BROKER_HUB: undefined, BUWIZ_BROKER_NO_NODE: "1" }), encoding: "utf8", timeout: 10000 });
-
-  assert.equal(r.status, 2, r.stderr);
-  assert.match(r.stderr, /BUWIZ_BROKER_NO_NODE=1\) needs BUWIZ_BROKER_HUB=1/);
 });

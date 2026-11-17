@@ -1,25 +1,26 @@
-// The MCP routes that move with the chat routes (Rust broker plan, phase 5
-// item 5.2): POST /mcp/servers (add and edit, agent_pending kept until the
-// user enables), POST /mcp/attach and GET /mcp/attachments, as Node answers
-// them. MOCK on; MCP servers are the stdio fixtures.
+// The MCP routes that move with the chat routes: POST /mcp/servers (add
+// and edit, agent_pending kept until the user enables), POST /mcp/attach
+// and GET /mcp/attachments. MOCK on; MCP servers are the stdio fixtures.
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
-import { FIXTURE, ROOT, dbRows, nodeIn, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { FIXTURE, dbRows, offlineEnv, postJson, request, seedDb, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("mcp-chat");
-const APPS = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "mcp-apps-server.mjs");
+const APPS = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "mcp-apps-server.mjs");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 let server;
-let pending;
 
 before(async () => {
   // a server the agent installed (mcp_install): off, waiting for the user
-  pending = JSON.parse(nodeIn(dir, `
-    const { mcpUpsertServer } = await import("./src/tools.mjs");
-    console.log(JSON.stringify(await mcpUpsertServer({ name: "Agent Pick", command: process.execPath, args: [${JSON.stringify(FIXTURE)}], byAgent: true })));
-  `));
+  const db = await seedDb(dir, { env: offlineEnv(join(dir, "stubs.log")) });
+
+  db.prepare("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at, agent_pending, headers) VALUES(?,?,?,?,?,?,?,?,?)").run(
+    "agent-pick", "Agent Pick", process.execPath, JSON.stringify([FIXTURE]), "{}", 0, Date.now(), 1, "{}",
+  );
+  db.close();
   server = await startServer(dir, { env: offlineEnv(join(dir, "stubs.log")) });
 });
 
@@ -88,8 +89,7 @@ test("MCHAT-04 a switched-off server answers off on an edit and is not started",
 });
 
 test("MCHAT-05 agent_pending: the agent's server stays off through an edit; the user's enable clears it and connects", async () => {
-  assert.deepEqual(pending, { id: "agent-pick", status: "off", tools: 0, toolNames: [], err: null });
-  assert.deepEqual([row("agent-pick").enabled, row("agent-pick").agent_pending], [0, 1]);
+    assert.deepEqual([row("agent-pick").enabled, row("agent-pick").agent_pending], [0, 1]);
   assert.deepEqual((await postJson("/mcp/servers", { id: "agent-pick", name: "Agent Pick 2" })).json, { ok: true, id: "agent-pick", status: "off", tools: 0, toolNames: [], err: null });
   assert.deepEqual([row("agent-pick").enabled, row("agent-pick").agent_pending], [0, 1]);
   assert.deepEqual(await listed("agent-pick"), {

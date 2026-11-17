@@ -1,13 +1,12 @@
-// The bot routes (Rust broker plan, phase 5 item 5.2), as Node answers
-// them today: new, update, memories, integrations, delete, the /threads bot
+// The bot routes: new, update, memories, integrations, delete, the /threads bot
 // fields, avatars and the attachment picker. MOCK on, but MOCK does not
 // guard /avatar/gen or image models: those reach the fake opencodex
-// (broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs). The Mac tools are PATH stubs.
+// (tests/fixtures/fake-opencodex.mjs). The Mac tools are PATH stubs.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { PNG_B64, say, startFakeOpencodex } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
+import { PNG_B64, say, startFakeOpencodex } from "../fixtures/fake-opencodex.mjs";
 import { modelEnv, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
 
 const dir = tempDir("bots-routes");
@@ -39,6 +38,10 @@ const defaults = (name) => ({
   description: `${name} is a personal assistant bot in Buwiz Bot.`,
   instructions: `Stay in character as ${name}. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.`,
 });
+// A new bot sent no avatar wears Wiz's grin hat: a custom shape with its
+// drawing (outline, layers, eyes, solids) and Wiz's colour.
+const WIZ = { shape: "custom", color: "#FFFFFF" };
+const drawing = ({ outline, layers, eyes, solids, parts, ...rest }) => rest;
 const done = (id) => waitFor(async () => (await request("GET", `/status?id=${id}`)).json.done, 30000);
 
 test("BOT-01 /bot/new makes a bot with its own chat, seeded context, and makes that chat active", async () => {
@@ -50,12 +53,13 @@ test("BOT-01 /bot/new makes a bot with its own chat, seeded context, and makes t
 
   assert.match(bot.id, /^b[0-9a-z]+$/);
   assert.match(bot.threadId, /^t\d+$/);
-  assert.deepEqual(bot, { id: bot.id, name: "Ada", shape: "blob", color: "#1084FE", threadId: bot.threadId, ...defaults("Ada"), memories: [], integrations: [] });
+  assert.deepEqual(drawing(bot), { id: bot.id, name: "Ada", ...WIZ, threadId: bot.threadId, ...defaults("Ada"), memories: [], integrations: [] });
+  assert.ok(bot.outline && bot.layers.length && bot.eyes, "Wiz's drawing");
   assert.deepEqual(r.json.turns, []);
   const t = await threads();
 
   assert.equal(t.active, bot.threadId);
-  assert.deepEqual(t.list[0], { id: bot.threadId, uid: t.activeUid, title: "Ada", count: 0, hidden: false, archived: false, lastApp: "", bot: { id: bot.id, name: "Ada", shape: "blob", color: "#1084FE" } });
+  assert.deepEqual({ ...t.list[0], bot: drawing(t.list[0].bot) }, { id: bot.threadId, uid: t.activeUid, title: "Ada", count: 0, hidden: false, archived: false, lastApp: "", bot: { id: bot.id, name: "Ada", ...WIZ } });
   const own = (await postJson("/bot/new", { name: "Cy", shape: "star", color: "#FF309B" })).json.bot;
 
   assert.deepEqual([own.shape, own.color], ["star", "#FF309B"]);
@@ -67,8 +71,8 @@ test("BOT-02 /threads lists each bot with every field, preview and updated_at", 
   const id = (await postJson("/bot/new", { name: "Dee" })).json.bot.id;
   const b = await botOf(id);
 
-  assert.deepEqual(b, {
-    id, name: "Dee", shape: "blob", color: "#1084FE", threadId: b.threadId, pinned: false, section: "", hidden: false, image: "", crop: null,
+  assert.deepEqual(drawing(b), {
+    id, name: "Dee", ...WIZ, threadId: b.threadId, pinned: false, section: "", hidden: false, image: "", crop: null,
     model: "", effort: "", fast: false, label: "", ...defaults("Dee"), memories: [], integrations: [], updated_at: 0, preview: "",
   });
 });

@@ -1,17 +1,16 @@
-// The plugin market and private skills (Rust broker plan, phase 5 item
-// 5.8) as Node answers them: the catalog, a plugin's page, installs from
+// The plugin market and private skills: the catalog, a plugin's page, installs from
 // git and uninstalls (files, installed_plugins, mcp_servers rows), ${KEY}
 // setup values (plugin_settings, the shared @google row), connector
 // accounts, a skill's SKILL.md, POST /skills, /skills/state,
-// /skills/delete, the six skill tools (module level), an installed plugin
-// no catalog lists, and the bundled first-party catalog.
+// /skills/delete and an installed plugin no catalog lists. An install is
+// inspected first, then approved with its staging token.
 //
 // The broker reads a synthetic catalog (CATALOG below, written to a temp
 // file and named by BUWIZ_PLUGIN_CATALOG); its plugins and hosts are made up.
 // No network: the catalog's repositories are local bare repos built here,
 // reached through git's own `url.<file://…>.insteadOf` (GIT_CONFIG_*), with
 // only the file protocol allowed. The catalog also probes some connectors'
-// OAuth servers (plugins.mjs dcrSupport); every broker here sends HTTP(S)
+// OAuth servers (dynamic client registration); every broker here sends HTTP(S)
 // through a proxy sink on the second test port, which records the CONNECT
 // and refuses it.
 import assert from "node:assert/strict";
@@ -21,7 +20,7 @@ import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { FIXTURE, PORT, ROOT, dbRows, nodeIn, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { FIXTURE, PORT, dbRows, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const SINK_PORT = Number(process.env.TEST_SINK_PORT || PORT + 3);
 const ORBIT = "https://github.com/example/orbit-plugin";
@@ -130,13 +129,11 @@ const env = () => ({
   ...offlineEnv(join(dir, "stubs.log")),
   ...GIT_ENV,
   ...gitEnv,
-  // the catalog's OAuth probes go to the sink (Node: NODE_USE_ENV_PROXY)
+  // the catalog's OAuth probes go to the sink (the broker takes an environment proxy only with this set)
   NODE_USE_ENV_PROXY: "1",
   HTTPS_PROXY: `http://127.0.0.1:${SINK_PORT}`,
   HTTP_PROXY: `http://127.0.0.1:${SINK_PORT}`,
   NO_PROXY: "127.0.0.1,localhost",
-  // buwiz-broker hosts the MCP servers (Node ignores these)
-  BUWIZ_BROKER_MCP_HOST: "1",
   BUWIZ_PLUGIN_CATALOG: CATALOG_FILE,
 });
 
@@ -266,10 +263,21 @@ test("MKT-02 a plugin's page before install: the catalog's skills, its servers f
   assert.equal(none.text, '{"error":"unknown plugin"}');
 });
 
+/** An install as the app makes it: the review (inspect) first, then the
+ *  install with its staging token and the person's approval. A plugin that
+ *  cannot be inspected answers with the inspect's refusal. */
+async function install(name) {
+  const review = await postJson("/plugins/inspect", { name });
+
+  if (!review.json?.ok) return review;
+
+  return postJson("/plugins/install", { name, staging: review.json.staging, approve: true });
+}
+
 let orbitMeta;
 
 test("MKT-03 install: the repo's files under plugins/<key>, the record, a row for each connector with its values; one waiting for Setup", async () => {
-  const r = await postJson("/plugins/install", { name: "orbit" });
+  const r = await install("orbit");
 
   assert.equal(r.status, 200, r.text);
   assert.equal(r.text, JSON.stringify({ ok: true, name: "orbit", mcp: ["orbit-mcp"], kinds: ["skills", "commands", "agents", "hooks/hooks.json"], waiting: ["orbit-google"] }));
@@ -318,8 +326,8 @@ test("MKT-04 an installed plugin's page: its inventory and manifest, each connec
   assert.deepEqual(d.json.fields, [
     { key: "ORBIT_API_KEY", label: "Orbit API Key", type: "string", placeholder: "ORBIT_API_KEY", required: false, secret: true, hint: "Referenced as `${ORBIT_API_KEY}` in this plugin's MCP configuration.", options: [], set: false, value: "" },
     { key: "ORBIT_ADDRESS", label: "Orbit Address", type: "string", placeholder: "ORBIT_ADDRESS", required: false, secret: false, hint: "Referenced as `${ORBIT_ADDRESS}` in this plugin's MCP configuration. Defaults to `localhost:7233` when left blank.", options: [], set: false, value: "" },
-    { key: "GOOGLE_CLIENT_ID", label: "Google Client ID", placeholder: "xxxxxxxx.apps.googleusercontent.com", secret: false, hint: "Shared by every Google plugin (Gmail, Google Calendar, Drive, Docs, Sheets, Slides) — saving it here updates all of them. Create it in Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type Desktop app.", type: "string", required: true, options: [], oauth: true, shared: "google", set: false, value: "" },
-    { key: "GOOGLE_CLIENT_SECRET", label: "Google Client Secret", placeholder: "GOCSPX-…", secret: true, hint: "The Desktop app client's secret (Google issues one; it's sent on the token request). Shared by every Google plugin.", type: "string", required: true, options: [], oauth: true, shared: "google", set: false, value: "" },
+    { key: "GOOGLE_CLIENT_ID", label: "Google Client ID", placeholder: "xxxxxxxx.apps.googleusercontent.com", secret: false, hint: "Shared by every Google plugin (Gmail, Google Calendar, Drive, Docs, Sheets, Slides) — saving it here updates all of them. Create it in Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type Desktop app.", type: "string", required: true, options: [], oauth: true, shared: "google", set: false, value: "", pattern: "^[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com$", pattern_hint: "A Client ID ends with .apps.googleusercontent.com" },
+    { key: "GOOGLE_CLIENT_SECRET", label: "Google Client Secret", placeholder: "GOCSPX-…", secret: true, hint: "The Desktop app client's secret (Google issues one; it's sent on the token request). Shared by every Google plugin.", type: "string", required: true, options: [], oauth: true, shared: "google", set: false, value: "", not_pattern: "\\.apps\\.googleusercontent\\.com$", not_pattern_hint: "This looks like a Client ID: the secret usually starts with GOCSPX-", swap_with: "GOOGLE_CLIENT_ID", swap_hint: "The Client ID and Secret look swapped: the Client ID ends with .apps.googleusercontent.com, and the secret usually starts with GOCSPX-." },
   ]);
   const [mcp, google] = d.json.mcp;
 
@@ -427,7 +435,7 @@ test("MKT-09 an install that resolves the plugin through the repo's marketplace.
 
   db.prepare("INSERT INTO mcp_servers(id,name,command,args,env,enabled,created_at) VALUES('my-canvas','canvas','old','[]','{}',0,1)").run();
   db.close();
-  const r = await postJson("/plugins/install", { name: "sketch-docs" });
+  const r = await install("sketch-docs");
 
   assert.equal(r.text, JSON.stringify({ ok: true, name: "sketch-docs", mcp: ["my-canvas"], kinds: ["skills"], waiting: [] }));
   assert.deepEqual(files(join(PLUGINS, "sketch-docs")), ["plugins/sketch-docs/.cursor-plugin/plugin.json", "plugins/sketch-docs/.mcp.json", "plugins/sketch-docs/skills/sketch-docs/SKILL.md"]);
@@ -462,11 +470,11 @@ test("MKT-10 uninstall: the rows its install and connects created, the record, i
   assert.deepEqual(servers, ["my-canvas"]);
   // uninstalling what isn't installed is still ok
   assert.equal((await postJson("/plugins/uninstall", { name: "nope" })).text, '{"ok":true}');
-  assert.equal((await postJson("/plugins/install", { name: "nope" })).text, '{"ok":false,"error":"unknown plugin nope"}');
+  assert.equal((await install("nope")).text, '{"ok":false,"error":"unknown plugin nope"}');
 });
 
 test("MKT-11 a legacy plugin: cloned whole at plugins/<name>, its record keeps the source path", async () => {
-  const r = await postJson("/plugins/install", { name: "lumen" });
+  const r = await install("lumen");
 
   assert.equal(r.text, JSON.stringify({ ok: true, name: "lumen", mcp: [], kinds: ["skills"], waiting: [] }));
   assert.deepEqual(files(join(PLUGINS, "lumen")), [".claude-plugin/plugin.json", "skills/apl/SKILL.md"]);
@@ -535,92 +543,7 @@ test("MKT-12 POST /skills creates by slug and edits in place; /skills/state and 
 
   assert.deepEqual([broken.status, broken.text], [400, '{"ok":false}']);
   // (BUG: a /skills/delete body that isn't JSON throws outside any try and
-  // takes Node down: not sent here; Rust answers it, D8)
+  // takes the old Node broker down: not sent here; this broker answers it)
   assert.equal((await postJson("/skills/delete", { id: "skill" })).text, '{"ok":true}');
   assert.deepEqual(rows("SELECT id FROM skills ORDER BY created_at, id").map((s) => s.id), ["weekly-report", "n".repeat(48)]);
-});
-
-test("MKT-13 the six skill tools (module level): create, list, update, disable, enable, delete, and what each answers", () => {
-  const out = JSON.parse(nodeIn(tempDir("market-tools"), `
-    const { toolSkillAdmin, privateSkillsInject } = await import("./src/tools.mjs");
-    const { db } = await import("./src/state.mjs");
-    const r = [];
-    const t = (n, i) => r.push(toolSkillAdmin(n, i));
-    t("skill_list", {});
-    t("skill_create", { name: "Tone Guide", description: "How to write", instructions: "Be brief." });
-    t("skill_create", { name: "tone guide", instructions: "Be briefer." });
-    t("skill_create", { body: "no name" });
-    t("skill_update", { name: "Tone Guide", description: "new" });
-    t("skill_update", { id: "nope" });
-    t("skill_update", {});
-    t("skill_disable", { id: "tone-guide" });
-    t("skill_list", {});
-    t("skill_enable", { name: "tone-guide" });
-    r.push(privateSkillsInject());
-    t("skill_delete", { name: "skill" });
-    t("skill_delete", { id: "tone-guide" });
-    r.push(privateSkillsInject());
-    r.push(db.prepare("SELECT id, name, description, body, enabled FROM skills").all().map((x) => ({ ...x })));
-    console.log(JSON.stringify(r));
-  `));
-
-  assert.deepEqual(out, [
-    { content: "no private skills yet" },
-    { content: 'created private skill "tone-guide" — its instructions apply to every bot\'s next step' },
-    { content: 'updated private skill "tone-guide" — its instructions apply to every bot\'s next step' },
-    { content: 'created private skill "skill" — its instructions apply to every bot\'s next step' },
-    { content: 'skill "tone-guide" updated — applies from the next step' },
-    { content: "no private skill matches nope — skill_list shows the ids", is_error: true },
-    { content: "no private skill matches ? — skill_list shows the ids", is_error: true },
-    { content: 'skill "tone-guide" disabled — instructions withheld' },
-    { content: "tone-guide — Tone Guide (disabled) · new\nskill — skill · " },
-    { content: 'skill "tone-guide" enabled — instructions apply' },
-    "\nPrivate skills (active — follow when applicable):\n### Tone Guide\nnew\nBe briefer.\n\n### skill\n\nno name",
-    { content: 'deleted private skill "skill"' },
-    { content: 'deleted private skill "tone-guide"' },
-    "",
-    [],
-  ]);
-});
-
-test("MKT-14 installed plugin skills as the agent's index (module level)", () => {
-  const d = tempDir("market-inject");
-  const root = join(d, "plugins", "p1");
-
-  mkdirSync(join(root, "skills", "s1"), { recursive: true });
-  writeFileSync(join(root, "skills", "s1", "SKILL.md"), skillMd("s1", "First skill."));
-  mkdirSync(join(root, "skills", "s2"), { recursive: true });
-  const out = JSON.parse(nodeIn(d, `
-    const { pluginSkillsInject } = await import("./src/plugins.mjs");
-    const { db } = await import("./src/state.mjs");
-    const a = pluginSkillsInject();
-    db.prepare("INSERT INTO installed_plugins(name, meta, created_at) VALUES(?,?,?)").run("p1", JSON.stringify({ root: "p1" }), 1);
-    db.prepare("INSERT INTO installed_plugins(name, meta, created_at) VALUES(?,?,?)").run("gone", JSON.stringify({ root: "gone" }), 2);
-    console.log(JSON.stringify([a, pluginSkillsInject()]));
-  `));
-
-  assert.deepEqual(out, ["", `\nPlugin skills (installed): when a request matches a skill's description, read its SKILL.md with shell_run (cat the file) and follow it; files it references sit beside it.\n- p1/s1: First skill. (file: ${join(root, "skills", "s1", "SKILL.md")})`]);
-});
-
-test("MKT-15 the bundled catalog lists the three vendored plugins; no catalog file is an empty catalog (module level)", () => {
-  const read = (env) => JSON.parse(nodeIn(tempDir("market-catalog"), `
-    const { catalogEntries, entryFor, pluginRoot } = await import("./src/plugins.mjs");
-    const { db } = await import("./src/state.mjs");
-    db.prepare("INSERT INTO installed_plugins(name, meta, created_at) VALUES(?,?,?)").run("kept", JSON.stringify({ root: "kept" }), 1);
-    console.log(JSON.stringify({
-      rows: catalogEntries().map((e) => [e.key, e.displayName, e.publisher.displayName, e.cats, !!pluginRoot(e.key) || null]),
-      kept: entryFor("kept") && entryFor("kept").displayName,
-    }));
-  `, env));
-  const bundled = read({});
-
-  assert.deepEqual(bundled.rows.map((r) => r.slice(0, 4)), [
-    ["calcom", "Cal.com", "Cal.com", ["communication"]],
-    ["neon", "Neon", "Neon", ["data"]],
-    ["google-workspace", "Google Workspace", "taylorwilsdon", ["productivity"]],
-  ]);
-  for (const name of ["calcom", "neon", "google-workspace"]) assert.ok(existsSync(join(ROOT, "..", "broker", "buwiz-broker", "assets", "plugins", "external_plugins", name, ".mcp.json")), name);
-  const none = read({ BUWIZ_PLUGIN_CATALOG: join(dir, "no-such-catalog.json") });
-
-  assert.deepEqual(none, { rows: [], kept: "Kept" });
 });

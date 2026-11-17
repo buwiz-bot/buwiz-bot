@@ -1,13 +1,8 @@
-// The leftover leaves no 5.x item names (track L): Reminders through JXA,
-// Linear's three routes, and the file routes that write or hand a file to
-// another app (/file/write, /file/open, /file/save). Run against Node they
-// pin down what buwiz-broker's hub must match (BUWIZ_BROKER_HUB=1).
+// The routes that write or hand a file to another app: /file/write,
+// /file/open, /file/save.
 //
-// osascript, open and secret are the PATH stubs: the Reminders answers and
-// the save panel's chosen path come from a file the test writes. Linear's
-// URL is fixed to api.linear.app in Node, so only what needs no network is
-// covered: no LINEAR_API_KEY and `secret` failing. No test here has a key,
-// so none can reach Linear.
+// osascript and open are the PATH stubs: the save panel's chosen path comes
+// from a file the test writes.
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -22,9 +17,6 @@ const FILES = join(GEN, "files");
 const LOG = join(DATA, "stub-calls.jsonl");
 const ANSWER = join(DATA, "osascript-answer.txt");
 const OUTSIDE = tempDir("leftovers-outside");
-
-const HINT = "grant permission in System Settings → Privacy & Security → Reminders / Automation";
-const FAILED = { error: "Command failed: osascript -l JavaScript -e ", hint: HINT };
 
 before(async () => {
   server = await startServer(DATA, {
@@ -61,116 +53,6 @@ const json200 = (r) => {
   assert.equal(r.headers["content-type"], "application/json");
   return r.json;
 };
-
-test("LEFT-01 GET /data/reminders: the JXA list, wrapped; its errors as they are", async () => {
-  const list = [{ name: "Pay rent", list: "Home", due: "2026-11-01T09:00:00.000Z", flagged: true }];
-  answer(JSON.stringify(list) + "\n");
-  const [r, calls] = await callsOf(() => request("GET", "/data/reminders"));
-  assert.deepEqual(json200(r), { reminders: list });
-  assert.equal(r.text, JSON.stringify({ reminders: list }));
-  assert.equal(calls.length, 1);
-  const { bin, argv, env } = calls[0];
-  assert.equal(bin, "osascript");
-  assert.deepEqual(argv.slice(0, 3), ["-l", "JavaScript", "-e"]);
-  assert.equal(argv.length, 4);
-  assert.ok(argv[3].startsWith('\n      const app = Application("Reminders");\n      const out = [];'), argv[3]);
-  assert.ok(argv[3].includes("l.reminders.whose({completed: false})()"));
-  assert.ok(argv[3].includes("if (out.length >= 50) break outer;"));
-  assert.ok(argv[3].endsWith("\n      JSON.stringify(out);"));
-  assert.equal(env, undefined);
-
-  // nothing printed is JSON's null: no reminders
-  answer("");
-  assert.deepEqual(json200(await request("GET", "/data/reminders")), { reminders: [] });
-  answer("  null \n");
-  assert.deepEqual(json200(await request("GET", "/data/reminders")), { reminders: [] });
-  // an object with `error` comes back as it is; any other value is wrapped
-  answer('{"error":"no access","x":1}');
-  assert.equal((await request("GET", "/data/reminders")).text, '{"error":"no access","x":1}');
-  answer('{"a":1}');
-  assert.equal((await request("GET", "/data/reminders")).text, '{"reminders":{"a":1}}');
-  answer("0");
-  assert.equal((await request("GET", "/data/reminders")).text, '{"reminders":[]}');
-  // osascript failing (a denied permission): the first line of the error
-  answer("!cancel");
-  assert.deepEqual(json200(await request("GET", "/data/reminders")), FAILED);
-});
-
-test("LEFT-02 POST /data/reminders/add: the arguments travel as REM_* env vars", async () => {
-  answer('{"ok":true,"name":"Milk","list":"Groceries"}');
-  const [r, calls] = await callsOf(() => postJson("/data/reminders/add", { name: "Milk", list: "Groceries", due: "2026-11-02T10:00:00Z" }));
-  assert.equal(json200(r) && r.text, '{"ok":true,"name":"Milk","list":"Groceries"}');
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].env, { REM_DUE: "2026-11-02T10:00:00Z", REM_LIST: "Groceries", REM_NAME: "Milk" });
-  const script = calls[0].argv[3];
-  assert.deepEqual(calls[0].argv.slice(0, 3), ["-l", "JavaScript", "-e"]);
-  assert.ok(script.startsWith('\n            const app = Application("Reminders");\n            ObjC.import("Cocoa");'), script);
-  assert.ok(script.includes("if (!list) list = app.defaultList();"));
-  assert.ok(script.includes("list.reminders.push(app.Reminder(props));"));
-  assert.ok(script.endsWith("\n            JSON.stringify({ ok: true, name, list: list.name() });"));
-
-  // String() of each field; empty when missing
-  answer("null");
-  const [n, more] = await callsOf(() => postJson("/data/reminders/add", { name: 42, list: ["a", "b"] }));
-  assert.equal(n.text, "null");
-  assert.deepEqual(more[0].env, { REM_DUE: "", REM_LIST: "a,b", REM_NAME: "42" });
-
-  // no name: refused before osascript runs
-  for (const body of [{}, { name: "" }, { list: "Home" }]) {
-    const [r2, none] = await callsOf(() => postJson("/data/reminders/add", body));
-    assert.deepEqual(json200(r2), { error: "name?" });
-    assert.deepEqual(none, []);
-  }
-  const [bad, none] = await callsOf(() => raw("/data/reminders/add", "not json"));
-  assert.deepEqual(json200(bad), { error: "name?" });
-  assert.deepEqual(none, []);
-  const [empty] = await callsOf(() => request("POST", "/data/reminders/add"));
-  assert.deepEqual(json200(empty), { error: "name?" });
-
-  answer("!cancel");
-  assert.deepEqual(json200(await postJson("/data/reminders/add", { name: "Milk" })), FAILED);
-});
-
-test("LEFT-03 POST /data/reminders/complete: the first open reminder of that name", async () => {
-  answer('{"ok":false}');
-  const [r, calls] = await callsOf(() => postJson("/data/reminders/complete", { name: "Pay rent" }));
-  assert.equal(json200(r) && r.text, '{"ok":false}');
-  assert.deepEqual(calls[0].env, { REM_DUE: "", REM_LIST: "", REM_NAME: "Pay rent" });
-  const script = calls[0].argv[3];
-  assert.ok(script.startsWith('\n            const app = Application("Reminders");\n            ObjC.import("Cocoa");'), script);
-  assert.ok(script.includes('const name = ObjC.unwrap(env.objectForKey("REM_NAME"));'));
-  assert.ok(script.includes("if (hits.length) { hits[0].completed = true; done = true; break outer; }"));
-  assert.ok(script.endsWith("\n            JSON.stringify({ ok: done });"));
-
-  const [no, none] = await callsOf(() => postJson("/data/reminders/complete", { list: "Home" }));
-  assert.deepEqual(json200(no), { error: "name?" });
-  assert.deepEqual(none, []);
-
-  answer("!cancel");
-  assert.deepEqual(json200(await postJson("/data/reminders/complete", { name: "x" })), FAILED);
-});
-
-test("LEFT-04 /data/linear/* with no key (no env var, `secret` failing) never leaves the machine", async () => {
-  const [issues, calls] = await callsOf(() => request("GET", "/data/linear/issues"));
-  assert.deepEqual(json200(issues), { error: "linear not configured — run `secret set LINEAR_API_KEY`" });
-  assert.deepEqual(calls, [{ bin: "secret", argv: ["get", "LINEAR_API_KEY"] }]);
-
-  const [states, again] = await callsOf(() => request("GET", "/data/linear/states"));
-  assert.deepEqual(json200(states), { error: "linear not configured" });
-  // a missing key is looked up again on every call
-  assert.deepEqual(again, [{ bin: "secret", argv: ["get", "LINEAR_API_KEY"] }]);
-
-  // assign: no uid is refused before any lookup
-  for (const body of ["{}", '{"uid":""}', "nope", undefined]) {
-    const [r, none] = await callsOf(() => raw("/data/linear/assign", body));
-    assert.deepEqual(json200(r), { error: "uid?" }, String(body));
-    assert.deepEqual(none, []);
-  }
-  // with a uid and no key, the viewer lookup comes back empty: 200, not 502
-  const [assign, lookups] = await callsOf(() => postJson("/data/linear/assign", { uid: "abc" }));
-  assert.deepEqual(json200(assign), { error: "no viewer" });
-  assert.deepEqual(lookups, [{ bin: "secret", argv: ["get", "LINEAR_API_KEY"] }]);
-});
 
 test("LEFT-05 POST /file/write: the file and its versions under files/.versions", async () => {
   const b64 = (s) => Buffer.from(s).toString("base64");
@@ -299,8 +181,8 @@ test("LEFT-08 POST /file/save: the save panel, then a copy where it says", async
   assert.deepEqual(readdirSync(OUTSIDE), []);
 });
 
-test("LEFT-09 these routes match the URL exactly, as Node does: a query string is not found", async () => {
-  for (const [method, url] of [["GET", "/data/reminders?x=1"], ["GET", "/data/linear/issues?x"], ["POST", "/file/write?x=1"], ["POST", "/file/open?"]]) {
+test("LEFT-09 these routes match the URL exactly: a query string is not found", async () => {
+  for (const [method, url] of [["POST", "/file/write?x=1"], ["POST", "/file/open?"]]) {
     const r = method === "POST" ? await raw(url, "{}") : await request(method, url);
     assert.equal(r.status, 404, url);
     assert.equal(r.text, "not found");

@@ -1,11 +1,10 @@
-// v1 plugin routines and the Rox-facing host surface over HTTP (the Rust
-// broker plan, phase 5 items 5.5 and 5.5h): the fixture plugin installed
+// v1 plugin routines and the app-facing host surface over HTTP: the fixture plugin installed
 // through /v1/host/plugins/*, its routines enabled, approved, run (Run now
 // with MOCK turns), changed, hooked, disabled and deleted; the plugin list
 // with each routine's state merged; the events stream; the plugin actions
 // and the session routes' refusals; the host-token file. v1-host.test.mjs
-// covers the happy path of inspect/install/open/call/resolve/title/source
-// and RTN-09; this file extends it. The consent card needs the agent's
+// covers the happy path of inspect/install/open/call/resolve/title/source;
+// this file extends it. The consent card needs the agent's
 // routine_create: one case runs a broker on the scripted fake opencodex.
 //
 //   RTH-01 every /v1/host route's refusals: 401, 405, 404, a body that is no
@@ -46,11 +45,10 @@ import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { generate, random128 } from "../src/v1/ed.mjs";
-import { permsDigest } from "../src/v1/manifest.mjs";
-import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
-import { PORT, dbRows, modelEnv, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
-import { FX, bed, envelope, fixtureSpec } from "./v1-helpers.mjs";
+import { generate, random128 } from "../fixtures/v1/ed.mjs";
+import { say, startFakeOpencodex, use } from "../fixtures/fake-opencodex.mjs";
+import { PORT, allow, dbRows, modelEnv, offlineEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { FX, bed, envelope, fixtureSpec, permsDigest } from "./v1-helpers.mjs";
 
 const MOCK_REPLY = "_(mock reply — no model configured)_";
 const b = bed("routines-http");
@@ -218,6 +216,7 @@ test("RTH-02 install, then GET /v1/host/plugins byte for byte with each routine'
         plugin_pub: installed.plugin_pub,
         first_party: true,
         manifest_sha256: i.json.manifest_sha256,
+        update: null,
         apps: manifest.apps.map((a) => ({ ...a, perms_sha256: permsDigest(a.permissions) })),
         commands: manifest.commands,
         scopes: manifest.scopes,
@@ -226,7 +225,7 @@ test("RTH-02 install, then GET /v1/host/plugins byte for byte with each routine'
           reads_status: (r.reads || []).map((x) => ({ plugin: x.plugin, tools: x.tools, allowed: true, reason: null })),
           ...fresh(r),
         })),
-        tools: FIXTURE_TOOLS.map(([name, description, readOnly]) => ({ name, description, disabled: false, readOnly })),
+        tools: FIXTURE_TOOLS.map(([name, description, readOnly]) => ({ name, description, disabled: false, readOnly, widget: false })),
       },
     ],
   };
@@ -251,11 +250,11 @@ test("RTH-03 GET /v1/host/events: the comment first, then each plugin event in o
   await new Promise((r) => setTimeout(r, 100));
   assert.deepEqual((await host("POST", `/v1/host/plugins/${FX}/tools`, { tool: "fx_secret", disabled: false })).json, { ok: true, tool: "fx_secret", disabled: false });
   const want = [
-    { id: FX, state: "stopped", code: null, generation: 1, enabled: false },
-    { id: FX, state: "starting", code: null, generation: 1, enabled: true },
-    { id: FX, state: "running", code: null, generation: 2, enabled: true },
-    { id: FX, state: "running", code: null, generation: 2, enabled: true },
-    { id: FX, state: "running", code: null, generation: 2, enabled: true },
+    { id: FX, state: "stopped", code: null, generation: 1, enabled: false, update: null },
+    { id: FX, state: "starting", code: null, generation: 1, enabled: true, update: null },
+    { id: FX, state: "running", code: null, generation: 2, enabled: true, update: null },
+    { id: FX, state: "running", code: null, generation: 2, enabled: true, update: null },
+    { id: FX, state: "running", code: null, generation: 2, enabled: true, update: null },
   ];
 
   assert.ok(await waitFor(() => a.events.length >= want.length, 5000), a.raw);
@@ -274,7 +273,7 @@ test("RTH-04 the plugin actions: answers, the list while stopped, a switched-off
 
   assert.deepEqual([p.state, p.enabled, p.generation, p.code, p.message], ["stopped", false, 2, null, ""]);
   // stopped: the tools come from the record, the same shape
-  assert.deepEqual(p.tools, FIXTURE_TOOLS.map(([name, description, readOnly]) => ({ name, description, disabled: false, readOnly })));
+  assert.deepEqual(p.tools, FIXTURE_TOOLS.map(([name, description, readOnly]) => ({ name, description, disabled: false, readOnly, widget: false })));
   const w = p.routines.find((r) => r.id === "fx-writer");
 
   assert.deepEqual([w.available, w.reason], [false, `${FX} is disabled`]);
@@ -620,7 +619,7 @@ test("RTH-12 the 5.5h session routes' refusals: open, close, call, resolve, tick
 
   await is("call", env, 400, "permission_denied", "fx_secret is not in this app's permissions");
   await is("call", envelope({ ...open, ks, open_id: random128() }, "fx_echo", {}), 400, "session_invalid", "no open with a valid certificate has this open_id");
-  await is("call", envelope({ ...open, ks }, "fx_echo", {}, { ts: Date.now() - 120_000 }), 400, "stale", "the envelope's time is more than 60 s from the broker's");
+  await is("call", envelope({ ...open, ks }, "fx_echo", {}, { ts: Date.now() - 120_000 }), 409, "stale", "the envelope's time is more than 60 s from the broker's");
   await is("resolve", { plugin: FX, kind: "nope" }, 400, "invalid_args", "kind must be command or scope");
   await is("resolve", { plugin: FX, kind: "scope", name: "nope", value: "x" }, 404, "not_found", `${FX} has no scope nope`);
   await is("tickets/title", { plugin: FX, ticket: "nope" }, 400, "invalid_args", "ticket breaks the ticket grammar");
@@ -683,6 +682,8 @@ test("RTH-14 a restart writes a new host-token (0600); the old one is refused; e
 test("RTH-15 the consent card: the agent's routine_create leaves a pending instance; the host's enable switches it on", async () => {
   const room = await newChat();
 
+  // the person allowed the routines tool in this chat: without that the broker asks first (a tool_ask card)
+  allow(dataDir, room, "routines");
   fake.script("consent", [use("routine_create", { plugin: FX, routine: "fx-writer", trigger: "webhook", label: "From the agent" }), say("Asked the user.")]);
   fake.reset();
   const job = await postJson("/chat", { prompt: "[[script:consent]] watch my fixture", thread: room });
@@ -733,7 +734,7 @@ test("RTH-16 uninstall: the plugin's routines and instances go with it; the even
   await waitFor(() => ev.raw, 5000);
   assert.deepEqual((await host("POST", `/v1/host/plugins/${FX}/uninstall`, {})).json, { ok: true });
   assert.ok(await waitFor(() => ev.events.some((e) => e.state === "uninstalled"), 5000));
-  assert.deepEqual(ev.events.at(-1), { id: FX, state: "uninstalled", code: null, generation: 1, enabled: false });
+  assert.deepEqual(ev.events.at(-1), { id: FX, state: "uninstalled", code: null, generation: 1, enabled: false, update: null });
   ev.close();
   assert.deepEqual(dbRows(dataDir, "SELECT * FROM v1_routines"), []);
   assert.deepEqual(dbRows(dataDir, "SELECT * FROM v1_instances"), []);

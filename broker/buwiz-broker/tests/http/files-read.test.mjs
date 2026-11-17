@@ -1,6 +1,5 @@
-// The read side of files (plan item 2.5): a reply's files with Range,
-// their saved versions, attachments, avatars and generated assets. Run
-// against Node they pin down what buwiz-broker must match.
+// The read side of files: a reply's files with Range, their saved
+// versions, attachments, avatars and generated assets.
 import assert from "node:assert/strict";
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

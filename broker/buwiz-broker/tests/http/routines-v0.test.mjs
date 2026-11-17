@@ -1,11 +1,9 @@
-// v0 routines over HTTP (routes/routines.mjs, routines.mjs; the Rust
-// broker plan, phase 5 item 5.5): the routes Rox's Details pane calls, a
+// v0 routines over HTTP: the routes the app's Details pane calls, a
 // routine's run with MOCK turns, the checks through a connected MCP server
 // (an inline stub, no network), the failure-streak backoff and a deleted
-// chat. Written against Node; the contract the Rust port meets.
+// chat.
 //
-// Timing: Node has no clock seam for v0 routines. These cases use what it
-// gives: Run now (POST /routine/run), the 1 s floor of a timer armed for an
+// Timing: v0 routines have no clock seam. These cases use what there is: Run now (POST /routine/run), the 1 s floor of a timer armed for an
 // overdue routine ("first tick now"), and a restart for "overdue routines
 // run at start". next_run is last_run + the interval, so the backoff is
 // read off it without waiting.

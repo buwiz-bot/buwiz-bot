@@ -1,7 +1,6 @@
-// The host-internal API (host design section 4) end to end: a server of
-// this checkout on port 8799 with its own data dir, file keystore and trust
-// file. Every /v1/host/* route needs the host token; the Phase 0 guard still
-// runs first. Rox's whole path is driven over HTTP: inspect, install, the
+// The host-internal API end to end: a broker with its own data dir, file
+// keystore and trust file. Every /v1/host/* route needs the host token; the
+// Origin and JSON guard still runs first. The app's whole path is driven over HTTP: inspect, install, the
 // plugin list, events, a session, a signed call, resolve, ticket titles,
 // app source, disable/enable and uninstall.
 import assert from "node:assert/strict";
@@ -10,15 +9,14 @@ import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { generate, random128 } from "../src/v1/ed.mjs";
-import { ROOT, brokerCommand, tempDir } from "./helpers.mjs";
+import { generate, random128 } from "../fixtures/v1/ed.mjs";
+import { ASSETS, BROKER, PORT, serverEnv, startServer, tempDir } from "./helpers.mjs";
 import { FX, bed, envelope, fixtureSpec, until } from "./v1-helpers.mjs";
 
-const PORT = Number(process.env.V1_TEST_PORT || 8799);
 const b = bed("host");
 const dataDir = tempDir("v1-host-data");
-let child;
-let log = "";
+let server;
+let log = () => "";
 let token = "";
 
 function req(method, path, { headers = {}, body } = {}) {
@@ -56,24 +54,13 @@ function host(method, path, obj, extra = {}) {
 }
 
 before(async () => {
-  child = spawn(...brokerCommand(), {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_ALLOWED_ORIGINS: "", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-  });
-  child.stdout.on("data", (d) => (log += d));
-  child.stderr.on("data", (d) => (log += d));
-  await until(() => req("GET", "/health").then((r) => r.status === 200, () => false), 20000, `the server on ${PORT}:\n${log}`);
+  server = await startServer(dataDir, { env: { BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile } });
+  log = server.log;
   token = readFileSync(join(dataDir, "host-token"), "utf8");
 });
 
 after(async () => {
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch {}
-
-  await new Promise((r) => (child.exitCode !== null ? r() : child.once("exit", r)));
+  await server?.stop();
 });
 
 test("host token: X-Buwiz-Host carries it; the 1.x X-Rox-Host does not", async () => {
@@ -93,22 +80,21 @@ test("host token: 0600 file, required on every /v1/host route (401), guard still
 
   assert.equal(ok.status, 200);
   assert.deepEqual(ok.json, { ok: true, plugins: [] });
-  assert.ok(!log.includes(token), "the token is not logged");
+  assert.ok(!log().includes(token), "the token is not logged");
 });
 
 test("host token: a second server that cannot bind the port leaves the running server's token", async () => {
-  const second = spawn(...brokerCommand(), {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), BUWIZ_BROKER_DATA_DIR: dataDir, MOCK: "1", BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile },
+  const second = spawn(BROKER, ["--no-node", "--assets", ASSETS], {
+    env: serverEnv(dataDir, { BUWIZ_KEYSTORE: `file:${b.keysDir}`, BUWIZ_TRUST_FILE: b.trustFile }),
     stdio: "ignore",
   });
 
   await new Promise((r) => second.once("exit", r));
   assert.equal(readFileSync(join(dataDir, "host-token"), "utf8"), token, "the token file is the running server's");
-  assert.equal((await host("GET", "/v1/host/plugins")).status, 200, "Rox can still talk to the running server");
+  assert.equal((await host("GET", "/v1/host/plugins")).status, 200, "the app can still talk to the running server");
 });
 
-test("Rox's path over HTTP: inspect, install, list, open, call, resolve, title, source", async () => {
+test("the app's path over HTTP: inspect, install, list, open, call, resolve, title, source", async () => {
   const spec = fixtureSpec(b);
   const i = await host("POST", "/v1/host/plugins/inspect", spec);
 
@@ -226,6 +212,6 @@ test("uninstall over HTTP leaves nothing behind", async () => {
   assert.deepEqual((await host("POST", `/v1/host/plugins/${FX}/uninstall`, {})).json, { ok: true });
   assert.deepEqual((await host("GET", "/v1/host/plugins")).json.plugins, []);
   assert.equal((await host("POST", "/v1/host/apps/source", { plugin: FX, app: "card" })).status, 404);
-  assert.ok(!log.includes(seed), "the plugin key is not in the server log");
+  assert.ok(!log().includes(seed), "the plugin key is not in the server log");
   assert.throws(() => statSync(join(b.keysDir, `${FX}.key`)), "the key is deleted");
 });

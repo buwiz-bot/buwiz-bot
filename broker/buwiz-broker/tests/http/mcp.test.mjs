@@ -1,27 +1,19 @@
 // Plugins: an agent install stays off until the user enables it, apps
 // can't call a switched-off tool, and manifest names follow the grammar.
 //
-// The agent's mcp_install runs in this process (the tools module, on the
-// test's data directory) before the server starts on the same directory;
+// The row the agent's mcp_install leaves (switched off, waiting for the
+// user) is written to the data directory before the broker starts;
 // everything after that goes over HTTP.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { FIXTURE, PORT, env, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
+import { FIXTURE, postJson, request, seedDb, startServer, tempDir, waitFor } from "./helpers.mjs";
 
 const dataDir = tempDir("mcp");
 const mark = join(dataDir, "fixture-spawned");
 
-process.env.BUWIZ_BROKER_DATA_DIR = dataDir;
-
-process.env.MOCK = "1";
-
-process.env.PORT = String(PORT);
-
-const { toolMcpAdmin } = await import("../src/tools.mjs");
-const { db } = await import("../src/state.mjs");
-
+let db;
 const rowOf = (id) => db.prepare("SELECT * FROM mcp_servers WHERE id=?").get(id);
 const listed = async (id) => (await request("GET", "/mcp/servers")).json.servers.find((s) => s.id === id);
 
@@ -29,32 +21,25 @@ let server;
 let agentId = "";
 
 before(async () => {
-  const r = await toolMcpAdmin(null, "mcp_install", {
-    name: "Agent Fixture",
-    command: process.execPath,
-    args: [FIXTURE],
-    env: { FIXTURE_MARK: mark },
-  });
-
-  assert.ok(!r.is_error, r.content);
-  agentId = /server ([a-z0-9-]+)/.exec(r.content)?.[1] || "";
+  // the row the agent's mcp_install leaves: switched off, waiting for the user
+  db = await seedDb(dataDir);
+  db.prepare("INSERT INTO mcp_servers(id, name, command, args, env, enabled, created_at, agent_pending) VALUES(?,?,?,?,?,?,?,?)").run(
+    "agent-fixture", "Agent Fixture", process.execPath, JSON.stringify([FIXTURE]), JSON.stringify({ FIXTURE_MARK: mark }), 0, Date.now(), 1,
+  );
+  agentId = "agent-fixture";
   server = await startServer(dataDir);
 });
 
 after(async () => {
+  db?.close();
   await server?.stop();
 });
 
-test("mcp_install from the agent stores the server off and unspawned", async () => {
-  assert.equal(agentId, "agent-fixture");
+test("a server the agent installed stays off and unspawned", async () => {
   const row = rowOf(agentId);
   assert.equal(row.enabled, 0);
   assert.equal(row.agent_pending, 1);
   assert.equal(existsSync(mark), false, "the command was spawned");
-  const refused = await toolMcpAdmin(null, "mcp_enable", { id: agentId });
-  assert.equal(refused.is_error, true);
-  assert.match(refused.content, /Plugins/);
-  assert.equal(rowOf(agentId).enabled, 0);
   const s = await listed(agentId);
   assert.equal(s.enabled, false);
   assert.equal(s.status, "off");
@@ -111,11 +96,9 @@ test("manifest commands and scopes outside the grammar are dropped", async () =>
   assert.match(server.log(), /mcp ui-fixture: manifest scopes entry "bad\.scope" dropped/);
 });
 
-// buwiz-broker (plan 4.1) starts a stdio server whose process died again on
-// its next use; Node kept the dead client until the row changed
-const MCP_IN_RUST = !!process.env.BUWIZ_BROKER_CMD && env("BUWIZ_BROKER_MCP_HOST") === "1";
+// a stdio server whose process died starts again on its next use
 
-test("a stdio server whose process died starts again on its next use", { skip: !MCP_IN_RUST && "buwiz-broker hosting MCP (BUWIZ_BROKER_MCP_HOST=1) only" }, async () => {
+test("a stdio server whose process died starts again on its next use", async () => {
   const pids = () => readFileSync(mark, "utf8").split("\n").filter(Boolean).map(Number);
   const pid = pids().at(-1);
   const gone = () => {
