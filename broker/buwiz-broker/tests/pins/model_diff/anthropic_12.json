@@ -1,0 +1,64 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/direct/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 100,
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:error-500]] x"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/direct/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 100,
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:error-500]] x"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/direct/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 100,
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:error-500]] x"
+          }
+        ]
+      }
+    }
+  ],
+  "result": {
+    "error": "llm-api 500: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}}"
+  }
+}

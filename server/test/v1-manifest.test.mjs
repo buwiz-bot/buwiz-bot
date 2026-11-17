@@ -434,8 +434,8 @@ test("sign-manifest CLI: --key-file (0600 only) and --app fingerprints give a ma
   const keyFile = join(dir, "publisher.key");
   const template = join(dir, "template.json");
   const out = join(dir, "signed.json");
-  const m = JSON.parse(readFileSync(join(ROOT, "src", "v1", "fixture", "manifest.json"), "utf8"));
-  const fx = join(ROOT, "src", "v1", "fixture");
+  const m = JSON.parse(readFileSync(join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "v1", "manifest.json"), "utf8"));
+  const fx = join(ROOT, "..", "broker", "buwiz-broker", "tests", "fixtures", "v1");
 
   m.publisher.key_id = pub.keyId;
   // what a serializer could get wrong: integer-like keys, -0, 1e3, U+2028, control characters

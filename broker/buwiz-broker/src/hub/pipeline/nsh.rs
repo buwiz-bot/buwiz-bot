@@ -111,10 +111,10 @@ pub async fn check_candidate(nsh: &dyn Nsh, stage: &Path, name: &str) -> Result<
 pub(crate) mod tests {
     use super::*;
 
-    /// The broker tests' nsh stub (server/test/fixtures/bin/nsh), logging
+    /// The broker tests' nsh stub (tests/fixtures/bin/nsh), logging
     /// to `log`, in mode `mode`.
     pub fn stub(log: &Path, mode: &str) -> NshCli {
-        let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../server/test/fixtures/bin/nsh");
+        let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bin/nsh");
         NshCli { bin, timeout: TIMEOUT, env: vec![("BUWIZ_STUB_LOG".into(), log.display().to_string()), ("NSH_STUB".into(), mode.into())] }
     }
 

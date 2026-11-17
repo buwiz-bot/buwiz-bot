@@ -1997,12 +1997,12 @@ fn the_shell_card_offers_the_programs_rule() {
 
 #[tokio::test]
 async fn an_mcp_tool_marked_read_only_runs_at_ask_and_the_rest_ask() {
-    let Some(node) = std::env::var("PATH").ok().and_then(|p| p.split(':').map(|d| std::path::Path::new(d).join("node")).find(|p| p.exists())) else { return };
+    let node = std::env::var("PATH").ok().and_then(|p| p.split(':').map(|d| std::path::Path::new(d).join("node")).find(|p| p.exists())).expect("node on PATH runs the MCP stand-in");
     let b0 = bed_waiting("mcp-ro", std::time::Duration::from_millis(150));
     let dir = b0.ctx.data.clone();
     drop(b0);
     // the apps fixture with one more tool, marked read-only
-    let src = std::fs::read_to_string(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../server/test/fixtures/mcp-apps-server.mjs")).unwrap();
+    let src = std::fs::read_to_string(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-apps-server.mjs")).unwrap();
     let marked = src.replacen("const TOOLS = [", "const TOOLS = [\n  { name: \"peek\", description: \"Read only\", inputSchema: { type: \"object\" }, annotations: { readOnlyHint: true } },", 1);
     assert_ne!(src, marked);
     let script = dir.join("ro-server.mjs");

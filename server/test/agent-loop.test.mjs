@@ -1,5 +1,5 @@
 // The tool loop (Rust broker plan, phase 5 item 5.4) as Node runs it, with
-// MOCK off against the scripted fake opencodex (fixtures/fake-opencodex.mjs)
+// MOCK off against the scripted fake opencodex (broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs)
 // and nsh at the PATH stub: replies, tool rounds and what the model is sent
 // back, the generate_app placeholder and card, revise, the eighth round,
 // pause_turn, the web-search and streaming fallbacks, API errors, deferred
@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { say, startFakeOpencodex, use } from "./fixtures/fake-opencodex.mjs";
+import { say, startFakeOpencodex, use } from "../../broker/buwiz-broker/tests/fixtures/fake-opencodex.mjs";
 import { FIXTURE, dbRows, modelEnv, nodeIn, postJson, request, startServer, stubCalls, tempDir, waitFor } from "./helpers.mjs";
 
 const MODEL = "claude-haiku-5-5";

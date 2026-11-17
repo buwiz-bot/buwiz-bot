@@ -1,0 +1,63 @@
+== agent_endpoints
+== agent_hook_seen
+== agent_outbox
+== apps
+== artifact_meta
+== ask_grant
+== ask_waiting
+== attachment_names
+== attachments
+== bot_computer_home
+== bot_tools
+== bots
+{"id":"ann","name":"Ann","shape":"star","color":"#FF309B","thread_id":"t1","ord":0,"extra":"{\"made_by\":\"bob\"}","pinned":0,"section":"Work","hidden":0,"image":null,"crop":"{\"x\":1,\"y\":2,\"w\":3,\"h\":4}","model":null,"effort":null,"fast":0,"label":null,"description":"Ann is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Ann. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[{\"id\":\"m\",\"text\":\"likes tea\",\"at\":{ms}}]","integrations":"[]","outline":null,"art":null}
+{"id":"bob","name":"Bob","shape":"blob","color":"#1084FE","thread_id":null,"ord":1,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Bob is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Bob. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":null,"art":null}
+{"id":"cy","name":"Cy","shape":"custom","color":"#FFFFFF","thread_id":"t3","ord":2,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Cy is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Cy. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":"M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z","art":"{\"layers\":[{\"path\":\"M34 64 C34 56 66 56 66 64 C66 76 58 82 50 82 C42 82 34 76 34 64 Z\",\"fill\":\"#FBEBD3\"},{\"path\":\"M30 66 L38 66 L34 70 Z\",\"fill\":\"#F2C3B5\",\"opacity\":0.6},{\"path\":\"M30 40 L50 40 L40 56 Z\",\"fill\":\"#2B1D12\",\"over\":true}],\"eyes\":{\"c\":\"#2B1D12\",\"at\":[50,52.5],\"gap\":21,\"s\":1.1,\"rim\":\"#111111\",\"rw\":0.25,\"shut\":\"r\"},\"parts\":[{\"outline\":\"M12 38 L28 34 L34 10 L66 10 L72 34 L88 38 L88 44 L12 44 Z\",\"color\":\"#4C8CC9\",\"layers\":[{\"path\":\"M32 24 L68 24 L68 30 L32 30 Z\",\"fill\":\"#F4F4F4\"}],\"z\":1},{\"outline\":\"M40 30 L60 30 L60 50 L40 50 Z\",\"color\":\"#7A4A22\",\"z\":-0.5,\"d\":1.1}]}"}
+== computer_home
+== computer_jobs
+== computer_network
+== computer_providers
+== computer_seats
+== computers
+== group_items
+== groups
+== heads
+== installed_plugins
+== job_mark
+== kv
+== library_hidden
+== mcp_servers
+== meta
+{"k":"active","v":"t2"}
+{"k":"names_buwiz","v":"{ms}"}
+{"k":"sections","v":"[\"Work\"]"}
+{"k":"seq","v":"0"}
+== plugin_settings
+== policy_change
+== policy_note
+== policy_seen
+== routines
+== runs
+== shell_activity
+== shell_mode
+== shell_rule
+== skills
+== threads
+{"id":"t1","title":"first chat","ord":2,"agents":null,"hidden":0,"archived":0,"routine":null}
+{"id":"t2","title":"Routine · Daily","ord":3,"agents":null,"hidden":0,"archived":0,"routine":"{\"plugin\":\"p.one\",\"id\":\"daily\",\"name\":\"Daily\",\"thread\":\"t1\"}"}
+{"id":"t3","title":"Q3","ord":0,"agents":"{\"subject\":\"Q3\",\"participants\":[\"ann\"]}","hidden":0,"archived":0,"routine":null}
+{"id":"t4","title":"moved","ord":1,"agents":null,"hidden":0,"archived":0,"routine":null}
+== timeclock
+== tombstones
+== turns
+{"thread_id":"t1","seq":0,"role":"user","text":"hello","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"reply\":{\"i\":0,\"text\":\"q\"},\"attachments\":[{\"uri\":\"file:///a.png\"}]}","v":null}
+{"thread_id":"t1","seq":1,"role":"ai","text":"done","name":null,"label":"claude","caption":"","reaction":"","retries":0,"widget":0,"meta":"{\"links\":[{\"provider\":\"gdrive\",\"id\":\"f\",\"name\":\"a.pdf\",\"account\":\"x\"}],\"suggest\":[\"next\"]}","v":null}
+{"thread_id":"t1","seq":2,"role":"notice","text":"Daily ran","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"notice\":{\"routine\":\"daily\",\"thread\":\"t2\"}}","v":null}
+{"thread_id":"t2","seq":0,"role":"user","text":"Routine · Daily","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"routine\":{\"plugin\":\"p.one\",\"id\":\"daily\",\"run\":1}}","v":null}
+{"thread_id":"t3","seq":0,"role":"agent_message","text":"Check Q3.","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"message\":{\"id\":\"m1\",\"to\":[\"ann\"]},\"pending\":[\"ann\"]}","v":null}
+== v1_instances
+== v1_plugins
+== v1_routines
+== versions
+== widget_grants
+== widgets

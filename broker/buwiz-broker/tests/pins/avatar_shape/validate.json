@@ -1,0 +1,91 @@
+[
+  [],
+  [],
+  [
+    "shape must be one of blob, cloud, square, sparkle, clover, heart, flower, teardrop, tablet, wedge, house, star, hex or custom"
+  ],
+  [
+    "shape must be one of blob, cloud, square, sparkle, clover, heart, flower, teardrop, tablet, wedge, house, star, hex or custom"
+  ],
+  [
+    "color must be #RRGGBB"
+  ],
+  [
+    "color must be #RRGGBB"
+  ],
+  [
+    "color must be #RRGGBB"
+  ],
+  [
+    "a custom shape needs an outline"
+  ],
+  [],
+  [],
+  [
+    "shape must be one of blob, cloud, square, sparkle, clover, heart, flower, teardrop, tablet, wedge, house, star, hex or custom",
+    "color must be #RRGGBB"
+  ],
+  [
+    "color must be #RRGGBB",
+    "outline encloses no area"
+  ],
+  [
+    "part 1: layer 2's over must be true or false"
+  ],
+  [
+    "part 3's d must be 0.05..1.6",
+    "part 4's d must be 0.05..1.6",
+    "part 5's d must be 0.05..1.6",
+    "part 6's d must be 0.05..1.6"
+  ],
+  [
+    "only a custom outline can have parts"
+  ],
+  [
+    "parts must be a list"
+  ],
+  [
+    "at most 6 parts",
+    "part 1 must be {outline, color}",
+    "part 2 must be {outline, color}",
+    "part 3 must be {outline, color}",
+    "part 4: outline's width/height is 6.67; it must be between 0.4 and 2.5",
+    "part 5's color must be #RRGGBB",
+    "part 5: outline covers 1% of the box; it must cover at least 2%",
+    "part 5: layer 1 encloses no area",
+    "part 5's z must be -1..1",
+    "part 6's layers must be a list",
+    "part 6's z must be -1..1"
+  ],
+  [],
+  [
+    "only a custom outline can have layers"
+  ],
+  [
+    "a rich avatar needs at least one layer (the face)"
+  ],
+  [
+    "a rich avatar needs at least one layer (the face)"
+  ],
+  [
+    "eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"
+  ],
+  [
+    "at most 8 layers",
+    "layer 1's fill must be #RRGGBB",
+    "layer 2's opacity must be 0..1",
+    "layer 3's path may hold only M/L/C/Q/Z commands and numbers",
+    "layer 4's opacity must be 0..1",
+    "layer 4 encloses no area",
+    "layer 5 must be {path, fill}",
+    "layer 6 must be {path, fill}",
+    "layer 7's fill must be #RRGGBB",
+    "layer 7 needs a path",
+    "layer 8 needs a path",
+    "layer 9 needs a path",
+    "layer 10's coordinates must stay within -5..105",
+    "layer 11: outline command L is missing numbers",
+    "layer 12 encloses no area",
+    "eyes must be #RRGGBB"
+  ]
+]

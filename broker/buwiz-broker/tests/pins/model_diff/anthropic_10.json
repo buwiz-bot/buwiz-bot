@@ -1,0 +1,58 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "gpt-5.5",
+        "max_tokens": 20000,
+        "system": "sys",
+        "tools": [
+          {
+            "name": "react",
+            "input_schema": {
+              "type": "object"
+            }
+          }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": "[[script:tool-then-text]] go"
+          }
+        ],
+        "output_config": {
+          "effort": "medium"
+        },
+        "reasoning_effort": "medium"
+      }
+    }
+  ],
+  "result": {
+    "id": "msg_fake",
+    "type": "message",
+    "role": "assistant",
+    "model": "gpt-5.5",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_react",
+        "name": "react",
+        "input": {
+          "emoji": "👍"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 10
+    }
+  }
+}

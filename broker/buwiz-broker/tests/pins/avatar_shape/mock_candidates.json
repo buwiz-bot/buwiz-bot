@@ -1,0 +1,46 @@
+[
+  [
+    {
+      "name": "Blob",
+      "shape": "blob",
+      "color": "#FFFFFF",
+      "why": "A friendly ball in the primary ink."
+    },
+    {
+      "name": "Receipt",
+      "shape": "custom",
+      "color": "#FFFFFF",
+      "outline": "M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z",
+      "why": "A receipt with a torn foot."
+    },
+    {
+      "name": "Cat Head",
+      "shape": "custom",
+      "color": "#FFFFFF",
+      "outline": "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z",
+      "why": "A bold cat silhouette."
+    }
+  ],
+  [
+    {
+      "name": "Image Subject",
+      "shape": "custom",
+      "color": "#FFFFFF",
+      "outline": "M18 44 L22 14 L42 28 Q50 26 58 28 L78 14 L82 44 C88 66 72 86 50 86 C28 86 12 66 18 44 Z",
+      "why": "The image's subject as a silhouette."
+    },
+    {
+      "name": "Blob",
+      "shape": "blob",
+      "color": "#FFFFFF",
+      "why": "A friendly ball in the primary ink."
+    },
+    {
+      "name": "Pebble",
+      "shape": "custom",
+      "color": "#FFFFFF",
+      "outline": "M50 16 C73 16 88 31 88 52 C88 73 72 86 50 86 C28 86 12 73 12 52 C12 31 27 16 50 16 Z",
+      "why": "A calm, rounded pebble."
+    }
+  ]
+]

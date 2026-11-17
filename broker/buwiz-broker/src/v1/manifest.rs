@@ -1128,7 +1128,7 @@ pub fn added_permissions(prev: &Value, next: &Value) -> Vec<String> {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!("../../../../server/src/v1/fixture/manifest.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/v1/manifest.json");
 
     fn signed(edit: impl FnOnce(&mut Value)) -> (String, Trust) {
         let key = buwiz_protocol::keys::SessionKey::from_seed(&buwiz_protocol::keys::b64(&[3; 32])).unwrap();

@@ -1,0 +1,44 @@
+{
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/direct/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "x-api-key": "opencodex",
+        "anthropic-version": "2023-06-01"
+      },
+      "body": {
+        "model": "claude-haiku-5-5",
+        "max_tokens": 1024,
+        "system": "You are the assistant inside a generative-UI chat app: when the user asks for an interface, a tool builds and renders it natively. This message is conversation — answer in GitHub-flavored markdown, concise. If a UI would obviously help, offer to build it in one line.",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello!"
+          },
+          {
+            "role": "assistant",
+            "content": "[built widget R1]"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "user"
+          },
+          {
+            "role": "user",
+            "content": "how are you?"
+          }
+        ]
+      }
+    }
+  ],
+  "result": "ok"
+}

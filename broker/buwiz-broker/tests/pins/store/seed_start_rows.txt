@@ -1,0 +1,49 @@
+== agent_endpoints
+== agent_hook_seen
+== agent_outbox
+== apps
+== artifact_meta
+== attachment_names
+== attachments
+== bots
+{"id":"ann","name":"Ann","shape":"star","color":"#FF309B","thread_id":"t1","ord":0,"extra":"{\"made_by\":\"bob\",\"purpose\":\"help Bob\",\"accepts\":[\"bob\"]}","pinned":1,"section":"Work","hidden":0,"image":"file:///x/ann.png","crop":"{\"x\":0.1,\"y\":0.2,\"w\":0.5,\"h\":0.5}","model":"gpt-5.5","effort":"high","fast":1,"label":"tagline","description":"","instructions":"Be kind.","memories":"[{\"id\":\"{uuid}\",\"text\":\"likes tea\",\"at\":{ms}}]","integrations":"[{\"id\":\"s1\",\"kind\":\"skill\",\"at\":{ms},\"via\":\"user\"}]","outline":null,"art":null}
+{"id":"bob","name":"Bob","shape":"blob","color":"#1084FE","thread_id":null,"ord":1,"extra":"{\"helper\":{\"parent\":\"ann\",\"task\":\"sort\"}}","pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Bob is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Bob. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":null,"art":null}
+{"id":"cy","name":"Cy","shape":"custom","color":"#FFFFFF","thread_id":"t3","ord":2,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Cy is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Cy. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":"M26 14 L74 14 L74 80 L66 88 L58 80 L50 88 L42 80 L34 88 L26 80 Z","art":"{\"layers\":[{\"path\":\"M30 60 L70 60 L50 80 Z\",\"fill\":\"#F5EBD6\"},{\"path\":\"M30 30 L40 30 L35 40 Z\",\"fill\":\"#F2C3B5\",\"opacity\":0.6}],\"eyes\":\"#58D63A\"}"}
+{"id":"dee","name":"Dee","shape":"custom","color":"#D9232E","thread_id":null,"ord":3,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Dee is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Dee. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":"M26 14 L74 14 L74 80 L26 80 Z","art":"{\"layers\":[{\"path\":\"M30 60 L70 60 L50 80 Z\",\"fill\":\"#111111\"}]}"}
+{"id":"eve","name":"Eve","shape":"custom","color":"#D9232E","thread_id":null,"ord":4,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Eve is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Eve. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":"M26 14 L74 14 L74 80 L26 80 Z","art":"{\"layers\":[{\"path\":\"M30 60 L70 60 L50 80 Z\",\"fill\":\"#111111\"}],\"eyes\":{\"c\":\"#58D63A\",\"at\":[50,45.5],\"gap\":20,\"s\":1.25,\"rim\":\"#111111\",\"rw\":0.3}}"}
+{"id":"fay","name":"Fay","shape":"custom","color":"#1E1E1E","thread_id":null,"ord":5,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Fay is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Fay. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":"M26 14 L74 14 L74 80 L26 80 Z","art":"{\"layers\":[{\"path\":\"M30 60 L70 60 L50 80 Z\",\"fill\":\"#F5D7B5\"},{\"path\":\"M30 40 L50 40 L40 56 Z\",\"fill\":\"#1E1E1E\",\"over\":true}],\"eyes\":{\"c\":\"#1E1E1E\",\"shut\":\"l\"},\"parts\":[{\"outline\":\"M12 38 L86 36 L86 42 L14 42 Z\",\"color\":\"#4C8CC9\",\"layers\":[{\"path\":\"M32 24 L68 24 L68 30 L32 30 Z\",\"fill\":\"#F4F4F4\"}],\"z\":1},{\"outline\":\"M40 30 L60 30 L60 50 L40 50 Z\",\"color\":\"#7A4A22\",\"z\":-0.5,\"d\":1.1}]}"}
+{"id":"gus","name":"Gus","shape":"custom","color":"#1E1E1E","thread_id":null,"ord":6,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Gus is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Gus. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":"M26 14 L74 14 L74 80 L26 80 Z","art":"{\"parts\":[{\"outline\":\"M40 30 L60 30 L60 50 L40 50 Z\",\"color\":\"#7A4A22\"}]}"}
+{"id":"hal","name":"Hal","shape":"blob","color":"#1E1E1E","thread_id":null,"ord":7,"extra":null,"pinned":0,"section":null,"hidden":0,"image":null,"crop":null,"model":null,"effort":null,"fast":0,"label":null,"description":"Hal is a personal assistant bot in Buwiz Bot.","instructions":"Stay in character as Hal. Be helpful, concise and friendly; ask one short clarifying question when a request is ambiguous.","memories":"[]","integrations":"[]","outline":null,"art":null}
+== heads
+== installed_plugins
+== kv
+== library_hidden
+== mcp_servers
+== meta
+{"k":"active","v":"t1"}
+{"k":"names_buwiz","v":"{ms}"}
+{"k":"sections","v":"[\"Work\"]"}
+{"k":"seq","v":"0"}
+== plugin_settings
+== routines
+== skills
+== threads
+{"id":"t1","title":"first chat","ord":0,"agents":null,"hidden":0,"archived":0,"routine":null}
+{"id":"t2","title":"Routine thread","ord":1,"agents":null,"hidden":1,"archived":1,"routine":"{\"plugin\":\"p.one\",\"id\":\"daily\",\"name\":\"Daily\",\"thread\":\"t1\"}"}
+{"id":"t3","title":"Q3 😀 plans","ord":2,"agents":"{\"subject\":\"Q3\",\"participants\":[\"ann\",\"bob\"]}","hidden":0,"archived":0,"routine":null}
+== timeclock
+== tombstones
+== turns
+{"thread_id":"t1","seq":0,"role":"user","text":"hello","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"reply\":{\"i\":0,\"text\":\"quoted\",\"files\":[\"m1/a.txt\"]},\"attachments\":[{\"uri\":\"file:///x/a.png\",\"name\":\"a.png\",\"kind\":\"image\"}],\"v1Attachments\":[{\"plugin\":\"p.one\",\"token\":\"@p:x:1\"}]}","v":null}
+{"thread_id":"t1","seq":1,"role":"ai","text":"answer","name":"","label":"claude-haiku-5-5","caption":"cap","reaction":"👍","retries":2,"widget":0,"meta":"{\"files\":[{\"path\":\"m1/a.txt\",\"name\":\"a.txt\",\"kind\":\"text\"}],\"art\":{\"title\":\"T\",\"desc\":\"D\",\"w\":100,\"h\":80},\"links\":[{\"provider\":\"gdrive\",\"id\":\"f1\",\"name\":\"Doc\",\"link\":\"https://example.com/d\",\"mime\":\"application/vnd.google-apps.document\",\"account\":\"a@example.com\"},{\"provider\":\"mcp-app\",\"id\":\"mcp:apps/x\",\"name\":\"X\",\"token\":\"@apps:i:1\",\"kind\":\"app\",\"file_type\":\"An item\"}],\"suggest\":[\"Next step\"]}","v":null}
+{"thread_id":"t1","seq":2,"role":"ai","text":null,"name":"R1","label":"mock","caption":"","reaction":"","retries":0,"widget":1,"meta":"{\"art\":{\"title\":\"Counter\",\"desc\":\"\",\"w\":0,\"h\":0}}","v":1}
+{"thread_id":"t1","seq":3,"role":"notice","text":"Daily ran","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"notice\":{\"routine\":\"daily\",\"thread\":\"t2\"}}","v":null}
+{"thread_id":"t1","seq":4,"role":"ai","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx **bold** ## heading _under_ `code` > quote 😀😀","name":null,"label":"m","caption":"","reaction":"","retries":0,"widget":0,"meta":null,"v":null}
+{"thread_id":"t2","seq":0,"role":"user","text":"Routine · Daily","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"routine\":{\"plugin\":\"p.one\",\"id\":\"daily\",\"run\":1}}","v":null}
+{"thread_id":"t3","seq":0,"role":"agent_message","text":"Check Q3.","name":null,"label":null,"caption":null,"reaction":null,"retries":0,"widget":0,"meta":"{\"message\":{\"id\":\"m1\",\"from\":{\"id\":\"ann\",\"name\":\"Ann\"},\"to\":[\"bob\"],\"subject\":\"Q3\"},\"pending\":[\"bob\"],\"read_by\":[\"ann\"]}","v":null}
+{"thread_id":"t3","seq":1,"role":"ai","text":"woken","name":null,"label":"","caption":"","reaction":"","retries":0,"widget":0,"meta":"{\"agent\":{\"id\":\"bob\",\"name\":\"Bob\"}}","v":null}
+== v1_instances
+== v1_plugins
+== v1_routines
+== versions
+== widgets

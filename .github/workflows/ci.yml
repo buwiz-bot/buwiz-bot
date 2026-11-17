@@ -96,15 +96,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # the broker's diff tests run server/'s Node code beside it
+      # plain `node`, no packages: the broker's tests run a few small Node
+      # scripts as stand-ins (the fake model, the PATH stubs, the MCP and
+      # plugin fixtures under broker/buwiz-broker/tests)
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: server/package-lock.json
-      - name: npm ci (server)
-        working-directory: server
-        run: npm ci
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
