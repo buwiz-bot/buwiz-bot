@@ -113,7 +113,7 @@ fn has(app: &Headless, label: &str) -> bool {
 }
 
 fn says(app: &Headless, text: &str) -> bool {
-    app.texts().iter().any(|t| *t == text)
+    app.texts().contains(&text)
 }
 
 /// A row's size and where its title starts and how wide it is.
