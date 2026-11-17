@@ -35,6 +35,8 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const BROWSER_PATIENCE: Duration = Duration::from_secs(55);
 /// What a screen request gets: `box-screen` waits its turn, then for an X server and a viewer.
 const SCREEN_PATIENCE: Duration = Duration::from_secs(50);
+/// The key that reloads a page in the screen's browser.
+const RELOAD_KEY: &str = "F5";
 /// What the guest may answer with before it counts as broken.
 const MAX_BODY: usize = 64 * 1024 * 1024;
 /// The most pixels a screenshot may say it has: unpacking takes four bytes each, on this Mac.
@@ -142,9 +144,21 @@ impl BoxGuest {
     }
 
     /// Opens `url` in `screen`'s browser, as its desktop's user. No shell, so nothing in it is read
-    /// as one.
+    /// as one. A page that is already the front tab's is reloaded instead (a stale or error page
+    /// would otherwise stay as it is); when the front tab can't be read, or the reload key doesn't
+    /// go through, the page is opened as for any other address.
     pub async fn open_url(&self, screen: &Screen, url: &str) -> Result<()> {
-        self.screen(open_request(screen, url)?).await.map(|_| ())
+        let request = open_request(screen, url)?;
+        if self.is_front(screen, url).await && self.input(screen, &Input::Key { key: RELOAD_KEY.to_owned() }).await.is_ok() {
+            return Ok(());
+        }
+        self.screen(request).await.map(|_| ())
+    }
+
+    /// Whether the browser's front tab already shows `url`.
+    async fn is_front(&self, screen: &Screen, url: &str) -> bool {
+        let Some(want) = same_page_key(url) else { return false };
+        self.active_tab(screen).await.ok().and_then(|tab| tab.url).and_then(|shown| same_page_key(&shown)).is_some_and(|shown| shown == want)
     }
 
     /// `POST /v1/browser/<op>?display=` with `body`: the answer, a refusal with its code included.
@@ -296,6 +310,31 @@ fn open_request(screen: &Screen, url: &str) -> Result<Value> {
     Ok(json!({"action": "open", "bot": bot, "url": url}))
 }
 
+/// `url` as the browser writes it, for telling whether two addresses are one page: the scheme and
+/// host in lower case, a port that is the scheme's own dropped, and an empty path as `/`. The rest
+/// (path, query and fragment) is compared as given. `None` for what isn't an http or https address.
+fn same_page_key(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let own_port = match scheme.as_str() {
+        "http" => ":80",
+        "https" => ":443",
+        _ => return None,
+    };
+    let at = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(at);
+    let (userinfo, host) = authority.rsplit_once('@').map_or(("", authority), |(u, h)| (u, h));
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_suffix(own_port).unwrap_or(&host);
+    if host.is_empty() {
+        return None;
+    }
+    let tail = tail.strip_suffix('#').unwrap_or(tail);
+    let tail = if tail.starts_with('/') { tail.to_owned() } else { format!("/{tail}") };
+    let userinfo = if userinfo.is_empty() { String::new() } else { format!("{userinfo}@") };
+    Some(format!("{scheme}://{userinfo}{host}{tail}"))
+}
+
 /// The Bot whose folder `path` is in, with or without the workspace in front. Files anywhere else
 /// are the shared user's.
 fn owner_of(path: &str) -> Option<&str> {
@@ -433,6 +472,53 @@ mod tests {
         assert_eq!(open_request(&screen, "https://a.example").unwrap(), json!({"action": "open", "bot": "b_1", "url": "https://a.example"}));
         let shared = Screen { folder: "shared".into(), ..screen };
         assert!(open_request(&shared, "https://a.example").is_err());
+    }
+
+    #[test]
+    fn two_addresses_the_browser_writes_alike_are_one_page() {
+        let one = |a: &str, b: &str| same_page_key(a).is_some() && same_page_key(a) == same_page_key(b);
+        assert!(one("https://Shop.Example", "https://shop.example/"));
+        assert!(one("https://shop.example:443/a?b=1", "https://shop.example/a?b=1"));
+        assert!(one("http://shop.example:80", "HTTP://shop.example/"));
+        assert!(one("https://shop.example?b=1", "https://shop.example/?b=1"));
+        assert!(one("https://shop.example/a#", "https://shop.example/a"));
+        assert!(!one("https://shop.example/a", "https://shop.example/b"));
+        assert!(!one("https://shop.example/a", "http://shop.example/a"));
+        assert!(!one("https://shop.example:8443/a", "https://shop.example/a"));
+        assert!(!one("https://shop.example/a#x", "https://shop.example/a"));
+        assert!(!one("https://shop.example/A", "https://shop.example/a"));
+        assert_eq!(same_page_key("about:blank"), None);
+        assert_eq!(same_page_key("chrome-error://chromewebdata/"), None);
+    }
+
+    #[tokio::test]
+    async fn a_page_that_is_already_open_is_reloaded_not_opened() {
+        let fake = crate::guest_fake::FakeGuest::showing(Some("https://shop.example/cart"));
+        let addr = fake.serve().await;
+        let guest = BoxGuest::connect(&addr, &addr, Secret::new("t"));
+        let screen = parse_screen(r#"{"display":":2","viewer_port":6902}"#, "b_1").unwrap();
+        guest.open_url(&screen, "https://SHOP.example:443/cart").await.unwrap();
+        assert_eq!(fake.calls(), ["GET /v1/chrome/active-tab", r#"POST /v1/cua/key {"key":"F5"}"#]);
+    }
+
+    #[tokio::test]
+    async fn another_page_is_opened_and_nothing_is_reloaded() {
+        let fake = crate::guest_fake::FakeGuest::showing(Some("https://shop.example/cart"));
+        let addr = fake.serve().await;
+        let guest = BoxGuest::connect(&addr, &addr, Secret::new("t"));
+        let screen = parse_screen(r#"{"display":":2","viewer_port":6902}"#, "b_1").unwrap();
+        guest.open_url(&screen, "https://shop.example/pay").await.unwrap();
+        assert_eq!(fake.browser_calls(), [r#"POST /v1/screen {"action":"open","bot":"b_1","url":"https://shop.example/pay"}"#]);
+    }
+
+    #[tokio::test]
+    async fn a_front_tab_that_says_nothing_is_no_reason_to_reload() {
+        let fake = crate::guest_fake::FakeGuest::showing(None);
+        let addr = fake.serve().await;
+        let guest = BoxGuest::connect(&addr, &addr, Secret::new("t"));
+        let screen = parse_screen(r#"{"display":":2","viewer_port":6902}"#, "b_1").unwrap();
+        guest.open_url(&screen, "https://shop.example/cart").await.unwrap();
+        assert_eq!(fake.browser_calls(), [r#"POST /v1/screen {"action":"open","bot":"b_1","url":"https://shop.example/cart"}"#]);
     }
 
     #[test]

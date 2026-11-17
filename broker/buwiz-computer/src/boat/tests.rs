@@ -578,6 +578,11 @@ exit 0
 
 /// A box on every port the login forwards, taking only `token`.
 async fn fake_box(d: PathBuf, token: &'static str) {
+    fake_box_of(d, token, None).await
+}
+
+/// [`fake_box`], answering as `guest` does when it's given.
+async fn fake_box_of(d: PathBuf, token: &'static str, guest: Option<std::sync::Arc<crate::guest_fake::FakeGuest>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let master = loop {
         match std::fs::read_to_string(d.join("master")) {
@@ -589,9 +594,14 @@ async fn fake_box(d: PathBuf, token: &'static str) {
     for pair in words.windows(2).filter(|w| w[0] == "-L") {
         let here: u16 = pair[1].split(':').nth(1).unwrap().parse().unwrap();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", here)).await.unwrap();
+        let guest = guest.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else { return };
+                if let Some(guest) = guest.clone() {
+                    tokio::spawn(async move { guest.serve_one(socket).await });
+                    continue;
+                }
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 16384];
                     let n = socket.read(&mut buf).await.unwrap_or(0);
@@ -994,4 +1004,26 @@ async fn recover_names_the_other_labelled_sandboxes_it_leaves_as_they_are() {
     let p = provider(fake.addr, refusing_ssh("recover-alone").0);
     p.recover(&spec, None).await.unwrap().unwrap();
     assert_eq!(p.take_recover_note("comp1"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_already_open_is_reloaded_and_another_is_opened() {
+    let screen = crate::Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/b_1".into(), profile: None };
+    for (asked, reloads) in [("https://shop.example/cart", true), ("https://shop.example/pay", false)] {
+        let fake = serve(api(PIN)).await;
+        let ssh = logging_ssh(if reloads { "open-same" } else { "open-other" });
+        let dir = spec(if reloads { "open-same" } else { "open-other" }).dir;
+        std::fs::create_dir_all(&dir).unwrap();
+        let machine = record(&dir);
+        let guest = crate::guest_fake::FakeGuest::showing(Some("https://shop.example/cart"));
+        tokio::spawn(fake_box_of(ssh.parent().unwrap().to_owned(), "tok-boat", Some(guest.clone())));
+        let p = provider(fake.addr, ssh);
+        p.wake(&machine).await.unwrap();
+        p.open_url(&machine, &screen, asked).await.unwrap();
+        let sent = guest.browser_calls();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/cua/key "), reloads, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/screen "), !reloads, "{sent:?}");
+        p.sleep(&machine, Sleep::Light).await.unwrap();
+    }
 }

@@ -2502,6 +2502,23 @@ os.kill = lambda pid, sig: _rename(ROOT + '/proc/%d' % pid, ROOT + '/ended-%d' %
     }
 
     #[tokio::test]
+    async fn a_page_already_open_is_reloaded_and_another_is_opened() {
+        let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/a".into(), profile: None };
+        for (asked, reloads) in [("https://shop.example/cart", true), ("https://shop.example/pay", false)] {
+            let dir = tmp(if reloads { "open-same" } else { "open-other" });
+            let guest = crate::guest_fake::FakeGuest::showing(Some("https://shop.example/cart"));
+            let port = guest.serve().await.rsplit(':').next().unwrap().to_owned();
+            let state = inspected("running", "running", "T1").replace("47001", &port).replace("47002", &port);
+            let p = faked(&dir, &state, "true", "true");
+            p.open_url(&machine(&dir), &screen, asked).await.unwrap();
+            let sent = guest.browser_calls();
+            assert_eq!(sent.len(), 1, "{sent:?}");
+            assert_eq!(sent[0].starts_with("POST /v1/cua/key "), reloads, "{sent:?}");
+            assert_eq!(sent[0].starts_with("POST /v1/screen "), !reloads, "{sent:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn one_look_serves_a_request_and_the_next_request_looks_again() {
         let dir = tmp("ports");
         let p = faked(&dir, &inspected("running", "running", "T1"), "true", "true");

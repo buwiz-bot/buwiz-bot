@@ -402,3 +402,30 @@ fn a_lost_computer_is_never_offered_keep_and_the_sentence_says_why() {
     let why = p.cant_keep_lost().unwrap();
     assert!(why.contains("new secrets") && why.contains("deleted"), "{why}");
 }
+
+#[tokio::test]
+async fn a_page_already_open_is_reloaded_and_another_is_opened() {
+    use crate::Screen;
+    let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/b_1".into(), profile: None };
+    for (asked, reloads) in [("https://shop.example/cart", true), ("https://shop.example/pay", false)] {
+        let guest = crate::guest_fake::FakeGuest::showing(Some("https://shop.example/cart"));
+        let behind = guest.clone();
+        let fake = serve(move |req: &Seen| {
+            if req.path.starts_with("/v1/") && req.path != "/v1/ready" {
+                let body = behind.answer(&format!("{} {}\r\n\r\n{}", req.method, req.path, String::from_utf8_lossy(&req.body)));
+                return ok(200, &body);
+            }
+            platform(req)
+        })
+        .await;
+        let p = provider(fake.addr);
+        let made = p.create(&spec(if reloads { "open-same" } else { "open-other" })).await.unwrap();
+        assert_eq!(p.wake(&made).await.unwrap(), Woke::Resumed);
+        p.open_url(&made, &screen, asked).await.unwrap();
+        let sent = guest.browser_calls();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/cua/key "), reloads, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/screen "), !reloads, "{sent:?}");
+        p.destroy(&made).await.unwrap();
+    }
+}

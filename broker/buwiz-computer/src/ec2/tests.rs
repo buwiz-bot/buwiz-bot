@@ -215,6 +215,11 @@ exit 0"#,
 
 /// A box on every port the master forwards: up once `box-up` is there, taking only `TOKEN`.
 fn fake_box(d: PathBuf) {
+    fake_box_of(d, None)
+}
+
+/// [`fake_box`], answering as `guest` does once it's up, when one is given.
+fn fake_box_of(d: PathBuf, guest: Option<std::sync::Arc<crate::guest_fake::FakeGuest>>) {
     tokio::spawn(async move {
         let mut seen = String::new();
         loop {
@@ -225,22 +230,27 @@ fn fake_box(d: PathBuf) {
                 }
             };
             seen = master.clone();
-            serve_forwards(&d, &master).await;
+            serve_forwards(&d, &master, &guest).await;
         }
     });
 }
 
-async fn serve_forwards(d: &Path, master: &str) {
+async fn serve_forwards(d: &Path, master: &str, guest: &Option<std::sync::Arc<crate::guest_fake::FakeGuest>>) {
     {
         let words: Vec<&str> = master.split_whitespace().collect();
         for pair in words.windows(2).filter(|w| w[0] == "-L") {
             let here: u16 = pair[1].split(':').nth(1).unwrap().parse().unwrap();
             let listener = TcpListener::bind(("127.0.0.1", here)).await.unwrap();
             let d = d.to_owned();
+            let guest = guest.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else { return };
                     let up = d.join("box-up").exists();
+                    if let Some(guest) = guest.clone().filter(|_| up) {
+                        tokio::spawn(async move { guest.serve_one(socket).await });
+                        continue;
+                    }
                     tokio::spawn(async move {
                         let mut buf = vec![0u8; 16384];
                         let n = socket.read(&mut buf).await.unwrap_or(0);
@@ -568,4 +578,30 @@ async fn a_check_that_launched_ends_what_it_launched_and_doesnt_pass() {
     assert!(said.sentence().contains("terminated at once"), "{}", said.sentence());
     let f = fake.lock().unwrap();
     assert!(f.instances.iter().all(|i| i.state == "shutting-down"), "nothing it launched is left running");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_already_open_is_reloaded_and_another_is_opened() {
+    let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/b_1".into(), profile: None };
+    for (asked, reloads) in [("https://shop.example/cart", true), ("https://shop.example/pay", false)] {
+        let (d, fake) = (tmp(if reloads { "open-same" } else { "open-other" }), Shared::default());
+        {
+            let mut f = fake.lock().unwrap();
+            f.instances.push(ours("i-1", "cmp_ab12", "running"));
+            f.console = console::tests::console(PIN_A);
+        }
+        std::fs::write(d.join("box-state"), "running\n").unwrap();
+        std::fs::write(d.join("box-up"), "").unwrap();
+        let p = provider(&d, &fake, true).await;
+        let m = machine(&d, "i-1");
+        keygen(Path::new(KEYGEN), &m.dir.join(FOLDER), "cmp_ab12").await.unwrap();
+        let guest = crate::guest_fake::FakeGuest::showing(Some("https://shop.example/cart"));
+        fake_box_of(d.clone(), Some(guest.clone()));
+        assert_eq!(p.wake(&m).await.unwrap(), Woke::Resumed);
+        p.open_url(&m, &screen, asked).await.unwrap();
+        let sent = guest.browser_calls();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/cua/key "), reloads, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/screen "), !reloads, "{sent:?}");
+    }
 }

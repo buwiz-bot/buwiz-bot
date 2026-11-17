@@ -35,6 +35,8 @@ pub mod e2b;
 pub mod ec2;
 pub mod gate;
 pub mod guest;
+#[cfg(test)]
+mod guest_fake;
 pub mod job;
 #[cfg(feature = "mock")]
 pub mod loopback;

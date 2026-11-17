@@ -1226,6 +1226,25 @@ async fn the_open_url_holds_a_ticket_and_no_password() {
 }
 
 #[tokio::test]
+async fn the_tool_answers_the_same_for_a_page_that_is_open_and_for_a_new_one() {
+    let b = bed("open-tool");
+    awake(&b, &b.ann.0).await;
+    let r = run(&b, &b.ann.1, None);
+    b.mock.calls.lock().unwrap().clear();
+    let first = call(&r, "computer_open_url", json!({"url": "https://shop.example/cart"})).await;
+    let again = call(&r, "computer_open_url", json!({"url": "https://shop.example/cart"})).await;
+    let other = call(&r, "computer_open_url", json!({"url": "https://shop.example/pay"})).await;
+    for o in [&first, &again, &other] {
+        assert_eq!(o.is_error, None, "{}", words(o));
+    }
+    assert_eq!(words(&first), words(&again));
+    assert_eq!(words(&first), words(&other));
+    let opens: Vec<String> = b.mock.calls().into_iter().filter(|c| c.starts_with("open ")).collect();
+    assert_eq!(opens.len(), 3, "each ask reached the provider once: {opens:?}");
+    assert!(b.mock.calls().iter().all(|c| !c.contains("F5") && !c.starts_with("input")), "the tool itself sends no reload: {:?}", b.mock.calls());
+}
+
+#[tokio::test]
 async fn a_route_answers_only_the_apps_token() {
     let b = bed("routes");
     let req = HubRequest { method: hyper::Method::POST, url: "/v1/host/computer/bot/b_ann/wake".into(), headers: hyper::HeaderMap::new(), body: bytes::Bytes::new(), params: vec![b.ann.0.clone()] };

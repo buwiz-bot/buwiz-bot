@@ -353,3 +353,21 @@ async fn a_box_that_goes_quiet_behind_its_relays_stops_reading_as_awake() {
     }
     panic!("a dead box read as awake");
 }
+
+#[tokio::test]
+async fn a_page_already_open_is_reloaded_and_another_is_opened() {
+    let screen = Screen { display: ":2".into(), viewer_port: 6902, folder: "agents/b_1".into(), profile: None };
+    let d = dir("open-url");
+    let m = machine(&d);
+    for (shown, asked, reloads) in [("https://shop.example/cart", "https://shop.example/cart", true), ("https://shop.example/cart", "https://shop.example/pay", false)] {
+        let fake = crate::guest_fake::FakeGuest::showing(Some(shown));
+        let addr = fake.serve().await;
+        let provider = RemoteProvider::new();
+        provider.links.lock().unwrap().insert(m.dir.clone(), held(addr.trim_start_matches("http://")));
+        provider.open_url(&m, &screen, asked).await.unwrap();
+        let sent = fake.browser_calls();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/cua/key "), reloads, "{sent:?}");
+        assert_eq!(sent[0].starts_with("POST /v1/screen "), !reloads, "{sent:?}");
+    }
+}
