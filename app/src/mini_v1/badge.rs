@@ -59,10 +59,17 @@ pub struct Badge {
 }
 
 impl Badge {
-    /// A badge as the list or an event carries it, `None` when it breaks
+    /// A badge as the broker's list or an event carries it, `None` when it breaks
     /// the protocol's rules: an unknown dot, no `rev`, text over [`TEXT_MAX`]
-    /// characters, not on one line or with a space at either end. The text is
-    /// read as it is; "" is no text.
+    /// characters, with a hidden character (spec 4.2) or a space at either end.
+    /// The text is read as it is; "" is no text.
+    ///
+    /// This reads what the broker sends, not what a plugin sends, so it may be looser
+    /// than the broker's own rule on purpose: it has no manifest to judge the app by,
+    /// a listed badge always has its dot and text spelled out, and "none" with no text
+    /// is a clear here. What it must never do is draw a text the rule refuses, whoever
+    /// sent it (a bidi override would show a status reversed), so the text's rules
+    /// are the broker's, from the same shared definition (`buwiz_protocol::text`).
     pub fn from_json(v: &Value) -> Option<Badge> {
         let app = v.get("app")?.as_str().filter(|a| !a.is_empty())?.to_owned();
         let ticket = match v.get("ticket") {
@@ -74,7 +81,7 @@ impl Badge {
             None | Some(Value::Null) => "",
             Some(t) => t.as_str()?,
         };
-        if text.chars().count() > TEXT_MAX || text.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}') || text.starts_with(' ') || text.ends_with(' ') {
+        if text.chars().count() > TEXT_MAX || text.chars().any(buwiz_protocol::text::hidden) || text.starts_with(' ') || text.ends_with(' ') {
             return None;
         }
         Some(Badge { app, ticket, dot, text: text.to_owned(), rev: v.get("rev")?.as_i64()? })
@@ -173,6 +180,42 @@ mod tests {
 
     fn badge(app: &str, ticket: Option<&str>, dot: Dot, text: &str, rev: i64) -> Badge {
         Badge { app: app.into(), ticket: ticket.map(Into::into), dot, text: text.into(), rev }
+    }
+
+    /// The vectors every side shares (`vectors/badge.json` of the SDK), as the broker would list a
+    /// well formed one, and a text it refuses as it might arrive anyway.
+    #[test]
+    fn the_shared_vectors_read_as_the_broker_lists_them() {
+        let v: Value = serde_json::from_str(include_str!("../../../broker/buwiz-protocol/src/badge-vectors.json")).unwrap();
+        let (mut read, mut refused) = (0, 0);
+        for c in v["cases"].as_array().unwrap() {
+            let b = &c["badge"];
+            let Some(o) = b.as_object().filter(|o| !o.contains_key("clear") && o.get("text").is_none_or(Value::is_string)) else { continue };
+            let listed = json!({"app": "board", "ticket": null, "dot": o.get("dot").cloned().unwrap_or(json!("none")), "text": o.get("text").cloned().unwrap_or(json!("")), "rev": 1});
+            let got = Badge::from_json(&listed);
+            if c["ok"] == true {
+                let got = got.unwrap_or_else(|| panic!("{b} is well formed"));
+                assert_eq!(got.dot.word(), o.get("dot").and_then(Value::as_str).unwrap_or("none"), "{b}");
+                assert_eq!(Some(got.text.as_str()), o.get("text").and_then(Value::as_str).or(Some("")), "{b}");
+                read += 1;
+            } else if o.get("dot").is_none_or(|d| d.as_str().is_some_and(|d| Dot::parse(d).is_some())) && o.contains_key("text") && o["text"] != "" {
+                // a text the rule refuses: never read, so never drawn
+                assert_eq!(got, None, "{b}");
+                refused += 1;
+            }
+        }
+        assert!(read > 5 && refused > 25, "{read} {refused}");
+        assert_eq!(Badge::from_json(&json!({"app": "board", "dot": "red", "text": "\u{202e}2 due", "rev": 1})), None, "a bidi override is not drawn, even from the broker");
+    }
+
+    #[test]
+    fn a_clear_missed_while_the_stream_was_down_is_applied_by_the_reload() {
+        let mut book = Book::default();
+        book.list("p", 10, vec![badge("forms", None, Dot::Red, "2", 8), badge("card", None, Dot::Green, "", 9)]);
+        // the stream drops; the plugin clears forms (rev 12) and changes card (rev 14); the app hears neither
+        // the reload that follows the stream's return has them
+        book.list("p", 20, vec![badge("card", None, Dot::Amber, "x", 14)]);
+        assert_eq!(texts(&book, "p"), ["card:None:x"]);
     }
 
     #[test]

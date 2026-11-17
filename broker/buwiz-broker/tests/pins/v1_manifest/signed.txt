@@ -86,7 +86,8 @@
           "fx_fail",
           "fx_big",
           "fx_search",
-          "fx_open"
+          "fx_open",
+          "fx_badge"
         ],
         "open": {
           "apps": [
@@ -167,6 +168,6 @@
   "signature": {
     "alg": "ed25519",
     "key_id": "test-key",
-    "value": "dcmk1M4KfsCZ1uHewavGsUbEw7P_fIfc4NjO2KcbV8yyN3gkVfZN0X6HnIZpKt5_wINmep_EZsBrBJLf11WIDA"
+    "value": "LqR3oe1mmffnYch_kyoo2H5HVqPfghfgCkDdAmdGQYG7joj2xixouFFzW4mxS6HiaavEpnd3GnBVbezHzyOjBg"
   }
 }

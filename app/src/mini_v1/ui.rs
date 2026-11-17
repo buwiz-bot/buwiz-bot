@@ -2517,7 +2517,8 @@ fn badge_slot(b: Option<&badge::Badge>) -> impl IntoElement {
     // the dot's room is kept when it has no colour, so the text stays where it is
     let dot = view().size(px(BADGE_DOT)).flex_shrink(0.0).rounded(px(BADGE_DOT / 2.0));
     slot = match badge_ink(b.dot) {
-        Some(ink) => slot.child(dot.label(format!("Status {}", b.dot.word())).bg(ink)),
+        // decorative: the row's own name says the state in words
+        Some(ink) => slot.child(dot.bg(ink)),
         None => slot.child(dot),
     };
     if !b.text.is_empty() {
@@ -2536,7 +2537,6 @@ pub fn pins_section() -> impl IntoElement {
         let grouped: Vec<V1Key> = store().groups.with(|gs| {
             gs.iter().flat_map(|g| &g.items).filter(|it| it.kind == "app").filter_map(|it| V1Key::parse(&it.id).ok()).collect()
         });
-        let entries = store().v1.entries.get();
         store()
             .v1
             .records
@@ -2545,7 +2545,8 @@ pub fn pins_section() -> impl IntoElement {
             .filter(|p| !grouped.iter().any(|k| k.plugin == p.plugin && k.app == p.app && k.ticket == p.ticket))
             .filter(|p| store().v1_reach(&p.plugin) != connect::Reach::Gone)
             .map(|p| {
-                let b = entries.iter().find(|e| e.id == p.plugin).and_then(|e| badge::for_pin(&e.badges, &p.app, p.ticket.as_deref())).cloned();
+                // only the pin's badge is copied, not the plugin's entry
+                let b = store().v1.entries.with(|es| es.iter().find(|e| e.id == p.plugin).and_then(|e| badge::for_pin(&e.badges, &p.app, p.ticket.as_deref())).cloned());
                 (p, b)
             })
             .collect::<Vec<_>>()

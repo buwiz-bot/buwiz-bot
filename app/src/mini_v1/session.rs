@@ -391,7 +391,9 @@ pub fn listen_for_generations() {
                             }
                         }
                         // `resync`: this reader missed events, so the list is read again
-                        let resync = name == "resync";
+                        // `resync`: this reader missed events; `open`: the stream is up (again), and
+                        // what changed while it was down is read again
+                        let resync = name == "resync" || name == "open";
                         if (name == "badge" || resync)
                             && let Ok(v) = serde_json::from_str::<Value>(data)
                         {

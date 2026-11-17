@@ -420,6 +420,8 @@ impl Host {
         accounts::migrate(&db).map_err(|e| e.to_string())?;
         let (events, _) = broadcast::channel(1024);
         let (badge_events, _) = broadcast::channel(1024);
+        // the highest rev a stored badge has: what comes next is above it, whatever the clock says
+        let seeded: i64 = db.query_row("SELECT coalesce(max(updated_at), 0) FROM v1_badges", [], |r| r.get(0)).unwrap_or(0);
         Ok(Arc::new_cyclic(|me| Host {
             db: Mutex::new(db),
             keys: o.keys,
@@ -432,7 +434,7 @@ impl Host {
             events,
             badge_events,
             badge_gates: Mutex::new(HashMap::new()),
-            last_rev: AtomicI64::new(0),
+            last_rev: AtomicI64::new(seeded),
             seq: AtomicU64::new(1),
             closers: Mutex::new(Vec::new()),
             apps_dir: o.apps_dir,

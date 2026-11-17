@@ -94,13 +94,13 @@ pub fn parse(apps: &[String], v: &Value) -> Result<Parsed, &'static str> {
     ok(Some((dot.to_owned(), text.unwrap_or_default().to_owned())))
 }
 
-/// `t` as written: 1 to [`TEXT_MAX`] characters, one line, no space at either end.
+/// `t` as written: 1 to [`TEXT_MAX`] characters, no hidden character (spec 4.2), no space at either end.
 fn one_line(t: &str) -> Result<&str, &'static str> {
     if t.is_empty() {
         return Err("text is empty");
     }
-    if t.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}') {
-        return Err("text is not one line of plain characters");
+    if t.chars().any(buwiz_protocol::text::hidden) {
+        return Err("text has a hidden character");
     }
     if t.starts_with(' ') || t.ends_with(' ') {
         return Err("text starts or ends with a space");
@@ -216,6 +216,25 @@ impl Host {
         (at, json!(rows))
     }
 
+    /// Every plugin's badges from one read: the highest `rev` issued when it was made, and each
+    /// plugin's list (as [`Host::badges_view`] has one plugin's; a plugin not in it has none).
+    pub fn badges_all(&self) -> (i64, std::collections::HashMap<String, Value>) {
+        let got = self.sql(|db| {
+            let at = self.last_rev.load(Ordering::SeqCst);
+            let mut st = db.prepare("SELECT plugin, app, ticket, dot, text, updated_at FROM v1_badges ORDER BY plugin, app, ticket")?;
+            let rows = st
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, view(None, &r.get::<_, String>(1)?, &r.get::<_, String>(2)?, &r.get::<_, String>(3)?, &r.get::<_, String>(4)?, r.get(5)?))))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((at, rows))
+        });
+        let (at, rows) = got.unwrap_or_default();
+        let mut out: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+        for (plugin, b) in rows {
+            out.entry(plugin).or_default().push(b);
+        }
+        (at, out.into_iter().map(|(k, v)| (k, json!(v))).collect())
+    }
+
     /// Says what badge (`app`, `ticket`) of `id` is now, at once when it has
     /// been quiet for a second, else once the second is over, then with the
     /// latest value. A second's quiet leaves no trace of the badge here.
@@ -254,14 +273,19 @@ impl Host {
         });
     }
 
-    /// The event of badge (`app`, `ticket`) of `id` as it is stored now.
+    /// The event of badge (`app`, `ticket`) of `id` as it is stored now. A read of the
+    /// database that fails says nothing (logged once): a badge still stored is not announced as cleared.
     fn emit_badge(&self, id: &str, app: &str, ticket: &str) {
         let now = self.sql(|db| {
             db.query_row("SELECT dot, text, updated_at FROM v1_badges WHERE plugin=? AND app=? AND ticket=?", params![id, app, ticket], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
                 .map(Some)
                 .or_else(|e| if matches!(e, rusqlite::Error::QueryReturnedNoRows) { Ok(None) } else { Err(e) })
         });
-        let (dot, text, rev) = now.ok().flatten().unwrap_or_else(|| ("none".to_owned(), String::new(), self.next_rev()));
+        let (dot, text, rev) = match now {
+            Ok(Some(row)) => row,
+            Ok(None) => ("none".to_owned(), String::new(), self.next_rev()),
+            Err(e) => return log_once(format!("badge\0{id}\0read"), || format!("  v1 {id}: a badge change was not announced: {}", e.message)),
+        };
         let _ = self.badge_events.send(view(Some(id), app, ticket, &dot, &text, rev));
     }
 

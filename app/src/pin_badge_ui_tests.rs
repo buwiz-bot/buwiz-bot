@@ -124,6 +124,25 @@ fn has(app: &Headless, label: &str) -> bool {
     app.labels.iter().rev().filter(|(id, _)| app.live.contains(id) && seen.insert(*id)).any(|(_, l)| l == label)
 }
 
+/// The colour of each badge dot drawn now: the live 8 by 8 views painted one of the three status
+/// colours (the dot has no label: the row's name says the state), with their ids.
+fn dots(app: &Headless) -> Vec<(nsh_core::NodeId, nsh_core::Color)> {
+    let status = [theme::DOWN, theme::WARN, theme::UP].map(|c| nsh_core::Color::from(c.light));
+    let mut out: Vec<_> = app
+        .live
+        .iter()
+        .filter(|id| app.frames.get(id).is_some_and(|f| f.size.width.0 == 8.0 && f.size.height.0 == 8.0))
+        .filter_map(|id| app.styles.get(id).map(|s| (*id, s.background_color)))
+        .filter(|(_, c)| status.contains(c))
+        .collect();
+    out.sort_by_key(|(id, _)| format!("{id:?}"));
+    out
+}
+
+fn dot_count(app: &Headless, c: AdaptiveColor) -> usize {
+    dots(app).iter().filter(|(_, k)| *k == nsh_core::Color::from(c.light)).count()
+}
+
 fn says(app: &Headless, text: &str) -> bool {
     app.texts().contains(&text)
 }
@@ -156,12 +175,9 @@ fn each_dot_and_its_text_show_on_the_pin() {
         assert!(says(&app, text), "{text}: {:?}", app.texts());
     }
     // one dot a colour, the theme's status colours; the pin with no dot has none
-    let ink = |label: &str| app.style(label).background_color;
-    assert_eq!(ink("Status red"), nsh_core::Color::from(theme::DOWN.light));
-    assert_eq!(ink("Status amber"), nsh_core::Color::from(theme::WARN.light));
-    assert_ne!(ink("Status red"), ink("Status amber"));
-    assert!(has(&app, "Status green") && !has(&app, "Status none"));
-    assert_eq!(app.style("Status green").background_color, nsh_core::Color::from(theme::UP.light));
+    assert_eq!((dot_count(&app, theme::DOWN), dot_count(&app, theme::WARN), dot_count(&app, theme::UP)), (1, 1, 2), "red, amber, two green; none for People and Plain");
+    assert_ne!(nsh_core::Color::from(theme::DOWN.light), nsh_core::Color::from(theme::WARN.light));
+    assert!(!app.labels.iter().any(|(_, l)| l.starts_with("Status ")), "a dot has no label of its own: the row's name says it");
 }
 
 /// A clear and an update arrive while the app is open: the pin changes with
@@ -182,10 +198,10 @@ fn a_clear_and_an_update_arrive_while_the_app_is_open() {
     assert!(has(&app, "Form A, status amber, 18h"), "a cleared ticket badge falls back to the app's: {:?}", app.labels);
     app.press("clear forms");
     assert!(has(&app, "Tax forms") && has(&app, "Form A"), "a clear: no state in the name: {:?}", app.labels);
-    assert!(!has(&app, "Status red"), "no red dot is left: {:?}", app.labels);
+    assert_eq!(dot_count(&app, theme::DOWN), 0, "no red dot is left");
     assert_eq!(app.texts().iter().filter(|t| **t == "18h").count(), 1, "only Board's 18h is left: {:?}", app.texts());
     app.press("plain red");
-    assert!(has(&app, "Plain, status red") && has(&app, "Status red"), "{:?}", app.labels);
+    assert!(has(&app, "Plain, status red") && dot_count(&app, theme::DOWN) == 1, "{:?}", app.labels);
     app.press("other plugin");
     app.press("broken");
     assert!(has(&app, "Tax forms") && has(&app, "Plain, status red"), "nothing else moved: {:?}", app.labels);
@@ -224,7 +240,8 @@ fn the_widest_text_stays_inside_its_room() {
     let mut app = start();
     app.press("widest");
     let row = app.frame("Plain, status green, WWWWWWWW");
-    let slot = app.parent_frame("Status green");
+    let dot = dots(&app).iter().find(|(_, c)| *c == nsh_core::Color::from(theme::UP.light)).map(|(id, _)| *id).expect("the green dot");
+    let slot = app.frames[&app.parents[&dot]];
     let (text_id, _) = app.text_view("WWWWWWWW");
     let text = app.frames[&text_id];
     let right = |b: &nsh_core::geometry::Bounds<nsh_core::geometry::Points>| b.origin.x.0 + b.size.width.0;

@@ -1,5 +1,5 @@
 {
- "about": "A tool result's _meta[\"buwiz/badge\"] against a manifest whose apps are board and card (spec 16.4). `ok`: well formed on the wire, else malformed for `why`. `helper_ok`: whether the libraries' Badge helper accepts the same author input when it differs (it trims plain spaces and does not know the manifest). Vectors with `clear` are for the host only.",
+ "about": "A tool result's _meta[\"buwiz/badge\"] against a manifest whose apps are board and card (spec 16.4). A text with a hidden character (spec 4.2) is malformed. `ok`: well formed on the wire, else malformed for `why`. `helper_ok`: whether the libraries' Badge helper accepts the same author input when it differs (it trims plain spaces and does not know the manifest). Vectors with `clear` are for the host only.",
  "apps": [
   "board",
   "card"
@@ -76,7 +76,8 @@
     "app": "board",
     "text": "\ufeffx"
    },
-   "ok": true
+   "ok": false,
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -195,7 +196,7 @@
     "text": "ok\n"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -203,7 +204,7 @@
     "text": "\nok"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -211,7 +212,7 @@
     "text": "a\nb"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -219,7 +220,7 @@
     "text": "a\rb"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -227,7 +228,7 @@
     "text": "a\tb"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -235,7 +236,7 @@
     "text": "a\u0007b"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -243,7 +244,7 @@
     "text": "a\u2028b"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -251,7 +252,7 @@
     "text": "a\u2029b"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -259,7 +260,7 @@
     "text": "\u0085x"
    },
    "ok": false,
-   "why": "text is not one line of plain characters"
+   "why": "text has a hidden character"
   },
   {
    "badge": {
@@ -352,6 +353,126 @@
    },
    "ok": false,
    "why": "clear is not true"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u202e2 due"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u200bb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u00adb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\ufeff2 due"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u2066x"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u061cb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u180eb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u2060b"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\ufe0fb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\udb40\udc41b"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u200b"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u0001"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u007fb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "a\u009fb"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
+  },
+  {
+   "badge": {
+    "app": "board",
+    "text": "\u200d2"
+   },
+   "ok": false,
+   "why": "text has a hidden character"
   }
  ]
 }

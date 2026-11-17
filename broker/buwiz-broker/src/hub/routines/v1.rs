@@ -488,7 +488,15 @@ impl V1 {
     /// each routine's state merged.
     pub fn list(&self, db: &Db) -> Vec<Value> {
         let p = self.plugins.as_ref();
-        p.rows().iter().map(|row| pv::describe(p, row, &|plugin, r| self.info(db, plugin, r))).collect()
+        // one read of every plugin's badges, not one a plugin
+        let all = p.badges_all();
+        p.rows()
+            .iter()
+            .map(|row| {
+                let badges = all.as_ref().map(|(at, a)| (*at, a.get(&row.id).cloned().unwrap_or_else(|| json!([]))));
+                pv::describe_with(p, row, &|plugin, r| self.info(db, plugin, r), badges)
+            })
+            .collect()
     }
 
     /// the instance's own thread, made when it is enabled in a chat that exists

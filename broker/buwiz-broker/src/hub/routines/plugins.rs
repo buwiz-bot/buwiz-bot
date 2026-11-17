@@ -58,6 +58,10 @@ pub trait PluginView: Send + Sync {
     fn badges(&self, _id: &str) -> (i64, Value) {
         (0, json!([]))
     }
+    /// Every plugin's, from one read (`Host::badges_all`); a plugin not in it has none.
+    fn badges_all(&self) -> Option<(i64, std::collections::HashMap<String, Value>)> {
+        None
+    }
 }
 
 impl PluginView for Arc<Host> {
@@ -94,6 +98,9 @@ impl PluginView for Arc<Host> {
     }
     fn badges(&self, id: &str) -> (i64, Value) {
         self.badges_view(id)
+    }
+    fn badges_all(&self) -> Option<(i64, std::collections::HashMap<String, Value>)> {
+        Some(Host::badges_all(self))
     }
 }
 
@@ -206,6 +213,12 @@ pub fn routine_prompt(p: &dyn PluginView, plugin: &str, routine: &str) -> Option
 /// `setup` they need (no values) and, with accounts, the host's
 /// `account_commands` (`@short:login`, …).
 pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Value) -> Value {
+    describe_with(p, row, info, None)
+}
+
+/// [`describe`] with the plugin's badges already read (`badges`: its `rev` and list), as a list of
+/// plugins reads them once for all.
+pub fn describe_with(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Value, badges: Option<(i64, Value)>) -> Value {
     let m = row.manifest();
     let rt = p.runtime(&row.id);
     let off = disabled_of(row);
@@ -232,7 +245,7 @@ pub fn describe(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) -> Va
     // a newer release, or null: nothing of it is installed until the person's Install
     out.insert("update".into(), p.update(&row.id));
     // what its pins show (`buwiz/badge`)
-    let (rev, badges) = p.badges(&row.id);
+    let (rev, badges) = badges.unwrap_or_else(|| p.badges(&row.id));
     out.insert("badges".into(), badges);
     out.insert("badges_rev".into(), json!(rev));
     let apps: Vec<Value> = m

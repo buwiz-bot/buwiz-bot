@@ -39,6 +39,10 @@ struct Bed {
 }
 
 fn host_in(dir: &std::path::Path) -> Arc<Host> {
+    host_with(dir, HostClock::system())
+}
+
+fn host_with(dir: &std::path::Path, clock: HostClock) -> Arc<Host> {
     let t = trust(&[FX]);
     let pubs: serde_json::Map<String, Value> = t.publishers.iter().map(|(k, p)| (k.clone(), json!({"alg": "ed25519", "publisher": p.publisher, "public_key": p.public_key}))).collect();
     let approved: Vec<Value> = t.approved.iter().map(|(id, k)| json!({"id": id, "publisher_key_id": k})).collect();
@@ -48,7 +52,7 @@ fn host_in(dir: &std::path::Path) -> Arc<Host> {
         keys: Keystore::from_spec(&format!("file:{}", dir.join("keys").display())).unwrap(),
         trust_file: Some(dir.join("trust.json")),
         log_dir: None,
-        clock: HostClock::system(),
+        clock,
         timeouts: Timeouts::default(),
         apps_dir: Some(dir.join("v1/apps")),
     })
@@ -415,5 +419,65 @@ async fn revs_only_go_up() {
     let (later, none) = b.host.badges_view(FX);
     assert_eq!(none, json!([]));
     assert!(later >= cleared["rev"].as_i64().unwrap() && later > at, "the list's rev covers the removal");
+    b.done().await;
+}
+
+/// A restart seeds the revs from what is stored, so a clock set back cannot issue one below a rev already given.
+#[tokio::test]
+async fn revs_survive_a_restart_and_a_clock_set_back() {
+    let dir = std::env::temp_dir().join(format!("buwiz-badges-revclock-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock = HostClock::manual();
+    clock.manual_step(Some(5_000_000.0), false);
+    let host = host_with(&dir, clock);
+    install(&host, &spec_of(&sign(&dir, "manifest.json", |_| {}))).await;
+    let call = |h: &Arc<Host>, args: Value| {
+        let h = h.clone();
+        async move { h.call_tool(FX, "fx_badge", &args, None, None).await.unwrap() }
+    };
+    call(&host, json!({"badge": {"app": "board", "dot": "red"}})).await;
+    call(&host, json!({"badge": {"app": "card", "dot": "green"}})).await;
+    let before: Vec<i64> = host.badges_view(FX).1.as_array().unwrap().iter().map(|b| b["rev"].as_i64().unwrap()).collect();
+    assert_eq!(before, [5_000_000, 5_000_001], "the clock, then one more");
+    host.stop_all().await;
+    // a new host, its clock stepped far back
+    let clock = HostClock::manual();
+    clock.manual_step(Some(1_000.0), false);
+    let again = host_with(&dir, clock);
+    install(&again, &spec_of(&sign(&dir, "next.json", |m| m["version"] = json!("1.0.1")))).await;
+    let (at, list) = again.badges_view(FX);
+    let highest = list.as_array().unwrap().iter().map(|b| b["rev"].as_i64().unwrap()).max().unwrap();
+    assert!(at >= highest, "the list's rev ({at}) is not below a listed rev ({highest})");
+    again.call_tool(FX, "fx_badge", &json!({"badge": {"app": "board", "dot": "amber"}}), None, None).await.unwrap();
+    let after = again.badges_view(FX).1;
+    let changed = after.as_array().unwrap().iter().find(|b| b["app"] == "board").unwrap()["rev"].as_i64().unwrap();
+    assert!(changed > highest, "a change after the restart ({changed}) is above every earlier rev ({highest})");
+    again.stop_all().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A read of the database that fails announces nothing: a badge still stored is not said to be cleared.
+#[tokio::test]
+async fn a_failed_read_announces_nothing() {
+    let b = bed("readfail").await;
+    b.call(json!({"badge": {"app": "board", "dot": "red"}})).await;
+    let mut events = b.host.badge_events();
+    b.host.sql(|db| db.execute_batch("ALTER TABLE v1_badges RENAME TO v1_badges_gone")).unwrap();
+    b.host.emit_badge(FX, "board", "");
+    assert!(events.try_recv().is_err(), "nothing said");
+    b.host.sql(|db| db.execute_batch("ALTER TABLE v1_badges_gone RENAME TO v1_badges")).unwrap();
+    b.host.emit_badge(FX, "board", "");
+    assert_eq!(events.try_recv().unwrap()["dot"], "red", "and it says what is stored once it reads again");
+    b.done().await;
+}
+
+/// The plugin list reads every plugin's badges once.
+#[tokio::test]
+async fn the_list_has_each_plugins_badges_from_one_read() {
+    let b = bed("all").await;
+    b.call(json!({"badge": {"app": "board", "dot": "red"}})).await;
+    let (at, all) = b.host.badges_all();
+    assert_eq!(strip(all[FX].clone()), vec![one("board", None, "red", "")]);
+    assert_eq!(at, b.host.badges_view(FX).0);
     b.done().await;
 }
