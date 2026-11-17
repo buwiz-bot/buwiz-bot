@@ -60,8 +60,9 @@ are lost at the next rebuild.
   `node`, no packages). Run them with `broker/buwiz-broker/tests/http/run.sh
   <built buwiz-broker>`; each test starts the broker on `TEST_PORT` (8797 by
   default) with a temp data dir, from a clean environment. CI's broker job runs
-  them. `server/test/` keeps only what has no Rust twin yet (the in-process
-  plugin host suites, `v1-manifest`, `office`, the rich avatar cases; #262);
+  them; the plugin host's own are `v1-plugins`, `v1-sessions` and `v1-names`,
+  which speak to `/v1/host/*` as the app does. `server/test/` keeps only what
+  has no Rust twin yet (`v1-manifest`, `office`, the rich avatar cases; #262);
   `cd server && npm test` (after `npm ci`) runs those.
 - The owner's broker data is `~/Library/Application Support/Buwiz Broker`
   (`Grok Shell` before; it moves once, `broker/buwiz-protocol/src/broker_dir.rs`).
