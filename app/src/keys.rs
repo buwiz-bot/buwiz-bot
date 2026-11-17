@@ -52,13 +52,15 @@ pub(crate) enum Scope {
     Settings,
     /// The composer's `/` and `@` popup is open over the chat.
     ComposerPopup,
+    /// The popup has a row selected: Enter and Tab take it.
+    ComposerPick,
     /// The chat with no modal over it.
     Chat,
     Global,
 }
 
 /// Innermost first: the first open scope binding a key takes it.
-pub(crate) const ORDER: [Scope; 18] = [
+pub(crate) const ORDER: [Scope; 19] = [
     Scope::Recording,
     Scope::Menu,
     Scope::Palette,
@@ -74,6 +76,7 @@ pub(crate) const ORDER: [Scope; 18] = [
     Scope::PluginsSearch,
     Scope::Plugins,
     Scope::Settings,
+    Scope::ComposerPick,
     Scope::ComposerPopup,
     Scope::Chat,
     Scope::Global,
@@ -98,6 +101,7 @@ impl Scope {
             Scope::Plugins => "$plugins",
             Scope::Settings => "$settings",
             Scope::ComposerPopup => "$composer-popup",
+            Scope::ComposerPick => "$composer-popup",
             Scope::Chat => "$chat",
             Scope::Global => "$global",
         }
@@ -127,6 +131,7 @@ impl Scope {
             Scope::Plugins => s.plugins,
             Scope::Settings => s.settings,
             Scope::ComposerPopup => Scope::Chat.open_in(s) && s.popup,
+            Scope::ComposerPick => Scope::Chat.open_in(s) && s.popup && s.pick,
             Scope::Chat => {
                 !s.palette
                     && !s.viewer
@@ -169,6 +174,8 @@ pub(crate) struct Shown {
     settings: bool,
     /// The composer's `/` and `@` popup has rows.
     popup: bool,
+    /// …and a row of it is selected.
+    pick: bool,
     bot_details: bool,
     app_details: bool,
     bot_modal: bool,
@@ -200,6 +207,7 @@ impl Shown {
             plugins_drop: st.drop_open(),
             settings: st.settings_open.get(),
             popup: false,
+            pick: false,
             bot_details: st.bot_details.get().is_some(),
             app_details: st.app_details.get().is_some(),
             bot_modal: st.bot_modal.get(),
@@ -210,6 +218,7 @@ impl Shown {
         };
         // the popup's rows are read only while the chat is the open scope
         s.popup = Scope::Chat.open_in(&s) && !crate::slash::rows().is_empty();
+        s.pick = s.popup && crate::slash::armed();
         s
     }
 
@@ -368,8 +377,8 @@ pub(crate) static COMMANDS: &[Command] = &[
     // ——— The composer's / and @ popup ———
     always(repeating(cmd("popup.up", "Previous suggestion", Scope::ComposerPopup, &["up"], |_| crate::slash::step(-1)))),
     always(repeating(cmd("popup.down", "Next suggestion", Scope::ComposerPopup, &["down"], |_| crate::slash::step(1)))),
-    always(cmd("popup.pick", "Pick the suggestion", Scope::ComposerPopup, &["enter"], |_| crate::slash::enter())),
-    always(cmd("popup.complete", "Complete with the suggestion", Scope::ComposerPopup, &["tab"], |_| crate::slash::tab())),
+    always(cmd("popup.pick", "Pick the suggestion", Scope::ComposerPick, &["enter"], |_| crate::slash::enter())),
+    always(cmd("popup.complete", "Complete with the suggestion", Scope::ComposerPick, &["tab"], |_| crate::slash::tab())),
     always(cmd("popup.close", "Close the suggestions", Scope::ComposerPopup, &["escape"], |_| crate::slash::close())),
     always(with_arg(cmd("popup.pick_1", "Pick suggestion 1", Scope::ComposerPopup, &["mod+1"], popup_pick), 1)),
     always(with_arg(cmd("popup.pick_2", "Pick suggestion 2", Scope::ComposerPopup, &["mod+2"], popup_pick), 2)),

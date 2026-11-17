@@ -636,6 +636,7 @@ fn pop_picker() -> impl IntoElement {
         }
         let head = store().pop_head.get();
         let sel = store().pop_sel.get().min(rows.len() - 1);
+        let armed = crate::slash::armed();
         let start = crate::slash::first_shown(sel);
         view()
             .mb(px(6.0))
@@ -660,7 +661,7 @@ fn pop_picker() -> impl IntoElement {
                     .enumerate()
                     .skip(start)
                     .take(crate::slash::VISIBLE)
-                    .map(|(i, r)| pop_row(r, i == sel, i - start + 1)),
+                    .map(|(i, r)| pop_row(r, armed && i == sel, i - start + 1)),
             )
             .into_element()
     })

@@ -181,21 +181,11 @@ pub fn route(cmd: &Slash, plugins: &[Commands]) -> Route {
     }
 }
 
-/// The composer's rows for `/<q>`: every candidate, each in the form that
-/// reaches it (`/name` when unique, else `/short:name`), with its plugin.
-pub fn command_rows(q: &str, plugins: &[Commands]) -> Vec<(String, String, String)> {
-    let mut out = Vec::new();
-    for p in plugins.iter().filter(|p| p.enabled) {
-        for c in p.commands.iter().filter(|c| c.starts_with(q) || format!("{}:{c}", p.short).starts_with(q)) {
-            let unique = route(&Slash { short: None, name: c, args: "" }, plugins) == Route::Plugin {
-                plugin: p.plugin.clone(),
-                short: p.short.clone(),
-            };
-            let label = if unique { format!("/{c}") } else { format!("/{}:{c}", p.short) };
-            out.push((label, p.plugin.clone(), c.clone()));
-        }
-    }
-    out
+/// How the composer lists `p`'s command `name`: `/name` when it reaches only `p`, else
+/// `/short:name`.
+pub fn command_label(p: &Commands, name: &str, plugins: &[Commands]) -> String {
+    let unique = route(&Slash { short: None, name, args: "" }, plugins) == Route::Plugin { plugin: p.plugin.clone(), short: p.short.clone() };
+    if unique { format!("/{name}") } else { format!("/{}:{name}", p.short) }
 }
 
 /// One choice of a resolve (9.2), as the popup shows it.
@@ -479,11 +469,13 @@ mod tests {
         assert_eq!(go("/status"), Route::Builtin);
         assert_eq!(go("/off:ledger"), Route::Unknown);
         assert_eq!(go("/nope"), Route::Unknown);
-        // the composer lists every candidate in the form that reaches it
-        let rows: Vec<String> = command_rows("re", &ps).into_iter().map(|r| r.0).collect();
-        assert_eq!(rows, ["/bir:report", "/acc:report"]);
-        let rows: Vec<String> = command_rows("tax", &ps).into_iter().map(|r| r.0).collect();
-        assert_eq!(rows, ["/taxform", "/taxprofile"]);
+        // the composer lists a command in the form that reaches it
+        let bir = ps.iter().find(|p| p.short == "bir").unwrap();
+        let acc = ps.iter().find(|p| p.short == "acc").unwrap();
+        assert_eq!(command_label(bir, "taxform", &ps), "/taxform");
+        assert_eq!(command_label(bir, "taxprofile", &ps), "/taxprofile");
+        assert_eq!(command_label(bir, "report", &ps), "/bir:report");
+        assert_eq!(command_label(acc, "report", &ps), "/acc:report");
     }
 
     #[test]
