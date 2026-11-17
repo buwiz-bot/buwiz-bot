@@ -2,7 +2,10 @@
 # The HTTP tests: each starts the given buwiz-broker on its own data dir and
 # speaks HTTP to it. Plain `node` (24 or later), no packages.
 #
-#   tests/http/run.sh <buwiz-broker binary> [test file ...]
+#   tests/http/run.sh <buwiz-broker binary> [--core | --office] [test file ...]
+#
+# With no test files it runs them all; --core leaves out office.test.mjs, which
+# needs the BetterOffice packages (`npm ci` in office/), and --office runs only it.
 #
 # TEST_PORT (default 8797) is the port each test's broker takes, one at a
 # time; move it when another broker holds it. Exits non-zero if any test
@@ -32,5 +35,13 @@ if [ -z "${BUWIZ_HTTP_CLEAN:-}" ]; then
   exit $?
 fi
 cd "$HERE" || exit 2
-[ $# -gt 0 ] || set -- ./*.test.mjs
+GROUP=all
+case "${1:-}" in --core) GROUP=core; shift ;; --office) GROUP=office; shift ;; esac
+if [ $# -eq 0 ]; then
+  case "$GROUP" in
+    office) set -- ./office.test.mjs ;;
+    core) for f in ./*.test.mjs; do [ "$f" = ./office.test.mjs ] || set -- "$@" "$f"; done ;;
+    *) set -- ./*.test.mjs ;;
+  esac
+fi
 node --test --test-concurrency=1 "$@"

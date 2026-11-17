@@ -1,5 +1,5 @@
 {
-  "about": "Node's answers for the manifest cases (server/test/v1-manifest.test.mjs, Appendix C.1), recorded from Node's v1/manifest.mjs. A case is the fixture tests/fixtures/v1/manifest.json (publisher.key_id test-key) with its edits applied, signed with the seed of 32 bytes of 3 (the board and card fingerprints filled), then verified; see tests/manifest_pins.rs for the edit, macro and post-processing forms.",
+  "about": "Node's answers for the manifest cases (Appendix C.1: the old v1-manifest test), recorded from its v1/manifest.mjs. A case is the fixture tests/fixtures/v1/manifest.json (publisher.key_id test-key) with its edits applied, signed with the seed of 32 bytes of 3 (the board and card fingerprints filled), then verified; see tests/manifest_pins.rs for the edit, macro and post-processing forms.",
   "cases": [
     {"id":"MAN-01 the fixture","op":"verify","expect":{"ok":true,"sha256":"f294438a7920aec042b27f552e31f4a25e56288f3455c658d1d69737dfe11f4f"}},
     {"id":"MAN-01 keys reversed, whitespace changed","op":"verify","layout":"reversed3","expect":{"ok":true,"sha256":"f294438a7920aec042b27f552e31f4a25e56288f3455c658d1d69737dfe11f4f"}},
