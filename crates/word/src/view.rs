@@ -8,7 +8,8 @@
 //! page once per layout and zoom (`doc.rs`); a scroll only moves the page
 //! views and asks for pages coming near, so scrolling never repaints a
 //! page's canvas. The caret, the selection and find's matches are views
-//! over the pages, moved rather than drawn; pictures are image views.
+//! over the pages, moved rather than drawn; pictures are image views. The
+//! thumbnail strip beside them is [`super::strip`].
 //!
 //! Typing goes into one hidden text input that keeps the focus; the keys
 //! that edit (arrows, Delete, Return, ⌘B, …) are bound in `keys.rs`
@@ -25,7 +26,7 @@ use buwiz_office_kit::host::theme;
 
 /// Space between pages (`CANVAS_PAGE_GAP_PX`) and around them
 /// (`CANVAS_PAGES_PADDING_PX`), points.
-const GAP: f32 = 16.0;
+pub(crate) const GAP: f32 = 16.0;
 pub const PAD: f32 = 24.0;
 /// How far past the view pages are kept drawn, in view heights.
 const AHEAD: f32 = 1.0;
@@ -38,7 +39,7 @@ fn ui() -> &'static WordUi {
 /// by typing starts the hidden field afresh: what it held is behind the
 /// caret no more.
 pub fn send(cmd: Cmd) {
-    if !matches!(cmd, Cmd::View { .. } | Cmd::Type(_) | Cmd::Print | Cmd::SaveTo(_) | Cmd::Copy { cut: false }) {
+    if !matches!(cmd, Cmd::View { .. } | Cmd::Thumbs { .. } | Cmd::Type(_) | Cmd::Print | Cmd::SaveTo(_) | Cmd::Copy { cut: false }) {
         empty_field();
     }
     post(cmd);
@@ -110,7 +111,7 @@ pub fn focus() {
 }
 
 /// Each page's top, and the whole height, at `zoom` (points).
-fn tops(pages: &[(f32, f32)], zoom: f32) -> (Vec<f32>, f32) {
+pub(crate) fn tops(pages: &[(f32, f32)], zoom: f32) -> (Vec<f32>, f32) {
     let mut y = PAD;
     let mut out = Vec::with_capacity(pages.len());
     for (i, (_, h)) in pages.iter().enumerate() {
@@ -175,6 +176,23 @@ pub fn reveal(u: &WordUi, page: usize, y: f32) {
     }
     u.scroll.set(to);
     ask_pages(u, false);
+    super::strip::follow(u);
+}
+
+/// Scrolls to the top of page `page` (the strip's press).
+pub fn go_to_page(page: usize) {
+    let u = ui();
+    let meta = u.meta.get_untracked();
+    let (tops, _) = tops(&meta.pages, u.zoom.get_untracked());
+    let Some(top) = tops.get(page) else { return };
+    let to = (top - GAP).max(0.0);
+    if let Some(r) = SCROLLER.with(std::cell::Cell::get) {
+        r.scroll_to(point(px(0.0), px(to)), false);
+    }
+    u.scroll.set(to);
+    ask_pages(u, false);
+    super::strip::follow(u);
+    focus();
 }
 
 /// A key's move.
@@ -436,10 +454,12 @@ fn pages() -> impl IntoElement {
         .on_layout(move |b: &Bounds<Points>| {
             u.area.set((b.size.width.0, b.size.height.0));
             ask_pages(u, false);
+            super::strip::follow(u);
         })
         .on_scroll(move |e: &ScrollEvent| {
             u.scroll.set(e.offset.y.0);
             ask_pages(u, false);
+            super::strip::follow(u);
         })
         .child(
             view()
@@ -581,6 +601,7 @@ pub fn word_view() -> impl IntoElement {
             view()
                 .flex_1()
                 .flex_row()
+                .child(super::strip::strip())
                 .child(view().flex_1().child(pages()).child(typing()))
                 .child(when(move || u.review.get(), review)),
         )

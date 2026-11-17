@@ -23,6 +23,9 @@ use super::layout::Layout;
 use super::save;
 use buwiz_office_kit::session::Document;
 
+/// A thumbnail's width, points: the strip's drawings are made at this scale.
+pub const THUMB_W: f32 = 96.0;
+
 // the menu bar's commands (Insert, Format, Page Setup, Watermark)
 #[path = "commands.rs"]
 mod commands;
@@ -75,6 +78,9 @@ pub enum Cmd {
     /// The pages in and near view at `zoom`: drawn when not yet drawn for
     /// this layout and zoom.
     View { pages: Vec<usize>, zoom: f32 },
+    /// The pages the thumbnail strip shows: each drawn small, from its
+    /// display list, when not yet drawn for its content.
+    Thumbs { pages: Vec<usize> },
     /// A click at (`x`, `y`) on page `page` (page pixels); `extend` moves
     /// only the selection's head; `clicks` 2 selects a word, 3 a paragraph.
     Click { page: usize, x: f32, y: f32, extend: bool, clicks: u8 },
@@ -182,6 +188,9 @@ pub enum Out {
     Meta(Box<Meta>),
     /// Page `index` drawn for layout `rev` at the zoom it was asked at.
     Page { index: usize, rev: u64, zoom: f32, drawn: Arc<Drawn> },
+    /// Page `index`'s thumbnail, [`THUMB_W`] wide: its content changed (or
+    /// it was not drawn yet).
+    Thumb { index: usize, drawn: Arc<Drawn> },
     Caret(Caret),
     /// Picture bytes by (part, relationship id), once each.
     Media(Vec<(MediaKey, Arc<Vec<u8>>)>),
@@ -208,6 +217,12 @@ pub struct Word {
     want: Vec<usize>,
     /// What was drawn of each page: its list as drawn, the layout and the zoom.
     drawn: HashMap<usize, (Arc<DisplayPage>, u64, f32)>,
+    /// The pages the strip shows, and what was drawn of each thumbnail: the
+    /// list as drawn, the layout it was last found current in, and the
+    /// drawing (a page that moved in the text, its list's offsets changed,
+    /// is drawn the same: only a different drawing is sent).
+    thumb_want: Vec<usize>,
+    thumbs: HashMap<usize, (Arc<DisplayPage>, u64, Arc<Drawn>)>,
     /// Pictures already sent.
     media_sent: std::collections::HashSet<MediaKey>,
     media: Option<Vec<(String, Vec<u8>)>>,
@@ -277,6 +292,8 @@ impl Word {
             zoom: 1.0,
             want: vec![0],
             drawn: HashMap::new(),
+            thumb_want: Vec::new(),
+            thumbs: HashMap::new(),
             media_sent: Default::default(),
             media: None,
             found: Vec::new(),
@@ -454,6 +471,7 @@ impl Word {
             self.undo = UndoSession::new();
             self.undo.track(self.layout.engine.doc());
             self.drawn.clear();
+            self.thumbs.clear();
         }
         let window = self.window();
         if let Err(e) = self.layout.full(window) {
@@ -507,6 +525,63 @@ impl Word {
             outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(drawn) });
         }
         self.send_media(pictures, outs);
+        self.redraw_thumbs(outs, false);
+    }
+
+    /// Draws the strip's thumbnails whose page's content changed. The
+    /// drawing is the page's display list at the thumbnail's scale: no
+    /// layout. A page whose list is built already is compared in place
+    /// (what an edit leaves built is the pages in view); one that is not is
+    /// built only when the strip asks (`build`), and then only if it was
+    /// not found current in this layout, so a key never builds a list for
+    /// the strip.
+    fn redraw_thumbs(&mut self, outs: &mut Vec<Out>, build: bool) {
+        let count = self.layout.page_count();
+        let want: Vec<usize> = self.thumb_want.iter().copied().filter(|p| *p < count).collect();
+        if want.is_empty() {
+            return;
+        }
+        if build {
+            let unbuilt: Vec<usize> = want
+                .iter()
+                .copied()
+                .filter(|i| self.layout.with_pages(|ps| ps[*i].unbuilt).unwrap_or(false) && self.thumbs.get(i).is_none_or(|(_, rev, _)| *rev != self.rev))
+                .collect();
+            if !unbuilt.is_empty()
+                && let Err(e) = self.layout.build(&unbuilt)
+            {
+                log::warn!("word: building thumbnails {unbuilt:?}: {e}");
+            }
+        }
+        for i in want {
+            // None: not built; Some(same): built, and whether it is the drawn one
+            let state = self.layout.with_pages(|ps| ps.get(i).filter(|p| !p.unbuilt).map(|p| self.thumbs.get(&i).is_some_and(|(old, _, _)| **old == *p))).flatten();
+            match state {
+                None => {}
+                Some(true) => {
+                    if let Some(t) = self.thumbs.get_mut(&i) {
+                        t.1 = self.rev;
+                    }
+                }
+                Some(false) => {
+                    let Some(page) = self.layout.page(i) else { continue };
+                    let k = THUMB_W / (page.width.as_f64().unwrap_or(816.0) as f32).max(1.0);
+                    let drawn = draw::page(&page, &self.layout.fonts, k);
+                    let page = Arc::new(page);
+                    match self.thumbs.get_mut(&i) {
+                        Some(t) if t.2.drawing == drawn.drawing && t.2.w == drawn.w && t.2.h == drawn.h => {
+                            t.0 = page;
+                            t.1 = self.rev;
+                        }
+                        _ => {
+                            let drawn = Arc::new(drawn);
+                            self.thumbs.insert(i, (page, self.rev, drawn.clone()));
+                            outs.push(Out::Thumb { index: i, drawn });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The bytes of pictures not sent yet.
@@ -1004,7 +1079,7 @@ impl Document for Word {
         // `viewing-mode` and `suggesting-unsupported` gates)
         let reads = matches!(
             cmd,
-            Cmd::View { .. } | Cmd::Click { .. } | Cmd::Move { .. } | Cmd::SelectAll | Cmd::Find { .. } | Cmd::Copy { cut: false } | Cmd::SaveTo(_) | Cmd::Print | Cmd::Mode(_) | Cmd::Table(TableOp::SelectTable)
+            Cmd::View { .. } | Cmd::Thumbs { .. } | Cmd::Click { .. } | Cmd::Move { .. } | Cmd::SelectAll | Cmd::Find { .. } | Cmd::Copy { cut: false } | Cmd::SaveTo(_) | Cmd::Print | Cmd::Mode(_) | Cmd::Table(TableOp::SelectTable)
         );
         if self.mode == EditMode::Viewing && !reads {
             return (vec![Out::Note(format::VIEWING.to_owned())], false);
@@ -1017,7 +1092,7 @@ impl Document for Word {
         if self.mode == EditMode::Suggesting && !tracked {
             return (vec![Out::Note(format::NOT_SUGGESTED.to_owned())], false);
         }
-        if !matches!(cmd, Cmd::View { .. } | Cmd::Table(_) | Cmd::Format(_) | Cmd::Copy { cut: false } | Cmd::Print | Cmd::SaveTo(_)) {
+        if !matches!(cmd, Cmd::View { .. } | Cmd::Thumbs { .. } | Cmd::Table(_) | Cmd::Format(_) | Cmd::Copy { cut: false } | Cmd::Print | Cmd::SaveTo(_)) {
             self.whole_table = false;
         }
         let story = self.head.story.clone();
@@ -1088,6 +1163,11 @@ impl Document for Word {
                 if zoomed {
                     outs.push(self.caret(false));
                 }
+                false
+            }
+            Cmd::Thumbs { pages } => {
+                self.thumb_want = pages;
+                self.redraw_thumbs(&mut outs, true);
                 false
             }
             Cmd::Click { page, x, y, extend, clicks } => {

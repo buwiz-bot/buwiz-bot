@@ -230,13 +230,25 @@ fn typing_200() {
     fonts::Fonts::resolve("Arial", false, false);
     for local in [false, true] {
         println!("-- with footnotes, local lowering {local}");
-        typing(fixture::document(200), local);
+        typing(fixture::document(200), local, false);
         println!("-- without footnotes, local lowering {local}");
-        typing(fixture::document_without_notes(200), local);
+        typing(fixture::document_without_notes(200), local, false);
     }
 }
 
-fn typing(bytes: Vec<u8>, local: bool) {
+/// The same echo with the thumbnail strip showing eight pages around the
+/// caret's (three of them the pages in view).
+#[test]
+#[ignore = "bench: run with --ignored --nocapture"]
+fn typing_200_strip() {
+    fonts::Fonts::resolve("Arial", false, false);
+    println!("-- with footnotes, strip showing");
+    typing(fixture::document(200), false, true);
+    println!("-- without footnotes, strip showing");
+    typing(fixture::document_without_notes(200), false, true);
+}
+
+fn typing(bytes: Vec<u8>, local: bool, strip: bool) {
     use super::doc::{Cmd, Move, Word};
     use buwiz_office_kit::session::Document;
     let t = Instant::now();
@@ -251,6 +263,14 @@ fn typing(bytes: Vec<u8>, local: bool) {
     w.run(Cmd::View { pages: vec![99, 100, 101], zoom: 1.0 });
     w.run(Cmd::Click { page: 100, x: 200.0, y: 200.0, extend: false, clicks: 1 });
     w.run(Cmd::Move { to: Move::LineEnd, extend: false });
+    if strip {
+        let t = Instant::now();
+        let (outs, _) = w.run(Cmd::Thumbs { pages: (96..104).collect() });
+        println!("the strip's first ask (8 thumbnails: lists built and drawn) {:.1} ms ({} drawn)", ms(t), outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count());
+        let t = Instant::now();
+        let (outs, _) = w.run(Cmd::Thumbs { pages: (97..105).collect() });
+        println!("scrolled by one page (1 new thumbnail, the rest stand) {:.1} ms ({} drawn)", ms(t), outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count());
+    }
     let mut v = Vec::new();
     for k in 0..30 {
         let t = Instant::now();
@@ -258,7 +278,8 @@ fn typing(bytes: Vec<u8>, local: bool) {
         v.push(ms(t));
         if k == 0 {
             let pages = outs.iter().filter(|o| matches!(o, super::doc::Out::Page { drawn, .. } if drawn.w > 0.0)).count();
-            println!("first key: {pages} pages drawn again");
+            let thumbs = outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count();
+            println!("first key: {pages} pages drawn again, {thumbs} thumbnails drawn again");
         }
     }
     v.sort_by(f64::total_cmp);

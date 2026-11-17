@@ -363,3 +363,87 @@ fn a_next_page_section_break_starts_a_page_and_a_continuous_one_none() {
     let m = last_meta(&mut w, Cmd::Insert(Insert::SectionBreak("continuous")));
     assert_eq!(m.pages.len(), 2, "{}", w.request_sections());
 }
+
+/// The thumbnails the answers carry, by page.
+fn thumbs(outs: &[Out]) -> Vec<usize> {
+    outs.iter().filter_map(|o| if let Out::Thumb { index, .. } = o { Some(*index) } else { None }).collect()
+}
+
+#[test]
+fn the_strip_gets_one_thumbnail_per_page_drawn_from_its_display_list() {
+    use super::doc::THUMB_W;
+    let mut w = open(fixture::document(4));
+    let pages = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.clone();
+    assert_eq!(pages.len(), 4);
+    let all: Vec<usize> = (0..pages.len()).collect();
+    let (outs, _) = w.run(Cmd::Thumbs { pages: all.clone() });
+    assert_eq!(thumbs(&outs), all, "one each, none of the pages in view first");
+    for o in &outs {
+        let Out::Thumb { index, drawn } = o else { continue };
+        let (pw, ph) = pages[*index];
+        assert!((drawn.w - THUMB_W).abs() < 0.01, "page {index} is {} wide", drawn.w);
+        assert!((drawn.h - THUMB_W * ph / pw).abs() < 0.01, "its height keeps the page's shape");
+        assert!(drawn.drawing.ops.len() > 10, "page {index} has its text drawn: {} operations", drawn.drawing.ops.len());
+    }
+    // asked again, nothing changed: nothing drawn
+    let (outs, _) = w.run(Cmd::Thumbs { pages: all });
+    assert!(thumbs(&outs).is_empty(), "{:?}", thumbs(&outs));
+    // no page canvas was drawn for the strip
+    assert!(!outs.iter().any(|o| matches!(o, Out::Page { .. })));
+}
+
+#[test]
+fn a_one_page_document_has_its_one_thumbnail() {
+    let mut w = open(fixture::paragraphs(&["Hello world"]));
+    let (outs, _) = w.run(Cmd::Thumbs { pages: vec![0, 1, 7] });
+    assert_eq!(thumbs(&outs), vec![0], "pages the document lacks are not drawn");
+}
+
+#[test]
+fn an_edit_draws_again_only_the_thumbnail_of_the_page_it_changed() {
+    let mut w = open(fixture::document(6));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    let all: Vec<usize> = (0..n).collect();
+    w.run(Cmd::View { pages: all.clone(), zoom: 1.0 });
+    w.run(Cmd::Thumbs { pages: all });
+    // a character typed on page 3 (a page break starts each section)
+    w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+    let (outs, changed) = w.run(Cmd::Type("!".into()));
+    assert!(changed);
+    assert_eq!(thumbs(&outs), vec![2], "page 3's thumbnail, and no other");
+    // and it differs from the one before: the typed text is in it
+    let (outs, _) = w.run(Cmd::Type("?".into()));
+    assert_eq!(thumbs(&outs), vec![2]);
+}
+
+#[test]
+fn typing_builds_no_display_list_for_the_strip() {
+    let mut w = open(fixture::document(8));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    // the strip shows every page, the document shows the third
+    w.run(Cmd::View { pages: vec![2], zoom: 1.0 });
+    let (outs, _) = w.run(Cmd::Thumbs { pages: (0..n).collect() });
+    assert_eq!(thumbs(&outs).len(), n);
+    w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+    let (outs, _) = w.run(Cmd::Type("!".into()));
+    assert_eq!(thumbs(&outs), vec![2], "only the page in view, which is built, is compared");
+    let unbuilt = (0..n).filter(|i| w.page(*i).is_some_and(|p| p.unbuilt)).count();
+    assert!(unbuilt >= n - 3, "the pages off the screen stay unbuilt after a key: {unbuilt} of {n}");
+}
+
+#[test]
+fn a_thumbnail_the_edit_left_behind_is_drawn_when_the_strip_asks_again() {
+    use super::doc::Insert;
+    let mut w = open(fixture::document(5));
+    let n = meta(&w.run(Cmd::Move { to: Move::Right, extend: false }).0).unwrap().pages.len();
+    let all: Vec<usize> = (0..n).collect();
+    w.run(Cmd::View { pages: vec![0], zoom: 1.0 });
+    w.run(Cmd::Thumbs { pages: all.clone() });
+    // a page break at the caret (page 1): every page after it moves down one
+    let (outs, _) = w.run(Cmd::Insert(Insert::PageBreak));
+    assert!(thumbs(&outs).iter().all(|i| *i == 0), "a key's answer holds the pages in view only: {:?}", thumbs(&outs));
+    let (outs, _) = w.run(Cmd::Thumbs { pages: all });
+    let got = thumbs(&outs);
+    assert!(got.len() >= n - 1, "the later pages' thumbnails are drawn again: {got:?}");
+    assert!(!got.contains(&0) || got.len() > 1);
+}
