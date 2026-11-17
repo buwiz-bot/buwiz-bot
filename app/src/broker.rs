@@ -548,6 +548,9 @@ mod tests {
             let body = &body[body.find('{').unwrap() + 1..];
             let first = body.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//")).unwrap();
             assert_eq!(first, "if let Some(why) = buwiz_bot::broker::refusal() {");
+            // and the old variable names are refused right after, still before anything opens
+            let second = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).nth(4).unwrap();
+            assert_eq!(second, "if let Err(why) = buwiz_protocol::env::refuse_old_names() {");
             assert!(!source.contains("#[ctor"), "nothing runs before main");
         }
     }
