@@ -3,9 +3,10 @@
 // (drafts/agent-messaging.md §10.3). An MCP server on stdio that calls the
 // Rox broker's /v1/bridge/* routes with a bridge endpoint's token. Make the
 // endpoint in Rox (POST /v1/host/agents/endpoints/create {bot, kind:
-// "bridge", name}), then add this server to Claude Code:
+// "bridge", name}), run `npm ci` once in this folder, then add this server to
+// Claude Code:
 //
-//   claude mcp add rox -e BUWIZ_BRIDGE_TOKEN=<token> -- node <rox>/server/bridge/rox-bridge.mjs
+//   claude mcp add rox -e BUWIZ_BRIDGE_TOKEN=<token> -- node <checkout>/bridge/rox-bridge.mjs
 //
 // BUWIZ_BRIDGE_URL is the broker (default http://127.0.0.1:8787); ROX_BRIDGE_URL
 // and ROX_BRIDGE_TOKEN, the old names, still work. The bridge
@@ -14,7 +15,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { env } from "../src/env.mjs";
+import { env } from "./env.mjs";
 
 const BASE = (env("BUWIZ_BRIDGE_URL") || "http://127.0.0.1:8787").replace(/\/+$/, "");
 const TOKEN = env("BUWIZ_BRIDGE_TOKEN") || "";

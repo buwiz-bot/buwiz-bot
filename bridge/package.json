@@ -1,0 +1,12 @@
+{
+  "name": "buwiz-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An MCP server that lets an outside coding agent talk with a Buwiz Bot agent",
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  }
+}
