@@ -276,6 +276,13 @@ fn typing(bytes: Vec<u8>, local: bool, strip: bool) {
         let t = Instant::now();
         let (outs, _) = w.run(Cmd::Type(if k % 5 == 4 { " ".into() } else { "x".into() }));
         v.push(ms(t));
+        if strip && k % 10 == 9 {
+            // a pause in the typing: the strip catches up
+            std::thread::sleep(super::doc::THUMB_SETTLE);
+            let t = Instant::now();
+            let (outs, _) = w.tick();
+            println!("after a pause: the strip's check {:.1} ms ({} thumbnails drawn again)", ms(t), outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count());
+        }
         if k == 0 {
             let pages = outs.iter().filter(|o| matches!(o, super::doc::Out::Page { drawn, .. } if drawn.w > 0.0)).count();
             let thumbs = outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count();

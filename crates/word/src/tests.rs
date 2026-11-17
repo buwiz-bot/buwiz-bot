@@ -364,6 +364,12 @@ fn a_next_page_section_break_starts_a_page_and_a_continuous_one_none() {
     assert_eq!(m.pages.len(), 2, "{}", w.request_sections());
 }
 
+/// What the worker draws of the strip once the keys pause.
+fn settled(w: &mut Word) -> Vec<Out> {
+    std::thread::sleep(super::doc::THUMB_SETTLE);
+    w.tick().0
+}
+
 /// The thumbnails the answers carry, by page.
 fn thumbs(outs: &[Out]) -> Vec<usize> {
     outs.iter().filter_map(|o| if let Out::Thumb { index, .. } = o { Some(*index) } else { None }).collect()
@@ -410,10 +416,14 @@ fn an_edit_draws_again_only_the_thumbnail_of_the_page_it_changed() {
     w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
     let (outs, changed) = w.run(Cmd::Type("!".into()));
     assert!(changed);
-    assert_eq!(thumbs(&outs), vec![2], "page 3's thumbnail, and no other");
-    // and it differs from the one before: the typed text is in it
+    assert!(thumbs(&outs).is_empty(), "the key's answer holds no thumbnail work");
+    assert!(w.busy(), "the strip is looked at once the keys pause");
+    assert_eq!(thumbs(&settled(&mut w)), vec![2], "page 3's thumbnail, and no other");
+    assert!(!w.busy());
+    // and again for the next key
     let (outs, _) = w.run(Cmd::Type("?".into()));
-    assert_eq!(thumbs(&outs), vec![2]);
+    assert!(thumbs(&outs).is_empty());
+    assert_eq!(thumbs(&settled(&mut w)), vec![2]);
 }
 
 #[test]
@@ -425,8 +435,8 @@ fn typing_builds_no_display_list_for_the_strip() {
     let (outs, _) = w.run(Cmd::Thumbs { pages: (0..n).collect() });
     assert_eq!(thumbs(&outs).len(), n);
     w.run(Cmd::Click { page: 2, x: 200.0, y: 200.0, extend: false, clicks: 1 });
-    let (outs, _) = w.run(Cmd::Type("!".into()));
-    assert_eq!(thumbs(&outs), vec![2], "only the page in view, which is built, is compared");
+    w.run(Cmd::Type("!".into()));
+    assert_eq!(thumbs(&settled(&mut w)), vec![2], "only the page in view, which is built, is compared");
     let unbuilt = (0..n).filter(|i| w.page(*i).is_some_and(|p| p.unbuilt)).count();
     assert!(unbuilt >= n - 3, "the pages off the screen stay unbuilt after a key: {unbuilt} of {n}");
 }
@@ -441,7 +451,9 @@ fn a_thumbnail_the_edit_left_behind_is_drawn_when_the_strip_asks_again() {
     w.run(Cmd::Thumbs { pages: all.clone() });
     // a page break at the caret (page 1): every page after it moves down one
     let (outs, _) = w.run(Cmd::Insert(Insert::PageBreak));
-    assert!(thumbs(&outs).iter().all(|i| *i == 0), "a key's answer holds the pages in view only: {:?}", thumbs(&outs));
+    assert!(thumbs(&outs).is_empty());
+    let settled = thumbs(&settled(&mut w));
+    assert!(settled.iter().all(|i| *i == 0), "only the page in view is looked at: {settled:?}");
     let (outs, _) = w.run(Cmd::Thumbs { pages: all });
     let got = thumbs(&outs);
     assert!(got.len() >= n - 1, "the later pages' thumbnails are drawn again: {got:?}");

@@ -130,3 +130,23 @@ No run was faster with it on, so it stays off. Edits made through
 `EditingDoc` don't reach the engine's resident text path
 (`edit_resident_text` is `pub(crate)`), which is the one local lowering
 serves.
+
+## The thumbnail strip
+
+`cargo test -p buwiz-word --lib bench::typing_200_strip -- --ignored --nocapture --exact`
+is the typing echo above with the strip showing eight pages around the
+caret (three of them the pages in view).
+
+- A thumbnail is the page's display list drawn at 96 points wide
+  (`draw::page` at a scale; no layout). The strip's first ask, eight
+  thumbnails with their lists built: ~40 ms. A scroll by one page, one new
+  thumbnail: ~10 ms. Neither is on the typing path.
+- A key sends no thumbnail: the worker looks at the strip 150 ms after the
+  last edit (`THUMB_SETTLE`, in `tick`), draws the built pages again and
+  sends only a thumbnail whose drawing differs (the edited page's; a page
+  that only moved in the text draws the same). 4–9 ms per pause.
+- Pages the strip shows that are not in view are not built after an edit;
+  they are looked at when the strip asks again (a scroll, the page count
+  changing), so a thumbnail far from the edit may lag until then.
+- Typing echo with the strip showing: 95.6 ms with footnotes (94.8 without
+  the strip), 53.6 ms without (52.5).

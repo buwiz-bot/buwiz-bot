@@ -99,6 +99,19 @@ fn workbook() -> Vec<u8> {
     Workbook::from_model(model).unwrap().save().unwrap()
 }
 
+/// The indices of the `true`s, comma separated (`-` for none).
+fn index_list(on: impl Iterator<Item = bool>) -> String {
+    let v: Vec<String> = on.enumerate().filter(|(_, b)| *b).map(|(i, _)| i.to_string()).collect();
+    if v.is_empty() { "-".to_owned() } else { v.join(",") }
+}
+
+/// The thumbnails drawn, as `page:drawing` pairs, the drawing named by its address (a thumbnail
+/// drawn again is another one).
+fn thumb_probe(w: &super::docx::WordUi) -> String {
+    let v: Vec<String> = w.thumbs.borrow().iter().enumerate().filter_map(|(i, s)| s.try_get().flatten().map(|t| format!("{i}:{:p}", std::sync::Arc::as_ptr(&t.0)))).collect();
+    if v.is_empty() { "-".to_owned() } else { v.join(",") }
+}
+
 /// What the office UI holds now, as `key=value` words.
 fn probe() -> String {
     let o = &store().office;
@@ -109,10 +122,11 @@ fn probe() -> String {
     let z = w.zoom.get_untracked();
     let left = m.pages.first().map_or(0.0, |p| super::docx::view::page_left(w.area.get_untracked().0, p.0 * z));
     let (pw, ph) = m.pages.first().copied().unwrap_or_default();
+    let tdim = w.thumbs.borrow().get(2).and_then(|s| s.try_get().flatten()).map_or("-".to_owned(), |t| format!("{},{},{}", t.0.w, t.0.h, t.0.drawing.ops.len()));
     let table = m.table.map_or("-".to_owned(), |(r, c)| format!("{r}x{c}"));
     let wm = m.watermark.as_ref().and_then(|v| v.get("text").or(v.get("kind"))).and_then(|v| v.as_str()).unwrap_or("-").replace(' ', "_");
     let pics = w.pages.borrow().iter().filter_map(|s| s.try_get().flatten()).map(|s| s.drawn.pictures.len()).sum::<usize>();
-    let word = format!(" bidi={} table={table} wm={wm} pw={pw} ph={ph} mtop={} dialog={} pics={pics} scroll={} strip={} cur={}", m.bidi, m.setup.top, (w.setup_open.get_untracked() || w.watermark_open.get_untracked()) as u8, w.scroll.get_untracked(), untracked(|| super::docx::strip::shown(w)) as u8, super::docx::strip::current(w)) + &fmt_probe();
+    let word = format!(" bidi={} table={table} wm={wm} pw={pw} ph={ph} mtop={} dialog={} pics={pics} scroll={} strip={} cur={} td={} tdim={} sscroll={} sview={} stops={} pd={}", m.bidi, m.setup.top, (w.setup_open.get_untracked() || w.watermark_open.get_untracked()) as u8, w.scroll.get_untracked(), untracked(|| super::docx::strip::shown(w)) as u8, super::docx::strip::current(w), thumb_probe(w), tdim, w.strip_scroll.get_untracked(), w.strip_area.get_untracked().1, super::docx::strip::cells(&m.pages).0.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(","), index_list(w.pages.borrow().iter().map(|s| s.try_get().flatten().is_some()))) + &fmt_probe();
     let (cp, cx, cy) = c.caret.map_or((-1, 0.0, 0.0), |(p, x, y, _)| (p as i64, x, y));
     let sheet = &o.sheet;
     format!(
@@ -1216,12 +1230,30 @@ fn the_bar_overflows_into_more_actions_at_a_narrow_width() {
     assert!(app.has("Comments & Changes"));
 }
 
+/// [`until`] with the engine at hand, for conditions on its views.
+fn wait(app: &mut Headless, what: &str, ok: impl Fn(&Headless, &HashMap<String, String>) -> bool) -> HashMap<String, String> {
+    let end = Instant::now() + WAIT;
+    loop {
+        let p = read(app);
+        if !p.is_empty() && ok(app, &p) {
+            return p;
+        }
+        assert!(Instant::now() < end, "{what}: never happened\nprobe: {p:?}");
+        app.pump(Duration::from_millis(20));
+    }
+}
+
 /// The numbers of the thumbnails that exist, in order.
 fn thumbs_alive(app: &Headless) -> Vec<usize> {
     let mut v: Vec<usize> = app.labels.iter().filter(|(id, _)| app.live.contains(id)).filter_map(|(_, l)| l.strip_prefix("Go to page ")?.parse().ok()).collect();
     v.sort_unstable();
     v.dedup();
     v
+}
+
+/// The thumbnails drawn, as the probe lists them (`page:address`).
+fn drawn_thumbs(p: &HashMap<String, String>) -> Vec<String> {
+    word(p, "td").split(',').filter(|t| *t != "-").map(str::to_owned).collect()
 }
 
 /// The thumbnails that wear the marker (a visible frame; the others' is clear).
@@ -1255,16 +1287,15 @@ fn the_strip_lists_a_thumbnail_per_page_marks_the_page_in_view_and_follows_the_s
         return;
     }
     let mut app = open_pages("strip-list", 5);
-    let p = until(&mut app, "a thumbnail per page", |p| is(p, "strip", "1") && thumbs_alive(&app) == [1, 2, 3, 4, 5] && num(p, "pages") == 5.0);
+    let p = wait(&mut app, "a thumbnail per page", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3, 4, 5] && num(p, "pages") == 5.0);
     assert_eq!(num(&p, "cur"), 0.0);
     assert!(app.has("Page thumbnail strip") && app.has("Page 1 thumbnail"));
     assert_eq!(thumbs_marked(&app), [1], "the first page is in view");
     // each thumbnail is the page drawn small, in the page's shape and the strip's width
-    let until_drawn = until(&mut app, "the thumbnails drawn", |_| (0..5).all(|i| store().office.word.thumb(i).get_untracked().is_some()));
-    drop(until_drawn);
-    let t = store().office.word.thumb(2).get_untracked().unwrap().0;
-    assert!((t.w - 96.0).abs() < 0.01 && (t.h - 96.0 * 1056.0 / 816.0).abs() < 0.01, "{}x{}", t.w, t.h);
-    assert!(t.drawing.ops.len() > 10);
+    let p = until(&mut app, "the thumbnails drawn", |p| drawn_thumbs(p).len() == 5);
+    let t = widths(&p, "tdim");
+    assert!((t[0] - 96.0).abs() < 0.01 && (t[1] - 96.0 * 1056.0 / 816.0).abs() < 0.01, "{t:?}");
+    assert!(t[2] > 10.0, "the page's text is drawn: {t:?}");
     // the document scrolled to page 3 marks page 3 and no other
     app.scroll(pages_scroller(&app), page_top(3) - 16.0);
     until(&mut app, "page 3 marked", |p| num(p, "cur") == 2.0);
@@ -1273,17 +1304,14 @@ fn the_strip_lists_a_thumbnail_per_page_marks_the_page_in_view_and_follows_the_s
     app.scroll(pages_scroller(&app), page_top(5) - 16.0);
     let p = until(&mut app, "page 5 marked", |p| num(p, "cur") == 4.0);
     assert_eq!(thumbs_marked(&app), [5]);
-    let strip = store().office.word.strip_scroll.get_untracked();
-    let (_, view_h) = store().office.word.strip_area.get_untracked();
-    let total = buwiz_word::strip::cells(&store().office.word.meta.get_untracked().pages).1;
-    assert!(total > view_h, "the five thumbnails overflow the strip ({total} in {view_h}) for this to mean something: {p:?}");
-    let (tops, _) = buwiz_word::strip::cells(&store().office.word.meta.get_untracked().pages);
-    assert!(strip + view_h >= tops[4] + 100.0, "the last thumbnail is in view: scroll {strip}, view {view_h}, top {}", tops[4]);
+    let (strip, view_h, tops) = (num(&p, "sscroll"), num(&p, "sview"), widths(&p, "stops"));
+    assert!(tops[4] + 156.0 > view_h, "the five thumbnails overflow the strip ({view_h} high) for this to mean something: {p:?}");
+    assert!(strip > 0.0 && strip + view_h >= tops[4] + 100.0, "the last thumbnail is in view: scroll {strip}, view {view_h}, top {}", tops[4]);
     // back to the top: the strip comes back to page 1
     app.scroll(pages_scroller(&app), 0.0);
-    until(&mut app, "page 1 marked again", |p| num(p, "cur") == 0.0);
+    let p = until(&mut app, "page 1 marked again", |p| num(p, "cur") == 0.0);
     assert_eq!(thumbs_marked(&app), [1]);
-    assert_eq!(store().office.word.strip_scroll.get_untracked(), 0.0);
+    assert_eq!(num(&p, "sscroll"), 0.0, "the strip came back with it");
 }
 
 #[test]
@@ -1292,7 +1320,7 @@ fn a_press_or_enter_on_a_thumbnail_scrolls_the_document_to_its_page() {
         return;
     }
     let mut app = open_pages("strip-press", 5);
-    until(&mut app, "the strip", |_| thumbs_alive(&app) == [1, 2, 3, 4, 5]);
+    wait(&mut app, "the strip", |app, _p| thumbs_alive(app) == [1, 2, 3, 4, 5]);
     // a button with its page's name
     assert_eq!(app.access("Go to page 4").0, AccessibilityRole::Button);
     app.press("Go to page 4");
@@ -1300,7 +1328,7 @@ fn a_press_or_enter_on_a_thumbnail_scrolls_the_document_to_its_page() {
     assert_eq!(num(&p, "cur"), 3.0);
     assert_eq!(thumbs_marked(&app), [4]);
     // page 4's canvas is asked for and drawn
-    until(&mut app, "page 4 drawn", |_| store().office.word.page(3).get_untracked().is_some());
+    until(&mut app, "page 4 drawn", |p| word(p, "pd").split(',').any(|i| i == "3"));
     // the press from the keyboard (Enter or Space on the focused thumbnail) is a press with no pointer
     let id = app.view("Go to page 2");
     app.send(id, nsh_core::EventKind::Press, nsh_core::EventPayload::Press(Default::default()));
@@ -1319,7 +1347,7 @@ fn the_view_menu_hides_and_shows_the_strip() {
         return;
     }
     let mut app = open_pages("strip-toggle", 3);
-    until(&mut app, "the strip", |p| is(p, "strip", "1") && thumbs_alive(&app) == [1, 2, 3]);
+    wait(&mut app, "the strip", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3]);
     let left = num(&read(&app), "left");
     assert_eq!(menu_rows(&mut app, "View"), ["Page thumbnails"]);
     app.press("Page thumbnails");
@@ -1330,8 +1358,8 @@ fn the_view_menu_hides_and_shows_the_strip() {
     // shown again: its thumbnails are there, drawn, the first marked
     app.press("View");
     app.press("Page thumbnails");
-    until(&mut app, "the strip shown", |p| is(p, "strip", "1") && thumbs_alive(&app) == [1, 2, 3]);
-    until(&mut app, "the thumbnails drawn", |_| (0..3).all(|i| store().office.word.thumb(i).get_untracked().is_some()));
+    wait(&mut app, "the strip shown", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1, 2, 3]);
+    until(&mut app, "the thumbnails drawn", |p| drawn_thumbs(p).len() == 3);
     assert_eq!(thumbs_marked(&app), [1]);
 }
 
@@ -1350,8 +1378,8 @@ fn a_one_page_document_starts_without_the_strip_and_shows_its_one_thumbnail_when
     assert!(is(&p, "strip", "0") && !app.has("Page thumbnail strip"));
     app.press("View");
     app.press("Page thumbnails");
-    until(&mut app, "its thumbnail", |p| is(p, "strip", "1") && thumbs_alive(&app) == [1]);
-    until(&mut app, "its thumbnail drawn", |_| store().office.word.thumb(0).get_untracked().is_some());
+    wait(&mut app, "its thumbnail", |app, p| is(p, "strip", "1") && thumbs_alive(app) == [1]);
+    until(&mut app, "its thumbnail drawn", |p| drawn_thumbs(p).len() == 1);
     assert_eq!(thumbs_marked(&app), [1]);
 }
 
@@ -1361,11 +1389,19 @@ fn typing_draws_again_only_the_thumbnail_of_the_page_typed_on() {
         return;
     }
     let mut app = open_pages("strip-edit", 4);
-    until(&mut app, "the thumbnails drawn", |_| thumbs_alive(&app) == [1, 2, 3, 4] && (0..4).all(|i| store().office.word.thumb(i).get_untracked().is_some()));
-    let ptrs = || (0..4).map(|i| std::sync::Arc::as_ptr(&store().office.word.thumb(i).get_untracked().unwrap().0)).collect::<Vec<_>>();
+    wait(&mut app, "the thumbnails drawn", |app, p| thumbs_alive(app) == [1, 2, 3, 4] && drawn_thumbs(p).len() == 4);
     // the document's pages in view come to rest: all four are near at this size
-    until(&mut app, "the pages drawn", |_| store().office.word.page(0).get_untracked().is_some());
-    let before = ptrs();
+    until(&mut app, "the pages drawn", |p| word(p, "pd").split(',').any(|i| i == "0"));
+    // the whole layout (which draws every thumbnail again) has come and gone
+    let mut before = drawn_thumbs(&read(&app));
+    loop {
+        app.pump(Duration::from_millis(400));
+        let now = drawn_thumbs(&read(&app));
+        if now == before && now.len() == 4 {
+            break;
+        }
+        before = now;
+    }
     // a click on the first page's first line, a character typed
     let left = num(&read(&app), "left");
     app.press_at("Document pages", left + 100.0, 24.0 + 104.0, false);
@@ -1373,8 +1409,9 @@ fn typing_draws_again_only_the_thumbnail_of_the_page_typed_on() {
     let rev = num(&read(&app), "rev");
     app.type_text("Document", "!");
     until(&mut app, "the typed text laid out", |p| num(p, "rev") > rev);
-    until(&mut app, "its thumbnail drawn again", |_| ptrs()[0] != before[0]);
-    let after = ptrs();
+    let p = until(&mut app, "its thumbnail drawn again", |p| drawn_thumbs(p).first() != before.first());
+    let after = drawn_thumbs(&p);
+    assert_eq!(after.len(), 4);
     assert_eq!(&after[1..], &before[1..], "the other pages' thumbnails stand");
 }
 
@@ -1385,23 +1422,21 @@ fn a_long_documents_strip_keeps_only_the_thumbnails_near_its_view() {
     }
     let mut app = open_pages("strip-long", 60);
     until(&mut app, "the whole document laid out", |p| num(p, "pages") == 60.0);
-    until(&mut app, "the strip's size", |_| store().office.word.strip_area.get_untracked().1 > 0.0);
-    let view_h = store().office.word.strip_area.get_untracked().1;
+    let view_h = num(&until(&mut app, "the strip's size", |p| num(p, "sview") > 0.0), "sview");
     let alive = thumbs_alive(&app);
     // a view and a half's worth of cells at 156 points each, and then some
     let most = ((view_h * 2.0) / 150.0).ceil() as usize + 2;
     assert_eq!(alive.first(), Some(&1));
     assert!(alive.len() <= most && alive.len() >= 3, "{} thumbnails for a {view_h}-point view: {alive:?}", alive.len());
-    let drawn = |app: &Headless| (0..60).filter(|i| store().office.word.thumb(*i).get_untracked().is_some()).count();
-    until(&mut app, "the near thumbnails drawn", |_| drawn(&app) >= 3);
-    assert!(drawn(&app) <= most, "the worker drew {} of 60", drawn(&app));
+    let p = until(&mut app, "the near thumbnails drawn", |p| drawn_thumbs(p).len() >= 3);
+    assert!(drawn_thumbs(&p).len() <= most, "the worker drew {} of 60", drawn_thumbs(&p).len());
     // the document at page 45: the strip follows, and 1 is gone while 45 is there
     app.scroll(pages_scroller(&app), page_top(45) - 16.0);
     until(&mut app, "page 45 marked", |p| num(p, "cur") == 44.0);
-    until(&mut app, "its thumbnail", |_| thumbs_alive(&app).contains(&45));
+    wait(&mut app, "its thumbnail", |app, _p| thumbs_alive(app).contains(&45));
     let alive = thumbs_alive(&app);
     assert!(!alive.contains(&1) && alive.len() <= most, "{alive:?}");
     assert_eq!(thumbs_marked(&app), [45]);
-    until(&mut app, "page 45's thumbnail drawn", |_| store().office.word.thumb(44).get_untracked().is_some());
-    assert!(drawn(&app) <= 2 * most, "the strip's thumbnails stay near: {} drawn", drawn(&app));
+    let p = until(&mut app, "page 45's thumbnail drawn", |p| drawn_thumbs(p).iter().any(|t| t.starts_with("44:")));
+    assert!(drawn_thumbs(&p).len() <= 2 * most, "the strip's thumbnails stay near: {} drawn", drawn_thumbs(&p).len());
 }

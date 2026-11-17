@@ -25,6 +25,9 @@ use buwiz_office_kit::session::Document;
 
 /// A thumbnail's width, points: the strip's drawings are made at this scale.
 pub const THUMB_W: f32 = 96.0;
+/// How long after the last edit the strip's thumbnails are checked and
+/// drawn again: the keys come first (the echo carries no thumbnail work).
+pub const THUMB_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
 // the menu bar's commands (Insert, Format, Page Setup, Watermark)
 #[path = "commands.rs"]
@@ -223,6 +226,9 @@ pub struct Word {
     /// is drawn the same: only a different drawing is sent).
     thumb_want: Vec<usize>,
     thumbs: HashMap<usize, (Arc<DisplayPage>, u64, Arc<Drawn>)>,
+    /// When the built thumbnails are looked at again after an edit or a
+    /// scroll: a pause in the typing, not each key ([`THUMB_SETTLE`]).
+    thumbs_due: Option<std::time::Instant>,
     /// Pictures already sent.
     media_sent: std::collections::HashSet<MediaKey>,
     media: Option<Vec<(String, Vec<u8>)>>,
@@ -294,6 +300,7 @@ impl Word {
             drawn: HashMap::new(),
             thumb_want: Vec::new(),
             thumbs: HashMap::new(),
+            thumbs_due: None,
             media_sent: Default::default(),
             media: None,
             found: Vec::new(),
@@ -525,10 +532,13 @@ impl Word {
             outs.push(Out::Page { index: i, rev: self.rev, zoom: self.zoom, drawn: Arc::new(drawn) });
         }
         self.send_media(pictures, outs);
-        self.redraw_thumbs(outs, false);
+        if !self.thumb_want.is_empty() {
+            self.thumbs_due = Some(std::time::Instant::now() + THUMB_SETTLE);
+        }
     }
 
-    /// Draws the strip's thumbnails whose page's content changed. The
+    /// Draws the strip's thumbnails whose page's content changed (the
+    /// worker's tick calls it once the edits pause). The
     /// drawing is the page's display list at the thumbnail's scale: no
     /// layout. A page whose list is built already is compared in place
     /// (what an edit leaves built is the pages in view); one that is not is
@@ -1167,6 +1177,7 @@ impl Document for Word {
             }
             Cmd::Thumbs { pages } => {
                 self.thumb_want = pages;
+                self.thumbs_due = None;
                 self.redraw_thumbs(&mut outs, true);
                 false
             }
@@ -1302,6 +1313,10 @@ impl Document for Word {
 
     fn tick(&mut self) -> (Vec<Out>, bool) {
         let mut outs = Vec::new();
+        if self.thumbs_due.is_some_and(|t| std::time::Instant::now() >= t) {
+            self.thumbs_due = None;
+            self.redraw_thumbs(&mut outs, false);
+        }
         if !self.meta_sent {
             // the first page, then the rest on the next tick
             self.meta_sent = true;
@@ -1316,7 +1331,7 @@ impl Document for Word {
     }
 
     fn busy(&self) -> bool {
-        !self.meta_sent || !self.complete
+        !self.meta_sent || !self.complete || self.thumbs_due.is_some()
     }
 
     fn save(&mut self, path: &Path) -> Result<(Vec<u8>, PathBuf), String> {
