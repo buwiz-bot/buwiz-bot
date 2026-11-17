@@ -128,6 +128,12 @@ fn grid(key: String, tau: f64, still: bool) -> impl IntoElement {
     .size_full()
 }
 
+/// `v` laid over its parent edge to edge on the card's background: what a
+/// dot grid is drawn on to cover an app (a revise, a card's hold).
+pub(crate) fn cover(v: View) -> View {
+    v.absolute().top(px(0.0)).left(px(0.0)).right(px(0.0)).bottom(px(0.0)).bg(theme::CARD)
+}
+
 /// A card's body while a revise of it builds (Try Again, `revise_app`):
 /// the dot grid over the old version, at the body's size. `app` keys the
 /// card's Try Again status (`card_status`); `id` is the turn the server
@@ -151,13 +157,7 @@ pub(crate) fn revise_overlay(app: String, id: String) -> impl IntoElement {
     when(
         move || busy.get(),
         move || {
-            view()
-                .absolute()
-                .top(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .bg(theme::CARD)
+            cover(view())
                 .child(dot_grid(key.clone(), TAU_APP))
                 .into_element()
         },
