@@ -58,21 +58,11 @@ pub fn cells(pages: &[(f32, f32)]) -> (Vec<f32>, f32) {
     (out, y)
 }
 
-/// The pages whose cells are near the strip's view: first and last. The
-/// scroll is held to the content (a strip scrolled past the end of a
-/// document that got shorter shows its last cells), so the window is always
-/// the cells near the view, never the whole document.
+/// The pages whose cells are near the strip's view: first and last
+/// ([`view::window`], as the pages' own).
 pub fn near(pages: &[(f32, f32)], scroll: f32, view_h: f32) -> Option<(usize, usize)> {
-    if pages.is_empty() {
-        return None;
-    }
     let (tops, total) = cells(pages);
-    let scroll = scroll.clamp(0.0, (total - view_h).max(0.0));
-    let (lo, hi) = (scroll - view_h * AHEAD, scroll + view_h * (1.0 + AHEAD));
-    let last_page = pages.len() - 1;
-    let first = tops.iter().zip(pages).position(|(t, p)| t + cell_h(*p) >= lo).unwrap_or(last_page);
-    let last = tops.iter().rposition(|t| *t <= hi).unwrap_or(first).max(first);
-    Some((first, last))
+    view::window(&tops, tops.iter().zip(pages).map(|(t, p)| t + cell_h(*p)), total, scroll, view_h, AHEAD)
 }
 
 /// The page the document's scroll is at: the last whose top is within a
@@ -109,7 +99,9 @@ pub fn toggle() {
     let u = ui();
     let now = untracked(|| shown(u));
     u.strip.set(Some(!now));
-    // shown again: it follows the document's scroll from the start
+    // shown again: its scroller starts at the top, so does the offset kept
+    // for it, and it follows the document's scroll from the start
+    u.strip_scroll.set(0.0);
     u.strip_followed.set(None);
     ask(u);
 }
@@ -192,7 +184,9 @@ fn scroll_to(u: &WordUi, to: f32) {
 fn thumb(i: ReadSignal<usize>, cur: Memo<usize>, geo: Memo<(Vec<f32>, f32)>) -> impl IntoElement {
     let u = ui();
     let page = i.get_untracked();
-    let size = move || u.meta.with(|m| m.pages.get(i.get()).map_or((THUMB_W, THUMB_W * 1.3), |p| (THUMB_W, thumb_h(*p))));
+    // a page not laid out yet: the usual shape
+    let shape = move || u.meta.with(|m| m.pages.get(i.get()).copied().unwrap_or((THUMB_W, THUMB_W * 1.3)));
+    let size = move || (THUMB_W, thumb_h(shape()));
     let top = move || geo.with(|g| g.0.get(i.get()).copied().unwrap_or(0.0));
     let on = move || cur.get() == i.get();
     let canvas = canvas(move || match u.thumb(i.get()).get() {
@@ -210,7 +204,7 @@ fn thumb(i: ReadSignal<usize>, cur: Memo<usize>, geo: Memo<(Vec<f32>, f32)>) -> 
         .left(px(0.0))
         .top(move || px(top()))
         .w(px(WIDTH))
-        .h(move || px(ROW_PAD + MARK + size().1 + MARK + LABEL_H + ROW_PAD))
+        .h(move || px(cell_h(shape())))
         .items_center()
         .py(px(ROW_PAD))
         .label(format!("Go to page {}", page + 1))

@@ -1433,3 +1433,26 @@ fn a_long_documents_strip_keeps_only_the_thumbnails_near_its_view() {
     let p = until(&mut app, "page 45's thumbnail drawn", |p| drawn_thumbs(p).iter().any(|t| t.starts_with("44:")));
     assert!(drawn_thumbs(&p).len() <= 2 * most, "the strip's thumbnails stay near: {} drawn", drawn_thumbs(&p).len());
 }
+
+#[test]
+fn a_strip_shown_again_starts_at_the_top_of_its_scroller_and_follows_to_the_page_in_view() {
+    if !in_child("a_strip_shown_again_starts_at_the_top_of_its_scroller_and_follows_to_the_page_in_view") {
+        return;
+    }
+    let mut app = open_pages("strip-reshow", 60);
+    until(&mut app, "the whole document laid out", |p| num(p, "pages") == 60.0);
+    app.scroll(pages_scroller(&app), page_top(45) - 16.0);
+    let p = until_with(&mut app, "the strip far down, page 45 drawn", |app, p| num(p, "cur") == 44.0 && thumbs_alive(app).contains(&45) && drawn_thumbs(p).iter().any(|t| t.starts_with("44:")));
+    assert!(num(&p, "sscroll") > 1000.0, "{p:?}");
+    app.press("View");
+    app.press("Page thumbnails");
+    until(&mut app, "the strip hidden", |p| is(p, "strip", "0"));
+    app.press("View");
+    app.press("Page thumbnails");
+    // its new scroller is at the top, and the offset kept says so: the follow brings page 45 into
+    // view and the thumbnails there exist and are drawn (none are missing at the strip's real place)
+    let p = until_with(&mut app, "the strip back at page 45", |app, p| is(p, "strip", "1") && num(p, "sscroll") > 1000.0 && thumbs_alive(app).contains(&45) && drawn_thumbs(p).iter().any(|t| t.starts_with("44:")));
+    assert_eq!(thumbs_marked(&app), [45], "{p:?}");
+    let alive = thumbs_alive(&app);
+    assert!(!alive.contains(&1), "{alive:?}");
+}

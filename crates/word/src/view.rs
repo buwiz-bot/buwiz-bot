@@ -129,20 +129,29 @@ pub fn page_left(area_w: f32, page_w: f32) -> f32 {
     ((area_w - page_w) / 2.0).max(PAD)
 }
 
+/// The cells near a view of height `view_h` scrolled to `scroll`, first and
+/// last, from each cell's top and bottom in a content `total` high: those
+/// within `ahead` view heights either side. The scroll is held to the
+/// content (past the end of a content that got shorter the last cells show,
+/// never the whole of it). The pages' and the strip's windows are this.
+pub(crate) fn window(tops: &[f32], bottoms: impl Iterator<Item = f32>, total: f32, scroll: f32, view_h: f32, ahead: f32) -> Option<(usize, usize)> {
+    if tops.is_empty() {
+        return None;
+    }
+    let scroll = scroll.clamp(0.0, (total - view_h).max(0.0));
+    let (lo, hi) = (scroll - view_h * ahead, scroll + view_h * (1.0 + ahead));
+    let first = bottoms.into_iter().position(|b| b >= lo).unwrap_or(tops.len() - 1);
+    let last = tops.iter().rposition(|t| *t <= hi).unwrap_or(first).max(first);
+    Some((first, last))
+}
+
 /// The pages near the view: first and last.
 fn near(u: &WordUi) -> Option<(usize, usize)> {
     let meta = u.meta.get_untracked();
-    if meta.pages.is_empty() {
-        return None;
-    }
     let z = u.zoom.get_untracked();
-    let (tops, _) = tops(&meta.pages, z);
+    let (tops, total) = tops(&meta.pages, z);
     let (_, h) = u.area.get_untracked();
-    let s = u.scroll.get_untracked();
-    let (lo, hi) = (s - h * AHEAD, s + h * (1.0 + AHEAD));
-    let first = tops.iter().zip(&meta.pages).position(|(t, p)| t + p.1 * z >= lo).unwrap_or(0);
-    let last = tops.iter().rposition(|t| *t <= hi).unwrap_or(first).max(first);
-    Some((first, last))
+    window(&tops, tops.iter().zip(&meta.pages).map(|(t, p)| t + p.1 * z), total, u.scroll.get_untracked(), h, AHEAD)
 }
 
 /// Asks the worker for the pages near the view (`again`: whatever was
@@ -179,13 +188,19 @@ pub fn reveal(u: &WordUi, page: usize, y: f32) {
     super::strip::follow(u);
 }
 
+/// The scroll that puts a page at `top` just under the view's top, held to
+/// what the scroller can reach (its offset and ours then agree).
+pub(crate) fn page_offset(top: f32, total: f32, view_h: f32) -> f32 {
+    (top - GAP).clamp(0.0, (total - view_h).max(0.0))
+}
+
 /// Scrolls to the top of page `page` (the strip's press).
 pub fn go_to_page(page: usize) {
     let u = ui();
     let meta = u.meta.get_untracked();
-    let (tops, _) = tops(&meta.pages, u.zoom.get_untracked());
+    let (tops, total) = tops(&meta.pages, u.zoom.get_untracked());
     let Some(top) = tops.get(page) else { return };
-    let to = (top - GAP).max(0.0);
+    let to = page_offset(*top, total, u.area.get_untracked().1);
     if let Some(r) = SCROLLER.with(std::cell::Cell::get) {
         r.scroll_to(point(px(0.0), px(to)), false);
     }
@@ -619,6 +634,15 @@ mod tests {
         assert_eq!(delta("abc", "abd"), (1, "d".to_owned()));
         assert_eq!(delta("abc", "a"), (2, String::new()));
         assert_eq!(delta("née", "née"), (0, String::new()));
+    }
+
+    #[test]
+    fn a_page_the_scroller_cannot_bring_to_the_top_gets_the_end_of_the_content() {
+        let (t, total) = tops(&[(816.0, 1056.0), (816.0, 400.0)], 1.0);
+        assert_eq!(page_offset(t[0], total, 700.0), 8.0);
+        // a short last page: its top is past the largest scroll
+        assert_eq!(page_offset(t[1], total, 700.0), total - 700.0);
+        assert_eq!(page_offset(t[1], total, 5000.0), 0.0);
     }
 
     #[test]

@@ -199,7 +199,7 @@ impl WordUi {
     /// same, so what it does not resend is what is still here.
     pub fn keep_thumbs(&self, window: Option<(usize, usize)>) {
         for (i, t) in self.thumbs.borrow().iter().enumerate() {
-            let keep = window.is_some_and(|(a, b)| i + doc::THUMB_KEEP >= a && i <= b + doc::THUMB_KEEP);
+            let keep = doc::thumb_kept(i, window);
             if !keep && t.get_untracked().is_some() {
                 t.set(None);
             }
@@ -227,7 +227,13 @@ pub fn on_out(u: &WordUi, o: Out) {
             }
             strip::ask(u);
         }
-        Out::Thumb { index, drawn } => u.thumb(index).set(Some(Thumb(drawn))),
+        Out::Thumb { index, drawn } => {
+            // one the strip has left since the worker drew it (it was on its way) is not kept
+            let window = u.thumbs_asked.get().map(|(a, b, ..)| (a, b));
+            if doc::thumb_kept(index, window) {
+                u.thumb(index).set(Some(Thumb(drawn)));
+            }
+        }
         Out::Page { index, rev, zoom, drawn } => {
             let s = u.page(index);
             if drawn.drawing.ops.is_empty() && drawn.w == 0.0 {

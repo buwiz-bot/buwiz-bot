@@ -31,6 +31,17 @@ pub const THUMB_SETTLE: std::time::Duration = std::time::Duration::from_millis(1
 /// Thumbnails kept beyond either end of the strip's window (both here and in
 /// the view), so a small scroll back draws nothing again.
 pub const THUMB_KEEP: usize = 2;
+/// How many of the strip's pages a `Thumbs` command draws itself (enough that
+/// the strip does not show empty); the rest come a page a tick.
+pub const THUMB_NOW: usize = 3;
+
+/// Whether the thumbnail of page `i` is kept while the strip's window is
+/// `window` (first and last page): the window and [`THUMB_KEEP`] beyond it.
+/// The worker and the view both ask this, so they never disagree on what is
+/// still drawn.
+pub fn thumb_kept(i: usize, window: Option<(usize, usize)>) -> bool {
+    window.is_some_and(|(a, b)| i + THUMB_KEEP >= a && i <= b + THUMB_KEEP)
+}
 
 // the menu bar's commands (Insert, Format, Page Setup, Watermark)
 #[path = "commands.rs"]
@@ -246,6 +257,8 @@ pub struct Word {
     /// The strip's pages still to bring up to date once the keys paused:
     /// one a tick, so a key that comes meanwhile waits for one page at most.
     thumb_todo: Vec<usize>,
+    /// A build for the strip failed (logged once).
+    thumb_build_failed: bool,
     /// Pictures already sent.
     media_sent: std::collections::HashSet<MediaKey>,
     media: Option<Vec<(String, Vec<u8>)>>,
@@ -319,6 +332,7 @@ impl Word {
             thumbs: HashMap::new(),
             thumbs_due: None,
             thumb_todo: Vec::new(),
+            thumb_build_failed: false,
             media_sent: Default::default(),
             media: None,
             found: Vec::new(),
@@ -592,7 +606,7 @@ impl Word {
             && self.thumbs.get(&i).is_none_or(|(_, rev, _)| *rev != self.rev)
             && let Err(e) = self.layout.build(&[i])
         {
-            log::warn!("word: building thumbnail {i}: {e}");
+            self.thumb_build_failed(&format!("{i}: {e}"));
         }
         match self.thumb_state(i) {
             ThumbState::Unbuilt => {}
@@ -603,8 +617,7 @@ impl Word {
             }
             ThumbState::Changed => {
                 let Some(page) = self.layout.page(i) else { return };
-                let k = THUMB_W / (page.width.as_f64().unwrap_or(816.0) as f32).max(1.0);
-                let drawn = draw::page(&page, &self.layout.fonts, k);
+                let drawn = self.thumb_drawing(&page);
                 let page = Arc::new(page);
                 match self.thumbs.get_mut(&i) {
                     Some(t) if t.2.drawing == drawn.drawing && t.2.w == drawn.w && t.2.h == drawn.h => {
@@ -621,29 +634,44 @@ impl Word {
         }
     }
 
-    /// The strip asks for `pages`: what it kept beyond them is dropped, and
-    /// each is brought up to date now (the lists not built, in one call).
-    fn want_thumbs(&mut self, pages: Vec<usize>, outs: &mut Vec<Out>) {
-        self.thumb_todo.clear();
-        self.thumbs_due = None;
-        let (lo, hi) = (pages.iter().copied().min().unwrap_or(0), pages.iter().copied().max().unwrap_or(0));
-        if pages.is_empty() {
-            self.thumbs.clear();
-        } else {
-            self.thumbs.retain(|i, _| *i + THUMB_KEEP >= lo && *i <= hi + THUMB_KEEP);
+    /// A page's thumbnail drawing: its display list at the strip's scale.
+    fn thumb_drawing(&self, page: &DisplayPage) -> Drawn {
+        let k = THUMB_W / (page.width.as_f64().unwrap_or(816.0) as f32).max(1.0);
+        draw::page(page, &self.layout.fonts, k)
+    }
+
+    /// A build for the strip failed: said once, and not tried again here (the
+    /// pages are left for the next pause pass, which asks each once).
+    fn thumb_build_failed(&mut self, what: &str) {
+        if !std::mem::replace(&mut self.thumb_build_failed, true) {
+            log::warn!("word: building thumbnails {what}");
         }
+    }
+
+    /// The strip asks for `pages`: what it kept beyond them is dropped, the
+    /// first [`THUMB_NOW`] are brought up to date now (their lists built in
+    /// one call), and the rest a page a tick, so a key never waits for a
+    /// whole window.
+    fn want_thumbs(&mut self, pages: Vec<usize>, outs: &mut Vec<Out>) {
+        self.thumbs_due = None;
+        let window = pages.iter().copied().min().zip(pages.iter().copied().max());
+        self.thumbs.retain(|i, _| thumb_kept(*i, window));
         self.thumb_want = pages;
         let count = self.layout.page_count();
         let want: Vec<usize> = self.thumb_want.iter().copied().filter(|p| *p < count).collect();
-        let unbuilt: Vec<usize> = want.iter().copied().filter(|i| self.thumb_state(*i) == ThumbState::Unbuilt && self.thumbs.get(i).is_none_or(|(_, rev, _)| *rev != self.rev)).collect();
+        let now = want.len().min(THUMB_NOW);
+        let unbuilt: Vec<usize> = want[..now].iter().copied().filter(|i| self.thumb_state(*i) == ThumbState::Unbuilt && self.thumbs.get(i).is_none_or(|(_, rev, _)| *rev != self.rev)).collect();
         if !unbuilt.is_empty()
             && let Err(e) = self.layout.build(&unbuilt)
         {
-            log::warn!("word: building thumbnails {unbuilt:?}: {e}");
+            self.thumb_build_failed(&format!("{unbuilt:?}: {e}"));
+            // not drawn now: left for the pause pass
+            self.thumbs_due = Some(std::time::Instant::now() + THUMB_SETTLE);
         }
-        for i in want {
+        for &i in &want[..now] {
             self.thumb_page(i, false, outs);
         }
+        self.thumb_todo = want[now..].to_vec();
     }
 
     /// One more of the strip's pages, once the keys have paused.
@@ -1049,8 +1077,7 @@ impl Word {
     pub fn fresh_thumb(&mut self, i: usize) -> Option<Drawn> {
         self.layout.build(&[i]).ok()?;
         let page = self.layout.page(i)?;
-        let k = THUMB_W / (page.width.as_f64().unwrap_or(816.0) as f32).max(1.0);
-        Some(draw::page(&page, &self.layout.fonts, k))
+        Some(self.thumb_drawing(&page))
     }
 
     /// The pages whose thumbnails are kept.

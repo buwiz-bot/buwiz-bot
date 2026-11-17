@@ -251,7 +251,7 @@ fn strip_reflow_200() {
         w.tick();
         w.tick();
         w.run(Cmd::View { pages: vec![99, 100, 101], zoom: 1.0 });
-        w.run(Cmd::Thumbs { pages: (150..158).collect() });
+        ask(&mut w, (150..158).collect());
         w.run(Cmd::Click { page: 100, x: 200.0, y: 200.0, extend: false, clicks: 1 });
         w.run(Cmd::Move { to: Move::LineEnd, extend: false });
         let t = Instant::now();
@@ -281,6 +281,44 @@ fn strip_reflow_200() {
     }
 }
 
+/// The strip shown, or scrolled a whole window, on a tall window of 20 pages: the command
+/// draws the first few, a tick a page brings the rest, and a key that comes right after
+/// the command waits for one tick at most.
+#[test]
+#[ignore = "bench: run with --ignored --nocapture"]
+fn strip_show_200() {
+    use super::doc::{Cmd, Move, Word};
+    use buwiz_office_kit::session::Document;
+    fonts::Fonts::resolve("Arial", false, false);
+    for (name, bytes) in [("with footnotes", fixture::document(200)), ("without footnotes", fixture::document_without_notes(200))] {
+        println!("-- {name}");
+        let mut w = Word::open(bytes, std::path::Path::new("a.docx")).unwrap();
+        w.tick();
+        w.tick();
+        w.run(Cmd::View { pages: vec![49, 50, 51], zoom: 1.0 });
+        w.run(Cmd::Click { page: 50, x: 200.0, y: 200.0, extend: false, clicks: 1 });
+        w.run(Cmd::Move { to: Move::LineEnd, extend: false });
+        for (what, pages) in [("shown (20 pages)", (140..160).collect::<Vec<usize>>()), ("scrolled a whole window", (160..180).collect())] {
+            let (cmd, rest, worst, drawn) = ask(&mut w, pages.clone());
+            println!("{what}: the command {cmd:.1} ms, then {rest:.1} ms in ticks (worst {worst:.1} ms), {drawn} drawn");
+            // the same ask on another window, a key right after the command and one tick
+            let next: Vec<usize> = pages.iter().map(|p| p + 40).collect();
+            let t = Instant::now();
+            w.run(Cmd::Thumbs { pages: next });
+            let cmd = ms(t);
+            let t = Instant::now();
+            w.tick();
+            let tick = ms(t);
+            let t = Instant::now();
+            w.run(Cmd::Type("x".into()));
+            println!("a key right after the command (and the tick the worker runs between): command {cmd:.1} ms, tick {tick:.1} ms, echo {:.1} ms", ms(t));
+            while w.busy() {
+                w.tick();
+            }
+        }
+    }
+}
+
 /// The same echo with the thumbnail strip showing eight pages around the
 /// caret's (three of them the pages in view).
 #[test]
@@ -291,6 +329,27 @@ fn typing_200_strip() {
     typing(fixture::document(200), false, true);
     println!("-- without footnotes, strip showing");
     typing(fixture::document_without_notes(200), false, true);
+}
+
+/// A strip ask as the worker serves it: the command, then a tick a page.
+/// (command ms, ticks ms in all, worst tick ms, thumbnails drawn)
+fn ask(w: &mut super::doc::Word, pages: Vec<usize>) -> (f64, f64, f64, usize) {
+    use super::doc::{Cmd, Out};
+    use buwiz_office_kit::session::Document;
+    let t = Instant::now();
+    let (outs, _) = w.run(Cmd::Thumbs { pages });
+    let cmd = ms(t);
+    let mut drawn = outs.iter().filter(|o| matches!(o, Out::Thumb { .. })).count();
+    let (mut rest, mut worst) = (0.0, 0.0f64);
+    while w.busy() {
+        let t = Instant::now();
+        let (outs, _) = w.tick();
+        let d = ms(t);
+        rest += d;
+        worst = worst.max(d);
+        drawn += outs.iter().filter(|o| matches!(o, Out::Thumb { .. })).count();
+    }
+    (cmd, rest, worst, drawn)
 }
 
 fn typing(bytes: Vec<u8>, local: bool, strip: bool) {
@@ -309,12 +368,10 @@ fn typing(bytes: Vec<u8>, local: bool, strip: bool) {
     w.run(Cmd::Click { page: 100, x: 200.0, y: 200.0, extend: false, clicks: 1 });
     w.run(Cmd::Move { to: Move::LineEnd, extend: false });
     if strip {
-        let t = Instant::now();
-        let (outs, _) = w.run(Cmd::Thumbs { pages: (96..104).collect() });
-        println!("the strip's first ask (8 thumbnails: lists built and drawn) {:.1} ms ({} drawn)", ms(t), outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count());
-        let t = Instant::now();
-        let (outs, _) = w.run(Cmd::Thumbs { pages: (97..105).collect() });
-        println!("scrolled by one page (1 new thumbnail, the rest stand) {:.1} ms ({} drawn)", ms(t), outs.iter().filter(|o| matches!(o, super::doc::Out::Thumb { .. })).count());
+        let (cmd, rest, worst, drawn) = ask(&mut w, (96..104).collect());
+        println!("the strip's first ask (8 thumbnails): the command {cmd:.1} ms, then {rest:.1} ms in ticks (worst {worst:.1} ms), {drawn} drawn");
+        let (cmd, rest, worst, drawn) = ask(&mut w, (97..105).collect());
+        println!("scrolled by one page (1 new thumbnail, the rest stand): the command {cmd:.1} ms, then {rest:.1} ms in ticks (worst {worst:.1} ms), {drawn} drawn");
     }
     let mut v = Vec::new();
     for k in 0..30 {
