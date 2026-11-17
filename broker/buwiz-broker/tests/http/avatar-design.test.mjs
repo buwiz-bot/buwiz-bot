@@ -1,18 +1,24 @@
 // Avatar design over HTTP: POST /avatar/design (MOCK, then over the wire to
 // the fake opencodex, and on the OpenAI-compatible path), the bot routes'
 // `outline` field through a broker restart, POST /avatar/picture and
-// /avatar/image/import. The recipe checks themselves are pinned in
-// src/hub/library/avatar_shape/tests.rs.
+// /avatar/image/import, and the rich recipes (layers, eyes, parts, solids, shut
+// eyes) through the bot routes, a restart and the keep-alive. The recipe checks
+// themselves are pinned in src/hub/library/avatar_shape/tests.rs.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { PNG_B64, say, startFakeOpencodex } from "../fixtures/fake-opencodex.mjs";
-import { modelEnv, postJson, request, startServer, tempDir } from "./helpers.mjs";
+import { PORT as TEST_PORT, modelEnv, postJson, request, startServer, tempDir, waitFor } from "./helpers.mjs";
 
-// the design prompt the broker sends, as pinned beside the avatar checks
-const DESIGN_SYSTEM = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "pins", "avatar_shape", "design_system.txt"), "utf8");
+// what the avatar checks pinned (src/hub/library/avatar_shape/tests.rs): the design prompt the broker
+// sends, and the three rich mock designs
+const PINS = join(dirname(fileURLToPath(import.meta.url)), "..", "pins", "avatar_shape");
+const DESIGN_SYSTEM = readFileSync(join(PINS, "design_system.txt"), "utf8");
+const MOCK_RICH = JSON.parse(readFileSync(join(PINS, "rich.json"), "utf8"))[1];
+const EYE_ERRORS = JSON.parse(readFileSync(join(PINS, "eye_errors.json"), "utf8"));
 const KIT_SHAPES = ["blob", "cloud", "square", "sparkle", "clover", "heart", "flower", "teardrop", "tablet", "wedge", "house", "star", "hex"];
 // a candidate the way the designer must return it: a kit shape, or a custom outline with its colour
 const validCandidate = (c) =>
@@ -259,4 +265,352 @@ test("AVD-24 /avatar/image/import copies a file the app's open panel chose into 
   bad(await postJson("/avatar/image/import", { path: "relative.png" }), "import needs an absolute file path");
   bad(await postJson("/avatar/image/import", { path: join(dir, "nope.png") }), "image not found");
   bad(await postJson("/avatar/image/import", { path: dir }), "image not found");
+});
+
+// ── the rich recipes ─────────────────────────────────────────────────────
+
+const HEX = /^#[0-9A-F]{6}$/i;
+const hat = MOCK_RICH.find((c) => c.parts);
+const sent = (cands) => say(JSON.stringify({ candidates: cands }));
+// a rich bot as /bot/new takes it
+const richBot = (name, r, extra = {}) => ({ name, shape: "custom", color: r.color, outline: r.outline, layers: r.layers, eyes: r.eyes, ...extra });
+// a rich design over the wire with the self-check off: what the model said comes back tidied
+async function designed(cands, label) {
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined, GEN_AVATAR_SELFCHECK: "0" }) });
+  fake.reset();
+  fake.script(label, [say(JSON.stringify({ candidates: cands }))]);
+  const r = await postJson("/avatar/design", { prompt: `[[script:${label}]] x`, style: "rich" });
+  assert.equal(r.status, 200, r.text);
+
+  return r.json.candidates;
+}
+const restart = async () => {
+  await server.stop();
+  server = await startServer(dir, { env: env() });
+};
+
+test("AVD-15 rich avatars: MOCK rich designs are the pinned ones; a bot keeps its layers and eyes, a new outline or a kit shape drops them, across a restart", async () => {
+  await restart();
+  const d = await postJson("/avatar/design", { prompt: "a violet ogre", style: "rich" });
+  assert.equal(d.status, 200, d.text);
+  assert.deepEqual(d.json, { ok: true, candidates: MOCK_RICH }, "the three mock designs of the pin avatar_shape/rich.json");
+  assert.equal(d.json.candidates.length, 3);
+  assert.ok(d.json.candidates.every((c) => c.shape === "custom" && c.layers.length && HEX.test(typeof c.eyes === "string" ? c.eyes : c.eyes.c)));
+  // the checks, as the routes answer them
+  const r = MOCK_RICH[0];
+  const refusal = async (change, error) => bad(await postJson("/bot/new", richBot("Bad", r, change)), error);
+  // no layers sent: eyes alone make no rich avatar, and the bot is stored plain
+  const plain = await postJson("/bot/new", richBot("Plain", r, { layers: [], eyes: "#FFFFFF" }));
+  assert.equal(plain.status, 200, plain.text);
+  assert.ok(!("layers" in plain.json.bot) && !("eyes" in plain.json.bot));
+  await refusal({ layers: [{ path: "M10 10 L20 10 L20 20 Z", fill: "red" }] }, /layer 1's fill must be #RRGGBB/);
+  await refusal({ layers: [{ path: "M10 10 L20 10 L20 20 Z", fill: "#FF0000", opacity: 2 }] }, /layer 1's opacity must be 0\.\.1/);
+  await refusal({ layers: [{ path: "M10 10 H20 V20 Z", fill: "#FF0000" }] }, /only M\/L\/C\/Q\/Z/);
+  await refusal({ eyes: "nope" }, "eyes must be #RRGGBB");
+  // stored on a bot
+  const made = await postJson("/bot/new", richBot("Ogre", r));
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  let b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [r.layers, r.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.layers, r.layers);
+  // a colour alone keeps them
+  await postJson("/bot/update", { id, color: "#225522" });
+  assert.deepEqual((b = await botOf(id)).layers, r.layers);
+  // across a restart
+  await restart();
+  assert.deepEqual([(b = await botOf(id)).layers, b.eyes], [r.layers, r.eyes]);
+  // a new outline without layers drops them; so does a kit shape
+  await postJson("/bot/update", { id, outline: GOOD.cat });
+  assert.ok(!("layers" in (b = await botOf(id))) && !("eyes" in b));
+  await postJson("/bot/update", { id, outline: r.outline, layers: r.layers, eyes: r.eyes });
+  assert.deepEqual((await botOf(id)).layers, r.layers);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("layers" in (b = await botOf(id))) && b.shape === "hex");
+});
+
+test("AVD-18 rich self-check: the designs drawn flat go back to the model once; a fix that passes replaces its candidate, one that fails keeps the first; GEN_AVATAR_SELFCHECK=0 skips it", async () => {
+  const fixedEyes = { c: "#FFC83D", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
+  const fix = [{ ...MOCK_RICH[0], eyes: fixedEyes }, { ...MOCK_RICH[1], layers: [] }, { ...MOCK_RICH[2], name: "Cat Two" }];
+  mkdirSync(avatars, { recursive: true });
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined }) });
+  fake.reset();
+  fake.script("rich-check", [sent(MOCK_RICH), sent(fix)]);
+  const r = await postJson("/avatar/design", { prompt: "[[script:rich-check]] a violet ogre", style: "rich" });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.candidates.map((c) => c.name), ["Violet Ogre", "Band Hero", "Cat Two"]);
+  assert.deepEqual(r.json.candidates[0].eyes, fixedEyes, "a fix that passes replaces its candidate");
+  assert.deepEqual(r.json.candidates[1], MOCK_RICH[1], "a fix without layers keeps the first");
+  const calls = fake.calls();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.max_tokens, 12000);
+  const [first, said, look] = calls[1].body.messages;
+  assert.deepEqual(first, calls[0].body.messages[0]);
+  assert.deepEqual(JSON.parse(said.content), { candidates: MOCK_RICH });
+  assert.deepEqual(look.content.map((b) => b.type), ["text", "image", "text", "image", "text", "image", "text"]);
+  assert.equal(look.content[0].text, "Design 1 (Violet Ogre):");
+  assert.equal(look.content[1].source.media_type, "image/png");
+  assert.equal(look.content[6].text, 'Here are your three designs drawn flat. For each, does it read as the request "[[script:rich-check]] a violet ogre"? Fix the outline, layers and eyes where it doesn\'t (missing hair volume, eyes off the lenses or band, features covering the eyes). Reply with all 3, JSON only.');
+  assert.deepEqual(readdirSync(avatars).filter((f) => f.startsWith("check-")), [], "the previews are cleaned up");
+  // switched off: one call
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined, GEN_AVATAR_SELFCHECK: "0" }) });
+  fake.reset();
+  fake.script("rich-off", [sent(MOCK_RICH)]);
+  assert.equal((await postJson("/avatar/design", { prompt: "[[script:rich-off]] x", style: "rich" })).status, 200);
+  assert.equal(fake.calls().length, 1);
+});
+
+test("AVD-19 rich eyes as a placement: checked, stored, carried by /threads and a restart; compact layers parse", async () => {
+  await restart();
+  const r = MOCK_RICH[0];
+  const eyes = { c: "#FFC83D", at: [50, 58], gap: 20, s: 1.2, rim: "#111111", rw: 0.3 };
+  // the checks as the routes answer them: Node's messages, which the pin eye_errors.json also holds
+  const checks = [
+    [{ c: "red", at: [500, 5], gap: 0, s: 3, rim: 1, rw: 2 }, ["eyes.c must be #RRGGBB", "eyes.at must sit inside the outline's box", "eyes.gap must be a number 0..100", "eyes.s must be 0.6..2.2", "eyes.rim must be #RRGGBB", "eyes.rw must be 0..1.2"]],
+    [[1], ["eyes must be #RRGGBB or {c, at?, gap?, s?, rim?, rw?}"]],
+    [{ c: "#FFFFFF", at: [1] }, ["eyes.at must be [x, y]"]],
+  ];
+  for (const [bad_eyes, errors] of checks) {
+    assert.ok(EYE_ERRORS.some((e) => JSON.stringify(e) === JSON.stringify(errors)), `the pin holds ${errors[0]}`);
+    bad(await postJson("/bot/new", richBot("Eyes", r, { eyes: bad_eyes })), errors.join("; "));
+  }
+  // the compact layer form, and the placement's colours tidied, as a design comes back
+  const [c] = await designed([{ name: "Tidy", shape: "custom", outline: r.outline, color: "#3e8e2f", layers: [["M30 60 L70 60 L50 80 Z", "#f5ebd6", 0.5], ["M1 1 L9 1 L9 9 Z", "#000000"]], eyes: { c: "#ffc83d", at: [50, 58], rim: " #111111 ", junk: 1 } }], "tidy");
+  assert.deepEqual(c.layers, [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6", opacity: 0.5 }, { path: "M1 1 L9 1 L9 9 Z", fill: "#000000" }]);
+  assert.deepEqual(c.eyes, { c: "#FFC83D", at: [50, 58], rim: "#111111" });
+  await restart();
+  // a bot keeps them
+  const made = await postJson("/bot/new", richBot("Placed", r, { eyes }));
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.eyes, eyes);
+  bad(await postJson("/bot/update", { id, eyes: { c: "#FFC83D", s: 9 } }), "eyes.s must be 0.6..2.2");
+  // eyes alone update a rich bot
+  const moved = { ...eyes, at: [50, 60] };
+  assert.equal((await postJson("/bot/update", { id, eyes: moved })).status, 200);
+  assert.deepEqual((await botOf(id)).eyes, moved);
+  await restart();
+  const b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [r.layers, moved]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.eyes, moved);
+});
+
+test("AVD-21 solids: checked (kinds, limits, cost), parsed, stored and carried across a restart; a new outline or a kit shape drops them", async () => {
+  await restart();
+  const lathe = { kind: "lathe", color: "#F2C062", at: [50, 40, 0], tilt: [-7, 0, 3], oval: 0.9, teeth: [6, 0.5],
+    profile: [[0, 20], [20, 18], [30, 0], [44, -3], [30, -5], [0, -5]],
+    marks: [{ path: "M-180 40 L180 40 L180 55 L-180 55 Z", fill: "#E0393A" }] };
+  const shell = { kind: "shell", color: "#151515", offset: 2.5, edge: [[-180, 120], [0, 70], [90, 100]], scallop: [9, 8, 1], lobes: [12, 9.5, 1] };
+  const tube = { kind: "tube", color: "#9A5B3A", path: [[20, 30, 0, 3], [10, 15, 2, 1.5]], branches: [[[14, 22, 1, 2], [4, 20, 4, 1]]] };
+  const solids = [lathe, shell, tube];
+  const post = (s, extra = {}) => postJson("/bot/new", richBot("Solid", hat, { solids: s, ...extra }));
+  const one = async (s, error) => bad(await post([s]), error);
+  const accepted = async (s) => assert.equal((await post(s)).status, 200);
+  await accepted(solids);
+  const notAList = await post("x");
+  assert.equal(notAList.status, 200, notAList.text);
+  assert.ok(!("solids" in notAList.json.bot), "a value that is not a list is no solids");
+  await one(5, "solid 1 must be {kind, color}");
+  await one({ kind: "cube", color: "#112233" }, "solid 1's kind must be lathe, shell or tube");
+  bad(await post(Array(11).fill(tube)), "at most 10 solids");
+  await one({ ...lathe, color: "red" }, "solid 1's color must be #RRGGBB");
+  await one({ ...lathe, at: [500, 40, 0] }, "solid 1's at is out of range");
+  await one({ ...lathe, at: [50, 40] }, "solid 1's at must be [x, y, z]");
+  await one({ ...lathe, tilt: [0, 0, 400] }, "solid 1's tilt must be [x, y, z] degrees, -180..180");
+  await one({ ...lathe, oval: 9 }, "solid 1's oval must be 0.3..3");
+  await one({ ...lathe, teeth: [2.5, 0.5] }, "solid 1's teeth must be [2..18, 0..1]");
+  await one({ ...lathe, profile: [[1, 2]] }, "solid 1's profile needs 2 to 40 points");
+  await one({ ...lathe, profile: [[10, 2], [20, 3], [30, 4]] }, "solid 1's profile must run axis to axis, or back to its start");
+  await one({ ...lathe, marks: [{ path: "M0 0 L9 0 L9 200 Z", fill: "#112233" }] }, "solid 1 mark 1's coordinates must stay within -180..180, -5..105");
+  await one({ ...shell, offset: 99 }, "solid 1's offset must be 0..60");
+  await one({ ...shell, edge: [] }, "solid 1's edge needs 1 to 24 points");
+  await one({ ...shell, edge: [[10, 90], [0, 90]] }, "solid 1's edge azimuths must rise");
+  await one({ ...shell, scallop: [40, 5, 0] }, "solid 1's scallop must be [2..18, 0..60, 0 or 1]");
+  await one({ ...shell, lobes: [33, 9, 0] }, "solid 1's lobes must be [1..32, 1..60, -60..60]");
+  await one({ ...tube, path: [[1, 2, 3, 4]] }, "solid 1's path needs 2 to 12 points");
+  await one({ ...tube, path: [[1, 2, 3, 400], [1, 2, 3, 4]] }, "solid 1's path's point is out of range");
+  await one({ ...tube, branches: Array(7).fill(tube.path) }, "solid 1 has more than 6 branches");
+  // a short path can retrace one edge hundreds of times: what counts is what it samples to
+  const retrace = (n) => `M-180 0${"L180 0L180 100L-180 0".repeat(n)}Z`;
+  assert.ok(retrace(170).length <= 4000);
+  await one({ ...lathe, marks: [{ path: retrace(170), fill: "#112233" }] }, /^solid 1 mark 1 samples to \d+ points, at most 1000(;|$)/);
+  bad(await post([{ ...lathe, marks: Array(3).fill({ path: retrace(2), fill: "#112233" }) }]), /^solid 1's marks sample to \d+ points, at most 2000(;|$)/);
+  await accepted([{ ...lathe, marks: [{ path: retrace(2), fill: "#112233" }] }]);
+  const huge = await post([{ ...lathe, marks: [{ path: "M0 0 L1e300 50 L0 90 Z", fill: "#112233" }] }]);
+  assert.equal(huge.status, 400, "a huge coordinate is refused");
+  assert.equal(huge.json.error.split("; ").length, 1);
+  // the widest shell: 18 scallops cut 72 columns
+  await accepted(Array(10).fill({ ...shell, scallop: [18, 8, 1], lobes: undefined }));
+  bad(await post(Array(10).fill({ ...shell, scallop: [18, 8, 1], lobes: [32, 9, 1] })), /^the solids cost \d+ faces, at most 8000(;|$)/);
+  const tall = Array.from({ length: 40 }, (_, i) => [i === 0 || i === 39 ? 0 : 100, i % 2 ? 100 : -100]);
+  bad(await post(Array(10).fill({ ...lathe, marks: undefined, teeth: undefined, profile: tall })), /^the solids cost \d+ faces, at most 8000(;|$)/);
+  const kitShape = await postJson("/bot/new", { name: "Solid", shape: "heart", color: "#FF0000", solids });
+  assert.equal(kitShape.status, 200, kitShape.text);
+  assert.ok(!("solids" in kitShape.json.bot), "a kit shape has none");
+  bad(await postJson("/bot/new", { name: "Solid", shape: "custom", color: "#FF0000", outline: hat.outline, solids }), "solids need a rich avatar: at least one layer (the face)");
+  // a design keeps them
+  const [c] = await designed([{ ...hat, solids }], "solids");
+  assert.deepEqual(c.solids, solids);
+  await restart();
+  // stored whole, and through a restart
+  const made = await post(solids.map((s) => ({ ...s, junk: 1, marks: s.marks?.map((m) => ({ ...m, junk: 1 })) })));
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.solids, solids, "only the fields of its kind are stored");
+  bad(await postJson("/bot/update", { id, solids: [{ ...shell, offset: 99 }] }), "solid 1's offset must be 0..60");
+  await postJson("/bot/update", { id, color: "#112233" });
+  assert.deepEqual((await botOf(id)).solids, solids, "a colour alone keeps them");
+  await restart();
+  let b = await botOf(id);
+  assert.deepEqual([b.solids, b.layers, b.eyes], [solids, hat.layers, hat.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.solids, solids);
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes });
+  assert.ok(!("solids" in (b = await botOf(id))), "a new outline without solids drops them");
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, solids: [tube] });
+  assert.deepEqual((await botOf(id)).solids, [tube]);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("solids" in (b = await botOf(id))) && b.shape === "hex");
+});
+
+test("AVD-20 rich parts: checked (2% pieces, z, count), parsed, stored and carried across a restart; a new outline or a kit shape drops them", async () => {
+  await restart();
+  assert.ok(hat, "a multi-part mock");
+  const brim = { outline: "M30 40 L70 40 L70 46 L30 46 Z", color: "#E8C85A" };
+  const small = { outline: "M44 44 L56 44 L56 56 L44 56 Z", color: "#E8C85A" };
+  const antler = { outline: "M40 30 L60 30 L60 50 L40 50 Z", color: "#7A4A22", z: -1, d: 1.1 };
+  const post = (parts, extra = {}) => postJson("/bot/new", richBot("Parts", hat, { parts, ...extra }));
+  bad(await post([brim]), "part 1: outline's width/height is 6.67; it must be between 0.4 and 2.5");
+  bad(await post([small]), "part 1: outline covers 1% of the box; it must cover at least 2%");
+  assert.equal((await post([antler])).status, 200);
+  bad(await post([{ ...antler, z: 2, color: "brown", layers: [{ path: "M1 1 Z", fill: "#000000" }] }]), ["part 1's color must be #RRGGBB", "part 1: layer 1 encloses no area", "part 1's z must be -1..1"].join("; "));
+  bad(await post(Array(7).fill(antler)), "at most 6 parts");
+  bad(await post([{ ...antler, d: 0.04 }, { ...antler, d: 1.6 }, { ...antler, d: "1" }]), ["part 1's d must be 0.05..1.6", "part 3's d must be 0.05..1.6"].join("; "));
+  const notAList = await post("x");
+  assert.equal(notAList.status, 200, notAList.text);
+  assert.ok(!("parts" in notAList.json.bot), "a value that is not a list is no parts");
+  bad(await post([5]), "part 1 must be {outline, color}");
+  const kitShape = await postJson("/bot/new", { name: "Parts", shape: "heart", color: "#FF0000", parts: [antler] });
+  assert.equal(kitShape.status, 200, kitShape.text);
+  assert.ok(!("parts" in kitShape.json.bot), "a kit shape has none");
+  // parsed (tidied, compact layers) as a design comes back
+  const [c] = await designed([{ ...hat, parts: [{ outline: ` ${antler.outline}\n`, colour: "#7a4a22", z: -1, d: 1.1, layers: [["M42 32 L58 32 L50 40 Z", "#ffffff"]] }, ...hat.parts, 5] }], "parts");
+  assert.deepEqual(c.parts[0], { outline: antler.outline, color: "#7A4A22", layers: [{ path: "M42 32 L58 32 L50 40 Z", fill: "#FFFFFF" }], z: -1, d: 1.1 });
+  assert.equal(c.parts.length, 2);
+  await restart();
+  // a bot keeps them
+  const made = await post(hat.parts);
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  assert.deepEqual(made.json.bot.parts, hat.parts);
+  bad(await postJson("/bot/update", { id, parts: [{ ...antler, z: 5 }] }), "part 1's z must be -1..1");
+  await postJson("/bot/update", { id, color: "#222222" });
+  assert.deepEqual((await botOf(id)).parts, hat.parts, "a colour alone keeps them");
+  await restart();
+  let b = await botOf(id);
+  assert.deepEqual([b.parts, b.layers, b.eyes], [hat.parts, hat.layers, hat.eyes]);
+  assert.deepEqual((await threads()).list.find((t) => t.id === b.threadId).bot.parts, hat.parts);
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes });
+  assert.ok(!("parts" in (b = await botOf(id))), "a new outline without parts drops them");
+  await postJson("/bot/update", { id, outline: hat.outline, layers: hat.layers, eyes: hat.eyes, parts: [antler] });
+  assert.deepEqual((await botOf(id)).parts, [antler]);
+  await postJson("/bot/update", { id, shape: "hex" });
+  assert.ok(!("parts" in (b = await botOf(id))) && b.shape === "hex");
+});
+
+// One POST, with the order of what arrived: the status line, each body chunk, the end.
+function timedPost(path, obj) {
+  return new Promise((resolve, reject) => {
+    const events = [];
+    const req = httpRequest({ host: "127.0.0.1", port: TEST_PORT, method: "POST", path, headers: { "content-type": "application/json" } }, (res) => {
+      events.push("head");
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (events.push(c.trim() === "" ? "space" : "json"), (text += c)));
+      res.on("end", () => (events.push("end"), resolve({ status: res.statusCode, type: res.headers["content-type"], events, text })));
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify(obj));
+  });
+}
+
+test("AVD-22 slow designs and pictures keep the answer alive: a 200 at once, spaces, then the JSON (a late error too); fast ones answer as before", async () => {
+  await server.stop();
+  server = await startServer(dir, { env: env({ MOCK: undefined, GEN_AVATAR_KEEPALIVE_MS: "200,100", GEN_AVATAR_SELFCHECK: "0" }) });
+  const slow = (text, wait = 2500) => ({ ...say(text), wait });
+  fake.reset();
+  fake.script("slow-rich", [slow(JSON.stringify({ candidates: MOCK_RICH }))]);
+  const r = await timedPost("/avatar/design", { prompt: "[[script:slow-rich]] a hero", style: "rich" });
+  assert.equal(r.status, 200);
+  assert.equal(r.type, "application/json");
+  // the keep-alive: the status line and spaces arrive while the model is still answering, the JSON last
+  assert.equal(r.events[0], "head");
+  assert.ok(r.events.indexOf("space") > 0 && r.events.indexOf("space") < r.events.indexOf("json"), `spaces before the JSON: ${r.events}`);
+  assert.deepEqual(r.events.slice(-2), ["json", "end"]);
+  assert.match(r.text, /^ {3,}\{/, "spaces, then the JSON");
+  const j = JSON.parse(r.text);
+  assert.equal(j.ok, true);
+  assert.deepEqual(j.candidates.map((c) => c.name), MOCK_RICH.map((c) => c.name));
+  // a late error: still a 200, its body {ok:false, error}
+  fake.reset();
+  fake.script("slow-none", [slow("no json", 1500), slow("still none", 1500)]);
+  const e = await timedPost("/avatar/design", { prompt: "[[script:slow-none]] a hero", style: "rich" });
+  assert.equal(e.status, 200);
+  assert.match(e.text, /^ +\{/);
+  assert.deepEqual(JSON.parse(e.text), { ok: false, error: "no rich design came back that the engine can draw; try again or another model" });
+  // a slow picture
+  fake.reset();
+  fake.script("slow-pic", [slow('<svg viewBox="0 0 1024 1024"><rect width="1024" height="1024"/></svg>')]);
+  const p = await timedPost("/avatar/picture", { prompt: "[[script:slow-pic]] a hero" });
+  assert.equal(p.status, 200);
+  assert.match(p.text, /^ +\{"ok":true,"via":"claude-haiku-5-5"/);
+  // fast ones: as before, no spaces, their own status codes
+  const bad400 = await timedPost("/avatar/design", { prompt: "  " });
+  assert.deepEqual([bad400.status, bad400.text], [400, JSON.stringify({ ok: false, error: "describe the bot or add a picture" })]);
+  fake.reset();
+  fake.script("fast-rich", [say(JSON.stringify({ candidates: MOCK_RICH }))]);
+  const f = await timedPost("/avatar/design", { prompt: "[[script:fast-rich]] a hero", style: "rich" });
+  assert.equal(f.status, 200);
+  assert.match(f.text, /^\{"ok":true/);
+  const pic400 = await timedPost("/avatar/picture", {});
+  assert.deepEqual([pic400.status, pic400.text], [400, JSON.stringify({ ok: false, error: "add a picture or describe the character" })]);
+  // a client that hangs up mid-wait: the broker carries on
+  fake.reset();
+  fake.script("slow-gone", [slow(JSON.stringify({ candidates: MOCK_RICH }), 1500)]);
+  await new Promise((done) => {
+    const req = httpRequest({ host: "127.0.0.1", port: TEST_PORT, method: "POST", path: "/avatar/design", headers: { "content-type": "application/json" } }, (res) => {
+      res.once("data", () => (req.destroy(), done()));
+    });
+    req.on("error", () => {});
+    req.end(JSON.stringify({ prompt: "[[script:slow-gone]] x", style: "rich" }));
+  });
+  // the first heartbeat arrived and the client left; the broker's job goes on to the end and it stays up
+  await waitFor(async () => fake.calls().length === 1, 20000);
+  assert.equal((await request("GET", "/health")).status, 200, "still up");
+});
+
+test("AVD-23 a shut eye and over-layers: checked, parsed (the compact \"over\"), stored only when true, carried across a restart", async () => {
+  await restart();
+  const r = MOCK_RICH[0];
+  assert.equal((await postJson("/bot/new", richBot("Shut", r, { eyes: { c: "#FFFFFF", shut: "l" } }))).status, 200);
+  bad(await postJson("/bot/new", richBot("Shut", r, { eyes: { c: "#FFFFFF", shut: "left" } })), "eyes.shut must be l or r");
+  bad(await postJson("/bot/new", richBot("Over", r, { layers: [{ path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: "yes" }] })), "layer 1's over must be true or false");
+  // parsed as a design comes back: the compact "over", the shut eye tidied, false dropped
+  const [c] = await designed([{ ...r, eyes: { c: "#ffc83d", shut: " L " }, layers: [["M30 40 L50 40 L40 56 Z", "#1e1e1e", 1, "over"], ["M30 60 L70 60 L50 80 Z", "#f5ebd6"], { path: "M60 40 L70 40 L65 50 Z", fill: "#000000", over: false }] }], "shut");
+  assert.deepEqual(c.eyes, { c: "#FFC83D", shut: "l" });
+  assert.deepEqual(c.layers, [{ path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", opacity: 1, over: true }, { path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M60 40 L70 40 L65 50 Z", fill: "#000000" }]);
+  await restart();
+  // stored only when true
+  const layers = [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6", over: false }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }];
+  const made = await postJson("/bot/new", richBot("Winky", r, { layers, eyes: { c: "#FFC83D", shut: "r" } }));
+  assert.equal(made.status, 200, made.text);
+  const id = made.json.bot.id;
+  const want = [{ path: "M30 60 L70 60 L50 80 Z", fill: "#F5EBD6" }, { path: "M30 40 L50 40 L40 56 Z", fill: "#1E1E1E", over: true }];
+  assert.deepEqual(made.json.bot.layers, want);
+  bad(await postJson("/bot/update", { id, eyes: { c: "#FFC83D", shut: "x" } }), "eyes.shut must be l or r");
+  await restart();
+  const b = await botOf(id);
+  assert.deepEqual([b.layers, b.eyes], [want, { c: "#FFC83D", shut: "r" }]);
 });
