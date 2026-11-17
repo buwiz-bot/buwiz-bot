@@ -188,18 +188,6 @@ pub fn command_label(p: &Commands, name: &str, plugins: &[Commands]) -> String {
     if unique { format!("/{name}") } else { format!("/{}:{name}", p.short) }
 }
 
-/// Every candidate command of the enabled plugins, each in the form that reaches it
-/// ([`command_label`]), with its plugin: (label, plugin, name).
-pub fn command_rows(plugins: &[Commands]) -> Vec<(String, String, String)> {
-    let mut out = Vec::new();
-    for p in plugins.iter().filter(|p| p.enabled) {
-        for c in &p.commands {
-            out.push((command_label(p, c, plugins), p.plugin.clone(), c.clone()));
-        }
-    }
-    out
-}
-
 /// One choice of a resolve (9.2), as the popup shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
@@ -481,14 +469,13 @@ mod tests {
         assert_eq!(go("/status"), Route::Builtin);
         assert_eq!(go("/off:ledger"), Route::Unknown);
         assert_eq!(go("/nope"), Route::Unknown);
-        // the composer lists every candidate in the form that reaches it
-        let rows: Vec<String> = command_rows(&ps).into_iter().map(|r| r.0).filter(|l| l.contains("re")).collect();
-        assert_eq!(rows, ["/bir:report", "/acc:report"]);
-        let rows: Vec<String> = command_rows(&ps).into_iter().map(|r| r.0).filter(|l| l.contains("tax")).collect();
-        assert_eq!(rows, ["/taxform", "/taxprofile"]);
-        let one = ps.iter().find(|p| p.short == "bir").unwrap();
-        assert_eq!(command_label(one, "taxform", &ps), "/taxform");
-        assert_eq!(command_label(one, "report", &ps), "/bir:report");
+        // the composer lists a command in the form that reaches it
+        let bir = ps.iter().find(|p| p.short == "bir").unwrap();
+        let acc = ps.iter().find(|p| p.short == "acc").unwrap();
+        assert_eq!(command_label(bir, "taxform", &ps), "/taxform");
+        assert_eq!(command_label(bir, "taxprofile", &ps), "/taxprofile");
+        assert_eq!(command_label(bir, "report", &ps), "/bir:report");
+        assert_eq!(command_label(acc, "report", &ps), "/acc:report");
     }
 
     #[test]
