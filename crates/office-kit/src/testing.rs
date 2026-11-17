@@ -58,6 +58,8 @@ pub struct Headless {
     values: HashMap<NodeId, String>,
     /// The inputs made secure (masked) entry, as last configured.
     secure: HashMap<NodeId, bool>,
+    /// The views that hide themselves and what's in them from assistive technologies, as last sent.
+    hidden: HashSet<NodeId>,
     /// The file requests (open dialogs) not answered yet.
     files: Vec<u32>,
 }
@@ -93,6 +95,7 @@ pub fn run(config: EngineConfig) -> Headless {
         hints: HashMap::new(),
         values: HashMap::new(),
         secure: HashMap::new(),
+        hidden: HashSet::new(),
         files: Vec::new(),
     };
     until(&mut app, "the first render", |_| true);
@@ -116,6 +119,11 @@ impl Headless {
                 MountItem::ViewProps { id, props } => {
                     if let Some(l) = props.accessibility.label.as_deref() {
                         self.labels.push((*id, l.to_owned()));
+                    }
+                    if props.accessibility.hidden {
+                        self.hidden.insert(*id);
+                    } else {
+                        self.hidden.remove(id);
                     }
                     self.access.insert(*id, (props.accessibility.role, props.accessibility.state.disabled, props.accessibility.state.checked));
                     match props.accessibility.hint.as_deref() {
@@ -195,7 +203,26 @@ impl Headless {
     }
 
     pub fn texts(&self) -> Vec<&str> {
-        self.texts.iter().filter(|(id, _)| self.live.contains(id)).map(|(_, t)| t.as_str()).collect()
+        self.live_texts(|_| true)
+    }
+
+    /// The live texts whose view `keep` says yes to.
+    fn live_texts(&self, keep: impl Fn(NodeId) -> bool) -> Vec<&str> {
+        self.texts.iter().filter(|(id, _)| self.live.contains(id) && keep(**id)).map(|(_, t)| t.as_str()).collect()
+    }
+
+    /// [`Headless::texts`], less every text that hides itself, or sits in a view that hides, from
+    /// assistive technologies: the views the page marked hidden, by the prop it sent.
+    pub fn readable_texts(&self) -> Vec<&str> {
+        self.live_texts(|mut id| loop {
+            if self.hidden.contains(&id) {
+                return false;
+            }
+            match self.parents.get(&id) {
+                Some(parent) => id = *parent,
+                None => return true,
+            }
+        })
     }
 
     /// The live text view showing `text`, whole, and its content as the engine sent it (its line

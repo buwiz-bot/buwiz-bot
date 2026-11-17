@@ -28,6 +28,39 @@ use crate::theme;
 /// How long a shown password stays on screen.
 const SHOWN_FOR: Duration = Duration::from_secs(30);
 
+/// How long a test lets it stay (0: [`SHOWN_FOR`]).
+#[cfg(test)]
+pub(crate) static SHOWN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn shown_for() -> Duration {
+    #[cfg(test)]
+    if let ms @ 1.. = SHOWN_MS.load(std::sync::atomic::Ordering::SeqCst) {
+        return Duration::from_millis(ms);
+    }
+    SHOWN_FOR
+}
+
+/// Counts the shows and the times what is shown is taken off: a timer clears only the show it
+/// began with, and a Touch ID answer that comes after the page closed shows nothing.
+static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What a shown password's text says to a program that asks the element (its label is preferred
+/// over its text, and stands as its value), in place of the password itself.
+fn shown_label(what: &str) -> String {
+    format!("Saved {} is shown on screen", what.to_lowercase())
+}
+
+/// Whether `shown` holds row `id`'s secret.
+fn is_shown(shown: &Option<(String, Secret)>, id: &str) -> bool {
+    shown.as_ref().is_some_and(|(i, _)| i == id)
+}
+
+/// Takes what's shown off the screen, and ends any show under way.
+fn forget_shown(u: Ui) {
+    EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    u.shown.set(None);
+}
+
 /// The Add / Edit form, while it's open: `None` adds, `Some(id)` edits; and
 /// the site the login had when the form opened.
 #[derive(Clone, PartialEq, Debug)]
@@ -96,7 +129,10 @@ fn watch_settings(u: Ui) {
     Owner::detached().run(|| {
         effect(move || {
             if !crate::live::store().settings_open.get() {
-                untracked(|| close_form_of(u));
+                untracked(|| {
+                    close_form_of(u);
+                    forget_shown(u);
+                });
             }
         })
     });
@@ -134,6 +170,7 @@ fn forget_typed_of(u: Ui) {
 /// Opens Settings on Logins; a form left open keeps nothing typed into its secret fields.
 pub(crate) fn open_page() {
     forget_typed();
+    forget_shown(ui());
     let st = crate::live::store();
     st.settings_page.set("logins".to_owned());
     st.settings_open.set(true);
@@ -244,10 +281,15 @@ fn show(row: SiteLogin) {
     let what = if row.kind == KIND_CODE { "code" } else { "password" };
     let reason = format!("show the saved {what} for {} as {}", row.origin, row.username);
     let id = row.id.clone();
+    let began = EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     Owner::detached().run(|| {
         spawn(async move {
             let got = off_main(move || vault().unlock(&row, &reason)).await;
             u.busy.set(false);
+            if EPOCH.load(std::sync::atomic::Ordering::SeqCst) != began {
+                // the page closed or opened again while the sheet was up
+                return;
+            }
             let shown = match got {
                 Some(Unlock::Secret(s)) if what == "code" => match super::totp::Totp::parse(s.expose()) {
                     Ok(t) => Secret::new(t.current().0),
@@ -259,12 +301,19 @@ fn show(row: SiteLogin) {
                 Some(Unlock::Refused(why)) => return u.note.set(format!("Touch ID didn't confirm: {why}")),
             };
             u.shown.set(Some((id.clone(), shown)));
-            timer(SHOWN_FOR).await;
-            if u.shown.with_untracked(|s| s.as_ref().is_some_and(|(i, _)| *i == id)) {
+            let mine = EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            timer(shown_for()).await;
+            if EPOCH.load(std::sync::atomic::Ordering::SeqCst) == mine && u.shown.with_untracked(|s| is_shown(s, &id)) {
                 u.shown.set(None);
             }
         });
     });
+}
+
+/// What the page's own state prints with `{:?}`, for a test that a shown password isn't in it.
+#[cfg(test)]
+pub(crate) fn shown_debug() -> String {
+    format!("{:?}", ui().shown.get_untracked())
 }
 
 fn delete(id: String) {
@@ -577,7 +626,7 @@ fn kind_word(kind: &str) -> &'static str {
 fn detail(row: SiteLogin) -> impl IntoElement {
     let u = ui();
     let id = row.id.clone();
-    let (id_shown, id_conf, id_del) = (id.clone(), id.clone(), id.clone());
+    let (id_shown, id_hidden, id_conf, id_del) = (id.clone(), id.clone(), id.clone(), id.clone());
     let has = vault().has_secret(&row);
     let secretless = row.kind == KIND_PASSKEY;
     let what = if row.kind == KIND_CODE { "Code" } else { "Password" };
@@ -618,11 +667,19 @@ fn detail(row: SiteLogin) -> impl IntoElement {
                         .min_w(px(0.0))
                         .number_of_lines(1)
                         .text_size(px(13.0))
-                        .text_color(theme::TEXT),
+                        .text_color(theme::TEXT)
+                        // a password on screen is out of the accessibility tree, and what its
+                        // element says is a fixed phrase, not the password: a program that
+                        // already holds the element reads that
+                        .accessibility_elements_hidden({
+                            let id = id_hidden.clone();
+                            move || u.shown.with(|s| is_shown(s, &id))
+                        })
+                        .optional_label(move || u.shown.with(|s| is_shown(s, &id_hidden)).then(|| shown_label(what).into())),
                     )
                     .when(has, move |v| {
                         let id = id.clone();
-                        let showing = move || u.shown.with(|s| s.as_ref().is_some_and(|(i, _)| *i == id));
+                        let showing = move || u.shown.with(|s| is_shown(s, &id));
                         let row = row2.clone();
                         v.child(dynamic(move || {
                             if showing() {
