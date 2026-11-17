@@ -221,6 +221,9 @@ pub async fn attach(ctx: &HubCtx, body: &Value) -> Result<Value, String> {
     if ctx.db.with(|c| enabled_server(c, &server))?.is_none() {
         return Err(format!("no such server {server}"));
     }
+    if let Some((_, why)) = crate::hub::policy::scope_refusal(ctx, &found, &crate::hub::policy::keys::mcp_key(&server)) {
+        return Err(why);
+    }
     let manifest = mcp.manifest(&server).await;
     let scope = scopes_of(&manifest).into_iter().find(|s| s.get("name").and_then(Value::as_str) == Some(scope_name.as_str()));
     let Some(scope) = scope.filter(|s| s.get("attach").is_some_and(js::truthy)) else { return Err(format!("@{server}:{scope_name} tokens can't be attached")) };

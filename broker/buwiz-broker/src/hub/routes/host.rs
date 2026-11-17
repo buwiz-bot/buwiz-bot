@@ -42,6 +42,11 @@
 //! /v1/host/tools/set {bot | "chats", key, state}`, `/v1/host/shell/mode {mode}` and
 //! `/v1/host/shell/rules {op, kind, pattern}`, and `POST /v1/host/tools/undo {undo}`.
 //!
+//! The composer's `@` menu follows the Bot of the chat in front: `GET /v1/host/tools/off?thread=<chat>`
+//! lists the plugins and MCP servers (`v1:<id>`, `mcp:<id>`) switched off for that chat's Bot, and
+//! `POST /v1/host/resolve` (a scope, not a command) and `/mcp/resolve` take the chat as `thread` and
+//! refuse a scope of one that is (`disabled`) before the plugin or server is asked anything.
+//!
 //! Widget data sources (`hub::sources`): `POST /v1/host/widget/open {name}` (a widget's
 //! ticket and call path), `POST /v1/host/widget/grant {id, answer}` (the person's answer on
 //! a `widget_ask` card), `GET /v1/host/widget/grants?name=` and `POST /v1/host/widget/revoke
@@ -308,6 +313,9 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
         let bot = url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "bot").map(|(_, v)| v.into_owned());
         return sent(&path, crate::hub::policy::host_view(&ctx, bot.as_deref()));
     }
+    if req.method == Method::GET && path == "/v1/host/tools/off" {
+        return sent(&path, crate::hub::policy::host_scopes_off(&ctx, req.query("thread").as_deref().unwrap_or_default()));
+    }
     if req.method == Method::GET && path == "/v1/host/widget/grants" {
         return sent(&path, crate::hub::sources::grants::host_grants(&ctx, req.query("name").as_deref()).await);
     }
@@ -331,6 +339,19 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     let Some(route) = Route::of(&path) else { return refusal(StatusCode::NOT_FOUND, "not_found", format!("no route {path}")) };
     let Some(body) = read_body(&req.body) else { return refusal(StatusCode::BAD_REQUEST, "invalid_args", "the body must be a JSON object (at most 2 MiB)") };
     sent(&path, route.run(&rs, &ctx, &body).await)
+}
+
+/// A scope's resolve or complete is for a chat, and the plugin must be on for that chat's Bot.
+/// A command (`kind: "command"`) is the person's own act and is not gated.
+fn scope_gate(ctx: &HubCtx, b: &Value) -> Result<(), V1Error> {
+    if b.get("kind").and_then(Value::as_str) != Some("scope") {
+        return Ok(());
+    }
+    let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default();
+    match crate::hub::policy::scope_refusal(ctx, text("thread"), &crate::hub::policy::keys::v1_key(text("plugin"))) {
+        Some((code, message)) => Err(V1Error::new(code, message)),
+        None => Ok(()),
+    }
 }
 
 /// v1/routes.mjs's `POSTS` and `ACTIONS`.
@@ -451,7 +472,10 @@ impl Route {
                     "/v1/host/sessions/close" => ss.close(b).await,
                     "/v1/host/call" => ss.call(b).await,
                     "/v1/host/tickets/title" => ss.ticket_title(b).await,
-                    _ => ss.resolve(b).await,
+                    _ => {
+                        scope_gate(ctx, b)?;
+                        ss.resolve(b).await
+                    }
                 }
             }
             Route::Action(raw, action) => {

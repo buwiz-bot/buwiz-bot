@@ -143,6 +143,10 @@ async fn main() {
         // the /mcp routes are Rust's when the MCP servers are (plan 4.3)
         Some(line) if hosts.contains(&"mcp") => {
             let routes = buwiz_broker::leaf::mcp::McpRoutes::new(line.mcp().clone(), allowed.clone());
+            let routes = match &hub {
+                Some(hub) => routes.with_gate(hub.ctx().clone()),
+                None => routes,
+            };
             // a mini app account's sign-in comes back on the same callback route
             let routes = if hosts.contains(&"v1") { routes.with_plugins(line.host().clone()) } else { routes };
             door.with_line(line.clone()).with_mcp(routes)

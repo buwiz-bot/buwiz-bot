@@ -255,6 +255,11 @@ static ENTRIES: Mutex<Vec<PluginEntry>> = Mutex::new(Vec::new());
 /// Records are changed under this lock (the bridge and the main thread).
 static RECORDS: Mutex<()> = Mutex::new(());
 
+/// The open chat, for a bridge thread: what a resolve is for.
+pub(super) fn active_chat() -> String {
+    ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Answers ask `id` once (later answers are dropped).
 fn answer(id: u64, yes: bool) {
     let f = {
@@ -279,6 +284,18 @@ fn change_records<R>(f: impl FnOnce(&mut Records) -> R) -> R {
     out
 }
 
+/// Whether `entry` may attach to `thread`: the broker's switches for that chat's Bot have it on.
+/// Closed when the broker does not say. The Err is what the person is told.
+fn attach_allowed(b: &dyn host_api::Broker, thread: &str, entry: &PluginEntry) -> Result<(), String> {
+    match host_api::scopes_off(b, thread) {
+        Ok(said) => match said.get(&buwiz_protocol::switches::v1_key(&entry.id)) {
+            Some(sentence) => Err(sentence.clone()),
+            None => Ok(()),
+        },
+        Err(_) => Err("Couldn't check this Bot's tools. Try again.".to_owned()),
+    }
+}
+
 /// The chat a v1 app attaches to: the open one.
 struct OpenChat;
 
@@ -293,6 +310,10 @@ impl super::native::Chat for OpenChat {
         let Ok(k) = V1Key::parse(key) else { return false };
         let entry = ENTRIES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.id == k.plugin).cloned();
         let Some(entry) = entry else { return false };
+        if let Err(why) = attach_allowed(&broker(), &thread, &entry) {
+            super::to_store(move |_| crate::toast::show(why));
+            return false;
+        }
         let (token, title) = (token.to_owned(), title.to_owned());
         let added = change_records(|r| r.attach(&thread, &token, &title, &entry));
         if added {
@@ -1098,6 +1119,7 @@ impl Store {
             spawn(async move {
                 let entries2 = entries.clone();
                 let text2 = text.clone();
+                let thread2 = thread.clone();
                 let rewrite = crate::vault::off_main(move || {
                     let plugin_of = |s: &str| entries2.iter().find(|p| p.short == s && p.enabled).map(|p| p.id.clone());
                     let b = broker();
@@ -1109,6 +1131,7 @@ impl Store {
                             value: value.to_owned(),
                             complete: false,
                             context: json!({"attached": attached.iter().filter(|a| a["plugin"] == plugin).collect::<Vec<_>>()}),
+                            thread: thread2.clone(),
                         };
                         match host_api::resolve(&b, &ask).map(|v| tokens::answer(&v)) {
                             Ok(tokens::Answer::Token { ticket, title }) => Ok((ticket, title)),
@@ -1159,6 +1182,7 @@ impl Store {
             return crate::toast::show("Open a chat to attach to");
         }
         let entries = self.v1.entries.get_untracked();
+        let chat = thread.clone();
         Owner::detached().run(|| {
             spawn(async move {
                 let got = crate::vault::off_main(move || {
@@ -1178,6 +1202,7 @@ impl Store {
                             value: t.value.to_owned(),
                             complete: false,
                             context: json!({"attached": []}),
+                            thread: chat.clone(),
                         };
                         out.push(match host_api::resolve(&b, &ask).map(|v| tokens::answer(&v)) {
                             Ok(tokens::Answer::Token { ticket, title }) => {
@@ -1240,6 +1265,7 @@ impl Store {
                     value: value.clone(),
                     complete: false,
                     context: json!({"attached": attached.into_iter().filter(|a| a["plugin"] == plugin.as_str()).collect::<Vec<_>>()}),
+                    thread,
                 };
                 let got = crate::vault::off_main(move || host_api::resolve(&broker(), &ask)).await;
                 let v = match got {
@@ -1344,6 +1370,7 @@ impl Store {
             value: value.to_owned(),
             complete: true,
             context: json!({"attached": []}),
+            thread: self.active_id.get_untracked(),
         };
         let n = crate::slash::next_ask();
         let query = self.draft.get_untracked();
@@ -3395,6 +3422,25 @@ mod tests {
     use super::*;
 
     const T: &str = "tkt_0123456789ABCDEFGHJKMNPQRS";
+
+    /// A plugin off for the chat's Bot cannot attach to that chat, and a broker that does not
+    /// say is a no: the same sentence the person gets elsewhere.
+    #[test]
+    fn a_plugin_off_for_the_chats_bot_cannot_attach_there() {
+        struct Says(Result<Value, ()>);
+        impl host_api::Broker for Says {
+            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, super::super::RoxError> {
+                assert_eq!(route, "/v1/host/tools/off?thread=t1");
+                self.0.clone().map_err(|_| super::super::RoxError::new("plugin_unavailable", "down"))
+            }
+        }
+        let books = PluginEntry { id: "app.buwiz.books".into(), title: "Books".into(), ..Default::default() };
+        let off = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.books"], "said": {"v1:app.buwiz.books": "Books is switched off for this Bot. Turn it on in Tools to use it here."}})));
+        assert_eq!(attach_allowed(&off, "t1", &books).unwrap_err(), "Books is switched off for this Bot. Turn it on in Tools to use it here.");
+        let on = Says(Ok(json!({"ok": true, "bot": "b_ann", "off": ["v1:app.buwiz.other"], "said": {"v1:app.buwiz.other": "x"}})));
+        assert!(attach_allowed(&on, "t1", &books).is_ok());
+        assert!(attach_allowed(&Says(Err(())), "t1", &books).is_err(), "fails closed");
+    }
 
     /// Save that cannot send (a save of the same setup runs, or a check
     /// fails) tells its caller why, so a card that went busy is never left
