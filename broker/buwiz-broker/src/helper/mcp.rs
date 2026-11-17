@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn a_v1_plugin_gets_the_tool_folders_on_path_as_a_v0_server_does() {
         let env = child_env_from(&spec(false, &[("GWS_USER_EMAIL", "a@b")]), base());
-        // what mcp_servers gives a v0 server, so a Dock-launched Rox's gws finds uvx
+        // what mcp_servers gives a v0 server, so a Dock-launched Buwiz Bot's gws finds uvx
         assert_eq!(path(&env), Some(tool_path("/usr/bin:/bin", "/h").as_str()));
         assert_eq!(path(&env), Some("/usr/bin:/bin:/h/.local/bin:/h/.cargo/bin:/h/.bun/bin:/opt/homebrew/bin:/usr/local/bin"));
         assert_eq!(env.iter().filter(|(k, _)| k == "PATH").count(), 1);

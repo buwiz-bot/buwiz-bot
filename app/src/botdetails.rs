@@ -13,7 +13,7 @@ use nsh_base::input;
 use nsh_core::prelude::*;
 
 use crate::live::store;
-use crate::store::{BotIntegration, RoxBot};
+use crate::store::{BotIntegration, BuwizBot};
 use crate::theme;
 
 /// The modal's open bot and mode (`store().bot_details`).
@@ -74,7 +74,7 @@ fn pop() {
     });
 }
 
-fn bot_of(id: &str) -> Option<RoxBot> {
+fn bot_of(id: &str) -> Option<BuwizBot> {
     store().bots.get().into_iter().find(|b| b.id == id)
 }
 
@@ -163,7 +163,7 @@ fn header(title: &str, sub: bool) -> impl IntoElement {
 }
 
 /// Save (edit mode, on pages with fields) and Publish (off for now).
-fn footer(b: &RoxBot, edit: bool, page: &str) -> impl IntoElement {
+fn footer(b: &BuwizBot, edit: bool, page: &str) -> impl IntoElement {
     let id = b.id.clone();
     let saves = edit && (page == "main" || page == "context");
     let memory = page.strip_prefix("memory:").filter(|_| edit).map(str::to_owned);
@@ -230,7 +230,7 @@ fn pill(label: &'static str, primary: bool, on: bool, act: impl Fn() + 'static) 
         .when(on, |v| v.on_press(act))
 }
 
-fn mark(b: &RoxBot, size: f32) -> impl IntoElement {
+fn mark(b: &BuwizBot, size: f32) -> impl IntoElement {
     view().self_center().child(crate::avatar::bot_avatar(crate::avatar::BotAvatarProps::bot(b, size)))
 }
 
@@ -308,7 +308,7 @@ fn field(value: Signal<String>, placeholder: &'static str, h: f32) -> impl IntoE
         .on_change(move |t: &str| value.set(t.to_owned()))
 }
 
-fn main_page(b: &RoxBot, edit: bool) -> impl IntoElement {
+fn main_page(b: &BuwizBot, edit: bool) -> impl IntoElement {
     let st = store();
     let apps: Vec<String> = b.integrations.iter().filter(|i| i.kind != "skill").map(|i| i.name.clone()).collect();
     view()
@@ -345,7 +345,7 @@ fn main_page(b: &RoxBot, edit: bool) -> impl IntoElement {
         .child(card().w_full().mt(px(16.0)).child(crate::homes::bot_row(&b.id, edit)))
 }
 
-fn context_page(b: &RoxBot, edit: bool) -> impl IntoElement {
+fn context_page(b: &BuwizBot, edit: bool) -> impl IntoElement {
     let st = store();
     let id = b.id.clone();
     let skills: Vec<BotIntegration> = b.integrations.iter().filter(|i| i.kind == "skill").cloned().collect();
@@ -405,7 +405,7 @@ fn context_page(b: &RoxBot, edit: bool) -> impl IntoElement {
         .child(integration_list(&id, skills, edit, "No skills yet"))
 }
 
-fn memory_page(b: &RoxBot, id: &str, edit: bool) -> impl IntoElement {
+fn memory_page(b: &BuwizBot, id: &str, edit: bool) -> impl IntoElement {
     let st = store();
     let text_now = b.memories.iter().find(|m| m.id == id).map(|m| m.text.clone()).unwrap_or_default();
     view()
@@ -420,7 +420,7 @@ fn memory_page(b: &RoxBot, id: &str, edit: bool) -> impl IntoElement {
         })
 }
 
-fn integrations_page(b: &RoxBot, edit: bool) -> impl IntoElement {
+fn integrations_page(b: &BuwizBot, edit: bool) -> impl IntoElement {
     let apps: Vec<BotIntegration> = b.integrations.iter().filter(|i| i.kind != "skill").cloned().collect();
     view()
         .pt(px(24.0))
@@ -494,7 +494,7 @@ fn integration_list(bot: &str, items: Vec<BotIntegration>, edit: bool, empty: &'
 
 /// Everything installed the bot doesn't have yet: connected apps and
 /// private skills; a press adds it.
-fn add_page(b: &RoxBot) -> impl IntoElement {
+fn add_page(b: &BuwizBot) -> impl IntoElement {
     let st = store();
     let has = |kind: &str, id: &str| b.integrations.iter().any(|i| i.kind == kind && i.id == id);
     let mut rows: Vec<BotIntegration> = st

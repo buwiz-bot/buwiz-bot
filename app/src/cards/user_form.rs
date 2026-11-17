@@ -807,7 +807,7 @@ fn normalize_name(name: &str) -> String {
 /// What a card can take from the vault (nativechat `CardTarget`): a whole
 /// login (a name beside one password), the name page or the password page
 /// of a two-step sign-in, or a code. Passkeys are not offered here: their
-/// key lives on a server Rox does not have yet.
+/// key lives on a server Buwiz Bot does not have yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CardTarget {
     Login { username_id: String, password_id: String },
@@ -1050,7 +1050,7 @@ type Registry = RefCell<HashMap<String, Local>>;
 type HeldMap = RefCell<HashMap<String, Held>>;
 
 fn local(key: &str) -> Local {
-    let at = ra_jit_live::anchor("rox.cards.user_form", || {
+    let at = ra_jit_live::anchor("buwiz.cards.user_form", || {
         Box::leak(Box::new(Registry::default())) as *const Registry as usize
     });
     // SAFETY: the anchor holds a leaked registry for the life of the
@@ -1081,7 +1081,7 @@ fn chat_of(key: &str) -> Option<String> {
 }
 
 fn held() -> &'static HeldMap {
-    let at = ra_jit_live::anchor("rox.cards.user_form.held", || {
+    let at = ra_jit_live::anchor("buwiz.cards.user_form.held", || {
         Box::leak(Box::new(HeldMap::default())) as *const HeldMap as usize
     });
     // SAFETY: as in `local`.

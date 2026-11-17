@@ -716,7 +716,7 @@ mod tests {
     /// A catalog with `demo` (a local repo: two servers, a skill, a
     /// command, hooks, one required field) and the vendored `vend`.
     fn fixture(label: &str) -> Fixture {
-        let root = std::env::temp_dir().join(format!("rox-mkt-review-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("buwiz-mkt-review-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         write(&repo.join(".claude-plugin/plugin.json"), r#"{"name":"demo","version":"1.2.0","author":{"name":"Ada"}}"#);

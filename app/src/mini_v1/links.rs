@@ -8,7 +8,7 @@
 //! way, unchanged: only a link naming a reverse-DNS plugin id, or `bir`
 //! once `app.buwiz.ebirforms` is installed as a v1 plugin, is v1's.
 
-use super::{RoxError, V1Key, host_api, load::PluginEntry, perms};
+use super::{MiniError, V1Key, host_api, load::PluginEntry, perms};
 
 /// The longest link (9.4, Appendix A).
 pub const MAX_LINK: usize = 2048;
@@ -91,7 +91,7 @@ pub fn ticket_notice(broker: &dyn host_api::Broker, key: &V1Key) -> Option<&'sta
     match host_api::ticket_title(broker, &key.plugin, ticket) {
         Ok(None) => Some(NO_LONGER_AVAILABLE),
         Ok(Some(_)) => None,
-        Err(RoxError { code, .. }) if code == "not_supported" => None,
+        Err(MiniError { code, .. }) if code == "not_supported" => None,
         Err(e) => {
             log::info!("mini v1: ticket of {}: {e}", key.plugin);
             None
@@ -176,7 +176,7 @@ mod tests {
     struct Titles;
 
     impl host_api::Broker for Titles {
-        fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, RoxError> {
+        fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, MiniError> {
             assert_eq!(route, "/v1/host/tickets/title");
             let b = body.unwrap();
             if b["ticket"] == T {

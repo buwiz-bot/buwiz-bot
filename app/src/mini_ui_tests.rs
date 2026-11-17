@@ -26,7 +26,7 @@ use crate::mini_v1::{
     records::Pin,
     ui,
 };
-use crate::store::{AccountRequiredNotice, AppAccountsNotice, AppSetupNotice, DriveLink, GroupItem, MiniOpen, PluginNav, RoxGroup, Turn};
+use crate::store::{AccountRequiredNotice, AppAccountsNotice, AppSetupNotice, DriveLink, GroupItem, MiniOpen, PluginNav, BuwizGroup, Turn};
 
 const CHILD: &str = "BUWIZ_MINI_UI_TEST";
 const TAX: &str = "app.buwiz.ebirforms";
@@ -111,7 +111,7 @@ fn seed() {
     st.v1.records.update(|r| {
         r.pin(Pin { plugin: TAX.into(), app: "card-people".into(), placement: "inline".into(), title: "Pinned profiles".into(), ..Default::default() });
     });
-    st.groups.set(vec![RoxGroup {
+    st.groups.set(vec![BuwizGroup {
         id: "g".to_owned(),
         items: vec![GroupItem { kind: "app".to_owned(), id: key(BOOKS, "books"), title: "Grouped Books".to_owned(), ..Default::default() }],
         ..Default::default()

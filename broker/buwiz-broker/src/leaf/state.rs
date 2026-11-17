@@ -1,4 +1,4 @@
-//! `/state`: one JSON blob per widget or Rox store, in `kv`
+//! `/state`: one JSON blob per widget or Buwiz Bot store, in `kv`
 //! (server/src/routes/apps.mjs). Accepts `/state/<name>`, `/state?name=`,
 //! and bodies of `{name, state}` or the bare state.
 

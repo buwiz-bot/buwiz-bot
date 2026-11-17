@@ -246,7 +246,7 @@ test("OFF-02 docx: files, open, outline, grep with a cursor, read, propose, revi
     await call("office_grep", { document, query: "ENGINE", caseSensitive: true });
     await call("office_read", { document, ref: "p3", start: 10, length: 50 });
     await call("office_read", { document, ref: "p1" });
-    const p = await call("office_propose", { document, author: "Rox", note: "tighten", edits: [{ match: g.matches[0].match, newText: "core" }, { match: g.matches[1].match, newText: "renderer" }] });
+    const p = await call("office_propose", { document, author: "Buwiz Bot", note: "tighten", edits: [{ match: g.matches[0].match, newText: "core" }, { match: g.matches[1].match, newText: "renderer" }] });
 
     await call("office_review", { document });
     await call("office_review", { document, proposal: p.id });
@@ -260,9 +260,9 @@ test("OFF-02 docx: files, open, outline, grep with a cursor, read, propose, revi
     await call("office_outline", { document, limit: 4 });
     await call("office_read", { document, ref: "p2" });
     // the old match is stale now; a fresh grep proposes again
-    await call("office_propose", { document, author: "Rox", edits: [{ match: g.matches[0].match, newText: "x" }] });
+    await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: g.matches[0].match, newText: "x" }] });
     const g2 = await call("office_grep", { document, query: "Welcome" });
-    const q = await call("office_propose", { document, author: "Rox", edits: [{ match: g2.matches[0].match, newText: "Hello" }] });
+    const q = await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: g2.matches[0].match, newText: "Hello" }] });
 
     await call("office_reject", { document, proposal: q.id });
     await call("office_reject", { document, proposal: q.id });
@@ -305,8 +305,8 @@ test("OFF-03 docx: tracked acceptance writes Word tracked changes; errors for fo
     await call("office_read", { document, ref: "p999" });
     await call("office_outline", { document, story: "nope" });
     await call("office_grep", { document, query: "a\nb" });
-    await call("office_propose", { document, author: "Rox", edits: [{ match: "m999", newText: "x" }] });
-    await call("office_propose_cells", { document, author: "Rox", edits: [{ cell: "c1", input: "1" }] });
+    await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: "m999", newText: "x" }] });
+    await call("office_propose_cells", { document, author: "Buwiz Bot", edits: [{ cell: "c1", input: "1" }] });
     await call("office_review", { document, proposal: "proposal99" });
     await call("office_open", { path: "../outside.docx" });
     await call("office_open", { path: "missing.docx" });
@@ -350,7 +350,7 @@ test("OFF-04 xlsx: open, outline, cells, grep, read fields, propose cells, revie
     await call("office_read", { document, ref: formula.ref, field: "formula" });
     await call("office_read", { document, ref: formula.ref, field: "value" });
     const target = cells.cells.find((c) => c.value.kind === "number") || cells.cells[1];
-    const p = await call("office_propose_cells", { document, author: "Rox", note: "bump", edits: [{ cell: target.cell, input: "1234" }, { cell: cells.cells[0].cell, input: "=1+2" }] });
+    const p = await call("office_propose_cells", { document, author: "Buwiz Bot", note: "bump", edits: [{ cell: target.cell, input: "1234" }, { cell: cells.cells[0].cell, input: "=1+2" }] });
 
     await call("office_review", { document });
     await call("office_review", { document, proposal: p.id });
@@ -361,8 +361,8 @@ test("OFF-04 xlsx: open, outline, cells, grep, read fields, propose cells, revie
     await call("office_accept", { document, proposal: p.id });
     await call("office_cells", { document, sheet: items[0].sheetId, range: "A1:B2" });
     // the handles read before the accept are stale now
-    await call("office_propose_cells", { document, author: "Rox", edits: [{ cell: target.cell, input: "1" }] });
-    await call("office_propose", { document, author: "Rox", edits: [{ match: "m1", newText: "x" }] });
+    await call("office_propose_cells", { document, author: "Buwiz Bot", edits: [{ cell: target.cell, input: "1" }] });
+    await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: "m1", newText: "x" }] });
     await call("office_outline", { document, headingsOnly: true });
     await call("office_cells", { document, sheet: items[0].sheetId, range: "B2:A1" });
     await call("office_cells", { document, sheet: "sheet:99", range: "A1" });
@@ -391,7 +391,7 @@ test("OFF-05 pptx: open, outline, grep with a cursor, read, propose, review, ren
     await call("office_grep", { document, query: "office", limit: 2, cursor: g.nextCursor });
     await call("office_grep", { document, query: "office", limit: 2, cursor: "nope" });
     await call("office_read", { document, ref: g.matches[0].ref, start: 2, length: 5 });
-    const p = await call("office_propose", { document, author: "Rox", note: "rename", edits: [{ match: g.matches[1].match, newText: "Docs" }] });
+    const p = await call("office_propose", { document, author: "Buwiz Bot", note: "rename", edits: [{ match: g.matches[1].match, newText: "Docs" }] });
 
     await call("office_review", { document });
     await call("office_review", { document, proposal: p.id });
@@ -401,11 +401,11 @@ test("OFF-05 pptx: open, outline, grep with a cursor, read, propose, review, ren
     await call("office_accept", { document, proposal: p.id });
     await call("office_read", { document, ref: g.matches[1].ref });
     const g2 = await call("office_grep", { document, query: "WASM" });
-    const q = await call("office_propose", { document, author: "Rox", edits: [{ match: g2.matches[0].match, newText: "Native" }] });
+    const q = await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: g2.matches[0].match, newText: "Native" }] });
 
     await call("office_reject", { document, proposal: q.id });
     await call("office_review", { document });
-    await call("office_propose", { document, author: "Rox", edits: [{ match: g.matches[0].match, newText: "x" }] });
+    await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: g.matches[0].match, newText: "x" }] });
     await call("office_outline", { document, headingsOnly: true });
     await call("office_export", { document, path: "accepted.pptx" });
     await contents(call, "proposed.pptx");
@@ -647,7 +647,7 @@ test("OFF-31 a docx, xlsx and pptx round trip in the broker (open, propose, acce
     for (const [path, query, newText] of [["betteroffice-demo.docx", "Welcome", "Hello"], ["presentation.pptx", "WASM", "Native"]]) {
       const { document } = await call("office_open", { path });
       const g = await call("office_grep", { document, query });
-      const p = await call("office_propose", { document, author: "Rox", edits: [{ match: g.matches[0].match, newText }] });
+      const p = await call("office_propose", { document, author: "Buwiz Bot", edits: [{ match: g.matches[0].match, newText }] });
 
       await call("office_accept", { document, proposal: p.id });
       await call("office_export", { document, path: `rt-${path}` });
@@ -656,7 +656,7 @@ test("OFF-31 a docx, xlsx and pptx round trip in the broker (open, propose, acce
     }
     const { document } = await call("office_open", { path: "showcase.xlsx" });
     const c = await call("office_cells", { document, sheet: "sheet:0", range: "A1" });
-    const p = await call("office_propose_cells", { document, author: "Rox", edits: [{ cell: c.cells[0].cell, input: "Q4 Sales Dashboard" }] });
+    const p = await call("office_propose_cells", { document, author: "Buwiz Bot", edits: [{ cell: c.cells[0].cell, input: "Q4 Sales Dashboard" }] });
 
     await call("office_accept", { document, proposal: p.id });
     await call("office_export", { document, path: "rt-showcase.xlsx" });

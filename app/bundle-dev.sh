@@ -12,13 +12,12 @@
 #
 # Its icon is app/resources/AppIcon.icns, the Buwiz logo.
 #
-# It also packages the broker Rox starts when none answers (plan 7.2) into
+# It also packages the broker Buwiz Bot starts when none answers into
 # Contents/Resources/broker/: buwiz-broker (a release build with
-# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one; rox-broker, its old
-# name, links to it) and the static files it
+# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one) and the static files it
 # serves, `server/` being its --assets and `node_modules/` beside it, and
 # in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
-# launched Rox has no nsh on PATH), release builds of this checkout's nsh
+# launched Buwiz Bot has no nsh on PATH), release builds of this checkout's nsh
 # submodule (`cargo build --release -p nsh-cli -p nsh-macos-host` in nsh/).
 #   BUWIZ_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices, and Rox.app is

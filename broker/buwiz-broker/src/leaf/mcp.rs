@@ -1,4 +1,4 @@
-//! The `/mcp/*` routes Rox calls (plan 4.3), answered here when this broker
+//! The `/mcp/*` routes Buwiz Bot calls (plan 4.3), answered here when this broker
 //! hosts the MCP servers, as routes/market.mjs answered them: the same shapes, status codes and texts. Three stay
 //! Node's until the chats move (phase 5), since they touch its in-memory
 //! chats: `POST /mcp/attach`, `GET /mcp/attachments` and `POST
@@ -6,7 +6,7 @@
 //!
 //! The servers themselves are McpHost's (helper/mcp_servers.rs); its status
 //! is what `/mcp/servers` shows and Node mirrors. `/mcp/open` hands only
-//! Rox links to the system (`open`, from PATH), an app link with a one-time
+//! Buwiz Bot links to the system (`open`, from PATH), an app link with a one-time
 //! pass that `/mcp/open/pass` redeems (open-pass.mjs). `/oauth/callback/`
 //! also finishes a mini app account's sign-in (§20.2) when the plugin
 //! host started it.

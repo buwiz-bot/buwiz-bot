@@ -574,7 +574,7 @@ impl Document for Book {
         // with it for the cores and the allocator), or a moment
         if self.rest.is_some() && (outs.iter().any(|o| matches!(o, Out::List { .. })) || !self.waiting.is_empty() || self.opened.elapsed().as_millis() > 300) {
             let (rest, tx) = self.rest.take().expect("checked");
-            let spawned = std::thread::Builder::new().name("rox-office-open".to_owned()).spawn(move || rest(&tx));
+            let spawned = std::thread::Builder::new().name("buwiz-office-open".to_owned()).spawn(move || rest(&tx));
             if let Err(e) = spawned {
                 log::warn!("office: no thread for the workbook: {e}");
             }

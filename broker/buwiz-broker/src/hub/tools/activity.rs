@@ -1,5 +1,5 @@
 //! What `/status` says a turn is doing (tools.mjs `PHRASES`, `phraseFor`,
-//! `TOOL_ACTIVITY`, `toolActivity`): a phase (Rox's avatar animation) and a
+//! `TOOL_ACTIVITY`, `toolActivity`): a phase (Buwiz Bot's avatar animation) and a
 //! short phrase, one drawn per phase and kept while that phase lasts.
 
 use serde_json::{json, Value};
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(title_case(" google-workspace_x "), "Google Workspace X");
         assert_eq!(title_case("many"), "Many");
         assert_eq!(title_case("it's"), "It'S");
-        let ctx = HubCtx::new(std::env::temp_dir().join("rox-activity-none"), crate::hub::traits::Clock::manual());
+        let ctx = HubCtx::new(std::env::temp_dir().join("buwiz-activity-none"), crate::hub::traits::Clock::manual());
         assert_eq!(tool_activity(&ctx, "react", &json!({})), ("working".into(), "Getting it done".into()));
         assert_eq!(tool_activity(&ctx, "web_search", &json!({"query": "  bbtree "})), ("searching".into(), "Searching for bbtree".into()));
         let long = "x".repeat(41);

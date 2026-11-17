@@ -1,4 +1,4 @@
-//! How a card's answer leaves Rox, and its rules for reading the reply.
+//! How a card's answer leaves Buwiz Bot, and its rules for reading the reply.
 //! The login card (`user_form.rs`) answers the broker's own routes,
 //! `POST /v1/host/computer/login/{submit,dismiss,saved}`, with the host
 //! token: a missing route or no broker shows as a failure, never as an
@@ -116,7 +116,7 @@ fn log_unsent(method: &str, path: &str, body: &Value) {
             *v = Value::String("«redacted»".to_owned());
         }
     }
-    log::info!("rox cards: no agent server for {method} {path}; would send {shown}");
+    log::info!("buwiz cards: no agent server for {method} {path}; would send {shown}");
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ pub(crate) async fn answer_run(run_id: &str, call_id: &str, approved: bool) -> S
     send("POST", &path, answer_body(call_id, approved)).await
 }
 
-/// This Mac's id for its local-exec rules: `BUWIZ_MACHINE_ID`, until Rox
+/// This Mac's id for its local-exec rules: `BUWIZ_MACHINE_ID`, until Buwiz Bot
 /// enrols a daemon of its own.
 pub(crate) fn machine_id() -> String {
     buwiz_protocol::env::var("BUWIZ_MACHINE_ID").unwrap_or_default()
@@ -255,7 +255,7 @@ pub(crate) const PROVE_PATH: &str = "/v1/host/prove";
 pub(crate) async fn submit_user_form(body: Value) -> UserFormReply {
     let reply = send_proven(client::host_token(), &nonce(), body, post_live).await;
     if reply == UserFormReply::MissingRoute {
-        log::info!("rox cards: the broker has no {SUBMIT_PATH}; the login went to it and was not used");
+        log::info!("buwiz cards: the broker has no {SUBMIT_PATH}; the login went to it and was not used");
     }
     reply
 }
@@ -286,7 +286,7 @@ where
     Fut: std::future::Future<Output = Option<(u16, Value)>>,
 {
     let Some(token) = token.filter(|t| !t.is_empty()) else {
-        log::warn!("rox cards: no host token to check the broker with; {path} was not sent");
+        log::warn!("buwiz cards: no host token to check the broker with; {path} was not sent");
         return Err(());
     };
     let proven = match post(PROVE_PATH, json!({ "nonce": nonce }), None).await {
@@ -295,13 +295,13 @@ where
             .and_then(Value::as_str)
             .is_some_and(|proof| buwiz_protocol::proof::proof_matches(&token, nonce, proof)),
         Some((status, _)) => {
-            log::warn!("rox cards: the broker answered {PROVE_PATH} {status}; {path} was not sent");
+            log::warn!("buwiz cards: the broker answered {PROVE_PATH} {status}; {path} was not sent");
             false
         }
         None => false,
     };
     if !proven {
-        log::warn!("rox cards: the broker did not prove itself; {path} was not sent");
+        log::warn!("buwiz cards: the broker did not prove itself; {path} was not sent");
         return Err(());
     }
     Ok(post(path, body, Some(token)).await)

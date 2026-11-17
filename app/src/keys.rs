@@ -12,7 +12,7 @@
 //! the performance monitor's ⌘⇧F / ⌘⇧K) are commands too: while a command
 //! keeps its menu key the menu item handles it; once the user moves it or
 //! gives the key to another command, the item loses its key equivalent and
-//! Rox binds the key itself.
+//! Buwiz Bot binds the key itself.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -228,18 +228,18 @@ impl Shown {
 }
 
 /// Whether the full-screen app on top owns the keys: it fills the content
-/// area and nothing of Rox's is over it (the viewer, a modal, a menu, the
+/// area and nothing of Buwiz Bot's is over it (the viewer, a modal, a menu, the
 /// palette). It then takes every chord its own keymap binds, and every
 /// chord while one of its text fields or editors has the focus (⌘B bolds
-/// there), before Rox's (`KeyPrecedence::First`) — but [`HOST_KEYS`]; Rox
+/// there), before Buwiz Bot's (`KeyPrecedence::First`) — but [`HOST_KEYS`]; Buwiz Bot
 /// keeps the chords it leaves. Any other hosted app — a card in the chat,
-/// a full-screen app under another or under the viewer — comes after Rox
+/// a full-screen app under another or under the viewer — comes after Buwiz Bot
 /// (`KeyPrecedence::Last`).
 pub(crate) fn app_owns_keys(s: &Shown) -> bool {
     s.mini_full && !s.over_apps && !s.bot_details && s.open() == [Scope::MiniApp, Scope::Global]
 }
 
-/// The commands whose keys stay Rox's while a full-screen app owns the
+/// The commands whose keys stay Buwiz Bot's while a full-screen app owns the
 /// keys: the palette, Settings, and the keyboard's ways out of the app
 /// (close it, back).
 pub(crate) const HOST_KEYS: [&str; 4] = ["palette.toggle", "settings.open", "mini.close", "history.back"];
@@ -792,7 +792,7 @@ fn reply() {
 
 /// Sends a menu action down the responder chain (the app delegate's
 /// performance monitor, NSApplication's hide, the window's miniaturize)
-/// — on the main thread, through `rox/keys`.
+/// — on the main thread, through `buwiz/keys`.
 fn send_action(action: &'static str) {
     sender().update(|(n, a)| {
         *n += 1;
@@ -997,12 +997,12 @@ fn menu_plan() -> (BTreeSet<String>, serde_json::Map<String, serde_json::Value>)
     (held, plan)
 }
 
-/// `rox/keys`, a 0×0 element at the root that does the keymap's AppKit
+/// `buwiz/keys`, a 0×0 element at the root that does the keymap's AppKit
 /// work on the main thread: the menu items' key equivalents, the actions
 /// commands send, and Settings' key recorder (its keys come back as `key`
 /// events).
 pub(crate) fn host() -> impl IntoElement {
-    native("rox/keys")
+    native("buwiz/keys")
         .prop("menu", || serde_json::Value::Object(menu_plan().1))
         .prop("send", || {
             let (n, a) = sender().get();
@@ -1256,7 +1256,7 @@ mod imp {
         }
         let Some(web_class) = AnyClass::get(c"WKWebView") else { return false };
         let app = NSApplication::sharedApplication(mtm);
-        // the key window; when Rox isn't frontmost, its first visible one
+        // the key window; when Buwiz Bot isn't frontmost, its first visible one
         let window = app.keyWindow().or_else(|| app.mainWindow()).or_else(|| {
             app.windows().iter().find(|w| w.isVisible())
         });
@@ -1349,11 +1349,11 @@ mod imp {
     }
 }
 
-/// Registers `rox/keys` (call before `run_app`, as `register_zoom`).
+/// Registers `buwiz/keys` (call before `run_app`, as `register_zoom`).
 #[cfg(target_os = "macos")]
 pub fn register_keys(components: &nsh_platform_macos::Components) {
     components.register(
-        "rox/keys",
+        "buwiz/keys",
         std::rc::Rc::new(|ctx| Box::new(imp::KeysHost::new(ctx)) as Box<dyn nsh_platform_macos::NativeComponent>),
     );
 }
@@ -1362,10 +1362,10 @@ pub fn register_keys(components: &nsh_platform_macos::Components) {
 mod tests {
     use super::{COMMANDS, Command, HOST_KEYS, ORDER, Scope, Shown, app_owns_keys, host_keys_in, owner_in, parse};
 
-    /// Who takes a chord: a command of Rox's, the hosted app, or nobody.
+    /// Who takes a chord: a command of Buwiz Bot's, the hosted app, or nobody.
     #[derive(Debug, PartialEq)]
     enum Taker {
-        Rox(&'static str),
+        Buwiz(&'static str),
         App,
         Nobody,
     }
@@ -1378,10 +1378,10 @@ mod tests {
     /// keymap binds `app`, `edits` when one of its text fields or editors
     /// has the focus: the full-screen app that owns the keys takes the
     /// chords it binds, and any chord while it edits, first
-    /// (`KeyPrecedence::First`: nsh's monitor skips them on Rox's root) —
-    /// but the host keys; any other comes after Rox (`Last`): Rox's
+    /// (`KeyPrecedence::First`: nsh's monitor skips them on Buwiz Bot's root) —
+    /// but the host keys; any other comes after Buwiz Bot (`Last`): Buwiz Bot's
     /// innermost open scope binding the chord takes it, and the app gets
-    /// what Rox leaves.
+    /// what Buwiz Bot leaves.
     fn dispatch(s: &Shown, chord: &str, app: &[&str], edits: bool) -> Taker {
         let k = parse(chord).expect("a keystroke");
         let app_binds = app.iter().any(|a| parse(a) == Some(k));
@@ -1390,7 +1390,7 @@ mod tests {
             return Taker::App;
         }
         match owner_in(k, &s.open(), defaults) {
-            Some(c) => Taker::Rox(c.id),
+            Some(c) => Taker::Buwiz(c.id),
             None if app_binds => Taker::App,
             None => Taker::Nobody,
         }
@@ -1413,14 +1413,14 @@ mod tests {
         Shown { tools: true, ..Shown::default() }
     }
 
-    /// The chat, no modal over it: an inline card's keys come after Rox's.
+    /// The chat, no modal over it: an inline card's keys come after Buwiz Bot's.
     fn chat() -> Shown {
         Shown::default()
     }
 
     #[test]
     fn word_view_bolds_on_cmd_b() {
-        assert_eq!(dispatch(&word(), "mod+b", &[], false), Taker::Rox("doc.bold"));
+        assert_eq!(dispatch(&word(), "mod+b", &[], false), Taker::Buwiz("doc.bold"));
     }
 
     #[test]
@@ -1428,8 +1428,8 @@ mod tests {
         // the native sheet has no formatting commands: ⌘B is not one of
         // its chords, so the global one keeps working
         assert!(!COMMANDS.iter().any(|c| matches!(c.scope, Scope::Sheet | Scope::SheetEdit) && c.keys.contains(&"mod+b")));
-        assert_eq!(dispatch(&sheet(), "mod+b", &[], false), Taker::Rox("sidebar.toggle"));
-        assert_eq!(dispatch(&sheet(), "mod+c", &[], false), Taker::Rox("sheet.copy"));
+        assert_eq!(dispatch(&sheet(), "mod+b", &[], false), Taker::Buwiz("sidebar.toggle"));
+        assert_eq!(dispatch(&sheet(), "mod+c", &[], false), Taker::Buwiz("sheet.copy"));
     }
 
     #[test]
@@ -1441,23 +1441,23 @@ mod tests {
     #[test]
     fn chat_with_an_inline_card_toggles_the_sidebar_on_cmd_b() {
         assert!(!app_owns_keys(&chat()));
-        assert_eq!(dispatch(&chat(), "mod+b", &["mod+b"], false), Taker::Rox("sidebar.toggle"));
-        // a chord Rox leaves still reaches the card
+        assert_eq!(dispatch(&chat(), "mod+b", &["mod+b"], false), Taker::Buwiz("sidebar.toggle"));
+        // a chord Buwiz Bot leaves still reaches the card
         assert_eq!(dispatch(&chat(), "left", &["left"], false), Taker::App);
     }
 
     #[test]
     fn a_global_chord_no_surface_binds_still_works_with_one_open() {
         for s in [word(), sheet(), full_app()] {
-            assert_eq!(dispatch(&s, "mod+,", &["mod+b"], false), Taker::Rox("settings.open"), "{s:?}");
+            assert_eq!(dispatch(&s, "mod+,", &["mod+b"], false), Taker::Buwiz("settings.open"), "{s:?}");
         }
         // the app's ⌘B takes nothing else of the global map
-        assert_eq!(dispatch(&full_app(), "mod+k", &["mod+b"], false), Taker::Rox("palette.toggle"));
-        assert_eq!(dispatch(&full_app(), "mod+b", &[], false), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&full_app(), "mod+k", &["mod+b"], false), Taker::Buwiz("palette.toggle"));
+        assert_eq!(dispatch(&full_app(), "mod+b", &[], false), Taker::Buwiz("sidebar.toggle"));
     }
 
     #[test]
-    fn the_app_owns_the_keys_only_with_nothing_of_roxs_over_it() {
+    fn the_app_owns_the_keys_only_with_nothing_of_the_apps_over_it() {
         let over = [
             Shown { viewer: true, ..full_app() },
             Shown { menu: true, ..full_app() },
@@ -1474,7 +1474,7 @@ mod tests {
         }
         // the Word view opened over the app takes its ⌘B
         let doc_over_app = Shown { mini_full: true, ..word() };
-        assert_eq!(dispatch(&doc_over_app, "mod+b", &["mod+b"], false), Taker::Rox("doc.bold"));
+        assert_eq!(dispatch(&doc_over_app, "mod+b", &["mod+b"], false), Taker::Buwiz("doc.bold"));
     }
 
     /// The scope a surface opens, and what is on screen with it open.
@@ -1513,7 +1513,7 @@ mod tests {
         assert!(!table.is_empty());
         for (scope, key, global, mine) in &table {
             let (_, s) = surfaces().into_iter().find(|(sc, _)| sc == scope).unwrap();
-            assert_eq!(dispatch(&s, key, &[], false), Taker::Rox(mine), "{} {key}: not {global}", scope.title());
+            assert_eq!(dispatch(&s, key, &[], false), Taker::Buwiz(mine), "{} {key}: not {global}", scope.title());
             println!("| {} | `{key}` | {global} | {mine} |", scope.title());
         }
     }
@@ -1528,9 +1528,9 @@ mod tests {
                 if k.reserved(nsh_core::platform::Os::MacOs).is_some() {
                     continue;
                 }
-                let want = if HOST_KEYS.contains(&g.id) { Taker::Rox(g.id) } else { Taker::App };
+                let want = if HOST_KEYS.contains(&g.id) { Taker::Buwiz(g.id) } else { Taker::App };
                 assert_eq!(dispatch(&full_app(), key, &[key], false), want, "{key} ({})", g.id);
-                assert_eq!(dispatch(&chat(), key, &[key], false), Taker::Rox(g.id), "{key} in the chat");
+                assert_eq!(dispatch(&chat(), key, &[key], false), Taker::Buwiz(g.id), "{key} in the chat");
             }
         }
     }
@@ -1546,13 +1546,13 @@ mod tests {
             assert_eq!(dispatch(&full_app(), chord, &[], true), Taker::App, "{chord} in a plain field");
         }
         // the focus off its editors: ⌘B is the sidebar's again
-        assert_eq!(dispatch(&full_app(), "mod+b", &[], false), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&full_app(), "mod+b", &[], false), Taker::Buwiz("sidebar.toggle"));
     }
 
     #[test]
-    fn host_keys_reach_rox_with_the_apps_editor_focused() {
+    fn host_keys_reach_buwiz_with_the_apps_editor_focused() {
         for (chord, id) in [("mod+k", "palette.toggle"), ("mod+,", "settings.open"), ("mod+w", "mini.close"), ("mod+[", "history.back")] {
-            assert_eq!(dispatch(&full_app(), chord, EDITOR, true), Taker::Rox(id), "{chord}");
+            assert_eq!(dispatch(&full_app(), chord, EDITOR, true), Taker::Buwiz(id), "{chord}");
         }
         assert_eq!(host_keys_in(defaults).len(), HOST_KEYS.len());
     }
@@ -1561,21 +1561,21 @@ mod tests {
     fn tools_takes_cmd_w_and_cmd_bracket_and_leaves_the_chat_closed() {
         assert!(ORDER.contains(&Scope::Tools));
         assert_eq!(tools().open(), [Scope::Tools, Scope::Global], "the chat is not open under it");
-        assert_eq!(dispatch(&tools(), "mod+w", &[], false), Taker::Rox("tools.close"));
-        assert_eq!(dispatch(&tools(), "mod+[", &[], false), Taker::Rox("tools.back"));
-        assert_eq!(dispatch(&tools(), "escape", &[], false), Taker::Rox("app.escape"));
+        assert_eq!(dispatch(&tools(), "mod+w", &[], false), Taker::Buwiz("tools.close"));
+        assert_eq!(dispatch(&tools(), "mod+[", &[], false), Taker::Buwiz("tools.back"));
+        assert_eq!(dispatch(&tools(), "escape", &[], false), Taker::Buwiz("app.escape"));
         // over a full-screen app: Tools first, and the app owns no keys
         let over_app = Shown { tools: true, ..full_app() };
         assert!(!app_owns_keys(&over_app));
-        assert_eq!(dispatch(&over_app, "mod+w", &[], false), Taker::Rox("tools.close"));
-        assert_eq!(dispatch(&over_app, "mod+b", &["mod+b"], false), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&over_app, "mod+w", &[], false), Taker::Buwiz("tools.close"));
+        assert_eq!(dispatch(&over_app, "mod+b", &["mod+b"], false), Taker::Buwiz("sidebar.toggle"));
         // closed: ⌘[ is history again
-        assert_eq!(dispatch(&chat(), "mod+[", &[], false), Taker::Rox("history.back"));
+        assert_eq!(dispatch(&chat(), "mod+[", &[], false), Taker::Buwiz("history.back"));
     }
 
     #[test]
     fn an_inline_cards_focused_editor_leaves_cmd_b_to_the_sidebar() {
-        assert_eq!(dispatch(&chat(), "mod+b", EDITOR, true), Taker::Rox("sidebar.toggle"));
+        assert_eq!(dispatch(&chat(), "mod+b", EDITOR, true), Taker::Buwiz("sidebar.toggle"));
         assert_eq!(dispatch(&chat(), "mod+i", EDITOR, true), Taker::App, "a chord Rox leaves");
     }
 }

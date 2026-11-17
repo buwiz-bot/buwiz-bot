@@ -4,7 +4,7 @@
 //! here). Coordinates stay the list's (viewport pixels = points).
 //!
 //! The document's colors are its own, except in dark mode: the default
-//! white sheet, its gridlines and the automatic black text take the Rox
+//! white sheet, its gridlines and the automatic black text take the Buwiz Bot
 //! theme's colors, as Excel and Numbers do, while fills and colors the
 //! author chose stay. Text over an explicit fill keeps black.
 

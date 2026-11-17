@@ -1,10 +1,10 @@
 //! App opens and the calls they make (spec 5.5, 13.2, 14, 15.2;
 //! `v1/sessions.mjs`).
 //!
-//! Rox opens an app by asking for a session: `buwiz.session.open` goes to
+//! Buwiz Bot opens an app by asking for a session: `buwiz.session.open` goes to
 //! the plugin, its certificate is verified with the plugin key from the
 //! install record and kept. From then on every bridge call arrives as
-//! Rox's signed envelope and passes the nine checks of 14.2, in the spec's
+//! Buwiz Bot's signed envelope and passes the nine checks of 14.2, in the spec's
 //! order, before anything reaches the plugin; the plugin then sees
 //! `_meta["buwiz/caller"]` (16.1). Ticket titles, resolve tools and app
 //! sources are here too: they share the validation of plugin answers.
@@ -546,7 +546,7 @@ impl Sessions {
         }
         let (plugin, app, perms, slots, queued) = self.check(envelope, sig)?;
         let args = get(envelope, "args").filter(|a| !a.is_null()).cloned().unwrap_or(json!({}));
-        // buwiz.preview: Rox calls the app's own tool for a document; only an
+        // buwiz.preview: Buwiz Bot calls the app's own tool for a document; only an
         // app with permissions.preview gets the larger result limit
         let preview = get(envelope, "purpose").is_some();
         if preview && get(envelope, "purpose") != Some(&json!("preview")) {
@@ -738,7 +738,7 @@ fn choices(list: Option<&Value>) -> Res<Vec<Value>> {
 }
 
 /// A resolve tool's `prompt` answer (15.2): a starter
-/// flow's text, which Rox puts in the composer for the person to edit and
+/// flow's text, which Buwiz Bot puts in the composer for the person to edit and
 /// send. Commands only; `text` has something other than spaces, tabs and
 /// line breaks and is at most [`PROMPT_MAX`] characters (refused, not cut:
 /// a cut prompt says something else).

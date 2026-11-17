@@ -3,7 +3,7 @@
 //! `/turns`, `/status`, `/prefs`, `/threads`, `/models`, `/catalog`,
 //! `/state/:app`, `/mcp/servers`, `/skills`.
 //!
-//! The address comes from `BUWIZ_BACKEND`, read once, so a test Rox can talk
+//! The address comes from `BUWIZ_BACKEND`, read once, so a test Buwiz Bot can talk
 //! to a test broker on another port. The broker's host-internal routes
 //! (`/v1/host/*`, the mini app protocol's) also need the token the broker
 //! writes at start ([`host_token`]): only a process that can read it may
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn the_backend_defaults_to_the_live_port_and_takes_rox_backend() {
+    fn the_backend_defaults_to_the_live_port_and_takes_buwiz_backend() {
         assert_eq!(super::backend_from(None), "http://127.0.0.1:8787");
         assert_eq!(super::backend_from(Some("")), "http://127.0.0.1:8787");
         assert_eq!(super::backend_from(Some("  ")), "http://127.0.0.1:8787");
@@ -331,7 +331,7 @@ mod tests {
     /// read there until `Buwiz Broker` exists.
     #[test]
     fn the_host_token_falls_back_to_grok_shell_until_it_moves() {
-        let home = std::env::temp_dir().join(format!("rox-host-token-home-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("buwiz-host-token-home-{}", std::process::id()));
         let support = home.join("Library/Application Support");
         std::fs::create_dir_all(support.join("Grok Shell")).unwrap();
         std::fs::write(support.join("Grok Shell/host-token"), "old\n").unwrap();
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn a_missing_or_empty_token_file_is_no_token() {
-        let dir = std::env::temp_dir().join(format!("rox-host-token-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buwiz-host-token-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("host-token");
         assert_eq!(super::token_in(&file), None);

@@ -6,7 +6,7 @@ use nsh_core::prelude::*;
 
 use crate::host::{host, theme};
 
-/// A bar over the document: the file changed outside Rox while it held
+/// A bar over the document: the file changed outside Buwiz Bot while it held
 /// edits, or closing asks what to do with them.
 pub fn prompts() -> impl IntoElement {
     let button = |label: &'static str, primary: bool, on: fn()| {

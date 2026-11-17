@@ -238,7 +238,7 @@ impl Fonts {
     /// The chain for `need`, as the web registry builds it: the bundled
     /// metric-compatible face and the last resort, each as a view for the
     /// family asked for, then the fallbacks for its scripts. (The web puts
-    /// a face the document embeds first; Rox doesn't read those yet.)
+    /// a face the document embeds first; Buwiz Bot doesn't read those yet.)
     pub fn need(&mut self, need: &Need) -> Vec<u32> {
         if self.has(&need.key, &need.scripts) {
             return self.chains[&need.key].clone();

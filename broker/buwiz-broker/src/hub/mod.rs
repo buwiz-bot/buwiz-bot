@@ -242,7 +242,7 @@ mod tests {
     }
 
     fn hub(install: impl FnOnce(&mut Registry, &mut HubCtx)) -> Hub {
-        let ctx = HubCtx::new(std::env::temp_dir().join("rox-hub-test-unused"), traits::Clock::manual());
+        let ctx = HubCtx::new(std::env::temp_dir().join("buwiz-hub-test-unused"), traits::Clock::manual());
         Hub::with(ctx, vec!["http://127.0.0.1:8798".to_owned()], install)
     }
 

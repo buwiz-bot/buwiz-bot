@@ -13,7 +13,7 @@ use nsh_core::element::View;
 
 use crate::avatar::{bot_avatar, BlobEdit, BlobGaze, BotAvatarProps};
 use crate::live::store;
-use crate::store::{AppMeta, Crop, Store, RoxApp};
+use crate::store::{AppMeta, Crop, Store, BuwizApp};
 use crate::theme;
 
 /// The pane's top bar height — the TSX's `TOP`.
@@ -497,7 +497,7 @@ fn made_by(line: String, parent: String) -> impl IntoElement {
 /// A bot's Details sections about other agents: Helper and Past helpers.
 /// Whom it hears is `/messages`'s card, and a conversation opens from its
 /// notice in a participant's chat.
-fn agents_sections(b: crate::store::RoxBot) -> impl IntoElement {
+fn agents_sections(b: crate::store::BuwizBot) -> impl IntoElement {
     let bots = store().bots.get();
     let (live, past) = crate::agents::helpers_of(&b.id, &bots);
     view()
@@ -514,7 +514,7 @@ fn agents_sections(b: crate::store::RoxBot) -> impl IntoElement {
 
 /// A temporary helper in its parent's Details: avatar, name, task; Open
 /// goes to its chat.
-fn helper_row(b: crate::store::RoxBot) -> AnyElement {
+fn helper_row(b: crate::store::BuwizBot) -> AnyElement {
     let hov = signal(false);
     let thread = b.thread_id.clone();
     let task = b.helper.as_ref().map(|h| h.task.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| b.purpose.clone());
@@ -1081,7 +1081,7 @@ fn save_params(instance: &str) {
 
 /// The bot's context in Details: its description, and a row to its Bot
 /// Details (instructions, memories, skills, integrations live there).
-fn bot_context(b: crate::store::RoxBot) -> impl IntoElement {
+fn bot_context(b: crate::store::BuwizBot) -> impl IntoElement {
     let id = b.id.clone();
     let hov = signal(false);
     view()
@@ -1231,7 +1231,7 @@ fn lib_chip(kind: &'static str, label: &'static str, n: usize, on: bool) -> impl
 
 /// A library row — the icon tile, title/file, the version picker chip,
 /// `ago` (App.tsx:2648).
-fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
+fn app_row(a: ReadSignal<BuwizApp>) -> impl IntoElement {
     let a0 = a.get();
     let n_chip = a0.app.clone();
     let a_ctx = a;
@@ -1313,7 +1313,7 @@ fn app_row(a: ReadSignal<RoxApp>) -> impl IntoElement {
 /// "Mini app · 360×480", "Image · 1024×1024", "PDF · 2 pages",
 /// "Sheet · 3 sheets", "Document · 12 KB"; a connector's file its type
 /// and where it lives — "Google Doc · Google Drive".
-pub(crate) fn subtitle(a: &RoxApp) -> String {
+pub(crate) fn subtitle(a: &BuwizApp) -> String {
     // an attached server app: what the server says of it (a TIN, a branch)
     if a.kind == "mcp-app" {
         return if a.details.subtitle.is_empty() { "Attached app".to_owned() } else { a.details.subtitle.clone() };

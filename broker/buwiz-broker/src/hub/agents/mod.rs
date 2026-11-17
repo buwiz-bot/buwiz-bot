@@ -1,5 +1,5 @@
 //! Agent messaging (plan 5.6, track E; agents.mjs): the user's agents
-//! messaging each other and the world outside Rox. The v1 envelope,
+//! messaging each other and the world outside Buwiz Bot. The v1 envelope,
 //! agents' threads (a thread marked `agents: {conversation, participants,
 //! subject, created_by, created_at}`, read-only and never a sidebar row),
 //! one notice per conversation in each participant's chat, who may message

@@ -239,7 +239,7 @@ fn use_account(key: &str, turn: i64, connector: &str, account: &str, label: &str
     let remember = store().card_remember.with_untracked(|r| r.contains(key));
     let line = format!("Sent again with {label}.");
     // This server takes no per-turn accounts: the choice is only logged.
-    log::info!("rox cards: plugin account for the next turn: {connector} = {account}");
+    log::info!("buwiz cards: plugin account for the next turn: {connector} = {account}");
     if remember {
         let (key, connector, account, coworker) =
             (key.to_owned(), connector.to_owned(), account.to_owned(), super::agent_id());

@@ -235,7 +235,7 @@ mod tests {
     /// market.test.mjs MKT-13
     #[tokio::test]
     async fn mkt_13_the_six_skill_tools() {
-        let dir = std::env::temp_dir().join(format!("rox-mkt-tools-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let dir = std::env::temp_dir().join(format!("buwiz-mkt-tools-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(dir.join("generated")).unwrap();
         let mut ctx = HubCtx::new(dir, Clock::manual());
         register(&mut ctx);

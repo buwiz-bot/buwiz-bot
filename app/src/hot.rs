@@ -183,7 +183,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
     crate::office::track();
     // the ra-jit stats pill's switch (⌘⇧R, `dev.livebar`). Shown by default
     // in dev builds only: a release never runs ra-jit, so it has no pill.
-    let live_bar_show = crate::live::keep("rox.livebar.show", || cfg!(debug_assertions));
+    let live_bar_show = crate::live::keep("buwiz.livebar.show", || cfg!(debug_assertions));
     store().livebar.set(Some(live_bar_show));
 
     // Appearance follows `themePref` (theme.ts): System resolves to the
@@ -315,8 +315,8 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
                 "lightbox" => st.open_lightbox(
                     vec![crate::store::LightItem {
                         kind: "image".into(),
-                        uri: "file:///tmp/rox_lightbox.png".into(),
-                        name: "rox_lightbox.png".into(),
+                        uri: "file:///tmp/buwiz_lightbox.png".into(),
+                        name: "buwiz_lightbox.png".into(),
                         ..Default::default()
                     }],
                     0,
@@ -441,7 +441,7 @@ pub(crate) fn hot_area(remount: Signal<u64>, note: Signal<String>) -> impl IntoE
 /// with the remount count; hovering shows the last report. ⌘⇧R toggles
 /// it and it drags anywhere; both survive remounts through `keep`.
 fn stats_bar(remount: Signal<u64>, note: Signal<String>, show: Signal<bool>) -> impl IntoElement {
-    let pos = crate::live::keep("rox.livebar.pos", || {
+    let pos = crate::live::keep("buwiz.livebar.pos", || {
         (12.0f32, (window().height.0 - 40.0).max(0.0))
     });
     let dx = animated_value(0.0);

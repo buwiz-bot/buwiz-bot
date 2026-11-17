@@ -1,6 +1,6 @@
 //! An open's session (spec 4.4) and its signed calls (8.1).
 //!
-//! Rox makes the session key, asks the broker to open the session (the
+//! Buwiz Bot makes the session key, asks the broker to open the session (the
 //! plugin signs a certificate over the key and the permissions digest),
 //! and checks that certificate itself before the app gets any method: the
 //! signature with the plugin's public key, and that every field is the one
@@ -21,7 +21,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use super::{RoxError, attribution::Actor, host_api, keys};
+use super::{MiniError, attribution::Actor, host_api, keys};
 
 /// The longest a certificate may live (spec 4.4, Q13).
 pub const MAX_LIFETIME_MS: i64 = 8 * 3600 * 1000;
@@ -73,7 +73,7 @@ impl Session {
         app: &str,
         permissions: Option<&Value>,
         generation: Option<u64>,
-    ) -> Result<Arc<Session>, RoxError> {
+    ) -> Result<Arc<Session>, MiniError> {
         let key = keys::SessionKey::generate();
         let now = now_ms();
         let ask = host_api::SessionAsk {
@@ -81,7 +81,7 @@ impl Session {
             app: app.to_owned(),
             open_id: keys::random_id(),
             ks_pub: key.public(),
-            perms_sha256: keys::perms_sha256(permissions).map_err(|e| RoxError::new("invalid_args", e))?,
+            perms_sha256: keys::perms_sha256(permissions).map_err(|e| MiniError::new("invalid_args", e))?,
             not_after: now + MAX_LIFETIME_MS,
         };
         let answer = host_api::session_open(broker, &ask)?;
@@ -105,35 +105,35 @@ impl Session {
     }
 
     /// `Ok` while calls may go out: not ended, not past `not_after`.
-    pub fn check_live(&self) -> Result<(), RoxError> {
+    pub fn check_live(&self) -> Result<(), MiniError> {
         match *self.ended.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some(Ended::Closed) => return Err(RoxError::new("closed", "the app was closed")),
-            Some(Ended::Restarted) => return Err(RoxError::new("plugin_restarted", "the plugin restarted")),
+            Some(Ended::Closed) => return Err(MiniError::new("closed", "the app was closed")),
+            Some(Ended::Restarted) => return Err(MiniError::new("plugin_restarted", "the plugin restarted")),
             None => {}
         }
         if now_ms() >= self.not_after {
-            return Err(RoxError::new("session_invalid", "the app's session expired; reopen it"));
+            return Err(MiniError::new("session_invalid", "the app's session expired; reopen it"));
         }
         Ok(())
     }
 
     /// The signed envelope of a call of `tool` with `args` (8.1):
     /// `(envelope, sig)`.
-    pub fn sign_call(&self, tool: &str, args: &Value, actor: Actor, press: Option<&Value>) -> Result<(Value, String), RoxError> {
+    pub fn sign_call(&self, tool: &str, args: &Value, actor: Actor, press: Option<&Value>) -> Result<(Value, String), MiniError> {
         self.sign(tool, args, None, actor, press)
     }
 
     /// [`Session::sign_call`] for `buwiz.preview`: the envelope says
     /// `"purpose": "preview"`, which the broker takes only from an app
     /// granted `preview`, and answers with the larger document limit.
-    pub fn sign_preview(&self, tool: &str, args: &Value, actor: Actor, press: Option<&Value>) -> Result<(Value, String), RoxError> {
+    pub fn sign_preview(&self, tool: &str, args: &Value, actor: Actor, press: Option<&Value>) -> Result<(Value, String), MiniError> {
         self.sign(tool, args, Some("preview"), actor, press)
     }
 
     /// `actor` and `press`, the record of an agent's press the Hub allowed,
     /// are the host's own word, under the signature: an app gives the bridge
     /// a tool and its arguments and nothing else.
-    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>, actor: Actor, press: Option<&Value>) -> Result<(Value, String), RoxError> {
+    fn sign(&self, tool: &str, args: &Value, purpose: Option<&str>, actor: Actor, press: Option<&Value>) -> Result<(Value, String), MiniError> {
         self.check_live()?;
         let mut envelope = json!({
             "v": 1, "typ": "buwiz-call",
@@ -147,7 +147,7 @@ impl Session {
         if let Some(p) = press {
             envelope["press"] = p.clone();
         }
-        let sig = self.key.sign(&envelope).map_err(|e| RoxError::new("invalid_args", e))?;
+        let sig = self.key.sign(&envelope).map_err(|e| MiniError::new("invalid_args", e))?;
         Ok((envelope, sig))
     }
 
@@ -215,8 +215,8 @@ pub fn preopen(
     app: &str,
     permissions: Option<&Value>,
     generation: Option<u64>,
-) -> Result<(), RoxError> {
-    let digest = keys::perms_sha256(permissions).map_err(|e| RoxError::new("invalid_args", e))?;
+) -> Result<(), MiniError> {
+    let digest = keys::perms_sha256(permissions).map_err(|e| MiniError::new("invalid_args", e))?;
     let waiting = POOL.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(p, a, d, _, s)| {
         p == plugin && a == app && *d == digest && s.check_live().is_ok()
     });
@@ -268,8 +268,8 @@ fn sweep_preopened_at(broker: Arc<dyn host_api::Broker>, now: std::time::Instant
 /// `now`): the plugin's signature over JCS(cert), every field, the
 /// lifetime and the permissions the broker holds. The certificate's
 /// `not_after`, or `plugin_bad_signature`.
-pub fn verify_cert(answer: &Value, ask: &host_api::SessionAsk, now: i64) -> Result<i64, RoxError> {
-    let bad = |m: &str| RoxError::new("plugin_bad_signature", format!("the session certificate {m}"));
+pub fn verify_cert(answer: &Value, ask: &host_api::SessionAsk, now: i64) -> Result<i64, MiniError> {
+    let bad = |m: &str| MiniError::new("plugin_bad_signature", format!("the session certificate {m}"));
     let cert = answer.get("cert").filter(|c| c.is_object()).ok_or_else(|| bad("is missing"))?;
     let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     let plugin_pub = text(answer, "plugin_pub").ok_or_else(|| bad("comes without the plugin's key"))?;
@@ -434,7 +434,7 @@ pub(crate) mod tests {
     }
 
     impl Broker for CertBroker {
-        fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, RoxError> {
+        fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, MiniError> {
             assert_eq!(route, "/v1/host/sessions/open");
             let b = body.unwrap();
             let mut cert = json!({
@@ -451,7 +451,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn open_with(tamper: fn(&mut Value, &mut Value)) -> Result<Arc<Session>, RoxError> {
+    fn open_with(tamper: fn(&mut Value, &mut Value)) -> Result<Arc<Session>, MiniError> {
         let b = CertBroker { plugin_key: keys::SessionKey::generate(), tamper };
         Session::open(&b, "app.buwiz.fixture", "card", Some(&json!({"tools": ["fx_echo"]})), None)
     }
@@ -496,8 +496,8 @@ pub(crate) mod tests {
         // the broker's own refusal comes through as is
         struct Refuses;
         impl Broker for Refuses {
-            fn request(&self, _: &str, _: &str, _: Option<Value>, _: Duration) -> Result<Value, RoxError> {
-                Err(RoxError::new("plugin_unavailable", "not running"))
+            fn request(&self, _: &str, _: &str, _: Option<Value>, _: Duration) -> Result<Value, MiniError> {
+                Err(MiniError::new("plugin_unavailable", "not running"))
             }
         }
         let e = Session::open(&Refuses, "app.buwiz.fixture", "card", None, None).err().unwrap();
@@ -546,7 +546,7 @@ pub(crate) mod tests {
     }
 
     impl Broker for Counting {
-        fn request(&self, m: &str, route: &str, body: Option<Value>, t: Duration) -> Result<Value, RoxError> {
+        fn request(&self, m: &str, route: &str, body: Option<Value>, t: Duration) -> Result<Value, MiniError> {
             if route == "/v1/host/sessions/close" {
                 self.closed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return Ok(json!({"ok": true}));

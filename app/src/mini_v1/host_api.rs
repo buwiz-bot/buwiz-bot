@@ -1,6 +1,6 @@
 //! The broker's host-internal API (`/v1/host/*`, design §4) as typed
 //! functions. Every request carries the host token (`X-Buwiz-Host`); every
-//! refusal comes back as the spec's [`RoxError`].
+//! refusal comes back as the spec's [`MiniError`].
 //!
 //! The bridge's handlers run on the engine thread and hand their work to
 //! threads of their own, so the transport here is blocking: a small
@@ -16,13 +16,13 @@ use std::{
 
 use serde_json::{Value, json};
 
-use super::RoxError;
+use super::MiniError;
 
-/// The broker, as Rox reaches it.
+/// The broker, as Buwiz Bot reaches it.
 pub trait Broker: Send + Sync {
     /// `method` on `route` (`/v1/host/…`) with a JSON `body`: the answer's
     /// JSON, or the broker's refusal.
-    fn request(&self, method: &str, route: &str, body: Option<Value>, timeout: Duration) -> Result<Value, RoxError>;
+    fn request(&self, method: &str, route: &str, body: Option<Value>, timeout: Duration) -> Result<Value, MiniError>;
 }
 
 /// The bridge's call limit (spec 7.3), also the HTTP read timeout of a call.
@@ -32,32 +32,32 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Resolve tools, ticket titles and app source (14.2).
 const SHORT_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn post(b: &dyn Broker, route: &str, body: Value, timeout: Duration) -> Result<Value, RoxError> {
+fn post(b: &dyn Broker, route: &str, body: Value, timeout: Duration) -> Result<Value, MiniError> {
     b.request("POST", route, Some(body), timeout)
 }
 
 /// `GET /v1/host/plugins`: the installed plugins with their manifests'
 /// apps, commands, scopes and tools.
-pub fn plugins(b: &dyn Broker) -> Result<Vec<Value>, RoxError> {
+pub fn plugins(b: &dyn Broker) -> Result<Vec<Value>, MiniError> {
     let v = b.request("GET", "/v1/host/plugins", None, SHORT_TIMEOUT)?;
     Ok(v.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default())
 }
 
 /// `GET /v1/host/tools/off?thread=`: each plugin or server key switched off for the chat's Bot, with
 /// the broker's own sentence for it.
-pub fn scopes_off(b: &dyn Broker, thread: &str) -> Result<std::collections::HashMap<String, String>, RoxError> {
+pub fn scopes_off(b: &dyn Broker, thread: &str) -> Result<std::collections::HashMap<String, String>, MiniError> {
     let v = b.request("GET", &format!("/v1/host/tools/off?thread={}", crate::client::urlenc(thread)), None, SHORT_TIMEOUT)?;
     let said = v.get("said").and_then(Value::as_object).map(|m| m.iter().filter_map(|(k, s)| Some((k.clone(), s.as_str()?.to_owned()))).collect()).unwrap_or_default();
     Ok(said)
 }
 
 /// `POST /v1/host/apps/source`: an app's source and fingerprint.
-pub fn app_source(b: &dyn Broker, plugin: &str, app: &str) -> Result<(String, String), RoxError> {
+pub fn app_source(b: &dyn Broker, plugin: &str, app: &str) -> Result<(String, String), MiniError> {
     let v = post(b, "/v1/host/apps/source", json!({"plugin": plugin, "app": app}), SHORT_TIMEOUT)?;
     let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     match (text("source"), text("fingerprint")) {
         (Some(s), Some(f)) => Ok((s, f)),
-        _ => Err(RoxError::new("internal", "the broker sent no source")),
+        _ => Err(MiniError::new("internal", "the broker sent no source")),
     }
 }
 
@@ -73,7 +73,7 @@ pub struct SessionAsk {
 }
 
 /// `POST /v1/host/sessions/open`: `{cert, cert_sig, plugin_pub, permissions}`.
-pub fn session_open(b: &dyn Broker, ask: &SessionAsk) -> Result<Value, RoxError> {
+pub fn session_open(b: &dyn Broker, ask: &SessionAsk) -> Result<Value, MiniError> {
     let body = json!({
         "plugin": ask.plugin, "app": ask.app, "open_id": ask.open_id,
         "ks_pub": ask.ks_pub, "perms_sha256": ask.perms_sha256, "not_after": ask.not_after,
@@ -82,7 +82,7 @@ pub fn session_open(b: &dyn Broker, ask: &SessionAsk) -> Result<Value, RoxError>
 }
 
 /// `POST /v1/host/sessions/close` (best effort).
-pub fn session_close(b: &dyn Broker, open_id: &str) -> Result<(), RoxError> {
+pub fn session_close(b: &dyn Broker, open_id: &str) -> Result<(), MiniError> {
     post(b, "/v1/host/sessions/close", json!({"open_id": open_id}), SHORT_TIMEOUT).map(drop)
 }
 
@@ -90,14 +90,14 @@ pub fn session_close(b: &dyn Broker, open_id: &str) -> Result<(), RoxError> {
 /// `buwiz/document`, `buwiz/open_with`, `buwiz/save` and
 /// `buwiz/account_use`, which are the host's: `tool_result` keeps them from
 /// the app).
-pub fn call(b: &dyn Broker, envelope: &Value, sig: &str, timeout: Duration) -> Result<Value, RoxError> {
+pub fn call(b: &dyn Broker, envelope: &Value, sig: &str, timeout: Duration) -> Result<Value, MiniError> {
     let v = post(b, "/v1/host/call", json!({"envelope": envelope, "sig": sig}), timeout)?;
     Ok(v.get("result").cloned().unwrap_or(Value::Null))
 }
 
 /// `POST /v1/host/tickets/title`: the ticket's title, `None` when the
 /// plugin says it is not valid.
-pub fn ticket_title(b: &dyn Broker, plugin: &str, ticket: &str) -> Result<Option<String>, RoxError> {
+pub fn ticket_title(b: &dyn Broker, plugin: &str, ticket: &str) -> Result<Option<String>, MiniError> {
     let v = post(b, "/v1/host/tickets/title", json!({"plugin": plugin, "ticket": ticket}), SHORT_TIMEOUT)?;
     if v.get("valid").and_then(Value::as_bool) != Some(true) {
         return Ok(None);
@@ -119,7 +119,7 @@ pub struct ResolveAsk {
 }
 
 /// `POST /v1/host/resolve`: the spec 9.2 result.
-pub fn resolve(b: &dyn Broker, ask: &ResolveAsk) -> Result<Value, RoxError> {
+pub fn resolve(b: &dyn Broker, ask: &ResolveAsk) -> Result<Value, MiniError> {
     let body = json!({
         "plugin": ask.plugin, "kind": ask.kind, "name": ask.name,
         "value": ask.value, "complete": ask.complete, "context": ask.context, "thread": ask.thread,
@@ -129,7 +129,7 @@ pub fn resolve(b: &dyn Broker, ask: &ResolveAsk) -> Result<Value, RoxError> {
 
 /// `POST /v1/host/plugins/inspect`: a temporary spawn's manifest and review
 /// lines (13.1 step 3); nothing is installed.
-pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value>) -> Result<Value, RoxError> {
+pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value>) -> Result<Value, MiniError> {
     let mut body = json!({"command": command, "args": args});
     if let Some(env) = env {
         body["env"] = env;
@@ -140,7 +140,7 @@ pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value
 /// `POST /v1/host/plugins/fetch {source}`: a mini app's name, GitHub URL or
 /// `owner/repo`, its release fetched, verified and inspected (nothing is
 /// installed): the inspection with `command`, `args`, `env`, `package`.
-pub fn fetch_release(b: &dyn Broker, source: &str) -> Result<Value, RoxError> {
+pub fn fetch_release(b: &dyn Broker, source: &str) -> Result<Value, MiniError> {
     post(b, "/v1/host/plugins/fetch", json!({"source": source.trim()}), Duration::from_secs(120))
 }
 
@@ -152,7 +152,7 @@ pub fn install(
     args: &[String],
     env: Option<Value>,
     manifest_sha256: &str,
-) -> Result<Value, RoxError> {
+) -> Result<Value, MiniError> {
     let mut body = json!({"command": command, "args": args, "manifest_sha256": manifest_sha256});
     if let Some(env) = env {
         body["env"] = env;
@@ -163,14 +163,14 @@ pub fn install(
 /// `POST /v1/host/notices/settle`: the user's answer to chat `chat`'s
 /// pending `kind` notices about plugin `id` (`declined`, `uninstalled`,
 /// `cancelled`).
-pub fn settle_notice(b: &dyn Broker, chat: &str, kind: &str, id: &str, state: &str) -> Result<(), RoxError> {
+pub fn settle_notice(b: &dyn Broker, chat: &str, kind: &str, id: &str, state: &str) -> Result<(), MiniError> {
     post(b, "/v1/host/notices/settle", json!({"chat": chat, "kind": kind, "id": id, "state": state}), SHORT_TIMEOUT).map(drop)
 }
 
 /// `POST /v1/host/plugins/updates/check`: asks each plugin's release
 /// source for a newer version now; the list comes back with what it found
 /// (`update` on each plugin).
-pub fn check_updates(b: &dyn Broker) -> Result<Vec<Value>, RoxError> {
+pub fn check_updates(b: &dyn Broker) -> Result<Vec<Value>, MiniError> {
     let v = post(b, "/v1/host/plugins/updates/check", json!({}), Duration::from_secs(60))?;
     Ok(v.get("plugins").and_then(Value::as_array).cloned().unwrap_or_default())
 }
@@ -179,13 +179,13 @@ pub fn check_updates(b: &dyn Broker) -> Result<Vec<Value>, RoxError> {
 /// `plugin`'s waiting update and puts its install-review card in chat
 /// `chat` (one while pending). Nothing is installed: only the card's
 /// Install does that.
-pub fn review_update(b: &dyn Broker, plugin: &str, chat: &str) -> Result<Value, RoxError> {
+pub fn review_update(b: &dyn Broker, plugin: &str, chat: &str) -> Result<Value, MiniError> {
     post(b, "/v1/host/plugins/updates/review", json!({"id": plugin, "chat": chat}), Duration::from_secs(120))
 }
 
 /// `POST /v1/host/plugins/updates/failed {id, chat, reason}`: a line in
 /// chat `chat` that `plugin`'s update failed and which version stays.
-pub fn update_failed(b: &dyn Broker, plugin: &str, chat: &str, reason: &str) -> Result<(), RoxError> {
+pub fn update_failed(b: &dyn Broker, plugin: &str, chat: &str, reason: &str) -> Result<(), MiniError> {
     post(b, "/v1/host/plugins/updates/failed", json!({"id": plugin, "chat": chat, "reason": reason}), SHORT_TIMEOUT).map(drop)
 }
 
@@ -201,11 +201,11 @@ pub enum PluginAction {
 }
 
 /// `POST /v1/host/plugins/:id/{enable,disable,uninstall}`, broker side
-/// only: Rox's own cascade (pins, attachments, storage) is part B's, with
+/// only: Buwiz Bot's own cascade (pins, attachments, storage) is part B's, with
 /// [`super::storage::delete_plugin`] for the stores.
-pub fn plugin_action(b: &dyn Broker, plugin: &str, action: PluginAction) -> Result<Value, RoxError> {
+pub fn plugin_action(b: &dyn Broker, plugin: &str, action: PluginAction) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) {
-        return Err(RoxError::new("invalid_args", "not a plugin id"));
+        return Err(MiniError::new("invalid_args", "not a plugin id"));
     }
     let (verb, body) = match action {
         PluginAction::Enable => ("enable", json!({})),
@@ -217,9 +217,9 @@ pub fn plugin_action(b: &dyn Broker, plugin: &str, action: PluginAction) -> Resu
 }
 
 /// `POST /v1/host/plugins/:id/tools`: the per-tool switch (8.3).
-pub fn set_tool_disabled(b: &dyn Broker, plugin: &str, tool: &str, disabled: bool) -> Result<Value, RoxError> {
+pub fn set_tool_disabled(b: &dyn Broker, plugin: &str, tool: &str, disabled: bool) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) {
-        return Err(RoxError::new("invalid_args", "not a plugin id"));
+        return Err(MiniError::new("invalid_args", "not a plugin id"));
     }
     post(b, &format!("/v1/host/plugins/{plugin}/tools"), json!({"tool": tool, "disabled": disabled}), SHORT_TIMEOUT)
 }
@@ -263,10 +263,10 @@ pub fn account_label_ok(label: &str) -> bool {
 pub const LABEL_RULE: &str = "Letters, digits and . _ @ + - only";
 
 /// `POST` an account route with `{label}`: `{ok, url?}` for a sign-in.
-pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, action: AccountAction) -> Result<Value, RoxError> {
+pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, action: AccountAction) -> Result<Value, MiniError> {
     let label = label.trim();
     if !super::perms::plugin_id_ok(plugin) || !account_id_ok(account) || !account_label_ok(label) {
-        return Err(RoxError::new("invalid_args", "not an account of a plugin"));
+        return Err(MiniError::new("invalid_args", "not an account of a plugin"));
     }
     post(b, &account_route(plugin, account, action), json!({"label": label}), SHORT_TIMEOUT)
 }
@@ -274,14 +274,14 @@ pub fn account_action(b: &dyn Broker, plugin: &str, account: &str, label: &str, 
 /// `POST /v1/host/plugins/:id/setup {values}`: the setup fields typed in
 /// (trimmed; empty ones left out, so a stored value stays). The values go
 /// in this body only: never into a log, the chat or the model.
-pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> Result<Value, RoxError> {
+pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) || !typed.iter().all(|(k, _)| setup_key_ok(k)) {
-        return Err(RoxError::new("invalid_args", "not a setup field of a plugin"));
+        return Err(MiniError::new("invalid_args", "not a setup field of a plugin"));
     }
     let values: serde_json::Map<String, Value> =
         typed.iter().map(|(k, v)| (k.clone(), v.trim())).filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k, json!(v))).collect();
     if values.is_empty() {
-        return Err(RoxError::new("invalid_args", "Enter the values first"));
+        return Err(MiniError::new("invalid_args", "Enter the values first"));
     }
     post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"values": values}), SHORT_TIMEOUT)
 }
@@ -289,18 +289,18 @@ pub fn save_setup(b: &dyn Broker, plugin: &str, typed: &[(String, String)]) -> R
 /// `POST /v1/host/plugins/:id/command {chat, command}`: an account command
 /// typed alone (`@gws:login`), its card posted in chat `chat` by the broker
 /// (it never reaches the model): `{ok, posted, kind, message?}`.
-pub fn account_command(b: &dyn Broker, plugin: &str, chat: &str, command: &str) -> Result<Value, RoxError> {
+pub fn account_command(b: &dyn Broker, plugin: &str, chat: &str, command: &str) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) || !super::tokens::ACCOUNT_COMMANDS.contains(&command) {
-        return Err(RoxError::new("invalid_args", "not an account command of a plugin"));
+        return Err(MiniError::new("invalid_args", "not an account command of a plugin"));
     }
     post(b, &format!("/v1/host/plugins/{plugin}/command"), json!({"chat": chat, "command": command}), SHORT_TIMEOUT)
 }
 
 /// `POST /v1/host/plugins/:id/setup {clear: true}`: Remove, every value
 /// of its setup gone (its provider's sign-ins expire).
-pub fn clear_setup(b: &dyn Broker, plugin: &str) -> Result<Value, RoxError> {
+pub fn clear_setup(b: &dyn Broker, plugin: &str) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) {
-        return Err(RoxError::new("invalid_args", "not a plugin id"));
+        return Err(MiniError::new("invalid_args", "not a plugin id"));
     }
     post(b, &format!("/v1/host/plugins/{plugin}/setup"), json!({"clear": true}), SHORT_TIMEOUT)
 }
@@ -329,9 +329,9 @@ pub fn routine_action(
     routine: &str,
     action: RoutineAction,
     thread: Option<&str>,
-) -> Result<Value, RoxError> {
+) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) || !super::perms::app_id_ok(routine) {
-        return Err(RoxError::new("invalid_args", "not a plugin or routine id"));
+        return Err(MiniError::new("invalid_args", "not a plugin or routine id"));
     }
     let mut body = json!({"plugin": plugin, "routine": routine});
     let verb = match action {
@@ -372,9 +372,9 @@ pub fn instance_action(
     instance: &str,
     action: InstanceAction,
     extra: Value,
-) -> Result<Value, RoxError> {
+) -> Result<Value, MiniError> {
     if !super::perms::plugin_id_ok(plugin) || !super::perms::app_id_ok(routine) {
-        return Err(RoxError::new("invalid_args", "not a plugin or routine id"));
+        return Err(MiniError::new("invalid_args", "not a plugin or routine id"));
     }
     let mut body = json!({"plugin": plugin, "routine": routine});
     if !instance.is_empty() {
@@ -402,14 +402,14 @@ pub struct HttpBroker {
 }
 
 impl HttpBroker {
-    /// The broker Rox is configured for (`BUWIZ_BACKEND`).
+    /// The broker Buwiz Bot is configured for (`BUWIZ_BACKEND`).
     pub fn configured() -> HttpBroker {
         HttpBroker { origin: crate::client::backend().to_owned() }
     }
 
     /// `(host, port)` of an `http://` origin; `https` brokers are not
     /// reached by this transport (the broker is on the loopback).
-    fn host_port(&self) -> Result<(String, u16), RoxError> {
+    fn host_port(&self) -> Result<(String, u16), MiniError> {
         let rest = self.origin.strip_prefix("http://").ok_or_else(|| unavailable("the broker is not at an http:// address"))?;
         let (host, port) = rest.rsplit_once(':').unwrap_or((rest, "80"));
         let port = port.parse().map_err(|_| unavailable("the broker's port is not a number"))?;
@@ -417,7 +417,7 @@ impl HttpBroker {
     }
 
     /// A connection with `timeout` for connecting, reading and writing.
-    fn connect(&self, timeout: Duration) -> Result<(TcpStream, String), RoxError> {
+    fn connect(&self, timeout: Duration) -> Result<(TcpStream, String), MiniError> {
         let (host, port) = self.host_port()?;
         let addr = (host.as_str(), port)
             .to_socket_addrs()
@@ -452,16 +452,16 @@ impl HttpBroker {
     /// `on_event(name, data)` for each until the stream ends or
     /// `on_event` returns false. Each time the stream is open it first says
     /// `"open"` (with `{}`), so what changed while it was down can be read again.
-    pub fn events(&self, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+    pub fn events(&self, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), MiniError> {
         self.follow("/v1/host/events", true, on_event)
     }
 
     /// Follows the server-sent events of `route`, as [`Self::events`] without its `"open"`.
-    pub fn stream(&self, route: &str, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+    pub fn stream(&self, route: &str, on_event: impl FnMut(&str, &str) -> bool) -> Result<(), MiniError> {
         self.follow(route, false, on_event)
     }
 
-    fn follow(&self, route: &str, say_open: bool, mut on_event: impl FnMut(&str, &str) -> bool) -> Result<(), RoxError> {
+    fn follow(&self, route: &str, say_open: bool, mut on_event: impl FnMut(&str, &str) -> bool) -> Result<(), MiniError> {
         let (mut stream, authority) = self.connect(Duration::from_secs(3600))?;
         let req = Self::head("GET", route, &authority, &[], "text/event-stream");
         stream.write_all(&req).map_err(|_| unavailable("the broker closed the connection"))?;
@@ -498,12 +498,12 @@ impl HttpBroker {
     }
 }
 
-fn unavailable(m: &str) -> RoxError {
-    RoxError::new("plugin_unavailable", m)
+fn unavailable(m: &str) -> MiniError {
+    MiniError::new("plugin_unavailable", m)
 }
 
 impl Broker for HttpBroker {
-    fn request(&self, method: &str, route: &str, body: Option<Value>, timeout: Duration) -> Result<Value, RoxError> {
+    fn request(&self, method: &str, route: &str, body: Option<Value>, timeout: Duration) -> Result<Value, MiniError> {
         let body = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
         match self.send(method, route, &body, timeout) {
             // the broker makes a new token when it starts: the file is read
@@ -515,14 +515,14 @@ impl Broker for HttpBroker {
 }
 
 impl HttpBroker {
-    fn send(&self, method: &str, route: &str, body: &[u8], timeout: Duration) -> Result<Value, RoxError> {
+    fn send(&self, method: &str, route: &str, body: &[u8], timeout: Duration) -> Result<Value, MiniError> {
         let (mut stream, authority) = self.connect(timeout)?;
         stream
             .write_all(&Self::head(method, route, &authority, body, "application/json"))
             .map_err(|_| unavailable("the broker closed the connection"))?;
         let mut raw = Vec::new();
         stream.take(MAX_RESPONSE as u64 + 1).read_to_end(&mut raw).map_err(|e| match e.kind() {
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => RoxError::new("timeout", "the broker took too long"),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => MiniError::new("timeout", "the broker took too long"),
             _ => unavailable("the broker closed the connection"),
         })?;
         let (status, body) = parse_response(&raw)?;
@@ -535,8 +535,8 @@ impl HttpBroker {
 const MAX_RESPONSE: usize = 16 << 20;
 
 /// Status and body of a raw HTTP/1.1 response (chunked or not).
-fn parse_response(raw: &[u8]) -> Result<(u16, Vec<u8>), RoxError> {
-    let bad = || RoxError::new("internal", "the broker's answer is not HTTP");
+fn parse_response(raw: &[u8]) -> Result<(u16, Vec<u8>), MiniError> {
+    let bad = || MiniError::new("internal", "the broker's answer is not HTTP");
     let end = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(bad)?;
     let head = std::str::from_utf8(&raw[..end]).map_err(|_| bad())?;
     let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).ok_or_else(bad)?;
@@ -563,16 +563,16 @@ fn dechunk(mut body: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// The answer's JSON, or its refusal as a [`RoxError`].
-fn answer(status: u16, body: &[u8]) -> Result<Value, RoxError> {
+/// The answer's JSON, or its refusal as a [`MiniError`].
+fn answer(status: u16, body: &[u8]) -> Result<Value, MiniError> {
     let v: Option<Value> = serde_json::from_slice(body).ok();
     match (status, v) {
         (_, Some(v)) if v.get("ok") == Some(&Value::Bool(false)) || (status >= 400 && v.get("code").is_some()) => {
-            Err(RoxError::from_body(&v))
+            Err(MiniError::from_body(&v))
         }
-        (401, _) => Err(RoxError::new("internal", "the broker refused Buwiz Bot's host token")),
+        (401, _) => Err(MiniError::new("internal", "the broker refused Buwiz Bot's host token")),
         (200..=299, Some(v)) => Ok(v),
-        (s, _) => Err(RoxError::new("internal", format!("the broker answered {s}"))),
+        (s, _) => Err(MiniError::new("internal", format!("the broker answered {s}"))),
     }
 }
 
@@ -581,7 +581,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn broker_answers_map_to_rox_errors() {
+    fn broker_answers_map_to_buwiz_errors() {
         let ok = super::parse_response(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true,\"result\":1}").unwrap();
         assert_eq!(super::answer(ok.0, &ok.1).unwrap()["result"], 1);
         let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"a\"\r\n3\r\n:1}\r\n0\r\n\r\n";
@@ -601,10 +601,10 @@ mod tests {
     fn a_resolve_names_its_chat_and_a_refusal_keeps_its_words() {
         struct Says(std::sync::Mutex<Vec<serde_json::Value>>);
         impl super::Broker for Says {
-            fn request(&self, _: &str, route: &str, body: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::RoxError> {
+            fn request(&self, _: &str, route: &str, body: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::MiniError> {
                 assert_eq!(route, "/v1/host/resolve");
                 self.0.lock().unwrap().push(body.unwrap());
-                Err(super::RoxError::new("disabled", "Books is switched off for this Bot."))
+                Err(super::MiniError::new("disabled", "Books is switched off for this Bot."))
             }
         }
         let says = Says(Default::default());
@@ -618,7 +618,7 @@ mod tests {
     fn a_scopes_off_answer_carries_the_brokers_own_sentences() {
         struct Says(serde_json::Value);
         impl super::Broker for Says {
-            fn request(&self, m: &str, route: &str, _: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::RoxError> {
+            fn request(&self, m: &str, route: &str, _: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::MiniError> {
                 assert_eq!((m, route), ("GET", "/v1/host/tools/off?thread=t%207"));
                 Ok(self.0.clone())
             }

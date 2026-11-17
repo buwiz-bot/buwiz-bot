@@ -1,6 +1,6 @@
-/* The v1 bridge's JS half (spec 7, design §2), prepended by Rox to an app's
+/* The v1 bridge's JS half (spec 7, design §2), prepended by Buwiz Bot to an app's
    compiled module after its imports were checked. It builds the frozen
-   global `rox` with only the methods the host granted (absent otherwise),
+   global `buwiz` with only the methods the host granted (absent otherwise),
    turns the host's rejections into BuwizError, and removes the network
    globals. Every check that matters is made again in Rust: this file only
    shapes the API. */
@@ -91,7 +91,7 @@ const __buwizBridge = (() => {
     ready: () => {
       __buwizHost.post("buwiz.ready", {});
     },
-    // an inline card's chrome, drawn by Rox (full screen: checked, then
+    // an inline card's chrome, drawn by Buwiz Bot (full screen: checked, then
     // ignored): footer buttons, the outcome line it settles to, a status
     actions: (list) => ask("buwiz.actions", { actions: list === undefined ? null : list }).then(done),
     onAction: (f) => {

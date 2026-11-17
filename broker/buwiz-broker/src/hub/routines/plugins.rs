@@ -1,7 +1,7 @@
 //! What routines and the plugin list read of the v1 plugins
 //! (`createViews` in v1/plugins.mjs): the records, each plugin's runtime,
 //! the trust store, tool calls, and the plugin list GET /v1/host/plugins
-//! hands Rox with each routine's state merged (`describe`). The host is
+//! hands Buwiz Bot with each routine's state merged (`describe`). The host is
 //! `helper::plugins::Host`; tests hand a fake.
 
 use std::sync::Arc;

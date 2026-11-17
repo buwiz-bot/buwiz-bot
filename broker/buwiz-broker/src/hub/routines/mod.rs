@@ -43,7 +43,7 @@ pub struct Routines {
     pub host: Arc<dyn RoutineHost>,
     pub v0: Arc<V0>,
     pub v1: Arc<V1>,
-    /// Rox's host token, made at start (`hub/routes/host.rs`)
+    /// Buwiz Bot's host token, made at start (`hub/routes/host.rs`)
     pub token: Mutex<Option<String>>,
     /// whether the schedulers run at start (not without a store)
     pub scheduled: bool,

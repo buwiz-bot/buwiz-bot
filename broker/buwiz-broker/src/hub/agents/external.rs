@@ -1,4 +1,4 @@
-//! Agents and the world outside Rox (agents-external.mjs, drafts/agent-
+//! Agents and the world outside Buwiz Bot (agents-external.mjs, drafts/agent-
 //! messaging.md §10). An endpoint belongs to one agent and is a participant
 //! `ext:<id>` in its conversations:
 //!

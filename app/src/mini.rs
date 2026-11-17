@@ -7,7 +7,7 @@
 //! emits) and hands it to `nsh_bundler::compile_module` — TypeScript
 //! stripped, JSX compiled, `nsh:*` imports left for the runtime.
 //!
-//! The element `native("rox/mini-app")` mounts a registered native
+//! The element `native("buwiz/mini-app")` mounts a registered native
 //! component whose NSView *is* an `AppView`: each mini app gets its own
 //! engine + QuickJS inside the Rust tree — the pure-Rust root is untouched.
 //! `mini_bundle` selects, for a generated widget, a policy of its own state
@@ -36,7 +36,7 @@ pub(crate) struct OutOfSight(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
 
 /// Whether the app placed under it owns the window's keys now
 /// (`keys::app_owns_keys`); provided by the full-screen layer. Without it
-/// (a card in the chat) the app comes after Rox's keys.
+/// (a card in the chat) the app comes after Buwiz Bot's keys.
 #[derive(Clone)]
 pub(crate) struct OwnsKeys(pub(crate) std::rc::Rc<dyn Fn() -> bool>);
 
@@ -71,7 +71,7 @@ fn mini_app_with(
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
     let owns = use_context::<OwnsKeys>();
-    native("rox/mini-app")
+    native("buwiz/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
         .when(heard.is_some(), |n| n.prop("hold", move || JsonValue::Bool(held)))
         .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
@@ -104,7 +104,7 @@ fn mini_app_with(
             move || JsonValue::String(store().mini_source_title(&name2).get()),
         )
         .prop("dev_type", || JsonValue::String(store().mini_dev_type.get()))
-        // every mini app follows Rox's theme (`mini_appearance`)
+        // every mini app follows Buwiz Bot's theme (`mini_appearance`)
         .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
@@ -202,7 +202,7 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
     let heard = hold_heard(hold);
     let h = std::rc::Rc::new(h);
     let h2 = h.clone();
-    let app_view = native("rox/mini-app")
+    let app_view = native("buwiz/mini-app")
         .prop("placement", || JsonValue::String("inline".to_owned()))
         .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
@@ -229,7 +229,7 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
 }
 
 /// The appearance every mini app (generated `R<n>` widgets, v0 `mcp:` and
-/// v1 plugin apps, full screen and in cards) takes under Rox's theme
+/// v1 plugin apps, full screen and in cards) takes under Buwiz Bot's theme
 /// `pref`: `Some(true)` dark, `Some(false)` light, `None` the system's
 /// (the window's effective appearance) for System or anything else.
 pub(crate) fn mini_appearance(pref: &str) -> Option<bool> {
@@ -462,7 +462,7 @@ fn full_app(open: crate::store::MiniOpen) -> impl IntoElement {
     provide_context(OutOfSight(std::rc::Rc::new(move || {
         store().mini_full.with(|v| v.last().map(|o| o.n)) != Some(n)
     })));
-    // on top with nothing of Rox's over it, its keymap comes first
+    // on top with nothing of Buwiz Bot's over it, its keymap comes first
     provide_context(OwnsKeys(std::rc::Rc::new(move || {
         store().mini_full.with(|v| v.last().map(|o| o.n)) == Some(n) && crate::keys::app_owns_keys(&crate::keys::Shown::now())
     })));
@@ -613,7 +613,7 @@ fn attach_button(key: &str, n: u64, token: &str) -> impl IntoElement {
 /// from there.
 fn pin_button(key: &str, n: u64) -> impl IntoElement {
     use crate::theme::tc;
-    // a v1 app's pin is Rox's own: {plugin, app, ticket?, placement} (12.3)
+    // a v1 app's pin is Buwiz Bot's own: {plugin, app, ticket?, placement} (12.3)
     if crate::mini_v1::is_v1(key) {
         return crate::mini_v1::ui::pin_button(key, n).into_element();
     }
@@ -898,7 +898,7 @@ mod imp {
         natural: Cell<f64>,
         alive: Cell<bool>,
         ctx: RefCell<Option<ComponentContext>>,
-        /// The element's `paused` prop: the app is out of sight in Rox.
+        /// The element's `paused` prop: the app is out of sight in Buwiz Bot.
         held: Cell<bool>,
         /// Its window can't be seen (minimized, covered, on another
         /// space or workspace).
@@ -909,7 +909,7 @@ mod imp {
         /// The element's `placement` prop (`full` or `inline`), for a v1
         /// app's `buwiz.viewport`.
         placement: RefCell<String>,
-        /// Rox's theme (`theme` prop): the app follows it
+        /// Buwiz Bot's theme (`theme` prop): the app follows it
         /// (`mini_appearance`).
         theme: RefCell<String>,
         /// A v1 open waiting for its first frame: its module and when its
@@ -934,7 +934,7 @@ mod imp {
         #[unsafe(super(NSView))]
         #[thread_kind = MainThreadOnly]
         #[ivars = FitIvars]
-        #[name = "RoxMiniFitView"]
+        #[name = "BuwizMiniFitView"]
         struct FitView;
 
         unsafe impl NSObjectProtocol for FitView {}
@@ -964,12 +964,12 @@ mod imp {
                 }
             }
 
-            #[unsafe(method(roxWindowOcclusion:))]
+            #[unsafe(method(buwizWindowOcclusion:))]
             fn window_changed(&self, _note: Option<&AnyObject>) {
                 self.check_window();
             }
 
-            #[unsafe(method(roxMeasure:))]
+            #[unsafe(method(buwizMeasure:))]
             fn measure(&self, _arg: Option<&AnyObject>) {
                 if !self.ivars().alive.get() {
                     return;
@@ -1177,7 +1177,7 @@ mod imp {
             this
         }
 
-        /// Holds the app while Rox has it out of sight or its window
+        /// Holds the app while Buwiz Bot has it out of sight or its window
         /// can't be seen: its frames and timers stop (a game loop costs
         /// nothing behind other windows).
         fn hold(&self) {
@@ -1219,14 +1219,14 @@ mod imp {
             if self.ivars().watching.replace(key) == key {
                 return;
             }
-            // SAFETY: selector-based observers; `roxWindowOcclusion:`
+            // SAFETY: selector-based observers; `buwizWindowOcclusion:`
             // takes the notification.
             unsafe {
                 let center = NSNotificationCenter::defaultCenter();
                 for name in [NSWindowDidChangeOcclusionStateNotification, NSWindowDidMoveNotification] {
                     center.addObserver_selector_name_object(
                         self,
-                        sel!(roxWindowOcclusion:),
+                        sel!(buwizWindowOcclusion:),
                         Some(name),
                         Some(&window),
                     );
@@ -1234,8 +1234,8 @@ mod imp {
             }
         }
 
-        /// Every mini app follows Rox's theme: Light or Dark as Rox is,
-        /// the window's (the system's) under Rox's System
+        /// Every mini app follows Buwiz Bot's theme: Light or Dark as Buwiz Bot is,
+        /// the window's (the system's) under Buwiz Bot's System
         /// (`mini_appearance`). The window itself carries the system's, so
         /// the view sets its own; the app's surface background (what shows
         /// before it draws) follows the same scheme.
@@ -1273,7 +1273,7 @@ mod imp {
             } else {
                 MEASURE_EVERY
             };
-            // SAFETY: `roxMeasure:` is this class's method taking one
+            // SAFETY: `buwizMeasure:` is this class's method taking one
             // object argument (nil here); NSObject's class method cancels
             // the one pending, so a kick (a load, a mount) never starts a
             // second loop.
@@ -1281,12 +1281,12 @@ mod imp {
                 let () = msg_send![
                     NSObject::class(),
                     cancelPreviousPerformRequestsWithTarget: self,
-                    selector: sel!(roxMeasure:),
+                    selector: sel!(buwizMeasure:),
                     object: None::<&AnyObject>
                 ];
                 let () = msg_send![
                     self,
-                    performSelector: sel!(roxMeasure:),
+                    performSelector: sel!(buwizMeasure:),
                     withObject: None::<&AnyObject>,
                     afterDelay: delay
                 ];
@@ -1374,10 +1374,10 @@ mod imp {
         fit: Retained<FitView>,
         view: Rc<AppView>,
         last: Option<(String, String)>,
-        /// Where the app's keymap stands with Rox's (`keys_first` prop):
+        /// Where the app's keymap stands with Buwiz Bot's (`keys_first` prop):
         /// after it unless the app owns the keys.
         keys: KeyPrecedence,
-        /// The keys Rox keeps while the app owns them (`host_keys` prop).
+        /// The keys Buwiz Bot keeps while the app owns them (`host_keys` prop).
         host_keys: Vec<Keystroke>,
         /// A v1 app's open: its session and bridge.
         v1: Option<crate::mini_v1::native::V1Open>,
@@ -1587,7 +1587,7 @@ mod imp {
                 return;
             }
             if name == "dev_type" {
-                // dev hook (`rox-agent-menu`: `type <n> <text>`): the app's
+                // dev hook (`buwiz-agent-menu`: `type <n> <text>`): the app's
                 // n-th text field takes the focus and `text` is inserted the
                 // way typing ends up (`insertText:` on the field editor)
                 if let Some((n, text)) = value
@@ -1700,12 +1700,12 @@ mod imp {
     }
 }
 
-/// Registers `rox/mini-app` on the app's component registry (call before
+/// Registers `buwiz/mini-app` on the app's component registry (call before
 /// `run_app` so the first cards resolve it).
 #[cfg(target_os = "macos")]
 pub fn register_mini_app(components: &nsh_platform_macos::Components) {
     components.register(
-        "rox/mini-app",
+        "buwiz/mini-app",
         std::rc::Rc::new(|ctx| {
             Box::new(imp::MiniApp::new(ctx)) as Box<dyn nsh_platform_macos::NativeComponent>
         }),
@@ -1888,9 +1888,9 @@ export default function R() {
     }
 
     #[test]
-    fn every_mini_app_follows_roxs_theme() {
+    fn every_mini_app_follows_buwiz_bots_theme() {
         use super::mini_appearance as look;
-        // whatever the system is, Rox's Light and Dark win; System (or no
+        // whatever the system is, Buwiz Bot's Light and Dark win; System (or no
         // pref yet) leaves the window's, which is the system's
         assert_eq!(look("dark"), Some(true));
         assert_eq!(look("light"), Some(false));

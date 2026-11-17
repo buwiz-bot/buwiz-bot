@@ -252,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_content_is_the_text_alone_without_files() {
-        let ctx = HubCtx::new(std::env::temp_dir().join("rox-uc-none"), crate::hub::traits::Clock::manual());
+        let ctx = HubCtx::new(std::env::temp_dir().join("buwiz-uc-none"), crate::hub::traits::Clock::manual());
         assert_eq!(user_content(&ctx, "hi", &json!({}), &[]).await, json!("hi"));
         assert_eq!(user_content(&ctx, "", &json!({"reply": {"text": "a\nb"}}), &[]).await, json!("> a\n> b\n\n(see the attachments)"));
     }

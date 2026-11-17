@@ -234,7 +234,7 @@ pub struct Market {
     pub plugins: PathBuf,
     /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`)
     pub out_dir: PathBuf,
-    /// the port Rox reaches (fixed OAuth redirects)
+    /// the port Buwiz Bot reaches (fixed OAuth redirects)
     pub port: u16,
     /// the catalog file's `version` (part of the catalog's rev)
     pub version: String,

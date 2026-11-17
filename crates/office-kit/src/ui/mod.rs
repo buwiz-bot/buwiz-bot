@@ -1,5 +1,5 @@
 //! The office views' controls, drawn and behaving as BetterOffice's web
-//! editor does them (`@betteroffice/docx-react` 0.4.3, the editor Rox's
+//! editor does them (`@betteroffice/docx-react` 0.4.3, the editor Buwiz Bot's
 //! web view mounts): its colors ([`palette`]), its icons ([`icons`]), the
 //! formatting bar's buttons, dropdowns and colour pickers, its menus and
 //! menu bar, the table grid and the dialogs' shell and fields. Word's view

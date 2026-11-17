@@ -93,7 +93,7 @@ struct Ui {
 }
 
 fn ui() -> Ui {
-    let at = ra_jit_live::anchor("rox.vault.page.shares", || {
+    let at = ra_jit_live::anchor("buwiz.vault.page.shares", || {
         let ui = Owner::detached().run(|| Ui {
             rows: signal(Vec::new()),
             sel: signal(String::new()),

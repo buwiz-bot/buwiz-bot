@@ -57,7 +57,7 @@ pub(crate) fn init() {
 /// writes the same signals, so the conversation survives remounts, not
 /// just values.
 pub(crate) fn store() -> &'static Store {
-    let at = ra_jit_live::anchor("rox.store", || {
+    let at = ra_jit_live::anchor("buwiz.store", || {
         Box::leak(Box::new(Store::new())) as *const Store as usize
     });
     unsafe { &*(at as *const Store) }

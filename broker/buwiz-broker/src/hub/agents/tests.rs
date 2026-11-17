@@ -73,7 +73,7 @@ impl Drop for World {
 
 fn temp() -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!("rox-agents-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+    let dir = std::env::temp_dir().join(format!("buwiz-agents-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir_all(dir.join("generated")).unwrap();
     dir
 }
@@ -666,7 +666,7 @@ async fn hook_02_the_same_id_and_body_are_taken_once_the_hook_allows_60_calls_an
 #[tokio::test]
 async fn hook_03_an_agents_answer_goes_out_signed_5xx_is_retried_4xx_dropped_with_a_notice() {
     let w = hook_world(vec![500, 200, 404], Some("Fixed in a3f2c1."));
-    let hook = w.endpoint(json!({"bot": "boss", "kind": "hook", "name": "CI", "url": "https://ci.example.com/rox"}));
+    let hook = w.endpoint(json!({"bot": "boss", "kind": "hook", "name": "CI", "url": "https://ci.example.com/buwiz"}));
     let (id, secret) = (hook["id"].as_str().unwrap().to_owned(), hook["secret"].as_str().unwrap().to_owned());
     let out_secret = hook["out_secret"].as_str().expect("an out secret").to_owned();
     let body = env(json!({}));
@@ -676,7 +676,7 @@ async fn hook_03_an_agents_answer_goes_out_signed_5xx_is_retried_4xx_dropped_wit
     let posts = w.posts.lock().unwrap().clone();
     assert_eq!(posts.len(), 1);
     let (url, sent, headers) = &posts[0];
-    assert_eq!(url, "https://ci.example.com/rox");
+    assert_eq!(url, "https://ci.example.com/buwiz");
     let msg: Value = serde_json::from_str(sent).unwrap();
     assert_eq!(msg["text"], json!("Fixed in a3f2c1."));
     assert_eq!(msg["in_reply_to"], got["id"]);
@@ -709,7 +709,7 @@ async fn hook_03_an_agents_answer_goes_out_signed_5xx_is_retried_4xx_dropped_wit
 #[tokio::test]
 async fn hook_a_bridge_receives_what_its_agent_sends_waiting_for_it_when_asked() {
     let w = hook_world(Vec::new(), None);
-    let bridge = w.endpoint(json!({"bot": "boss", "kind": "bridge", "name": "Claude Code · rox"}));
+    let bridge = w.endpoint(json!({"bot": "boss", "kind": "bridge", "name": "Claude Code · buwiz"}));
     let (id, secret) = (bridge["id"].as_str().unwrap().to_owned(), bridge["secret"].as_str().unwrap().to_owned());
     assert!(id.starts_with("ab_") && bridge.get("path").is_none());
     assert_eq!(w.hub.externals.bridge(&secret).unwrap().id, id);

@@ -8,7 +8,7 @@
 //!   and `GET /` and `/file/render` for every other kind since phase 7
 //!   (`Hub(Files)`): no route is Node's any more, and the broker forwards
 //!   nothing to Node (its forwarding is gone). `/highlight` is deleted
-//!   (6.2: no caller), and `/mermaid*` too (Rox draws every diagram natively).
+//!   (6.2: no caller), and `/mermaid*` too (Buwiz Bot draws every diagram natively).
 //! - `Rust`: already answered by the front door (leaf, `/mcp/*`);
 //!   with no MCP host (it could not start), the hub answers 501.
 //!
@@ -32,7 +32,7 @@ pub mod mcp_chat;
 
 use hyper::Method;
 
-/// the Rox-facing `/v1/host/*` routes, the `ri_` webhooks and the host
+/// the app-facing `/v1/host/*` routes, the `ri_` webhooks and the host
 /// token (5.5h, track D)
 pub mod host;
 /// `GET /models` (5.3, track B)
@@ -61,7 +61,7 @@ pub enum Track {
     Models,
     /// 5.5, track D: v0 and v1 routines
     Routines,
-    /// 5.5h, track D: the Rox-facing plugin host routes and the host token
+    /// 5.5h, track D: the app-facing plugin host routes and the host token
     Host,
     /// 5.6, track E: agent messaging and buwiz-bridge
     Agents,
@@ -172,7 +172,7 @@ pub const ROUTES: &[Entry] = &[
     e(Any, P("/v1/bridge/"), Hub(Agents)),
     // the webhooks: ah_… (agents) and ri_… (routines)
     e(Any, P("/v1/hooks/"), Hub(Hooks)),
-    // 5.5h the Rox-facing plugin host (finding 1)
+    // 5.5h the app-facing plugin host (finding 1)
     e(Get, X("/v1/host/plugins"), Hub(Host)),
     e(Get, X("/v1/host/events"), Hub(Host)),
     e(Get, X("/v1/host/ui/stream"), Hub(Host)),

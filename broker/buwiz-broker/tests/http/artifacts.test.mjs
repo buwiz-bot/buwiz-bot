@@ -426,7 +426,7 @@ test("ART-11 GET /artifact/info: an image, a reply file, a Drive file, an app; 4
     JSON.stringify(img),
     JSON.stringify({
       ok: true, id: "R3", name: "R3", kind: "image", title: "Cat", filename: "img-cat.png", file: "img-cat.png", description: "", icon: "",
-      meta: { w: 64, h: 64 }, w: 64, h: 64, i: 7, origin: img.origin, storage: { where: "mac", uri: `file://${asset}` }, versioning: "rox", published: false,
+      meta: { w: 64, h: 64 }, w: 64, h: 64, i: 7, origin: img.origin, storage: { where: "mac", uri: `file://${asset}` }, versioning: "buwiz", published: false,
       mtime: statSync(asset).mtimeMs, v: 1, versions: 1, history: versions("R3"), thread_id: chat, thread_title: "Builds", bot_name: "",
       created_at: Math.round(versions("R3")[0].created_at), updated_at: null, prompt: "draw a cat", path: asset, bytes: PNG.length,
     }),
@@ -439,7 +439,7 @@ test("ART-11 GET /artifact/info: an image, a reply file, a Drive file, an app; 4
   const p = join(GEN, "files", "mabc123", "report.md");
 
   assert.deepEqual(Object.keys(file), ["ok", "id", "name", "kind", "title", "filename", "file", "description", "icon", "meta", "attach", "i", "origin", "storage", "versioning", "published", "mtime", "v", "versions", "history", "thread_id", "thread_title", "bot_name", "created_at", "updated_at", "prompt", "path", "bytes"]);
-  assert.deepEqual([file.kind, file.title, file.filename, file.file, file.i, file.versioning, file.v, file.versions, file.prompt, file.path, file.bytes], ["document", "report.md", "report.md", "mabc123/report.md", 9, "rox", 0, 0, "", p, 5]);
+  assert.deepEqual([file.kind, file.title, file.filename, file.file, file.i, file.versioning, file.v, file.versions, file.prompt, file.path, file.bytes], ["document", "report.md", "report.md", "mabc123/report.md", 9, "buwiz", 0, 0, "", p, 5]);
   assert.deepEqual(file.attach, REPORT);
   assert.equal(file.meta.size, 5);
   assert.equal(file.meta.ext, "md");

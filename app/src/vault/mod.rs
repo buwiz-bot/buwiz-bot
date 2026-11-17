@@ -191,7 +191,7 @@ pub(crate) fn data_dir() -> PathBuf {
 /// The app's vault: the table in [`data_dir`], the Keychain, the real
 /// sheet. Anchored like the store, so a hot patch reaches the same one.
 pub(crate) fn vault() -> &'static Vault {
-    let at = ra_jit_live::anchor("rox.vault", || Box::leak(Box::new(Vault::open())) as *const Vault as usize);
+    let at = ra_jit_live::anchor("buwiz.vault", || Box::leak(Box::new(Vault::open())) as *const Vault as usize);
     // SAFETY: the anchor holds the address of a leaked `Vault` for the life
     // of the process.
     unsafe { &*(at as *const Vault) }
@@ -202,7 +202,7 @@ pub(crate) fn vault() -> &'static Vault {
 /// changes. Anchored like the vault.
 pub(crate) fn revision() -> nsh_core::prelude::Signal<u64> {
     use nsh_core::prelude::{Owner, Signal, signal};
-    let at = ra_jit_live::anchor("rox.vault.revision", || {
+    let at = ra_jit_live::anchor("buwiz.vault.revision", || {
         Box::leak(Box::new(Owner::detached().run(|| signal(0u64)))) as *const Signal<u64> as usize
     });
     // SAFETY: the anchor holds a leaked signal for the life of the process.
@@ -242,10 +242,10 @@ fn move_rox_secrets(dir: &std::path::Path, c: &Connection) {
     let accounts: Vec<String> = db::list(c).unwrap_or_default().iter().flat_map(|r| [r.id.clone(), code_account(&r.id)]).collect();
     match keychain::move_secrets(&keychain::Keychain(OLD_KEYCHAIN_SERVICE), &keychain::Keychain(KEYCHAIN_SERVICE), &accounts) {
         Ok(n) => {
-            log::info!("rox: {n} saved login secret(s) moved to {KEYCHAIN_SERVICE}");
+            log::info!("buwiz: {n} saved login secret(s) moved to {KEYCHAIN_SERVICE}");
             let _ = std::fs::write(&marker, format!("{{\"moved\":{n}}}\n"));
         }
-        Err(e) => log::warn!("rox: saved login secrets not moved from {OLD_KEYCHAIN_SERVICE} yet: {e}"),
+        Err(e) => log::warn!("buwiz: saved login secrets not moved from {OLD_KEYCHAIN_SERVICE} yet: {e}"),
     }
 }
 
@@ -285,7 +285,7 @@ impl Vault {
         let (db, open_error) = match conn {
             Ok(c) => (Some(c), None),
             Err(e) => {
-                log::warn!("rox: the logins table could not be opened: {e}");
+                log::warn!("buwiz: the logins table could not be opened: {e}");
                 (None, Some(e))
             }
         };
@@ -565,7 +565,7 @@ impl Vault {
         }
     }
 
-    /// Asks the device owner (the sheet reads "Rox is trying to
+    /// Asks the device owner (the sheet reads "Buwiz Bot is trying to
     /// `reason`"), then reads the row's secret — its password, or for a
     /// code row its `otpauth://` seed. The only way a secret leaves the
     /// Keychain. Blocks: call it off the UI thread.

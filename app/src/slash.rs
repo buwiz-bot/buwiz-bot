@@ -1,6 +1,6 @@
 //! Composer commands and `@` tokens. `/name args` runs a built-in, or a
 //! command an MCP server announces in its `buwiz://manifest` (`GET
-//! /mcp/manifest`): that server resolves it (`POST /mcp/resolve`) and Rox
+//! /mcp/manifest`): that server resolves it (`POST /mcp/resolve`) and Buwiz Bot
 //! opens what it answers — it never reaches the model. `@server:scope:value`
 //! tokens complete as they're typed; a message of tokens alone opens them,
 //! one with other text goes to the model with its tokens in it.

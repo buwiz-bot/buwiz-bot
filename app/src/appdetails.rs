@@ -6,7 +6,7 @@
 //! (`/app/info`, `/artifact/info`). A file kept by a connected app (Google
 //! Drive) shows its title — a rename goes to Drive — and where it lives.
 //! A server's app attached to a chat (`mcp-app`, a tax profile say) shows
-//! its picture, name, subtitle, facts and versions, and renames in Rox
+//! its picture, name, subtitle, facts and versions, and renames in Buwiz Bot
 //! only.
 
 use nsh_base::input;
@@ -14,7 +14,7 @@ use nsh_core::prelude::*;
 
 use crate::icons::icon;
 use crate::live::store;
-use crate::store::{app_name, AppInfo, Attach, RoxApp, Store};
+use crate::store::{app_name, AppInfo, Attach, BuwizApp, Store};
 use crate::theme;
 
 /// The app's icon at `size`: its generated (or uploaded) image, else the
@@ -63,7 +63,7 @@ pub(crate) fn app_icon(app: &str, size: f32) -> impl IntoElement {
 /// set icon, else its picture; a file's set icon, else its type tile (or
 /// its own thumbnail); a connector's file its type tile with the app's
 /// badge.
-pub(crate) fn artifact_tile(a: &RoxApp, size: f32) -> impl IntoElement {
+pub(crate) fn artifact_tile(a: &BuwizApp, size: f32) -> impl IntoElement {
     if a.kind == "mcp-app" {
         let name = if a.details.name.is_empty() { a.title.clone() } else { a.details.name.clone() };
         return named_tile(&a.image, &name, size).into_element();
@@ -716,7 +716,7 @@ fn mcp_identity() -> impl IntoElement {
         ))
 }
 
-/// Rename: the name Rox shows for it, in every chat and pin; empty goes
+/// Rename: the name Buwiz Bot shows for it, in every chat and pin; empty goes
 /// back to the server's.
 fn mcp_fields() -> impl IntoElement {
     view()
@@ -842,7 +842,7 @@ fn made_in_fact(k: &'static str, v: String) -> impl IntoElement {
         )
 }
 
-/// A fact that is a link out of Rox (a connector's version history).
+/// A fact that is a link out of Buwiz Bot (a connector's version history).
 fn link_fact(k: &'static str, v: String, url: String) -> impl IntoElement {
     let hov = signal(false);
     view()

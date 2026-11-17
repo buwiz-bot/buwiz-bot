@@ -937,7 +937,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "note": "tighten",
      "edits": [
       {
@@ -954,7 +954,7 @@
    "isError": false,
    "result": {
     "id": "proposal1",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "tighten",
     "status": "pending",
     "changes": [
@@ -992,7 +992,7 @@
     "proposals": [
      {
       "id": "proposal1",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "tighten",
       "status": "pending",
       "changes": 2
@@ -1011,7 +1011,7 @@
    "isError": false,
    "result": {
     "id": "proposal1",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "tighten",
     "status": "pending",
     "changes": [
@@ -1277,7 +1277,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "m1",
@@ -1342,7 +1342,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "m5",
@@ -1354,7 +1354,7 @@
    "isError": false,
    "result": {
     "id": "proposal2",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "",
     "status": "pending",
     "changes": [
@@ -1411,14 +1411,14 @@
     "proposals": [
      {
       "id": "proposal1",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "tighten",
       "status": "accepted",
       "changes": 2
      },
      {
       "id": "proposal2",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "",
       "status": "rejected",
       "changes": 1
@@ -9147,7 +9147,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "m999",
@@ -9167,7 +9167,7 @@
     "office_propose_cells",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "cell": "c1",
@@ -11374,7 +11374,7 @@
     "office_propose_cells",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "note": "bump",
      "edits": [
       {
@@ -11391,7 +11391,7 @@
    "isError": false,
    "result": {
     "id": "proposal2",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "bump",
     "status": "pending",
     "version": "V1",
@@ -11442,7 +11442,7 @@
     "proposals": [
      {
       "id": "proposal2",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "bump",
       "status": "pending",
       "changes": 2,
@@ -11462,7 +11462,7 @@
    "isError": false,
    "result": {
     "id": "proposal2",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "bump",
     "status": "pending",
     "version": "V1",
@@ -11692,7 +11692,7 @@
     "office_propose_cells",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "cell": "U:cell18",
@@ -11712,7 +11712,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "m1",
@@ -18381,7 +18381,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "note": "rename",
      "edits": [
       {
@@ -18394,7 +18394,7 @@
    "isError": false,
    "result": {
     "id": "proposal2",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "rename",
     "status": "pending",
     "version": "V1",
@@ -18423,7 +18423,7 @@
     "proposals": [
      {
       "id": "proposal2",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "rename",
       "status": "pending",
       "changes": 1,
@@ -18443,7 +18443,7 @@
    "isError": false,
    "result": {
     "id": "proposal2",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "rename",
     "status": "pending",
     "version": "V1",
@@ -18589,7 +18589,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "U:match5",
@@ -18601,7 +18601,7 @@
    "isError": false,
    "result": {
     "id": "proposal3",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "",
     "status": "pending",
     "version": "V2",
@@ -18644,7 +18644,7 @@
     "proposals": [
      {
       "id": "proposal2",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "rename",
       "status": "accepted",
       "changes": 1,
@@ -18652,7 +18652,7 @@
      },
      {
       "id": "proposal3",
-      "author": "Rox",
+      "author": "Buwiz Bot",
       "note": "",
       "status": "rejected",
       "changes": 1,
@@ -18666,7 +18666,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "U:match1",
@@ -21932,7 +21932,7 @@
     "office_propose",
     {
      "document": "doc1",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "m1",
@@ -21944,7 +21944,7 @@
    "isError": false,
    "result": {
     "id": "proposal1",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "",
     "status": "pending",
     "changes": [
@@ -24444,7 +24444,7 @@
     "office_propose",
     {
      "document": "doc3",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "match": "U:match1",
@@ -24456,7 +24456,7 @@
    "isError": false,
    "result": {
     "id": "proposal1",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "",
     "status": "pending",
     "version": "V1",
@@ -25319,7 +25319,7 @@
     "office_propose_cells",
     {
      "document": "doc5",
-     "author": "Rox",
+     "author": "Buwiz Bot",
      "edits": [
       {
        "cell": "U:cell1",
@@ -25331,7 +25331,7 @@
    "isError": false,
    "result": {
     "id": "proposal1",
-    "author": "Rox",
+    "author": "Buwiz Bot",
     "note": "",
     "status": "pending",
     "version": "V4",

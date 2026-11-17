@@ -1,9 +1,9 @@
 //! The Word view's title bar as the web editor draws it (DR `Lte`, the
 //! title bar of `Uh`): the document icon (`Mte`), the document's name
 //! (`Ate`) and the menu bar (`ez`): File, Format, Insert, View and Help, item for
-//! item with their icons and shortcuts. Under Rox's own viewer header.
+//! item with their icons and shortcuts. Under Buwiz Bot's own viewer header.
 //!
-//! The name is the file's, as Rox's host passes it (`documentName`, the
+//! The name is the file's, as Buwiz Bot's host passes it (`documentName`, the
 //! path's last part), without `.docx`. The host passes no
 //! `onDocumentNameChange`, so the web's field takes the focus but every
 //! change springs back to the name; so does this one.
@@ -34,7 +34,7 @@ fn ui() -> &'static WordUi {
 pub const TOC_REFUSAL: &str = "Inserting a table of contents is not supported yet.";
 /// Pictures wider than this come in at this width (`nd`, pixels).
 const MAX_IMAGE_W: u32 = 612;
-/// The kinds the picker offers (`accept="image/*"`, those Rox can read).
+/// The kinds the picker offers (`accept="image/*"`, those Buwiz Bot can read).
 pub const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "bmp", "webp"];
 
 /// The name the title bar shows (`Pte`): without `.docx`.
@@ -149,7 +149,7 @@ fn insert(what: Insert) {
     focus();
 }
 
-/// The menus, as `ez` builds them for Rox's host: File without Open (its
+/// The menus, as `ez` builds them for Buwiz Bot's host: File without Open (its
 /// `showFileOpen: false`), Help with Report issue (`showHelpMenu`'s
 /// default).
 fn menus() -> Vec<BarMenu> {

@@ -2003,7 +2003,7 @@ mod tests {
     fn the_sink_redacts_both_forms_of_the_seed_and_carries_partial_lines() {
         let seed = buwiz_protocol::keys::b64(&[0xfb; 32]);
         let std = buwiz_protocol::keys::b64_std(&[0xfb; 32]).trim_end_matches('=').to_owned();
-        let dir = std::env::temp_dir().join(format!("rox-sink-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buwiz-sink-{}", std::process::id()));
         let file = dir.join("p.log");
         let mut sink = Sink::new(Some(file.clone()), &seed);
         assert!(!sink.write("hello "));

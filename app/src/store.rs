@@ -1210,7 +1210,7 @@ pub struct AppRename {
 
 /// A row of the `bots` array of `GET /threads` — an agent (bot) persona.
 #[derive(Clone, PartialEq, Default)]
-pub struct RoxBot {
+pub struct BuwizBot {
     pub id: String,
     pub name: String,
     pub emoji: String,
@@ -1256,7 +1256,7 @@ pub struct RoxBot {
     pub accepts: crate::agents::Accepts,
 }
 
-impl RoxBot {
+impl BuwizBot {
     /// The colour its effects and accents take (see [`crate::avatar::accent_of`]).
     pub(crate) fn accent(&self) -> String {
         crate::avatar::accent_of(&self.shape, &self.color).to_owned()
@@ -1599,7 +1599,7 @@ pub struct ModelDef {
 /// `artifacts.mjs` record). `app` is its id: `R<n>` for a mini app or an
 /// image card, `file:<path>` for a file a reply made.
 #[derive(Clone, PartialEq, Default)]
-pub struct RoxApp {
+pub struct BuwizApp {
     pub app: String,
     /// "app" (a mini app), "image" (an image card: `file` is its png — or
     /// an image file, with `attach`), "document", "presentation",
@@ -1635,7 +1635,7 @@ pub struct RoxApp {
     pub versions: Vec<AppVersion>,
     /// Where it lives; only "mac" has a local file.
     pub storage: ArtStorage,
-    /// Who keeps its versions: "rox" (the `v<n>` tree), "provider" (the
+    /// Who keeps its versions: "buwiz" (the `v<n>` tree), "provider" (the
     /// connected app's own history) or "none".
     pub versioning: String,
     /// An `mcp-app` item (a server's token attached here): the token, the
@@ -1685,7 +1685,7 @@ impl McpDetails {
 }
 
 /// A Library record's `storage`: `place` is the server's `where` — "mac"
-/// (a file Rox wrote here, `uri` file://), "connector" (a connected app's
+/// (a file Buwiz Bot wrote here, `uri` file://), "connector" (a connected app's
 /// file: `provider` "gdrive", opened by `link`), or the not-yet-made
 /// "agent" / "cloud". Open, download and thumbnails branch on it.
 #[derive(Clone, PartialEq, Default)]
@@ -1721,14 +1721,14 @@ impl ArtStorage {
     }
 }
 
-impl RoxApp {
+impl BuwizApp {
     /// One `artifacts.mjs` record (`/thread/apps`' rows, a group's
     /// artifact members).
     fn from_json(a: &serde_json::Value) -> Self {
         let meta = ArtMeta::of(a.get("meta"));
         let origin = a.get("origin").cloned().unwrap_or_default();
         let details = McpDetails::of(a.get("details"));
-        RoxApp {
+        BuwizApp {
             // an attachment (`mcp-app`) may go by its `id`
             app: Some(s(a, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s(a, "id")),
             kind: s(a, "kind"),
@@ -1830,7 +1830,7 @@ pub const LIB_KINDS: [(&str, &str); 8] = [
 
 /// A Library record's chip; an unknown kind is Other, an attached
 /// server app (`mcp-app`) an app.
-pub fn lib_kind_of(a: &RoxApp) -> &str {
+pub fn lib_kind_of(a: &BuwizApp) -> &str {
     if a.kind == "mcp-app" {
         "app"
     } else if LIB_KINDS.iter().any(|(k, _)| *k == a.kind) {
@@ -1901,7 +1901,7 @@ pub struct AppInfo {
 
 impl AppInfo {
     /// An attached server app's details, from its Library record.
-    fn of_mcp(a: &RoxApp) -> Self {
+    fn of_mcp(a: &BuwizApp) -> Self {
         Self {
             name: a.app.clone(),
             kind: a.kind.clone(),
@@ -2090,7 +2090,7 @@ pub struct CtxMenu {
 /// center, `x` its right edge plus the 6px gap.
 #[derive(Clone, PartialEq)]
 pub struct RailPop {
-    pub bot: RoxBot,
+    pub bot: BuwizBot,
     pub cy: f32,
     pub x: f32,
     /// A mini app's card instead (its bare name; `bot` carries the title
@@ -2182,7 +2182,7 @@ pub struct PillAnchor {
 /// list of bots, chats and artifacts, in their order. An item may sit in
 /// several groups.
 #[derive(Clone, PartialEq, Default)]
-pub struct RoxGroup {
+pub struct BuwizGroup {
     pub id: String,
     pub name: String,
     pub color: String,
@@ -2201,11 +2201,11 @@ pub struct GroupItem {
     pub kind: String,
     pub id: String,
     pub thread: String,
-    pub artifact: Option<RoxApp>,
+    pub artifact: Option<BuwizApp>,
     pub title: String,
 }
 
-impl RoxGroup {
+impl BuwizGroup {
     fn from_json(v: &serde_json::Value) -> Self {
         Self {
             id: s(v, "id"),
@@ -2218,7 +2218,7 @@ impl RoxGroup {
                     kind: s(it, "kind"),
                     id: s(it, "ref"),
                     thread: s(it, "thread"),
-                    artifact: it.get("artifact").filter(|a| a.is_object()).map(RoxApp::from_json),
+                    artifact: it.get("artifact").filter(|a| a.is_object()).map(BuwizApp::from_json),
                     title: s(it, "title"),
                 })
                 .collect(),
@@ -2230,9 +2230,9 @@ impl RoxGroup {
 /// bot and chat lists (a bot's or chat's own row look).
 #[derive(Clone, PartialEq)]
 pub enum GroupRow {
-    Bot(RoxBot),
+    Bot(BuwizBot),
     Chat(ThreadMeta),
-    Artifact(Box<RoxApp>),
+    Artifact(Box<BuwizApp>),
     /// A server's mini app: its module name and title.
     App(String, String),
 }
@@ -2270,7 +2270,7 @@ pub struct PaletteItem {
     pub checked: bool,
     pub act: PaletteAct,
     /// An agent's row: drawn with its avatar.
-    pub bot: Option<RoxBot>,
+    pub bot: Option<BuwizBot>,
     /// A chat's row: its letter circle on this name's hue (the sidebar's).
     pub letter_of: String,
     /// A grouped mini app's row: its `</>` tile on this name's hue.
@@ -2437,13 +2437,13 @@ fn phase_state(phase: &str) -> &'static str {
 
 /// `activeBot()`'s merge: the open thread's `bot`, completed from the
 /// catalog row when the persona exists there.
-fn active_bot_of(id: &str, threads: &[ThreadMeta], bots: &[RoxBot]) -> Option<RoxBot> {
+fn active_bot_of(id: &str, threads: &[ThreadMeta], bots: &[BuwizBot]) -> Option<BuwizBot> {
     let tb = threads.iter().find(|t| t.id == id)?.bot.as_ref()?;
     Some(
         bots.iter()
             .find(|b| b.id == tb.id)
             .cloned()
-            .unwrap_or_else(|| RoxBot {
+            .unwrap_or_else(|| BuwizBot {
                 id: tb.id.clone(),
                 name: tb.name.clone(),
                 shape: tb.shape.clone(),
@@ -2525,7 +2525,7 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// `Store::group_item`: a v1 app's add is Rox's pin alone; its remove
+/// `Store::group_item`: a v1 app's add is Buwiz Bot's pin alone; its remove
 /// goes on to the server too, which may hold a `group_items` row for it.
 fn v1_add_stays_local(kind: &str, id: &str, add: bool) -> bool {
     add && kind == "app" && crate::mini_v1::is_v1(id)
@@ -2711,9 +2711,9 @@ impl Turn {
 pub struct Store {
     /// Sidebar data.
     pub threads: Signal<Vec<ThreadMeta>>,
-    pub bots: Signal<Vec<RoxBot>>,
+    pub bots: Signal<Vec<BuwizBot>>,
     /// The sidebar's groups (`GET /groups`), in the user's order.
-    pub groups: Signal<Vec<RoxGroup>>,
+    pub groups: Signal<Vec<BuwizGroup>>,
     /// `collapsedSecs` — `__hidden`, `__hiddenChats`, `__archived` start
     /// collapsed; the rest start open (absent ⇒ false). A group's key is
     /// its id, its value the server's `collapsed`.
@@ -2793,7 +2793,7 @@ pub struct Store {
     /// (a card waiting, a `/status` demo) has no Stop.
     pub run_jobs: Signal<BTreeMap<String, String>>,
     /// Each interactive card's state by its key (`cards::CardState`): no
-    /// entry is still open. Kept while Rox runs; a form's typed values are
+    /// entry is still open. Kept while Buwiz Bot runs; a form's typed values are
     /// never here.
     pub(crate) card_states: Signal<std::collections::HashMap<String, crate::cards::CardState>>,
     /// A choice card's picks by card key (field id → option).
@@ -2827,7 +2827,7 @@ pub struct Store {
     /// `detail` — the open app's `/catalog` metadata (variant B's header).
     pub detail_meta: Signal<Option<AppMeta>>,
     pub detail_app: Signal<String>,
-    pub thread_apps: Signal<Vec<RoxApp>>,
+    pub thread_apps: Signal<Vec<BuwizApp>>,
     /// The Library's kind chip ("all", "app", "image", "document", …),
     /// kept for the session.
     pub lib_filter: Signal<String>,
@@ -2909,7 +2909,7 @@ pub struct Store {
     /// The user's keyboard shortcuts: command id → keystrokes, only those
     /// changed from the defaults (`keymap.json`, `GET/POST /keymap`).
     pub keymap: Signal<std::collections::BTreeMap<String, Vec<String>>>,
-    /// The user's diagram colors over Rox's (`--pele-*` token → color, per
+    /// The user's diagram colors over Buwiz Bot's (`--pele-*` token → color, per
     /// mode; `mermaid.colors`, kept in `/state/rox-mermaid` as `colors`;
     /// absent until set: the defaults).
     pub mermaid_colors: Signal<crate::mermaid::palette::Overrides>,
@@ -2969,7 +2969,7 @@ pub struct Store {
     /// Conversations the user resumed here (their notices stop offering
     /// Resume before `/threads` says so).
     pub agents_resumed: Signal<Vec<String>>,
-    /// The last menu action asked for, numbered (`rox/keys` sends it).
+    /// The last menu action asked for, numbered (`buwiz/keys` sends it).
     pub keys_send: Signal<(u64, String)>,
     /// The last print job, numbered: (n, "text" | "html" | "image", payload,
     /// title).
@@ -2998,7 +2998,7 @@ pub struct Store {
     /// A jump to turn `i` of a thread waiting for that thread's
     /// transcript to mount: it then opens on the turn (`take_jump`).
     pub jump: std::cell::RefCell<Option<(String, String)>>,
-    /// A link opened before the chats were loaded (Rox launched by it):
+    /// A link opened before the chats were loaded (Buwiz Bot launched by it):
     /// it waits for them (`boot`), else the startup selection replaced
     /// its chat and its turn was never found. True when it came from
     /// another app ([`open_os_link`]).
@@ -3021,7 +3021,7 @@ pub struct Store {
     /// The chats opened, most recent first: what `alive` keeps beyond the
     /// ⌘1–9 chats.
     pub recent_chats: std::cell::RefCell<Vec<String>>,
-    /// Each chat's last scroll position, kept while Rox runs.
+    /// Each chat's last scroll position, kept while Buwiz Bot runs.
     pub scroll_marks: std::cell::RefCell<std::collections::HashMap<String, ScrollMark>>,
     /// The first turn that arrived while the open chat was away, until
     /// it is seen (the "New messages" pill).
@@ -3037,10 +3037,10 @@ pub struct Store {
     pub main_bot: Signal<String>,
     /// The "Choose a primary Bot" dialog: open with the bot picked so far.
     pub main_pick: Signal<Option<String>>,
-    /// A link waiting on Open or Cancel in Rox's sheet
+    /// A link waiting on Open or Cancel in Buwiz Bot's sheet
     /// (`botmodal::link_ask_layer`).
     pub link_ask: Signal<Option<crate::links::LinkAsk>>,
-    /// What Rox keeps for v1 plugins (`mini_v1::ui`).
+    /// What Buwiz Bot keeps for v1 plugins (`mini_v1::ui`).
     pub v1: crate::mini_v1::ui::V1,
     /// The Tools sheet and full view, and the `tools_change` cards'
     /// answers (`tools.rs`).
@@ -3256,7 +3256,7 @@ pub struct Store {
     pub(crate) groups_json: std::cell::RefCell<String>,
 
     /// Compiled mini-app sources, per module name (`R<n>`): the JS the
-    /// `rox/mini-app` component loads. Filled lazily by [`mini_source`].
+    /// `buwiz/mini-app` component loads. Filled lazily by [`mini_source`].
     pub minis: std::cell::RefCell<std::collections::HashMap<String, Signal<String>>>,
     /// Each generated widget's `call` path from `/v1/host/widget/open`
     /// (absent: the broker could not open it). Set before its source, so
@@ -3615,7 +3615,7 @@ impl Store {
                 self.set_threads(v);
             }
             self.resume_runs();
-            // Launched on a link (`open buwiz://…`, or `rox buwiz://…`): Rox
+            // Launched on a link (`open buwiz://…`): Buwiz Bot
             // opens there once the chats are known.
             self.booted.set(true);
             let early = self.early_link.borrow_mut().take();
@@ -3835,7 +3835,7 @@ impl Store {
             self.bots.set(
             list(&v, "bots")
                 .iter()
-                .map(|b| RoxBot {
+                .map(|b| BuwizBot {
                     id: s(b, "id"),
                     name: s(b, "name"),
                     emoji: s(b, "emoji"),
@@ -3917,7 +3917,7 @@ impl Store {
     /// `activeBot()` — the bot owning the open thread, merged with the
     /// catalog row when one exists (the thread payload carries only
     /// `id/name/shape/color`; `bots` adds `image`/`crop`).
-    pub fn active_bot(&'static self) -> Option<RoxBot> {
+    pub fn active_bot(&'static self) -> Option<BuwizBot> {
         let id = self.active_id.get();
         let threads = self.threads.get();
         let bots = self.bots.get();
@@ -3927,7 +3927,7 @@ impl Store {
     /// `active_bot` without tracking — for one-shot reads inside element
     /// builders (a `when`'s `then`), where a tracked read would rebuild
     /// the branch on every `/threads` refresh.
-    pub fn active_bot_untracked(&'static self) -> Option<RoxBot> {
+    pub fn active_bot_untracked(&'static self) -> Option<BuwizBot> {
         let id = self.active_id.get_untracked();
         let threads = self.threads.get_untracked();
         let bots = self.bots.get_untracked();
@@ -3935,7 +3935,7 @@ impl Store {
     }
 
     /// `pinnedBots()` — the rail tiles' set (pinned, not hidden).
-    pub fn pinned_bots(&'static self) -> Vec<RoxBot> {
+    pub fn pinned_bots(&'static self) -> Vec<BuwizBot> {
         self.bots
             .get()
             .into_iter()
@@ -3944,7 +3944,7 @@ impl Store {
     }
 
     /// `hiddenBots()` — the collapsed "Hidden Bots" section.
-    pub fn hidden_bots(&'static self) -> Vec<RoxBot> {
+    pub fn hidden_bots(&'static self) -> Vec<BuwizBot> {
         self.bots
             .get()
             .into_iter()
@@ -3953,7 +3953,7 @@ impl Store {
     }
 
     /// Unassigned — visible, unpinned bots no group holds.
-    pub fn ungrouped_bots(&'static self) -> Vec<RoxBot> {
+    pub fn ungrouped_bots(&'static self) -> Vec<BuwizBot> {
         let grouped: std::collections::HashSet<String> = self.groups.with(|gs| {
             gs.iter()
                 .flat_map(|g| g.items.iter())
@@ -4329,7 +4329,7 @@ impl Store {
     /// chats. Hidden bots never take a slot.
     pub fn shortcut_threads(&'static self) -> Vec<String> {
         // a temporary helper takes no slot (no sidebar row)
-        let bots: Vec<RoxBot> = self.bots.get_untracked().into_iter().filter(crate::agents::listed_bot).collect();
+        let bots: Vec<BuwizBot> = self.bots.get_untracked().into_iter().filter(crate::agents::listed_bot).collect();
         let threads = self.threads.get_untracked();
         let count_of = |tid: &str| {
             threads
@@ -4349,11 +4349,11 @@ impl Store {
         for b in bots.iter().filter(|b| b.pinned && !b.hidden) {
             push(&b.thread_id);
         }
-        let vis: Vec<&RoxBot> = bots.iter().filter(|b| !b.hidden && !b.pinned).collect();
+        let vis: Vec<&BuwizBot> = bots.iter().filter(|b| !b.hidden && !b.pinned).collect();
         let groups = self.groups.get_untracked();
         let grouped = |id: &str| groups.iter().any(|g| g.items.iter().any(|it| it.kind == "bot" && it.id == id));
         for g in &groups {
-            let mut items: Vec<&RoxBot> = g
+            let mut items: Vec<&BuwizBot> = g
                 .items
                 .iter()
                 .filter(|it| it.kind == "bot")
@@ -4364,7 +4364,7 @@ impl Store {
                 push(&b.thread_id);
             }
         }
-        let mut un: Vec<&RoxBot> = vis.iter().filter(|b| !grouped(&b.id)).copied().collect();
+        let mut un: Vec<&BuwizBot> = vis.iter().filter(|b| !grouped(&b.id)).copied().collect();
         un.sort_by_key(|a| std::cmp::Reverse(count_of(&a.thread_id)));
         for b in un {
             push(&b.thread_id);
@@ -4576,7 +4576,7 @@ impl Store {
             // A server that reads `?thread=` answers with that chat's turns;
             // an older one with its shared active thread (Grok Shell,
             // another window, a run on another chat can move it): a
-            // response for another thread stays out of the list, and Rox
+            // response for another thread stays out of the list, and Buwiz Bot
             // selects its own again so the next poll lands.
             if s(&v, "thread") != id && s(&v, "active") != id {
                 if self.active_id.get_untracked() == id {
@@ -4643,7 +4643,7 @@ impl Store {
                 if self.active_id.get_untracked() != id {
                     return;
                 }
-                self.thread_apps.set(list(&v, "apps").iter().map(RoxApp::from_json).collect());
+                self.thread_apps.set(list(&v, "apps").iter().map(BuwizApp::from_json).collect());
             }
         });
     }
@@ -4710,13 +4710,13 @@ impl Store {
 
     /// `libraryGroups()` — thread apps bucketed by `mtime` into
     /// Today / This week / Older (App.tsx:1269).
-    pub fn library_groups(&'static self) -> Vec<(String, Vec<RoxApp>)> {
+    pub fn library_groups(&'static self) -> Vec<(String, Vec<BuwizApp>)> {
         let day = 86_400_000.0f64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as f64)
             .unwrap_or(0.0);
-        let mut g: [(String, Vec<RoxApp>); 3] = [
+        let mut g: [(String, Vec<BuwizApp>); 3] = [
             ("Today".to_owned(), Vec::new()),
             ("This week".to_owned(), Vec::new()),
             ("Older".to_owned(), Vec::new()),
@@ -4724,7 +4724,7 @@ impl Store {
         let filter = self.lib_kind();
         // the Archived chip lists the archived only; every other chip
         // leaves them out
-        let shown = |a: &&RoxApp| {
+        let shown = |a: &&BuwizApp| {
             if filter == "archived" {
                 a.archived
             } else {
@@ -4748,7 +4748,7 @@ impl Store {
     /// count — (kind, label, count).
     pub fn lib_chips(&'static self) -> Vec<(&'static str, &'static str, usize)> {
         let apps = self.thread_apps.get();
-        let live: Vec<&RoxApp> = apps.iter().filter(|a| !a.archived).collect();
+        let live: Vec<&BuwizApp> = apps.iter().filter(|a| !a.archived).collect();
         let mut out = vec![("all", "All", live.len())];
         for (kind, label) in LIB_KINDS {
             let n = live.iter().filter(|a| lib_kind_of(a) == kind).count();
@@ -4767,7 +4767,7 @@ impl Store {
     /// list, else All.
     pub fn lib_kind(&'static self) -> String {
         let f = self.lib_filter.get();
-        let held = |a: &RoxApp| if f == "archived" { a.archived } else { !a.archived && lib_kind_of(a) == f };
+        let held = |a: &BuwizApp| if f == "archived" { a.archived } else { !a.archived && lib_kind_of(a) == f };
         if f != "all" && self.thread_apps.with(|v| v.iter().any(held)) {
             f
         } else {
@@ -4906,7 +4906,7 @@ impl Store {
         });
         self.ad_err.set(String::new());
         self.ad_busy.set(String::new());
-        let show = move |a: RoxApp| {
+        let show = move |a: BuwizApp| {
             self.ad_title.set(a.title.clone());
             self.app_details.set(Some(AppInfo::of_mcp(&a)));
         };
@@ -4916,7 +4916,7 @@ impl Store {
                 let id = id.to_owned();
                 spawn_detached(async move {
                     if let Some(v) = client::get(&details_url(&id, "mcp-app")).await {
-                        show(RoxApp::from_json(&v));
+                        show(BuwizApp::from_json(&v));
                     }
                 });
             }
@@ -5094,7 +5094,7 @@ impl Store {
         let Some(info) = self.app_details.get_untracked() else { return };
         let title = self.ad_title.get_untracked().trim().to_owned();
         let file = self.ad_file.get_untracked().trim().to_owned();
-        // An attached server app: Rename is a display name in Rox, shared
+        // An attached server app: Rename is a display name in Buwiz Bot, shared
         // by every chat and pin of its token (`POST /mcp/attachment/rename`;
         // empty goes back to the server's).
         if info.kind == "mcp-app" {
@@ -7644,7 +7644,7 @@ impl Store {
             if gone.is_some_and(|v| v.get("ok").and_then(|o| o.as_bool()) == Some(true)) {
                 match crate::vault::vault().forget_bot(&id) {
                     Ok(()) => crate::vault::changed(),
-                    Err(e) => log::warn!("rox: the deleted Bot's login shares weren't removed: {e}"),
+                    Err(e) => log::warn!("buwiz: the deleted Bot's login shares weren't removed: {e}"),
                 }
             }
             if let Some(v) = client::get("/threads").await {
@@ -7687,7 +7687,7 @@ impl Store {
     }
 
     /// `react` for one slot: the message's goes to the server's turn, a
-    /// file's or the media's to Rox's reactions in the state store.
+    /// file's or the media's to Buwiz Bot's reactions in the state store.
     pub fn react_slot(&'static self, i: i64, slot: &str, emoji: String) {
         if slot == "msg" {
             return self.react(i, emoji);
@@ -8206,7 +8206,7 @@ impl Store {
                 return;
             }
             *self.groups_json.borrow_mut() = j;
-            let groups: Vec<RoxGroup> = list(&v, "groups").iter().map(RoxGroup::from_json).collect();
+            let groups: Vec<BuwizGroup> = list(&v, "groups").iter().map(BuwizGroup::from_json).collect();
             let folds: Vec<(String, bool)> = groups.iter().map(|g| (g.id.clone(), g.collapsed)).collect();
             if folds.iter().any(|(k, c)| self.collapsed.with_untracked(|m| m.get(k).copied().unwrap_or(false)) != *c) {
                 self.collapsed.update(|m| m.extend(folds));
@@ -8234,12 +8234,12 @@ impl Store {
     /// `gid` (an artifact with its origin chat `thread`, an app with its
     /// title there), or takes it out — of that group only.
     pub fn group_item(&'static self, gid: &str, kind: &str, id: &str, thread: &str, add: bool) {
-        // a v1 app's pin is Rox's too: {plugin, app, ticket?, placement}
+        // a v1 app's pin is Buwiz Bot's too: {plugin, app, ticket?, placement}
         if kind == "app" && crate::mini_v1::is_v1(id) {
             self.v1_pinned(id, thread, add);
         }
         if v1_add_stays_local(kind, id, add) {
-            // the app server's groups take v0 apps only: Rox keeps it
+            // the app server's groups take v0 apps only: Buwiz Bot keeps it
             return;
         }
         let mut body = serde_json::json!({
@@ -8384,7 +8384,7 @@ impl Store {
     /// Opens a Library item with its kind's handler: an app pops out, an
     /// image card opens in the lightbox, a file in the viewer — a file kept
     /// elsewhere (Google Drive) opens by its link in the browser.
-    pub fn open_library_item(&'static self, a: &RoxApp) {
+    pub fn open_library_item(&'static self, a: &BuwizApp) {
         // a server's app attached here: its link, full screen
         if a.kind == "mcp-app" {
             match mini_link(&a.open) {
@@ -8439,7 +8439,7 @@ impl Store {
     /// A Library item's link — `buwiz://chat/<thread uid>?m=<turn id>`, as
     /// the card's Copy Link; a connector's file has its own (the Drive
     /// link).
-    pub fn library_link(&'static self, a: &RoxApp) -> String {
+    pub fn library_link(&'static self, a: &BuwizApp) -> String {
         if a.storage.connector() {
             return a.storage.link.clone();
         }
@@ -8451,7 +8451,7 @@ impl Store {
 
     /// Download: the save panel for an image card's png or a file, under
     /// its display name — only a file on this Mac has one.
-    pub fn save_library_item(&'static self, a: &RoxApp) {
+    pub fn save_library_item(&'static self, a: &BuwizApp) {
         if a.storage.place != "mac" {
             return;
         }
@@ -8525,7 +8525,7 @@ impl Store {
     }
 
     /// A group's artifact in its own chat, at the message that made it.
-    pub fn show_group_item(&'static self, a: &RoxApp) {
+    pub fn show_group_item(&'static self, a: &BuwizApp) {
         // an attached server app: each chat it's attached in has its card
         if a.kind == "mcp-app" && !a.token.is_empty() {
             let here = (!a.thread_uid.is_empty()).then(|| (a.thread_uid.clone(), a.turn_id.clone()));
@@ -8749,8 +8749,8 @@ impl Store {
         format!("buwiz://chat/{thread}?m={turn}")
     }
 
-    /// A link pressed in Rox: `buwiz://chat/<thread>[?m=<i>]` goes to that
-    /// chat (and turn); an outside URL opens outside Rox as
+    /// A link pressed in Buwiz Bot: `buwiz://chat/<thread>[?m=<i>]` goes to that
+    /// chat (and turn); an outside URL opens outside Buwiz Bot as
     /// [`crate::links::outside`] decides.
     pub fn open_link(&'static self, url: &str) {
         self.route_link(url, false);
@@ -8758,7 +8758,7 @@ impl Store {
 
     /// A `buwiz://` link another app or a web page opened (`lib.rs`, a launch
     /// argument): routed like [`open_link`], except that what would make
-    /// something (a new chat) or open a mini app waits on the person in Rox.
+    /// something (a new chat) or open a mini app waits on the person in Buwiz Bot.
     pub fn open_os_link(&'static self, url: &str) {
         self.route_link(url, true);
     }
@@ -8783,17 +8783,17 @@ impl Store {
             let pass = link_pass(url);
             if os && !pass.is_empty() {
                 // a link the app server opened for a mini app carries a
-                // one-time pass: redeemed, it opens like one from Rox
+                // one-time pass: redeemed, it opens like one from Buwiz Bot
                 spawn(async move {
                     let ok = client::post("/mcp/open/pass", serde_json::json!({ "pass": pass }))
                         .await
                         .is_some_and(|v| v.get("ok").and_then(|b| b.as_bool()) == Some(true));
-                    let from = if ok { AppOpener::Rox } else { AppOpener::Outside };
+                    let from = if ok { AppOpener::Buwiz } else { AppOpener::Outside };
                     self.open_mini_from(from, &key, "", &token);
                 });
                 return;
             }
-            let from = if os { AppOpener::Outside } else { AppOpener::Rox };
+            let from = if os { AppOpener::Outside } else { AppOpener::Buwiz };
             self.open_mini_from(from, &key, "", &token);
             return;
         }
@@ -8814,7 +8814,7 @@ impl Store {
                 return;
             }
             let Some(path) = crate::links::viewable(&path, &crate::links::view_root()) else {
-                log::warn!("rox: buwiz://view of a file that is no preview in {} refused", crate::links::view_root().display());
+                log::warn!("buwiz: buwiz://view of a file that is no preview in {} refused", crate::links::view_root().display());
                 return crate::toast::show("Buwiz Bot shows only previews from its temporary folder");
             };
             let path = path.to_string_lossy().into_owned();
@@ -8843,7 +8843,7 @@ impl Store {
         // `buwiz://chat/new?draft=<text>`: a new chat, its composer holding
         // the text (a mini app handing work to the assistant). From another
         // app (a mini app's link comes through the system too), the chat is
-        // made only after Start chat in Rox's sheet.
+        // made only after Start chat in Buwiz Bot's sheet.
         if let Some(q) = url.strip_prefix("buwiz://chat/new").filter(|q| q.is_empty() || q.starts_with('?') || q == &"/") {
             let draft = q
                 .trim_start_matches(['/', '?'])
@@ -8872,7 +8872,7 @@ impl Store {
             None => match crate::links::outside(url) {
                 Outside::Open => drop(open_url(url.to_owned())),
                 Outside::Ask => self.link_ask.set(Some(LinkAsk::Open(url.to_owned()))),
-                Outside::Refuse => log::warn!("rox: not opening {url}"),
+                Outside::Refuse => log::warn!("buwiz: not opening {url}"),
             },
         }
     }
@@ -8899,7 +8899,7 @@ impl Store {
     }
 
     /// A mini app full screen for `from`: at once when the person opened it
-    /// in Rox, else after Open in the link sheet
+    /// in Buwiz Bot, else after Open in the link sheet
     /// ([`crate::links::app_opens_unasked`]).
     pub fn open_mini_from(&'static self, from: crate::links::AppOpener, key: &str, title: &str, token: &str) {
         if crate::links::app_opens_unasked(from) {
@@ -9125,7 +9125,7 @@ mod tests {
     fn a_v1_apps_group_remove_reaches_the_server() {
         use super::v1_add_stays_local;
         let v1 = "v1:app.buwiz.ebirforms/forms";
-        assert!(v1_add_stays_local("app", v1, true), "an add is Rox's pin only");
+        assert!(v1_add_stays_local("app", v1, true), "an add is Buwiz Bot's pin only");
         assert!(!v1_add_stays_local("app", v1, false), "a remove posts /group/item");
         assert!(!v1_add_stays_local("app", "mcp:apps/hello", true));
         assert!(!v1_add_stays_local("artifact", "R18", false));
@@ -9526,11 +9526,11 @@ mod tests {
     }
 
     #[test]
-    fn an_app_link_routes_to_its_module_and_asks_unless_rox_opened_it() {
+    fn an_app_link_routes_to_its_module_and_asks_unless_buwiz_opened_it() {
         let key = mini_link("buwiz://app/bir/forms?props=%7B%22form%22%3A%221601C%22%7D").expect("an app link");
         assert_eq!(app_key_parts(&key), Some(("bir", "forms")));
-        // `route_link`: a link card in Rox opens it; the system's (`os`) asks
-        assert!(app_opens_unasked(AppOpener::Rox));
+        // `route_link`: a link card in Buwiz Bot opens it; the system's (`os`) asks
+        assert!(app_opens_unasked(AppOpener::Buwiz));
         assert!(!app_opens_unasked(AppOpener::Outside));
     }
 }

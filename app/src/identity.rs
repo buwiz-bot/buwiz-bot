@@ -102,7 +102,7 @@ fn migrate_data_with(over: Option<&OsStr>, home: &Path, rename: &Rename) -> Resu
     // nsh's storage of the root's app id; none is kept today, so a failure
     // here is no reason to stop
     if let Err(e) = migrate_dir(&support.join(OLD_APP_ID), &support.join(APP_ID), rename) {
-        log::warn!("rox: {OLD_APP_ID}'s storage was not moved: {e}");
+        log::warn!("buwiz: {OLD_APP_ID}'s storage was not moved: {e}");
     }
     Ok(done)
 }
@@ -125,7 +125,7 @@ fn migrate_dir(old: &Path, new: &Path, rename: &Rename) -> Result<Migration, Str
             std::fs::rename(&partial, new).map_err(|e| format!("{}: {e}", new.display()))?;
             // the copy is complete and in place: the old dir has nothing left to give
             if let Err(e) = std::fs::remove_dir_all(old) {
-                log::warn!("rox: {} was copied but not removed: {e}", old.display());
+                log::warn!("buwiz: {} was copied but not removed: {e}", old.display());
             }
             Migration::Copied
         }
@@ -173,7 +173,7 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-identity-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("buwiz-identity-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join(SUPPORT)).unwrap();
         d
@@ -181,7 +181,7 @@ mod tests {
 
     /// A Rox data dir as a migrated install has it: the v0 migration done
     /// at `migrated_at` 1234, a logins table, a plugin's files.
-    fn rox_dir(home: &Path) -> PathBuf {
+    fn old_data_dir(home: &Path) -> PathBuf {
         let old = home.join(SUPPORT).join(OLD_DIR_NAME);
         std::fs::create_dir_all(old.join("plugins/dev.example.p")).unwrap();
         std::fs::write(old.join("mini-v1.json"), r#"{"attachments":[],"pins":[],"opened":[],"migrated_at":1234,"sent":[],"versions":[]}"#).unwrap();
@@ -200,9 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn rox_data_moves_to_buwiz_bot_once_with_a_marker() {
+    fn old_data_moves_to_buwiz_bot_once_with_a_marker() {
         let home = scratch("move");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         assert_eq!(data_dir_in(None, &home), old, "before the migration the data is Rox's");
         assert_eq!(migrate_data(None, &home).unwrap(), Migration::Moved);
         let new = new_dir(&home);
@@ -218,9 +218,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_rename_copies_then_removes_rox_data() {
+    fn a_failed_rename_copies_then_removes_old_data() {
         let home = scratch("copy");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         let refuse = |_: &Path, _: &Path| -> std::io::Result<()> { Err(std::io::Error::other("cross-device link")) };
         assert_eq!(migrate_data_with(None, &home, &refuse).unwrap(), Migration::Copied);
         let new = new_dir(&home);
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn both_dirs_present_are_left_alone() {
         let home = scratch("both");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         let new = new_dir(&home);
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(new.join("logins.db"), b"newer").unwrap();
@@ -250,9 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn rox_data_dir_overrides_and_nothing_moves() {
+    fn an_old_data_dir_overrides_and_nothing_moves() {
         let home = scratch("override");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         let own = home.join("own");
         assert_eq!(migrate_data(Some(own.as_os_str()), &home).unwrap(), Migration::Overridden);
         assert_eq!(data_dir_in(Some(own.as_os_str()), &home), own);
@@ -374,7 +374,7 @@ mod tests {
     /// bundle of its own, named apart from Buwiz Bot, with the TEST icon,
     /// signed; the name defaults to the instance dir's.
     #[test]
-    fn test_rox_wraps_a_test_bundle_apart_from_buwiz_bot() {
+    fn buwiz_test_wraps_a_test_bundle_apart_from_buwiz_bot() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let dir = scratch("buwiz-test");
         let fake = dir.join("fake-bin");

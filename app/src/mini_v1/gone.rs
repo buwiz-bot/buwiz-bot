@@ -4,7 +4,7 @@
 //! The card then shows what it last showed as plain text, read-only. That
 //! text comes from the plugin's own store, through its `<short>_card_text`
 //! tool, and is held only while the card is on screen: nothing of it goes
-//! in the chat's record or in Rox's. Without it (no such tool, nothing
+//! in the chat's record or in Buwiz Bot's. Without it (no such tool, nothing
 //! stored, any refusal) the card shows its title and "Open in plugin".
 //!
 //! The decisions are pure; [`read`] is the one call out.
@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    RoxError,
+    MiniError,
     attribution::Actor,
     bridge,
     cards::OpenCard,
@@ -122,8 +122,8 @@ pub fn text_of(answer: &Value) -> Option<Text> {
 /// Reads the card's text from its plugin's store: a session of an app the
 /// plugin still has, one call of its text tool as the person, and the
 /// session closed. Blocks: call it off the main thread.
-pub fn read(broker: Arc<dyn host_api::Broker>, entry: &PluginEntry, listed: &Listed, card: &OpenCard) -> Result<Text, RoxError> {
-    let none = |why: &str| RoxError::new("not_found", why);
+pub fn read(broker: Arc<dyn host_api::Broker>, entry: &PluginEntry, listed: &Listed, card: &OpenCard) -> Result<Text, MiniError> {
+    let none = |why: &str| MiniError::new("not_found", why);
     let tool = text_tool(listed).ok_or_else(|| none("the plugin has no card text"))?;
     let ticket = ticket(card).ok_or_else(|| none("the card has no ticket"))?;
     let (app, permissions) = session_app(entry).ok_or_else(|| none("the plugin has no app"))?;

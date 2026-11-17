@@ -33,7 +33,7 @@ use buwiz_agent::OnceId;
 use serde_json::Value;
 
 use super::{
-    RoxError, V1Key,
+    MiniError, V1Key,
     attribution::{self, Actor},
     bridge::{self, Consent, Emit, HostUi, Live, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
@@ -156,7 +156,7 @@ impl HostUi for MacUi {
         on_main(move || write_pasteboard(&text));
     }
 
-    fn preview(&self, doc: bridge::Preview) -> Result<(), RoxError> {
+    fn preview(&self, doc: bridge::Preview) -> Result<(), MiniError> {
         super::to_store(move |st| st.v1_preview(doc));
         Ok(())
     }
@@ -324,7 +324,7 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = u64]
-    #[name = "RoxPickSizeFilter"]
+    #[name = "BuwizPickSizeFilter"]
     struct SizeFilter;
 
     unsafe impl NSObjectProtocol for SizeFilter {}
@@ -525,7 +525,7 @@ impl Drop for V1Open {
 }
 
 /// What an open's failure shows (6.7).
-fn shown(prepared: &Prepared, e: &RoxError) -> String {
+fn shown(prepared: &Prepared, e: &MiniError) -> String {
     match e.code.as_str() {
         "plugin_unavailable" => load::say::unavailable(&prepared.plugin.title),
         "plugin_bad_signature" => format!("Could not open {}: {} failed its signature check.", prepared.title, prepared.plugin.title),

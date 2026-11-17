@@ -1,4 +1,4 @@
-//! What Rox keeps for v1 plugins in its own data dir
+//! What Buwiz Bot keeps for v1 plugins in its own data dir
 //! (`<data dir>/mini-v1.json`): the chats' attachments (10.3), the pins
 //! (12.3), the fingerprint each app was last opened with (12.2), the
 //! version each plugin was last seen at (its Connect Apps page says
@@ -65,7 +65,7 @@ const MAX_SENT: usize = 500;
 pub const UPDATED_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// The version a plugin was last seen at, and when it changed to it (ms;
-/// 0 when it has not changed since Rox first saw the plugin).
+/// 0 when it has not changed since Buwiz Bot first saw the plugin).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Seen {
     pub plugin: String,
@@ -137,7 +137,7 @@ pub struct UpdateSeen {
     pub skipped: String,
 }
 
-/// The file in `dir` (Rox's data dir).
+/// The file in `dir` (Buwiz Bot's data dir).
 pub fn file(dir: &Path) -> PathBuf {
     dir.join("mini-v1.json")
 }
@@ -509,7 +509,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-records-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("buwiz-records-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }

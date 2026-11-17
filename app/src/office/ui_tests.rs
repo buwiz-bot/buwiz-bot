@@ -65,11 +65,11 @@ fn in_child(name: &str) -> bool {
 /// The broker's data folder a test's child takes (its files are in
 /// `generated/files`).
 fn broker_dir(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("rox-office-ui-broker-{name}"))
+    std::env::temp_dir().join(format!("buwiz-office-ui-broker-{name}"))
 }
 
 fn dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("rox-office-ui-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("buwiz-office-ui-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d

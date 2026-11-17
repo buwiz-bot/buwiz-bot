@@ -30,7 +30,7 @@ mod tests {
     fn a_name_reads_only_itself() {
         let get = |k: &str| match k {
             "BUWIZ_DATA_DIR" => Some(OsString::from("/new")),
-            "ROX_DATA_DIR" => Some(OsString::from("/other")),
+            "OTHER_DATA_DIR" => Some(OsString::from("/other")),
             _ => None,
         };
         assert_eq!(var_in("BUWIZ_DATA_DIR", get), Some("/new".into()));

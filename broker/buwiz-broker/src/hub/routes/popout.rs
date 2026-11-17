@@ -10,7 +10,7 @@
 //! new head and the `close_app` tool ends an app's windows, both through
 //! [`Windows`], the table Node kept in `openWindows`.
 //!
-//! AeroSpace is kept (6.3): Rox's "Open in Window" relies on it. It floats
+//! AeroSpace is kept (6.3): Buwiz Bot's "Open in Window" relies on it. It floats
 //! a new pop-out (AeroSpace tiles every new window) and raising an open
 //! one is AeroSpace-only, as in windows.mjs; without AeroSpace each call
 //! fails and is ignored. Pinned by server/test/popout.test.mjs (POP-xx).
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn popout_binary_identity_follows_the_bytes() {
-        let d = std::env::temp_dir().join(format!("rox-popout-id-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        let d = std::env::temp_dir().join(format!("buwiz-popout-id-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
         std::fs::create_dir_all(&d).unwrap();
         let bin = d.join("nsh");
         std::fs::write(&bin, "one").unwrap();
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn popout_host_output_appends_to_its_log() {
-        let d = std::env::temp_dir().join(format!("rox-popout-log-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        let d = std::env::temp_dir().join(format!("buwiz-popout-log-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
         std::fs::create_dir_all(&d).unwrap();
         let log = d.join("host.log");
         std::fs::write(&log, "before\n").unwrap();

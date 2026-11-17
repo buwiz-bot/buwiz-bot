@@ -52,7 +52,7 @@ status bar, under a millisecond, with all state (threads, transcript,
 draft, scroll) intact.
 
 Rules for patchable code (`src/hot.rs` and everything it pulls in — see
-`.devin/skills/rox-live/SKILL.md` for the full list):
+`.devin/skills/buwiz-live/SKILL.md` for the full list):
 
 - Persistent state goes through `crate::live::store()` or
   `crate::live::keep("name", init)`. No `static`, `thread_local!` or

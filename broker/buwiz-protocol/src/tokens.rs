@@ -2,7 +2,7 @@
 //! with them (9.2, 9.3).
 //!
 //! - Typed tokens `@short:scope:value` as the composer parses them, and
-//!   canonical tokens `@short:scope:tkt_…`, the only form Rox stores and
+//!   canonical tokens `@short:scope:tkt_…`, the only form Buwiz Bot stores and
 //!   sends to the model.
 //! - Slash commands `/[short:]name args` and their namespacing (3.1):
 //!   built-ins win, a name one enabled plugin declares is reachable
@@ -282,7 +282,7 @@ pub enum Answer {
     Open { app: String, props: serde_json::Map<String, Value>, ticket: Option<String>, title: String, placement: Option<String> },
     Token { ticket: String, title: String },
     /// A starter flow (protocol 1.1): text for the composer, which the
-    /// person edits and sends; Rox never sends it. A command's only.
+    /// person edits and sends; Buwiz Bot never sends it. A command's only.
     Prompt(String),
     Error(String),
 }

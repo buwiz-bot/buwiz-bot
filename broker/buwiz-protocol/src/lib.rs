@@ -1,4 +1,4 @@
-//! The Mini App Protocol v1 pieces Rox and the broker share: JCS (RFC 8785)
+//! The Mini App Protocol v1 pieces Buwiz Bot and the broker share: JCS (RFC 8785)
 //! bytes, ed25519 keys and signatures over them, the id grammars, and the
 //! composer's tokens and tickets, and the broker's proof of identity
 //! (`proof`), and the environment variables' Buwiz names with their old

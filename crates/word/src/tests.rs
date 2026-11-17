@@ -197,7 +197,7 @@ fn selection_width(outs: &[Out]) -> f64 {
 
 #[test]
 fn a_title_word_made_bold_and_italic_keeps_its_selection_to_its_glyphs() {
-    let mut w = open(fixture::titled("Welcome to Rox", &["A first paragraph."]));
+    let mut w = open(fixture::titled("Welcome to Buwiz Bot", &["A first paragraph."]));
     w.run(Cmd::Move { to: Move::DocStart, extend: false });
     w.run(Cmd::Move { to: Move::WordRight, extend: true });
     for f in [Fmt::Bold, Fmt::Italic] {
@@ -218,7 +218,7 @@ fn a_title_word_made_bold_and_italic_keeps_its_selection_to_its_glyphs() {
 
 #[test]
 fn typing_in_a_bold_italic_word_keeps_to_its_glyphs() {
-    let mut w = open(fixture::titled("Welcome to Rox", &["A first paragraph."]));
+    let mut w = open(fixture::titled("Welcome to Buwiz Bot", &["A first paragraph."]));
     w.run(Cmd::Move { to: Move::DocStart, extend: false });
     w.run(Cmd::Move { to: Move::WordRight, extend: true });
     w.run(Cmd::Format(Fmt::Bold));

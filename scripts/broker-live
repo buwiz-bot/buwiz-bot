@@ -114,7 +114,7 @@ mode() {
   [ -z "$pid" ] && { echo none; return; }
   cmd=$(ps -o command= -p "$pid")
   case "$cmd" in
-    *"/Contents/Resources/broker/buwiz-broker "* | *"/Contents/Resources/broker/rox-broker "*) echo bundled ;;
+    *"/Contents/Resources/broker/buwiz-broker "*) echo bundled ;;
     *) echo "other: $cmd" ;;
   esac
 }

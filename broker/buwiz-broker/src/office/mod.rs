@@ -350,7 +350,7 @@ mod tests {
     /// A workspace holding Node's seed files.
     fn workspace() -> PathBuf {
         let seeds = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../office/seeds");
-        let dir = std::env::temp_dir().join(format!("rox-office-test-{}", proto::uuid()));
+        let dir = std::env::temp_dir().join(format!("buwiz-office-test-{}", proto::uuid()));
         std::fs::create_dir_all(&dir).unwrap();
         for f in ["betteroffice-demo.docx", "showcase.xlsx", "presentation.pptx"] {
             std::fs::copy(seeds.join(f), dir.join(f)).unwrap();

@@ -1,5 +1,5 @@
 //! The colors (and fonts, radius, weights) Pele's `--pele-*` tokens take in
-//! Rox: its own look by default — the ten the old Node helper set (its
+//! Buwiz Bot: its own look by default — the ten the old Node helper set (its
 //! `PALETTES`), Pele's own fallbacks for the rest — and
 //! the user's overrides on top, per mode (`mermaid.colors`: the `colors`
 //! of Rox's own `/state/rox-mermaid`, as its zoom and drafts are kept).
@@ -42,7 +42,7 @@ pub(crate) const PELE_DEFAULTS: &[(&str, &str)] = &[
     ("series-8", "#9d755d"),
 ];
 
-// Rox's agent-bubble surface and inks (theme.rs: AGENT_BUBBLE, TEXT, DIM…),
+// Buwiz Bot's agent-bubble surface and inks (theme.rs: AGENT_BUBBLE, TEXT, DIM…),
 // as the Node helper set them.
 const DARK: &[(&str, &str)] = &[
     ("bg", "#1f1f1f"),
@@ -117,7 +117,7 @@ impl Overrides {
 }
 
 impl PelePalette {
-    /// Rox's palette for the mode, with `overrides` applied.
+    /// Buwiz Bot's palette for the mode, with `overrides` applied.
     pub fn new(dark: bool, overrides: &Overrides) -> Self {
         let mut vars: BTreeMap<String, String> = PELE_DEFAULTS.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
         for (k, v) in if dark { DARK } else { LIGHT } {

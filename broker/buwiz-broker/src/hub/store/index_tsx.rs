@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn store_index_names_modules_versions_and_widgets() {
-        let dir = std::env::temp_dir().join(format!("rox-index-{}", super::super::uuidv7()));
+        let dir = std::env::temp_dir().join(format!("buwiz-index-{}", super::super::uuidv7()));
         let (gen, w) = (dir.join("generated"), dir.join("widgets"));
         std::fs::create_dir_all(gen.join("R2")).unwrap();
         std::fs::create_dir_all(&w).unwrap();

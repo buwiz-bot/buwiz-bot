@@ -6,7 +6,7 @@
 //! and hit-testing alike, and nsh's layers draw at the scale they show
 //! (`backing_scale_of`), so text stays sharp.
 //!
-//! `rox/zoom` is a 0×0 native element at the app's root that carries the
+//! `buwiz/zoom` is a 0×0 native element at the app's root that carries the
 //! level (`store().ui_zoom`); its view finds the window, applies it, and
 //! applies it again whenever the content view's frame changes (a window
 //! resize keeps the bounds' scale, but not the root's frame inside).
@@ -20,7 +20,7 @@ use crate::live::store;
 /// hands the mouse to the hosted view its own picking lands on, so one
 /// covering the window took every click.
 pub(crate) fn zoom_host() -> impl IntoElement {
-    native("rox/zoom")
+    native("buwiz/zoom")
         .prop("zoom", move || JsonValue::from(store().ui_zoom.get() as f64))
         .absolute()
         .top(px(0.0))
@@ -57,7 +57,7 @@ mod imp {
         #[unsafe(super(NSView))]
         #[thread_kind = MainThreadOnly]
         #[ivars = ZoomIvars]
-        #[name = "RoxZoomHost"]
+        #[name = "BuwizZoomHost"]
         struct ZoomHost;
 
         unsafe impl NSObjectProtocol for ZoomHost {}
@@ -76,7 +76,7 @@ mod imp {
                 self.apply();
             }
 
-            #[unsafe(method(roxContentResized:))]
+            #[unsafe(method(buwizContentResized:))]
             fn content_resized(&self, _note: Option<&AnyObject>) {
                 self.apply();
             }
@@ -103,12 +103,12 @@ mod imp {
                 return;
             };
             content.setPostsFrameChangedNotifications(true);
-            // SAFETY: a selector-based observer; `roxContentResized:` takes
+            // SAFETY: a selector-based observer; `buwizContentResized:` takes
             // the notification. The center holds it weakly (macOS 10.11+).
             unsafe {
                 NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
                     self,
-                    sel!(roxContentResized:),
+                    sel!(buwizContentResized:),
                     Some(NSViewFrameDidChangeNotification),
                     Some(&content),
                 );
@@ -183,11 +183,11 @@ mod imp {
     }
 }
 
-/// Registers `rox/zoom` (call before `run_app`, as `register_mini_app`).
+/// Registers `buwiz/zoom` (call before `run_app`, as `register_mini_app`).
 #[cfg(target_os = "macos")]
 pub fn register_zoom(components: &nsh_platform_macos::Components) {
     components.register(
-        "rox/zoom",
+        "buwiz/zoom",
         std::rc::Rc::new(|ctx| {
             Box::new(imp::Zoom::new(ctx)) as Box<dyn nsh_platform_macos::NativeComponent>
         }),

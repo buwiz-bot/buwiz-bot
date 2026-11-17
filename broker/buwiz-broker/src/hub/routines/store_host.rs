@@ -207,7 +207,7 @@ mod tests {
 
     /// A loaded store on a temp dir, the adapter bound to it.
     fn bound(label: &str) -> (Arc<HubCtx>, StoreHost) {
-        let d = std::env::temp_dir().join(format!("rox-store-host-{label}-{}", store::uuidv7()));
+        let d = std::env::temp_dir().join(format!("buwiz-store-host-{label}-{}", store::uuidv7()));
         let ctx = HubCtx::new(d, Clock::manual());
         ctx.store.load().unwrap();
         let ctx = Arc::new(ctx);

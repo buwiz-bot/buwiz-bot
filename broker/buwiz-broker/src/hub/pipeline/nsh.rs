@@ -130,7 +130,7 @@ pub(crate) mod tests {
     }
 
     pub fn temp(label: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-pipe-{label}-{}-{:?}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let d = std::env::temp_dir().join(format!("buwiz-pipe-{label}-{}-{:?}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

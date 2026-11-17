@@ -4,9 +4,9 @@
 //! 0700), so an open skips the source fetch and the compile.
 //!
 //! An entry's key is the plugin id, the app id, the app's **signed
-//! manifest fingerprint** and this Rox build (the executable's size and
+//! manifest fingerprint** and this Buwiz Bot build (the executable's size and
 //! modification time: it carries the nsh compiler, the import table and
-//! the bridge shim). A changed fingerprint or a new Rox is a miss. Each
+//! the bridge shim). A changed fingerprint or a new Buwiz Bot is a miss. Each
 //! file records its key and the SHA-256 of its module; a file whose
 //! record does not match is a miss and is removed. Entries of
 //! fingerprints no longer in the installed manifest are evicted when the
@@ -30,7 +30,7 @@ pub fn enabled() -> bool {
     buwiz_protocol::env::var("BUWIZ_MINI_CACHE").is_none_or(|v| v != "0")
 }
 
-/// This Rox build: what compiled the module (nsh's compiler, the import
+/// This Buwiz Bot build: what compiled the module (nsh's compiler, the import
 /// table, the shim) is part of every key.
 pub fn build_id() -> String {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -174,7 +174,7 @@ mod tests {
     use super::*;
 
     fn root(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-cache-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("buwiz-cache-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
@@ -192,7 +192,7 @@ mod tests {
         clear_memory();
         assert_eq!(get(&r, P, "deadlines", "sha256:aa", "b1").as_deref(), Some("compiled js"));
         assert_eq!(get(&r, P, "deadlines", "sha256:bb", "b1"), None, "a new fingerprint");
-        assert_eq!(get(&r, P, "deadlines", "sha256:aa", "b2"), None, "a new Rox build");
+        assert_eq!(get(&r, P, "deadlines", "sha256:aa", "b2"), None, "a new Buwiz Bot build");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

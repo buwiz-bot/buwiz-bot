@@ -2,7 +2,7 @@
 //! `dist/styles.css`): its `--doc-*` tokens and the Tailwind theme tokens
 //! its utility classes read (`bg-muted`, `text-muted-foreground`, …), each
 //! as the (light, dark) pair of `.oox-root` and `.oox-root.dark`, so the
-//! Word view has the web's pixels in each appearance and follows Rox's.
+//! Word view has the web's pixels in each appearance and follows Buwiz Bot's.
 //!
 //! Plain `Hsla` literals (hue as a fraction of a turn), converted from the
 //! stylesheet's hex: `to_hsla` in const eval is not in ra-jit's evaluator

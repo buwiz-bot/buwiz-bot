@@ -32,7 +32,7 @@ fn pages_200() {
     println!("generated {} KB in {:.1} ms", bytes.len() / 1024, ms(t));
     let rss0 = peak_rss();
     // CoreText's first lookup in a process (over a second, cold) is paid
-    // long before a document opens in Rox
+    // long before a document opens in Buwiz Bot
     let t = Instant::now();
     fonts::Fonts::resolve("Arial", false, false);
     println!("CoreText warm-up {:.0} ms (not counted)", ms(t));

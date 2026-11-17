@@ -25,7 +25,7 @@ use buwiz_agent::{ActorId, AgentId, Allowed, Caller, Effect, Op, PressAction, Re
 use buwiz_protocol::ui;
 use serde_json::{Value, json};
 
-use crate::mini_v1::{RoxError, host_api};
+use crate::mini_v1::{MiniError, host_api};
 
 /// Who the Hub says is pressing.
 pub const AGENT: &str = "agent.broker";
@@ -123,10 +123,10 @@ pub fn action_of(short: &str, tool: &str, effect: Effect) -> Option<PressAction>
 /// Decides a call of `tool` made under an agent's press: what it does next,
 /// or the refusal. Nothing else may go out for a call of the agent's: asked
 /// before signing, this is what holds it back.
-pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, title: &str, tool: &str) -> Result<Verdict, RoxError> {
+pub fn check_tool(broker: &dyn host_api::Broker, plugin: &str, short: &str, title: &str, tool: &str) -> Result<Verdict, MiniError> {
     let held = |held: Held, said: String| {
         note_refused(held);
-        RoxError::new("permission_denied", said)
+        MiniError::new("permission_denied", said)
     };
     let unchecked = || "The Bot couldn't check this press, so nothing was sent.".to_owned();
     let Ok(word) = broker.request("POST", PRESS, Some(json!({"plugin": plugin, "tool": tool})), ui::PRESS_ROUTE) else {
@@ -304,15 +304,15 @@ pub(crate) mod tests {
     struct Word(Option<Value>);
 
     impl host_api::Broker for Word {
-        fn request(&self, _: &str, route: &str, body: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+        fn request(&self, _: &str, route: &str, body: Option<Value>, _: std::time::Duration) -> Result<Value, MiniError> {
             assert_eq!(route, PRESS);
             let body = body.unwrap();
             assert_eq!((body["plugin"].as_str(), body["tool"].as_str()), (Some("app.buwiz.books"), Some("fx_tool")));
-            self.0.clone().ok_or_else(|| RoxError::new("unavailable", "no broker"))
+            self.0.clone().ok_or_else(|| MiniError::new("unavailable", "no broker"))
         }
     }
 
-    fn check(word: Option<Value>) -> Result<Value, RoxError> {
+    fn check(word: Option<Value>) -> Result<Value, MiniError> {
         check_tool(&Word(word), "app.buwiz.books", "books", "Books", "fx_tool").map(|v| match v {
             Verdict::Go { press, .. } => press,
             held @ Verdict::Hold { .. } => panic!("held: {held:?}"),

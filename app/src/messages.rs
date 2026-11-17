@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::agents::{Accepts, listed_bot, name_of};
 use crate::live::store;
 use crate::slash::{Pick, PopRow};
-use crate::store::RoxBot;
+use crate::store::BuwizBot;
 use crate::theme;
 
 const OPEN_A_BOT: &str = "Open a Bot's chat first.";
@@ -32,8 +32,8 @@ const ALLOW: &str = "/messages allow ";
 /// The chat a command was typed in.
 enum Here {
     Plain,
-    Helper(Box<RoxBot>),
-    Bot(Box<RoxBot>),
+    Helper(Box<BuwizBot>),
+    Bot(Box<BuwizBot>),
 }
 
 fn here() -> Here {
@@ -91,7 +91,7 @@ enum Outcome {
 }
 
 /// The one Bot called `who`, ignoring case; never a helper. Why not, else.
-fn named<'a>(who: &str, bots: &'a [RoxBot]) -> Result<&'a RoxBot, String> {
+fn named<'a>(who: &str, bots: &'a [BuwizBot]) -> Result<&'a BuwizBot, String> {
     let who_l = who.to_lowercase();
     let mut found = bots.iter().filter(|b| listed_bot(b) && b.name.trim().to_lowercase() == who_l);
     match (found.next(), found.next()) {
@@ -102,7 +102,7 @@ fn named<'a>(who: &str, bots: &'a [RoxBot]) -> Result<&'a RoxBot, String> {
 }
 
 /// `who` added to `b`'s list, or why that changes nothing.
-fn allowing(b: &RoxBot, who: &str, bots: &[RoxBot]) -> Outcome {
+fn allowing(b: &BuwizBot, who: &str, bots: &[BuwizBot]) -> Outcome {
     let other = match named(who, bots) {
         Ok(o) => o,
         Err(why) => return Outcome::Say(why),
@@ -121,7 +121,7 @@ fn allowing(b: &RoxBot, who: &str, bots: &[RoxBot]) -> Outcome {
     Outcome::Set { bot: b.id.clone(), accepts: Accepts::List(list) }
 }
 
-fn outcome(line: &Line, here: &Here, bots: &[RoxBot]) -> Outcome {
+fn outcome(line: &Line, here: &Here, bots: &[BuwizBot]) -> Outcome {
     let say = |s: &str| Outcome::Say(s.to_owned());
     match (line, here) {
         (Line::NotACommand(s), _) => say(s),
@@ -148,7 +148,7 @@ fn row(fill: String, label: &str, detail: String, bot: &str) -> PopRow {
 /// The rows and header for `rest`, what follows `/messages `. Picking a row
 /// must run what it says, so a Bot whose name reads as a command is no row
 /// (`all` and `none` win over the name).
-fn rows(rest: &str, here: &Here, bots: &[RoxBot]) -> (Vec<PopRow>, String) {
+fn rows(rest: &str, here: &Here, bots: &[BuwizBot]) -> (Vec<PopRow>, String) {
     let line = rest.trim_start();
     let starts = |word: &str, q: &str| word.to_lowercase().starts_with(&q.to_lowercase());
     let listed = || bots.iter().filter(|b| listed_bot(b));
@@ -169,7 +169,7 @@ fn rows(rest: &str, here: &Here, bots: &[RoxBot]) -> (Vec<PopRow>, String) {
         Here::Bot(b) => Some(b),
         _ => None,
     };
-    let can_write = |b: &RoxBot| match this.map(|t| &t.accepts) {
+    let can_write = |b: &BuwizBot| match this.map(|t| &t.accepts) {
         Some(Accepts::All) => true,
         Some(Accepts::List(l)) => l.contains(&b.id),
         _ => false,
@@ -345,7 +345,7 @@ fn some(id: &str) {
 }
 
 /// Hears: All, Some or None, as it is now.
-fn hears_control(b: &RoxBot) -> impl IntoElement {
+fn hears_control(b: &BuwizBot) -> impl IntoElement {
     let (id1, id2, id3) = (b.id.clone(), b.id.clone(), b.id.clone());
     control(
         "Hears",
@@ -377,7 +377,7 @@ fn sends_control(id: &str) -> impl IntoElement {
 }
 
 /// A Bot on the list, with its ✕: off at once, with Undo.
-fn allowed_row(b: &RoxBot, who: &str, bots: &[RoxBot], list: &[String]) -> impl IntoElement {
+fn allowed_row(b: &BuwizBot, who: &str, bots: &[BuwizBot], list: &[String]) -> impl IntoElement {
     let name = name_of(who, bots);
     let (id, left) = (b.id.clone(), list.iter().filter(|x| x.as_str() != who).cloned().collect::<Vec<_>>());
     view()
@@ -476,13 +476,13 @@ mod tests {
     use crate::agents::HelperOf;
     use crate::store::Turn;
 
-    fn bot(id: &str, name: &str, accepts: Accepts) -> RoxBot {
-        RoxBot { id: id.to_owned(), name: name.to_owned(), accepts, ..Default::default() }
+    fn bot(id: &str, name: &str, accepts: Accepts) -> BuwizBot {
+        BuwizBot { id: id.to_owned(), name: name.to_owned(), accepts, ..Default::default() }
     }
 
     /// Nova, Scout, Ada, and Ada's helper.
-    fn bots() -> Vec<RoxBot> {
-        let helper = RoxBot { helper: Some(HelperOf { parent: "ada".to_owned(), ..Default::default() }), ..bot("h1", "Scribe", Accepts::All) };
+    fn bots() -> Vec<BuwizBot> {
+        let helper = BuwizBot { helper: Some(HelperOf { parent: "ada".to_owned(), ..Default::default() }), ..bot("h1", "Scribe", Accepts::All) };
         vec![bot("nova", "Nova", Accepts::All), bot("scout", "Scout", Accepts::All), bot("ada", "Ada", Accepts::All), helper]
     }
 
@@ -490,11 +490,11 @@ mod tests {
         Here::Bot(Box::new(bot("nova", "Nova", accepts)))
     }
 
-    fn labels(rest: &str, here: &Here, bots: &[RoxBot]) -> Vec<String> {
+    fn labels(rest: &str, here: &Here, bots: &[BuwizBot]) -> Vec<String> {
         rows(rest, here, bots).0.into_iter().map(|r| r.label).collect()
     }
 
-    fn fills(rest: &str, here: &Here, bots: &[RoxBot]) -> Vec<String> {
+    fn fills(rest: &str, here: &Here, bots: &[BuwizBot]) -> Vec<String> {
         rows(rest, here, bots)
             .0
             .into_iter()
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(run_on("allow tax helper", &h, &b), Outcome::Set { bot: "nova".to_owned(), accepts: Accepts::List(vec!["t".to_owned()]) });
     }
 
-    fn run_on(rest: &str, here: &Here, b: &[RoxBot]) -> Outcome {
+    fn run_on(rest: &str, here: &Here, b: &[BuwizBot]) -> Outcome {
         outcome(&parse(rest), here, b)
     }
 

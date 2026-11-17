@@ -599,7 +599,7 @@ fn file_record(ctx: &HubCtx, t: &Thread, i: usize, u: &Turn, f: &Value, p: &Path
         "i": i,
         "origin": origin_of(t, i, &turn_id(u)),
         "storage": storage_mac(Some(p)),
-        "versioning": "rox",
+        "versioning": "buwiz",
         "published": false,
         "mtime": num(mtime_ms(p).unwrap_or(0.0)),
         "v": last_file_version(ctx, &path),
@@ -791,7 +791,7 @@ fn card_record(ctx: &HubCtx, t: &Thread, i: usize, u: &Turn, l: &Lookups) -> Val
             "i": ii,
             "origin": origin,
             "storage": storage_mac(Some(&path)),
-            "versioning": "rox",
+            "versioning": "buwiz",
             "published": false,
             "mtime": num(mtime_ms(&path).unwrap_or(0.0)),
             "v": head,
@@ -822,7 +822,7 @@ fn card_record(ctx: &HubCtx, t: &Thread, i: usize, u: &Turn, l: &Lookups) -> Val
         "i": ii,
         "origin": origin,
         "storage": storage_mac(Some(&at)),
-        "versioning": "rox",
+        "versioning": "buwiz",
         "published": l.published.contains(&name),
         "mtime": num(mtime_ms(&path).unwrap_or(0.0)),
         "v": head,
@@ -1318,7 +1318,7 @@ pub fn parse_app_key(key: &str) -> Option<(String, String, Map<String, Value>)> 
 }
 
 /// `GET /module?name=mcp:<server>/<app>[|<props>]` (`mcpAppModule(raw)`):
-/// the shipped module with its props ahead of it as `globalThis.roxProps`.
+/// the shipped module with its props ahead of it as `globalThis.buwizProps`.
 /// A failed read is an `Err` (Node's route throws).
 pub async fn mcp_app_module(ctx: &HubCtx, raw: &str) -> Result<Value, String> {
     let k = parse_app_key(raw);
@@ -1345,7 +1345,7 @@ pub async fn mcp_app_module(ctx: &HubCtx, raw: &str) -> Result<Value, String> {
     };
     let mut p = props;
     p.insert("server".into(), json!(row));
-    let source = if text.is_empty() { String::new() } else { format!("globalThis.roxProps = {};\n{text}", js::stringify(&Value::Object(p))) };
+    let source = if text.is_empty() { String::new() } else { format!("globalThis.buwizProps = {};\n{text}", js::stringify(&Value::Object(p))) };
     let title = ["title", "name"].iter().find_map(|k| res.get(*k).filter(|v| js::truthy(v)).cloned()).unwrap_or(json!(app));
     Ok(json!({"source": source, "title": title}))
 }

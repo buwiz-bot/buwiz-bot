@@ -148,11 +148,11 @@ fn main() -> impl std::process::Termination {
         std::process::exit(2);
     }
     jank_log::init();
-    // Rox's data dir becomes Buwiz Bot's, once, before anything opens it
+    // Buwiz Bot's data dir becomes Buwiz Bot's, once, before anything opens it
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     match buwiz_bot::identity::migrate_data(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home) {
-        Ok(done) => log::info!("rox: data dir migration: {done:?}"),
-        Err(e) => log::error!("rox: Rox's data dir was not moved (it is used where it is): {e}"),
+        Ok(done) => log::info!("buwiz: data dir migration: {done:?}"),
+        Err(e) => log::error!("buwiz: Buwiz Bot's data dir was not moved (it is used where it is): {e}"),
     }
     // the copies a plugin's files are opened and shown from go after a day,
     // at launch and hourly
@@ -164,7 +164,7 @@ fn main() -> impl std::process::Termination {
     match platform::objc2::MainThreadMarker::new() {
         Some(mtm) => buwiz_bot::mini_v1::attribution::watch(mtm),
         // every mini app call then goes out as the agent's: a person-only press fails, safely
-        None => log::error!("rox: input isn't watched: main isn't on the main thread"),
+        None => log::error!("buwiz: input isn't watched: main isn't on the main thread"),
     }
     buwiz_bot::agent_hub::start();
     platform::set_ui_sets(ui_sets());
@@ -177,7 +177,7 @@ fn main() -> impl std::process::Termination {
         fps: buwiz_protocol::env::var("BUWIZ_FPS").is_some_and(|v| v != "0"),
         // A test instance (`BUWIZ_BACKGROUND=1`, which scripts/buwiz-test sets)
         // starts in the background: launching it never takes the focus from
-        // the app in front. The owner's Rox, automation on or not, comes
+        // the app in front. The owner's Buwiz Bot, automation on or not, comes
         // to the front as any app does.
         activate: buwiz_protocol::env::var("BUWIZ_BACKGROUND").as_deref() != Some("1"),
         // a test instance's nsh storage in its own data dir, not the owner's
@@ -198,6 +198,6 @@ fn main() {
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn main() {
-    eprintln!("rox runs on macOS (`cargo run`) and iOS (packaged by ../ios.sh)");
+    eprintln!("buwiz-bot runs on macOS (`cargo run`) and iOS (packaged by ../ios.sh)");
     std::process::exit(1);
 }

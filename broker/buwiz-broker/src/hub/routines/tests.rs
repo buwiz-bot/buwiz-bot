@@ -255,7 +255,7 @@ impl Drop for World {
 
 fn temp(label: &str) -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!("rox-routines-{label}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+    let dir = std::env::temp_dir().join(format!("buwiz-routines-{label}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir_all(dir.join("generated")).unwrap();
     dir
 }

@@ -1,4 +1,4 @@
-//! The host-internal API Rox calls (`/v1/host/*`, v1/routes.mjs; plan
+//! The host-internal API Buwiz Bot calls (`/v1/host/*`, v1/routes.mjs; plan
 //! 5.5h). Every request carries `X-Buwiz-Host: <token>`; the token is 32
 //! random bytes written to `<data dir>/host-token` (0600) when the hub
 //! starts, after the port is ours, and a request without it is answered

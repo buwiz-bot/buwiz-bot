@@ -516,7 +516,7 @@ mod tests {
     }
 
     async fn bed_in(label: &str, clock: HostClock) -> Bed {
-        let dir = std::env::temp_dir().join(format!("rox-miniapps-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+        let dir = std::env::temp_dir().join(format!("buwiz-miniapps-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
         let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
         ctx.store.load().unwrap();
         let trust_file = dir.join("trust.json");
