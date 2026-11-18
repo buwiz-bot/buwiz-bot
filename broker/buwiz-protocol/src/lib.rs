@@ -1,8 +1,8 @@
 //! The Mini App Protocol v1 pieces Buwiz Bot and the broker share: JCS (RFC 8785)
 //! bytes, ed25519 keys and signatures over them, the id grammars, and the
 //! composer's tokens and tickets, and the broker's proof of identity
-//! (`proof`), and the environment variables' Buwiz names with their old
-//! names (`env`), and the broker's data folder on the owner's Mac and its
+//! (`proof`), and the environment variables' Buwiz names, with the refusal of
+//! any variable of an earlier name (`env`), and the broker's data folder on the owner's Mac and its
 //! one move from `Grok Shell` to `Buwiz Broker` (`broker_dir`).
 //!
 //! buwiz-gws (buwiz-app/google-workspace) keeps a copy of `jcs` and part of

@@ -600,7 +600,8 @@ fn fields(m: &Map<String, Value>) -> Res {
 // ── verification (6.2) ───────────────────────────────────────────────────
 
 /// The one decision on a protocol number, for a manifest and for a package
-/// block alike: it is 1.0.x, as the host's is, or it is refused with code
+/// block alike: its major is the host's and its minor is not newer (a 1.0.x
+/// plugin runs on a 1.0 host and on a later 1.y one), or it is refused with code
 /// `protocol_unsupported` and one sentence. `noun` is "plugin" or "package".
 pub fn check_protocol(protocol: &str, host: &str, noun: &str) -> Res {
     let two = |s: &str| {
@@ -608,7 +609,7 @@ pub fn check_protocol(protocol: &str, host: &str, noun: &str) -> Res {
         (parts.next().unwrap_or(f64::NAN), parts.next().unwrap_or(f64::NAN))
     };
     let ((maj, min), (hmaj, hmin)) = (two(protocol), two(host));
-    if maj != hmaj || min != hmin {
+    if maj != hmaj || min > hmin {
         let n = js::number;
         return Err(V1Error::new("protocol_unsupported", format!("the {noun} implements protocol {protocol}; this Buwiz Bot supports {}.{}", n(hmaj), n(hmin))));
     }
@@ -1226,5 +1227,18 @@ mod tests {
         assert_eq!(mb(Some(&json!(1_500_000))), "1.4 MB");
         assert_eq!(mb(Some(&json!(100))), "1 KB");
         assert_eq!(mb(None), "NaN KB");
+    }
+
+    #[test]
+    fn check_protocol_accepts_what_a_newer_host_runs() {
+        // a 1.1 host runs 1.0.x and 1.1.x; a 1.2 plugin is newer, a 2.0 one another major
+        for p in ["1.0.0", "1.0.7", "1.1.0"] {
+            assert!(check_protocol(p, "1.1.0", "plugin").is_ok(), "{p}");
+        }
+        for p in ["1.2.0", "2.0.0", "0.9.0"] {
+            let e = check_protocol(p, "1.1.0", "plugin").unwrap_err();
+            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("the plugin implements protocol {p}; this Buwiz Bot supports 1.1")), "{p}");
+        }
+        assert!(check_protocol("1.1.0", "1.0.0", "package").is_err());
     }
 }
