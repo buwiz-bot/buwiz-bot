@@ -30,6 +30,7 @@
 # the Dock, the app switcher and the window say "Buwiz Bot test-<name>".
 # <name> (letters, digits, -) defaults to the instance dir's name. The copy
 # is refreshed when the binary changes.
+. "$(dirname "$0")/lib/no-old-names.sh"
 set -e
 NAME=""
 ONLY=""

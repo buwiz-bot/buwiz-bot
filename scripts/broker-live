@@ -20,6 +20,7 @@
 # PORT: default 8787.
 # BUWIZ_HEALTH_TRIES: how many half-seconds to wait for the broker (default 120).
 set -euo pipefail
+. "$(dirname "$0")/lib/no-old-names.sh"
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in

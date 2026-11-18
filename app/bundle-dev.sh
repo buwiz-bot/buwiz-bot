@@ -35,6 +35,7 @@
 #                           Word and sheet views draw with (default
 #                           office/node_modules/@betteroffice/fonts)
 set -euo pipefail
+. "$(dirname "$0")/../scripts/lib/no-old-names.sh"
 
 DEFAULT_APP="$HOME/Applications/Buwiz Bot.app"
 OLD_APP="$HOME/Applications/Rox.app"

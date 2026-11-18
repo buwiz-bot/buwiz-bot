@@ -30,6 +30,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/../lib/no-old-names.sh"
 
 # The identity, from the Info.plist app/bundle-dev.sh writes, so the two
 # bundles can't drift: name, bundle id, URL schemes and the executable's

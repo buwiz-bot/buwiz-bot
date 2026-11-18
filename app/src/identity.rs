@@ -433,4 +433,27 @@ mod tests {
         assert!(include_str!("main.rs").contains(".app_id(buwiz_bot::identity::APP_ID)"));
         assert!(include_str!("main.rs").contains("app_id: buwiz_bot::identity::APP_ID.to_owned()"));
     }
+
+    /// The scripts that once read a variable under an older name stop with it set:
+    /// exit 2 and the variable's name, before they do anything. Clean, the guard passes.
+    #[test]
+    fn scripts_that_once_read_an_old_name_refuse_it() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let scripts = manifest.join("../scripts");
+        for (script, args, old) in [
+            (scripts.join("broker-live"), vec!["status"], "ROX_APP"),
+            (scripts.join("wait-build"), vec!["true"], "ROX_BUILD_LOCK"),
+            (scripts.join("buwiz-test"), vec!["--bundle-only"], "ROX_BACKEND"),
+            (scripts.join("release/build.sh"), vec![], "ROX_BROKER_BIN"),
+            (manifest.join("bundle-dev.sh"), vec![], "ROX_APP"),
+        ] {
+            let out = std::process::Command::new(&script).args(&args).env(old, "x").env("GROK_DATA_DIR", "x").output().unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(2), "{}: {err}", script.display());
+            assert!(err.contains(&format!("GROK_DATA_DIR, {old};")) && err.contains("use the BUWIZ_ name instead"), "{}: {err}", script.display());
+        }
+        let guard = scripts.join("lib/no-old-names.sh");
+        let clean = std::process::Command::new("/bin/sh").arg("-c").arg(". \"$1\"; echo passed").arg("sh").arg(&guard).env_clear().env("PATH", "/usr/bin:/bin").env("BUWIZ_APP", "x").output().unwrap();
+        assert!(clean.status.success() && String::from_utf8_lossy(&clean.stdout).trim() == "passed", "{}", String::from_utf8_lossy(&clean.stderr));
+    }
 }
