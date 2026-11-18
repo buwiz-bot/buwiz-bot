@@ -140,6 +140,26 @@ fn ui_sets() -> Vec<nsh_core::element::Registry> {
     vec![nsh_base::registry(), buwiz_bot::registry()]
 }
 
+/// Says why the app does not start: on stderr, and in the log the app writes
+/// (`jank.log`, `BUWIZ_JANK_LOG` overrides), which is what a launch from the
+/// Finder leaves to read. Exits 2.
+#[cfg(target_os = "macos")]
+fn refuse_start(why: &str) -> ! {
+    use std::io::Write;
+    eprintln!("buwiz-bot: {why}");
+    let path = buwiz_protocol::env::var_os("BUWIZ_JANK_LOG").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        buwiz_bot::identity::logs_dir(std::path::Path::new(&home)).join("jank.log")
+    });
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "buwiz-bot: {why}");
+    }
+    std::process::exit(2);
+}
+
 #[cfg(target_os = "macos")]
 fn main() -> impl std::process::Termination {
     // a test bundle started bare would act as the owner's Bot
@@ -150,8 +170,7 @@ fn main() -> impl std::process::Termination {
     // then, before anything opens: an old variable name still set would leave a bench
     // un-isolated, so the Bot does not start with one
     if let Err(why) = buwiz_protocol::env::refuse_old_names() {
-        eprintln!("buwiz-bot: {why}");
-        std::process::exit(2);
+        refuse_start(&why);
     }
     jank_log::init();
     // Buwiz Bot's data dir becomes Buwiz Bot's, once, before anything opens it
