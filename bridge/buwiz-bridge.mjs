@@ -16,6 +16,15 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
+// a variable of an earlier name is not read: say so and stop, rather than run
+// with an empty token
+const OLD_NAMES = Object.keys(process.env).filter((k) => k.startsWith("ROX_") || ["GROK_DATA_DIR", "GROK_ALLOWED_ORIGINS", "GROK_BUNDLE_ID"].includes(k)).sort();
+
+if (OLD_NAMES.length) {
+  process.stderr.write(`buwiz-bridge: these variables are set and no longer read: ${OLD_NAMES.join(", ")}; use the BUWIZ_ name instead and unset them\n`);
+  process.exit(2);
+}
+
 const BASE = (process.env.BUWIZ_BRIDGE_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
 const TOKEN = process.env.BUWIZ_BRIDGE_TOKEN || "";
 

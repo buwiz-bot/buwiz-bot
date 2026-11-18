@@ -95,3 +95,20 @@ test("a refusal says its code and message", async () => {
   assert.equal(r.isError, true);
   assert.equal(r.content[0].text, "unauthorized: the bridge token is missing or wrong");
 });
+
+test("a variable of an earlier name stops the bridge, naming it", async () => {
+  const run = (env) => new Promise((resolve) => {
+    const c = spawn(process.execPath, [BRIDGE], { env: { PATH: process.env.PATH, ...env }, stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+
+    c.stderr.on("data", (d) => (err += d));
+    c.on("exit", (code) => resolve({ code, err }));
+    setTimeout(() => c.kill(), 1500).unref();
+  });
+  const old = await run({ ROX_BRIDGE_TOKEN: "x", ROX_BRIDGE_URL: "http://127.0.0.1:1" });
+
+  assert.equal(old.code, 2);
+  assert.match(old.err, /ROX_BRIDGE_TOKEN, ROX_BRIDGE_URL; use the BUWIZ_ name instead/);
+  // a Buwiz name alone starts it (it waits for a client on stdin, so it is killed, not exited 2)
+  assert.notEqual((await run({ BUWIZ_BRIDGE_TOKEN: "x" })).code, 2);
+});
