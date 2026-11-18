@@ -155,8 +155,8 @@ def lock_in_line():
 
 
 def carried():
-    """Each topic commit today's buwiz holds, with the buwiz commit that
-    holds it (by the trailers `cherry-pick -x` leaves)."""
+    """Each topic commit today's buwiz holds, with the newest buwiz commit
+    that holds it (by the trailers `cherry-pick -x` leaves)."""
     held = {}
     for record in git("log", "--format=%H%x00%B%x01", "upstream/main..origin/buwiz").split("\x01"):
         record = record.strip("\n")
@@ -164,7 +164,8 @@ def carried():
             continue
         commit, body = record.split("\x00", 1)
         for origin in re.findall(r"cherry picked from commit ([0-9a-f]{40})", body):
-            held[origin] = commit
+            # the log is newest first: the newest holder is the one kept
+            held.setdefault(origin, commit)
     return held
 
 

@@ -254,3 +254,11 @@ pr = 0
 status = "buwiz-only"
 base = "31d23200d0d382c23367ac0143fcc19a6571ecdc"
 note = "integration fixes for upstream 0.6 that no old topic base can hold: the scroll area and dialog roles named for gpui-agent clients and the shared adapter, the toggleFpsMonitor: and clearFpsMonitor: actions kept now that the standalone app builds no menus in app.rs, the adapter's tests against 0.6's menus and scene, and the Windows agent's menu shortcut passing no menu area; fold into the gpui-agent stack when it is rebased onto upstream"
+
+[[topic]]
+branch = "buwiz-port/upstream-0.6-drawing"
+kind = "fix"
+pr = 0
+status = "buwiz-only"
+base = "62cd76d689d1b8c88c2ff5c5bf985aee9d4ae7cd"
+note = "two fixes to topics as they sit on 0.6, cut after them: pr/macos-pace-mounts keeps a batch's text pictures when waiting views go in ahead of it (the flushed views are a batch of their own), and pr/perf-jank-log's monitor keeps the place a drag past an edge left it; fold each into its topic when that is rebased onto upstream"
