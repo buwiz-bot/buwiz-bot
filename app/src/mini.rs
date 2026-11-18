@@ -1838,6 +1838,9 @@ export default function R() {
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let mut config = EngineConfig::new(App::Js(bundle));
         config.network = Some(Arc::new(RecordingNetwork { seen: seen.clone(), bodies: bodies.clone() }));
+        // a desktop surface, as the app's: one that is not has no window, and
+        // the core sends it no window attributes whatever the policy
+        config.environment.os = nsh_core::platform::Os::MacOs;
         let (tx, rx) = mpsc::channel();
         let engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).expect("engine starts");
         (engine, rx, seen, bodies)
@@ -1936,7 +1939,17 @@ export default function R() {
         assert!(!pinned.allows_http("GET", "http://127.0.0.1:8787/state/R1@v2"));
         for access in [&access, &pinned] {
             // no other state key: the path matches exactly
-            for path in ["/state/R10", "/state/R1x", "/state/R1/", "/state/R1/x", "/state/R2", "/state/R1@v2", "/state/r1", "/state/%52%31", "/state/../state/R1", "/state/", "/state", "/statefoo"] {
+            for path in ["/state/R10", "/state/R1x", "/state/R1/", "/state/R1/x", "/state/R2", "/state/R1@v2", "/state/r1", "/state/%52%31", "/state/", "/state", "/statefoo"] {
+                assert!(!access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
+                assert!(!access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
+            }
+            // dot segments: the address is read as it is sent, so a path that
+            // comes back to its own state is its own state, and one that
+            // walks to another key, or out of /state, is refused
+            for path in ["/state/../state/R1", "/state/./R1", "/x/../state/R1", "/state/%2e%2e/state/R1"] {
+                assert!(access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
+            }
+            for path in ["/state/R1/../R2", "/state/R1/..", "/state/R1/../../state/R2", "/state/R1/%2e%2e/R2", "/state/R1/./x"] {
                 assert!(!access.allows_http("GET", &format!("http://127.0.0.1:8787{path}")), "{path}");
                 assert!(!access.allows_http("POST", &format!("http://127.0.0.1:8787{path}")), "{path}");
             }
@@ -2014,7 +2027,19 @@ export default function R() {
                 assert!(!access.allows_http("GET", &format!("{ORIGIN}{path}")), "{path}");
             }
             // the old data routes and the rest of the server stay out
-            for path in ["/data/timeclock", "/data/timeclock/in", "/data/../state/R1", "/mcp/call", "/v1/host/call", "/state/R2", "/sources"] {
+            // (a path with dot segments is judged as the address it is sent as)
+            for path in [
+                "/data/timeclock",
+                "/data/timeclock/in",
+                "/data/../state/R2",
+                "/state/R1/../../data/timeclock",
+                "/w/R1/dGlja2V0LW9uZQ/call/../../../../v1/host/call",
+                "/w/R1/dGlja2V0LW9uZQ/call/../../../R2/dGlja2V0LW9uZQ/call",
+                "/mcp/call",
+                "/v1/host/call",
+                "/state/R2",
+                "/sources",
+            ] {
                 assert!(!access.allows_http("POST", &format!("{ORIGIN}{path}")), "{path}");
                 assert!(!access.allows_http("GET", &format!("{ORIGIN}{path}")), "{path}");
             }
