@@ -12,7 +12,7 @@
 branch = "pr/macos-press-stops-momentum"
 kind = "fix"
 pr = 1511
-status = "open"
+status = "merged"
 note = "a press stops the momentum a trackpad flick left running; native check tests/native/press_momentum.rs"
 
 [[topic]]
@@ -26,7 +26,7 @@ note = "upstream declined #449 on 2026-10-27 (\"not ready to accept this feature
 branch = "pr/macos-embedded-scroll"
 kind = "fix"
 pr = 1515
-status = "open"
+status = "merged"
 note = "an AppView in a host's view passes on scrolls it cannot use (no movable scroll view under the pointer), so the Bot's page scrolls over a mini app's card; upstream version also uses input::event_root; native check tests/native/embedded_scroll.rs"
 
 [[topic]]
@@ -98,14 +98,14 @@ status = "local"
 branch = "pr/macos-detach-subtree"
 kind = "fix"
 pr = 1513
-status = "open"
+status = "merged"
 note = "a subtree a batch deletes leaves the window with its root, in one removeFromSuperview; upstream version still detaches modals and header items on their own; native check deleted_subtree in tests/native/mount.rs"
 
 [[topic]]
 branch = "pr/macos-cursor-on-change"
 kind = "fix"
 pr = 1512
-status = "open"
+status = "merged"
 note = "the cursor is set only when it changes as the mouse moves: with a customized pointer each NSCursor set costs ~10 ms; unit test input::tests::the_cursor_is_set_only_when_it_changes"
 
 [[topic]]
@@ -119,7 +119,7 @@ note = "superseded by #1160: shots are the window server's composite, videos inc
 branch = "pr/sandbox-desktop-homedir"
 kind = "fix"
 pr = 1499
-status = "open"
+status = "merged"
 note = "RX-007: window/menu commands and os.homedir() need the window/homeDir capabilities when an app declares capabilities (Buwiz Bot's mini apps)"
 
 [[topic]]
@@ -207,8 +207,8 @@ note = "superseded by upstream's sight module (#895 and the move counter): a rev
 branch = "pr/macos-pace-mounts"
 kind = "fix"
 pr = 1500
-status = "open"
-note = "a batch making hundreds of views out of sight is applied over frames, what shows at once; on upstream main alone, deciding what shows with crate::sight (it was stacked on pr/macos-revisit-cache's clip.rs, which upstream's sight replaced)"
+status = "local"
+note = "upstream closed #1500 with changes requested, so it is carried; on 0.6 the waiting views go in as a batch of their own (begin_batch, end_batch). a batch making hundreds of views out of sight is applied over frames, what shows at once; on upstream main alone, deciding what shows with crate::sight (it was stacked on pr/macos-revisit-cache's clip.rs, which upstream's sight replaced)"
 
 [[topic]]
 branch = "pr/macos-jank-commit-time"
@@ -236,7 +236,7 @@ note = "The Agent Hub: gpui-agent-server splits the listener off the in-process 
 branch = "pr/macos-web-file-url"
 kind = "fix"
 pr = 1496
-status = "open"
+status = "merged"
 note = "a file:// source loads by loadFileURL, reading its own folder only, and that web view may navigate to that file and no other: the viewer's PDF of a local copy was blank"
 
 [[topic]]
@@ -246,3 +246,19 @@ pr = 0
 status = "buwiz-only"
 base = "af7e18c2984f26b929081e1ac6af98ba8d78c705"
 note = "integration fixes no old topic base can hold: the gpui-agent stack's synth gating and role names against upstream's newer macOS code; fold into pr/gpui-agent when the stack is rebased onto upstream"
+
+[[topic]]
+branch = "buwiz-port/upstream-0.6"
+kind = "fix"
+pr = 0
+status = "buwiz-only"
+base = "31d23200d0d382c23367ac0143fcc19a6571ecdc"
+note = "integration fixes for upstream 0.6 that no old topic base can hold: the scroll area and dialog roles named for gpui-agent clients and the shared adapter, the toggleFpsMonitor: and clearFpsMonitor: actions kept now that the standalone app builds no menus in app.rs, the adapter's tests against 0.6's menus and scene, and the Windows agent's menu shortcut passing no menu area; fold into the gpui-agent stack when it is rebased onto upstream"
+
+[[topic]]
+branch = "buwiz-port/upstream-0.6-drawing"
+kind = "fix"
+pr = 0
+status = "buwiz-only"
+base = "62cd76d689d1b8c88c2ff5c5bf985aee9d4ae7cd"
+note = "two fixes to topics as they sit on 0.6, cut after them: pr/macos-pace-mounts keeps a batch's text pictures when waiting views go in ahead of it (the flushed views are a batch of their own), and pr/perf-jank-log's monitor keeps the place a drag past an edge left it; fold each into its topic when that is rebased onto upstream"

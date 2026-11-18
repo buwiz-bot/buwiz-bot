@@ -305,8 +305,20 @@ impl Headless {
             c.set(c.get() + 16.0);
             c.get()
         });
-        let p = TouchPoint { id: 1, target: id, path: vec![id], page: at, location: at, changed: true };
-        let e = TouchEvent { phase, timestamp: time, points: vec![p], activated: None };
+        let p = TouchPoint {
+            id: 1,
+            target: id,
+            path: vec![id],
+            page: at,
+            location: at,
+            changed: true,
+            // the mouse, which a desktop reports as a touch
+            pointer_type: nsh_core::PointerType::Mouse,
+            pressure: TouchPoint::default_pressure(phase, true),
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+        };
+        let e = TouchEvent { phase, timestamp: time, points: vec![p], activated: None, modifiers: Default::default() };
         self.send(ROOT_ID, EventKind::Touch, EventPayload::Touch(Box::new(e)));
         self.pump(Duration::from_millis(50));
     }

@@ -70,8 +70,11 @@ and its status. `scripts/nsh-fork status` checks it against git and GitHub.
    what breaks on the topic itself.
 3. `scripts/nsh-fork rebuild`: builds `buwiz-new` in `/tmp/buwiz-nsh-fork`. A
    conflict stops it there; resolve it once (git `rerere` replays the
-   resolution in later rebuilds) and run it again. A topic stacked on
-   another (the gpui-agent stack) brings its base's commits in once.
+   resolution in later rebuilds) and run it again. A topic commit `buwiz`
+   already holds is picked as `buwiz` holds it, so its earlier resolutions
+   come along and only what upstream changed since conflicts. A topic
+   stacked on another (the gpui-agent stack) brings its base's commits in
+   once.
    Merges are skipped: a topic that merges upstream `main` in carries its
    port in ordinary commits after the merge, and resolves the merge as
    the rebuild's picks do. Topics can add dependencies upstream's
