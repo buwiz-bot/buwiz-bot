@@ -1,5 +1,5 @@
 //! The spec's grammars for ids (section 3): plugin ids, app ids, scopes,
-//! tools, short names, tickets and prop keys. Rox and the broker check
+//! tools, short names, tickets and prop keys. Buwiz Bot and the broker check
 //! them the same way.
 
 pub fn plugin_id_ok(s: &str) -> bool {

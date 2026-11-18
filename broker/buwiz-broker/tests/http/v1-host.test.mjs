@@ -63,9 +63,9 @@ after(async () => {
   await server?.stop();
 });
 
-test("host token: X-Buwiz-Host carries it; the 1.x X-Rox-Host does not", async () => {
+test("host token: X-Buwiz-Host carries it; another header name does not", async () => {
   assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Buwiz-Host": token } })).status, 200);
-  assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Rox-Host": token } })).status, 401);
+  assert.equal((await req("GET", "/v1/host/plugins", { headers: { "X-Other-Host": token } })).status, 401);
 });
 
 test("host token: 0600 file, required on every /v1/host route (401), guard still first", async () => {
@@ -107,7 +107,6 @@ test("the app's path over HTTP: inspect, install, list, open, call, resolve, tit
 
   assert.equal(list.length, 1);
   assert.equal(list[0].short, "fx");
-  assert.ok(list[0].tools.every((t) => !t.name.startsWith("rox.")));
   assert.ok(list[0].tools.find((t) => t.name === "fx_search").readOnly);
   const board = list[0].apps.find((a) => a.id === "board");
   const ks = generate();

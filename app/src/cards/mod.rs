@@ -331,7 +331,7 @@ pub(crate) fn render(c: &TurnCard, turn: i64) -> Rc<dyn Fn() -> AnyElement> {
     })
 }
 
-/// Rox's card box: the agent column's 560 width, `CARD` on a hairline.
+/// Buwiz Bot's card box: the agent column's 560 width, `CARD` on a hairline.
 pub(crate) fn shell(id: &str) -> View {
     let v = view()
         .w_full()

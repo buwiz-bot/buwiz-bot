@@ -14,7 +14,7 @@
 use super::{SHARE_ALL_MEANS, SiteLogin, SiteMatch, plausible_site, site_match, vault};
 use crate::live::store;
 use crate::slash::{Pick, PopRow};
-use crate::store::RoxBot;
+use crate::store::BuwizBot;
 
 const USAGE: &str = "/vault, /vault add <site>, /vault share <site> with <Bot>, /vault unshare <site> with <Bot>, /vault share all, /vault share all off";
 /// For a word that isn't a site: fixed, so a password typed in a site's place is never shown back.
@@ -86,7 +86,7 @@ enum Outcome {
 }
 
 /// The one Bot called `who` (its name, any case, or its id).
-fn named<'a>(who: &str, bots: &'a [RoxBot]) -> Result<&'a RoxBot, String> {
+fn named<'a>(who: &str, bots: &'a [BuwizBot]) -> Result<&'a BuwizBot, String> {
     if let Some(b) = bots.iter().find(|b| b.id == who) {
         return Ok(b);
     }
@@ -107,7 +107,7 @@ fn row(fill: String, label: String, detail: String) -> PopRow {
     PopRow { pick: Pick::Fill(fill), label, hint: String::new(), detail, bot: String::new() }
 }
 
-fn outcome(line: Line, rows: &[SiteLogin], bots: &[RoxBot], share_all: bool) -> Outcome {
+fn outcome(line: Line, rows: &[SiteLogin], bots: &[BuwizBot], share_all: bool) -> Outcome {
     match line {
         Line::Say(s) => Outcome::Say(s.to_owned()),
         Line::Open => Outcome::Open,
@@ -230,8 +230,8 @@ mod tests {
 
     use super::*;
 
-    fn bot(id: &str, name: &str) -> RoxBot {
-        RoxBot { id: id.into(), name: name.into(), ..Default::default() }
+    fn bot(id: &str, name: &str) -> BuwizBot {
+        BuwizBot { id: id.into(), name: name.into(), ..Default::default() }
     }
 
     fn login(id: &str, site: &str, user: &str, shared: &[&str]) -> SiteLogin {

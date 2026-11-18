@@ -13,7 +13,7 @@
 //!   "Install older version" (12.1).
 //! - Uninstall (13.6, LCY-06): opens close and sessions end, the broker
 //!   uninstalls (the plugin's `buwiz.uninstall`, its key, its record), then
-//!   Rox removes the plugin's attachments, pins and library entries and
+//!   Buwiz Bot removes the plugin's attachments, pins and library entries and
 //!   deletes its apps' storage.
 
 use std::{path::Path, time::Duration};
@@ -21,7 +21,7 @@ use std::{path::Path, time::Duration};
 use serde_json::{Value, json};
 
 use super::{
-    RoxError,
+    MiniError,
     host_api::{self, Broker, PluginAction},
     records::Records,
     session::{self, Ended},
@@ -44,10 +44,9 @@ pub struct Tool {
     pub disabled: bool,
 }
 
-/// A reserved lifecycle tool's name: `buwiz.<lowercase>` (protocol 1.0)
-/// or `rox.<lowercase>` (an install from Rox).
+/// A reserved lifecycle tool's name: `buwiz.<lowercase>`.
 fn reserved_tool(name: &str) -> bool {
-    ["buwiz.", "rox."].iter().any(|p| name.strip_prefix(p).is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.')))
+    name.strip_prefix("buwiz.").is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase() || c == '.'))
 }
 
 /// One of a plugin's routines (5.9) as the person manages it.
@@ -655,8 +654,7 @@ impl Listed {
             message: s(v, "message"),
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(false),
             generation: v.get("generation").and_then(Value::as_u64).unwrap_or(0),
-            // the reserved lifecycle tools (`buwiz.provision`, …; `rox.*` in a
-            // record from Rox) are the broker's, never the
+            // the reserved lifecycle tools (`buwiz.provision`, …) are the broker's, never the
             // person's to switch: not listed, not counted
             tools: list(v, "tools")
                 .iter()
@@ -883,7 +881,7 @@ pub fn account_command_detail(cmd: &str) -> &'static str {
 }
 
 /// The installed v1 plugins.
-pub fn listed(b: &dyn Broker) -> Result<Vec<Listed>, RoxError> {
+pub fn listed(b: &dyn Broker) -> Result<Vec<Listed>, MiniError> {
     Ok(host_api::plugins(b)?.iter().map(Listed::of).collect())
 }
 
@@ -1039,7 +1037,7 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 
 /// `POST /v1/host/plugins/inspect` for `command args` with `env`: the
 /// review (nothing is installed).
-pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value>) -> Result<Review, RoxError> {
+pub fn inspect(b: &dyn Broker, command: &str, args: &[String], env: Option<Value>) -> Result<Review, MiniError> {
     let v = host_api::inspect(b, command, args, env.clone())?;
     Ok(Review { env, ..Review::of(&v, command, args) })
 }
@@ -1059,7 +1057,7 @@ pub fn release_source(line: &str) -> bool {
 /// Add…: a release source ([`release_source`]) fetched and reviewed by the
 /// broker; one the broker can't read as a repository, a multi-word line
 /// with no such release, or a command line, inspected as a command.
-pub fn add(b: &dyn Broker, line: &str) -> Result<Review, RoxError> {
+pub fn add(b: &dyn Broker, line: &str) -> Result<Review, MiniError> {
     if release_source(line) {
         match host_api::fetch_release(b, line) {
             Err(e) if e.code == "invalid_args" => {}
@@ -1078,7 +1076,7 @@ pub fn add(b: &dyn Broker, line: &str) -> Result<Review, RoxError> {
             Err(e) => return Err(e),
         }
     }
-    let Some((env, command, args)) = command_line(line) else { return Err(RoxError::new("invalid_args", "Enter a mini app's name, a GitHub repository or the plugin's command")) };
+    let Some((env, command, args)) = command_line(line) else { return Err(MiniError::new("invalid_args", "Enter a mini app's name, a GitHub repository or the plugin's command")) };
     inspect(b, &command, &args, env)
 }
 
@@ -1095,7 +1093,7 @@ pub enum Installed {
 /// Installs what `review` showed, after the person pressed its
 /// [`Review::action`]: that press is the approval of its added
 /// permissions or of its older version, and nothing else is approved.
-pub fn install(b: &dyn Broker, review: &Review) -> Result<Installed, RoxError> {
+pub fn install(b: &dyn Broker, review: &Review) -> Result<Installed, MiniError> {
     install_with(b, install_body(review))
 }
 
@@ -1141,7 +1139,7 @@ pub fn chat_install_body(review: &Review, typed: &[(String, String)], env_from: 
 }
 
 /// `POST /v1/host/plugins/install` with `body` (see [`install`]).
-pub fn install_with(b: &dyn Broker, body: Value) -> Result<Installed, RoxError> {
+pub fn install_with(b: &dyn Broker, body: Value) -> Result<Installed, MiniError> {
     match b.request("POST", "/v1/host/plugins/install", Some(body), Duration::from_secs(30)) {
         Ok(_) => Ok(Installed::Done),
         Err(e) => match refusal_reason(&e) {
@@ -1152,10 +1150,10 @@ pub fn install_with(b: &dyn Broker, body: Value) -> Result<Installed, RoxError> 
 }
 
 /// A refusal that asks the person for more: the broker sends its reason
-/// in `details` (the [`RoxError`] keeps only the code and message, so the
+/// in `details` (the [`MiniError`] keeps only the code and message, so the
 /// message is read: `consent_declined` is the added permissions, an
 /// `invalid_args` naming an older version the downgrade).
-fn refusal_reason(e: &RoxError) -> Option<Installed> {
+fn refusal_reason(e: &MiniError) -> Option<Installed> {
     match e.code.as_str() {
         "consent_declined" => Some(Installed::NeedsApproval(Vec::new())),
         "invalid_args" if e.message.contains("is older than") => Some(Installed::NeedsDowngrade),
@@ -1164,7 +1162,7 @@ fn refusal_reason(e: &RoxError) -> Option<Installed> {
 }
 
 /// Enable, disable (13.4, 13.5) or a failed plugin's Retry.
-pub fn switch(b: &dyn Broker, plugin: &str, action: PluginAction) -> Result<(), RoxError> {
+pub fn switch(b: &dyn Broker, plugin: &str, action: PluginAction) -> Result<(), MiniError> {
     host_api::plugin_action(b, plugin, action)?;
     if action == PluginAction::Disable {
         session::end_plugin(plugin, Ended::Closed);
@@ -1172,7 +1170,7 @@ pub fn switch(b: &dyn Broker, plugin: &str, action: PluginAction) -> Result<(), 
     Ok(())
 }
 
-/// What an uninstall removed on Rox's side.
+/// What an uninstall removed on Buwiz Bot's side.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Removed {
     pub sessions: usize,
@@ -1184,23 +1182,23 @@ pub struct Removed {
 /// screen (step 2), its sessions end, the broker uninstalls (steps 1, 3,
 /// 6), then its attachments and pins leave `records_dir`'s records and its
 /// apps' storage under `plugins_dir` is deleted (steps 4, 5). A refusal by
-/// the broker stops it before Rox removes anything.
+/// the broker stops it before Buwiz Bot removes anything.
 pub fn uninstall(
     b: &dyn Broker,
     plugin: &str,
     records_dir: &Path,
     plugins_dir: &Path,
     close_opens: &dyn Fn(&str),
-) -> Result<Removed, RoxError> {
+) -> Result<Removed, MiniError> {
     if !super::perms::plugin_id_ok(plugin) {
-        return Err(RoxError::new("invalid_args", "not a plugin id"));
+        return Err(MiniError::new("invalid_args", "not a plugin id"));
     }
     close_opens(plugin);
     let sessions = session::end_plugin(plugin, Ended::Closed);
     host_api::plugin_action(b, plugin, PluginAction::Uninstall)?;
     let mut records = Records::load(records_dir);
     let (attachments, pins) = records.remove_plugin(plugin);
-    records.save(records_dir).map_err(|e| RoxError::new("internal", format!("the records could not be saved: {e}")))?;
+    records.save(records_dir).map_err(|e| MiniError::new("internal", format!("the records could not be saved: {e}")))?;
     if let Err(e) = storage::delete_plugin(plugins_dir, plugin) {
         log::warn!("mini v1: {plugin}'s storage: {e}");
     }
@@ -1302,7 +1300,7 @@ mod tests {
     struct Lifecycle {
         routes: Mutex<Vec<(String, Value)>>,
         installed: Mutex<Option<String>>,
-        refuse: Option<RoxError>,
+        refuse: Option<MiniError>,
     }
 
     fn inspect_answer(update: Value) -> Value {
@@ -1331,19 +1329,19 @@ mod tests {
     }
 
     impl Broker for Lifecycle {
-        fn request(&self, method: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, RoxError> {
+        fn request(&self, method: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, MiniError> {
             self.routes.lock().unwrap().push((format!("{method} {route}"), body.clone().unwrap_or(Value::Null)));
             match route {
                 "/v1/host/plugins/inspect" => match body.as_ref().and_then(|b| b.get("command")).and_then(Value::as_str) {
-                    Some("nosuch") => Err(RoxError::new("plugin_unavailable", "spawn nosuch: No such file or directory")),
+                    Some("nosuch") => Err(MiniError::new("plugin_unavailable", "spawn nosuch: No such file or directory")),
                     _ => Ok(inspect_answer(Value::Null)),
                 },
                 // as the broker answers: plain words are a name (buwiz-app/<slug>); one with no release, not_found
                 "/v1/host/plugins/fetch" => match body.as_ref().and_then(|b| b.get("source")).and_then(Value::as_str) {
                     Some(n @ ("word" | "fx mcp" | "python3 server" | "nosuch arg")) => {
-                        Err(RoxError::new("not_found", format!("buwiz-app/{} has no release yet", n.replace(' ', "-"))))
+                        Err(MiniError::new("not_found", format!("buwiz-app/{} has no release yet", n.replace(' ', "-"))))
                     }
-                    Some("a.b") => Err(RoxError::new("invalid_args", "not a GitHub repository")),
+                    Some("a.b") => Err(MiniError::new("invalid_args", "not a GitHub repository")),
                     _ => {
                         let mut v = inspect_answer(Value::Null);
                         v["command"] = json!("/data/v1/apps/app.buwiz.fixture/1.1.0/bin/fx");
@@ -1456,7 +1454,7 @@ mod tests {
         install(&b, &narrower).unwrap();
         assert!(b.routes.lock().unwrap()[0].1.get("approve_permissions").is_none());
         // the broker refusing an unapproved widening asks again
-        let b = Lifecycle { refuse: Some(RoxError::new("consent_declined", "adds permissions")), ..Default::default() };
+        let b = Lifecycle { refuse: Some(MiniError::new("consent_declined", "adds permissions")), ..Default::default() };
         assert_eq!(install(&b, &narrower).unwrap(), Installed::NeedsApproval(Vec::new()));
     }
 
@@ -1471,7 +1469,7 @@ mod tests {
         let b = Lifecycle::default();
         install(&b, &older).unwrap();
         assert_eq!(b.routes.lock().unwrap()[0].1["allow_downgrade"], true);
-        let b = Lifecycle { refuse: Some(RoxError::new("invalid_args", "1.1.0 is older than the installed 1.2.0")), ..Default::default() };
+        let b = Lifecycle { refuse: Some(MiniError::new("invalid_args", "1.1.0 is older than the installed 1.2.0")), ..Default::default() };
         let mut silent = older.clone();
         silent.downgrade = false;
         assert_eq!(install(&b, &silent).unwrap(), Installed::NeedsDowngrade);
@@ -1490,9 +1488,9 @@ mod tests {
 
     #[test]
     fn lcy_06_uninstall_removes_attachments_pins_storage_and_the_link_is_not_installed() {
-        let base = std::env::temp_dir().join(format!("rox-uninstall-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("buwiz-uninstall-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let (records_dir, plugins_dir) = (base.join("rox"), base.join("rox/plugins"));
+        let (records_dir, plugins_dir) = (base.join("buwiz"), base.join("buwiz/plugins"));
         // its own id: ending its sessions must not touch other tests' opens
         let id = "app.buwiz.uninstallfx";
         let entry = PluginEntry::from_json(&json!({"id": id, "short": "fx", "title": "Fixture", "version": "1.0.0"})).unwrap();
@@ -1514,14 +1512,14 @@ mod tests {
         assert!(!plugins_dir.join(id).exists(), "its storage is deleted");
         // a later link shows "not installed" and does nothing else
         assert_eq!(links::route(&format!("buwiz://app/{id}/board"), &[]), links::Route::NotInstalled(id.into()));
-        // a broker refusal removes nothing on Rox's side
+        // a broker refusal removes nothing on Buwiz Bot's side
         let mut r = Records::default();
         r.attach("th1", &format!("@fx:item:{T}"), "Item One", &entry);
         r.save(&records_dir).unwrap();
         struct Refuses;
         impl Broker for Refuses {
-            fn request(&self, _: &str, _: &str, _: Option<Value>, _: Duration) -> Result<Value, RoxError> {
-                Err(RoxError::new("plugin_unavailable", "down"))
+            fn request(&self, _: &str, _: &str, _: Option<Value>, _: Duration) -> Result<Value, MiniError> {
+                Err(MiniError::new("plugin_unavailable", "down"))
             }
         }
         assert!(uninstall(&Refuses, id, &records_dir, &plugins_dir, &|_| {}).is_err());
@@ -1544,7 +1542,7 @@ mod tests {
         let sent = b.routes.lock().unwrap()[0].1.clone();
         assert_eq!((sent["env_from"].clone(), sent["env_from_keys"].clone(), sent.get("env")), (json!("dev.fx"), json!(["FX_KEY"]), None));
         // a refusal is the card's error
-        let b = Lifecycle { refuse: Some(RoxError::new("invalid_args", "manifest changed")), ..Default::default() };
+        let b = Lifecycle { refuse: Some(MiniError::new("invalid_args", "manifest changed")), ..Default::default() };
         assert_eq!(install_with(&b, chat_install_body(&r, &[], None)).unwrap_err().message, "manifest changed");
         let b = Lifecycle::default();
         host_api::settle_notice(&b, "c1", "app_install", "app.buwiz.fixture", "declined").unwrap();
@@ -1614,7 +1612,7 @@ mod tests {
         assert_eq!(l.tools.iter().filter(|t| t.disabled).count(), 1);
         // the lifecycle tools are the broker's: not listed, not counted
         let reserved = Listed::of(&json!({"id": "app.buwiz.books", "tools": [
-            {"name": "buwiz.provision"}, {"name": "buwiz.session.open"}, {"name": "rox.ticket.resolve"}, {"name": "books_today"}, {"name": "buwiz_x"}]}));
+            {"name": "buwiz.provision"}, {"name": "buwiz.session.open"}, {"name": "buwiz.ticket.resolve"}, {"name": "books_today"}, {"name": "buwiz_x"}]}));
         assert_eq!(reserved.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["books_today", "buwiz_x"]);
         assert_eq!(l.routines[0].reads, ["app.buwiz.gws: gws_search_mail"]);
         assert_eq!((l.routines[0].last_run, l.routines[0].last_error.as_str()), (1793194720000.0, "bir_payment_search: offline"));

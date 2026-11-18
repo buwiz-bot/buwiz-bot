@@ -2567,7 +2567,7 @@ pub(crate) fn viewer_save() {
         return;
     }
     if let Some(page) = OFFICE_PAGE.with(std::cell::Cell::get) {
-        page.inject_java_script("window.roxSave && window.roxSave(); true;");
+        page.inject_java_script("window.buwizSave && window.buwizSave(); true;");
     }
     let path = f.path.clone();
     spawn(async move {
@@ -2588,7 +2588,7 @@ fn printable(f: &Attach) -> Option<&'static str> {
 }
 
 /// ⌘P in the viewer: the system print panel for the file's text or
-/// image; a file Rox can't lay out (PDF, slides, sheets) opens in its own
+/// image; a file Buwiz Bot can't lay out (PDF, slides, sheets) opens in its own
 /// app, which prints it.
 pub(crate) fn viewer_print() {
     let st = store();

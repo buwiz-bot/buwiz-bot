@@ -38,7 +38,7 @@ use nsh_engine::{HostCall, HostChannel, HostReply};
 use serde_json::{Map, Value, json};
 
 use super::{
-    RoxError, V1Key,
+    MiniError, V1Key,
     attribution::Actor,
     cards::{self, CardAction, CardMeta},
     document::{self, Document, Refused},
@@ -117,9 +117,9 @@ pub trait HostUi: Send + Sync {
     /// Shows `doc` over the app: its title, Print and Close, the page in a
     /// web view that runs no script and loads nothing. Hosts without one
     /// refuse `not_supported`.
-    fn preview(&self, doc: Preview) -> Result<(), RoxError> {
+    fn preview(&self, doc: Preview) -> Result<(), MiniError> {
         let _ = doc;
-        Err(RoxError::new("not_supported", "this Buwiz Bot shows no print previews"))
+        Err(MiniError::new("not_supported", "this Buwiz Bot shows no print previews"))
     }
     /// The data folder of `plugin`, the only place a document of its may
     /// open from. A host that can't say opens none.
@@ -373,7 +373,7 @@ impl Fitter {
 /// `HostReply`, or a native screen's answer.
 pub trait Reply: Send + 'static {
     fn resolve(self: Box<Self>, value: Value);
-    fn reject(self: Box<Self>, e: RoxError);
+    fn reject(self: Box<Self>, e: MiniError);
 }
 
 impl Reply for HostReply {
@@ -382,7 +382,7 @@ impl Reply for HostReply {
     }
 
     /// The shim parses the wire text back into a `BuwizError`.
-    fn reject(self: Box<Self>, e: RoxError) {
+    fn reject(self: Box<Self>, e: MiniError) {
         HostReply::reject(*self, e.to_wire());
     }
 }
@@ -574,7 +574,7 @@ fn ready_handler(ctx: &Arc<OpenContext>, inline: bool) -> Handler {
 
 /// `buwiz.actions(list)`, `buwiz.meta(meta)` and `buwiz.settle(text)` (7.12 to
 /// 7.14): an inline card's footer buttons, header status and the line it
-/// settles to, drawn by Rox in its own style. Each is checked whatever the
+/// settles to, drawn by Buwiz Bot in its own style. Each is checked whatever the
 /// placement (a bad one rejects `invalid_args`); a full-screen open's are
 /// then ignored. They need no permission: they change only the app's own
 /// card, and a press reaches only the app. A press is the `buwiz.action`
@@ -636,23 +636,23 @@ struct HeldCall<'a> {
 const NOT_NOW: &str = "The person chose Not now, so nothing was sent. Don't press it again; ask them in words if you still need it.";
 const CANT_SHOW: &str = "The Bot couldn't show all of what this press would do, so nothing was sent.";
 
-fn reject(reply: AnyReply, e: RoxError) {
+fn reject(reply: AnyReply, e: MiniError) {
     reply.reject(e);
 }
 
-fn answer(reply: AnyReply, r: Result<Value, RoxError>) {
+fn answer(reply: AnyReply, r: Result<Value, MiniError>) {
     match r {
         Ok(v) => reply.resolve(v),
         Err(e) => reject(reply, e),
     }
 }
 
-fn invalid(m: &str) -> RoxError {
-    RoxError::new("invalid_args", m)
+fn invalid(m: &str) -> MiniError {
+    MiniError::new("invalid_args", m)
 }
 
-fn denied(m: &str) -> RoxError {
-    RoxError::new("permission_denied", m)
+fn denied(m: &str) -> MiniError {
+    MiniError::new("permission_denied", m)
 }
 
 /// Field `k` of `data` as a string.
@@ -676,14 +676,14 @@ impl OpenContext {
     }
 
     /// Counts a new call against the per-second limit.
-    fn admit(&self) -> Result<(), RoxError> {
+    fn admit(&self) -> Result<(), MiniError> {
         let mut g = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         while g.recent.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1)) {
             g.recent.pop_front();
         }
         if g.recent.len() >= self.limits.per_second {
-            return Err(RoxError::new("rate_limited", "too many calls; try again in a moment"));
+            return Err(MiniError::new("rate_limited", "too many calls; try again in a moment"));
         }
         g.recent.push_back(now);
         Ok(())
@@ -730,7 +730,7 @@ impl OpenContext {
             if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout)
                 && let Some(r) = s.lock().unwrap_or_else(|e| e.into_inner()).take()
             {
-                reject(r, RoxError::new("timeout", format!("no answer in {} s", timeout.as_secs())));
+                reject(r, MiniError::new("timeout", format!("no answer in {} s", timeout.as_secs())));
             }
         });
         (slot, done)
@@ -741,7 +741,7 @@ impl OpenContext {
     fn gated(
         self: &Arc<Self>,
         reply: AnyReply,
-        work: impl FnOnce(&OpenContext) -> Result<Value, RoxError> + Send + 'static,
+        work: impl FnOnce(&OpenContext) -> Result<Value, MiniError> + Send + 'static,
     ) {
         self.gated_for(reply, self.limits.timeout, work);
     }
@@ -751,7 +751,7 @@ impl OpenContext {
         self: &Arc<Self>,
         reply: AnyReply,
         timeout: Duration,
-        work: impl FnOnce(&OpenContext) -> Result<Value, RoxError> + Send + 'static,
+        work: impl FnOnce(&OpenContext) -> Result<Value, MiniError> + Send + 'static,
     ) {
         if let Err(e) = self.admit() {
             return reject(reply, e);
@@ -775,7 +775,7 @@ impl OpenContext {
     /// open to agents, the refusal, before anything is signed or sent. A
     /// call that needs the person waits here for their answer. `args` is
     /// what goes out, and `None` for what can't be held: it is refused.
-    fn press_of(&self, tool: &str, args: Option<&Value>, who: &CallActor) -> Result<Option<Value>, RoxError> {
+    fn press_of(&self, tool: &str, args: Option<&Value>, who: &CallActor) -> Result<Option<Value>, MiniError> {
         if who.actor != Actor::Agent {
             return Ok(None);
         }
@@ -802,9 +802,9 @@ impl OpenContext {
 
     /// The card of a held call of `tool`, in the plugin's words. A call that
     /// needs the person has to have them; a draft can show its arguments.
-    fn read_card(&self, call: &HeldCall) -> Result<Card, RoxError> {
+    fn read_card(&self, call: &HeldCall) -> Result<Card, MiniError> {
         let (title, needs_words) = (&self.prepared.plugin.title, hold::needs_plugin_words(call.effect));
-        let words = call.describe.map(|d| -> Result<Value, RoxError> {
+        let words = call.describe.map(|d| -> Result<Value, MiniError> {
             let ask = json!({"tool": call.tool, "args": call.args});
             let ai = press::caller().map(|_| json!({"by": "ai", "who": press::AGENT}));
             let (envelope, sig) = self.session.sign_call(d, &ask, Actor::Agent, ai.as_ref())?;
@@ -825,7 +825,7 @@ impl OpenContext {
 
     /// Holds `call` until the person answers: the press record to sign with
     /// it, or why nothing goes out.
-    fn held(&self, call: &HeldCall) -> Result<Value, RoxError> {
+    fn held(&self, call: &HeldCall) -> Result<Value, MiniError> {
         let tool = call.tool;
         let once = hold::open(call.args)?;
         let answer = self.ask_person(&once, call);
@@ -834,7 +834,7 @@ impl OpenContext {
         let end = |outcome, held: press::Held, code, said: &str| {
             press::note_outcome(tool, outcome);
             press::note_refused(held);
-            RoxError::new(code, said)
+            MiniError::new(code, said)
         };
         let not_sent = |said: &str| end("expired", press::Held::Said(said.to_owned()), "permission_denied", said);
         match answer {
@@ -1018,7 +1018,7 @@ impl OpenContext {
     /// accounts. The tool's work stands: the person's own press reads why in
     /// the answer's `account_use`, and an agent's press is told the account was
     /// not switched, with the sentences its action reports.
-    fn switch_dropped(&self, actor: Actor) -> RoxError {
+    fn switch_dropped(&self, actor: Actor) -> MiniError {
         match actor {
             Actor::Person => denied("Only a first-party plugin can switch accounts."),
             Actor::Agent => {
@@ -1038,7 +1038,7 @@ impl OpenContext {
     /// that costs nothing; they hold whatever a broker did.
     /// A label that's an address is never on a plugin's list, so none can ask
     /// for one. A broker's refusal can name a label, so only its code comes back.
-    fn use_account(&self, field: &Value, actor: Actor) -> Result<(), RoxError> {
+    fn use_account(&self, field: &Value, actor: Actor) -> Result<(), MiniError> {
         let p = &self.prepared;
         if actor != Actor::Person {
             press::note_refused(press::Held::Person);
@@ -1057,7 +1057,7 @@ impl OpenContext {
         let used = host_api::account_action(&*self.broker, &p.plugin.id, account, label, host_api::AccountAction::Use);
         used.map(drop).map_err(|e| {
             log::info!("mini v1: {}/{} an account switch: {}", p.plugin.id, p.key.app, e.code);
-            RoxError::new(&e.code, "Buwiz Bot couldn't switch to that account.")
+            MiniError::new(&e.code, "Buwiz Bot couldn't switch to that account.")
         })
     }
 
@@ -1090,7 +1090,7 @@ impl OpenContext {
         answer(reply, r.map(|()| Value::Null));
     }
 
-    fn open_app(&self, grant: &perms::OpenGrant, data: &Value) -> Result<(), RoxError> {
+    fn open_app(&self, grant: &perms::OpenGrant, data: &Value) -> Result<(), MiniError> {
         let o = data.as_object().ok_or_else(|| invalid("buwiz.open takes an object"))?;
         if let Some(k) = o.keys().find(|k| !["app", "props", "ticket"].contains(&k.as_str())) {
             return Err(invalid(&format!("buwiz.open does not take {k}")));
@@ -1100,7 +1100,7 @@ impl OpenContext {
             return Err(denied(&format!("{app:?} is not in this app's open.apps")));
         }
         let target = self.prepared.plugin.app(app).ok_or_else(|| {
-            RoxError::new("not_declared", format!("{} has no app {app:?}", self.prepared.plugin.title))
+            MiniError::new("not_declared", format!("{} has no app {app:?}", self.prepared.plugin.title))
         })?;
         let props = match data.get("props") {
             None | Some(Value::Null) => Map::new(),
@@ -1124,7 +1124,7 @@ impl OpenContext {
             return reject(reply, invalid("a URL is at most 2048 characters"));
         }
         if !url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
-            return reject(reply, RoxError::new("not_supported", "apps open https URLs only"));
+            return reject(reply, MiniError::new("not_supported", "apps open https URLs only"));
         }
         let Some(origin) = perms::https_origin(&url).filter(|_| !url.contains(char::is_whitespace)) else {
             return reject(reply, invalid("not a URL"));
@@ -1138,7 +1138,7 @@ impl OpenContext {
             ask,
             Box::new(move |yes| {
                 if !yes {
-                    return reject(reply, RoxError::new("consent_declined", "the person said no"));
+                    return reject(reply, MiniError::new("consent_declined", "the person said no"));
                 }
                 ui.open_url(&url);
                 reply.resolve(Value::Null);
@@ -1159,7 +1159,7 @@ impl OpenContext {
             return reject(reply, invalid("value is a string"));
         };
         if !self.ui.has_chat() {
-            return reject(reply, RoxError::new("no_chat", "this app was opened without a chat"));
+            return reject(reply, MiniError::new("no_chat", "this app was opened without a chat"));
         }
         let me = self.clone();
         std::thread::spawn(move || match me.resolve_token(&scope, &value) {
@@ -1171,7 +1171,7 @@ impl OpenContext {
                     ask,
                     Box::new(move |yes| {
                         if !yes {
-                            return reject(reply, RoxError::new("consent_declined", "the person said no"));
+                            return reject(reply, MiniError::new("consent_declined", "the person said no"));
                         }
                         let attached = ui.attach(&token, &title);
                         reply.resolve(json!({"token": token, "title": title, "attached": attached}));
@@ -1182,7 +1182,7 @@ impl OpenContext {
     }
 
     /// The canonical token and title `value` resolves to in `scope` (9.2).
-    fn resolve_token(&self, scope: &str, value: &str) -> Result<(String, String), RoxError> {
+    fn resolve_token(&self, scope: &str, value: &str) -> Result<(String, String), MiniError> {
         let ask = host_api::ResolveAsk {
             plugin: self.prepared.plugin.id.clone(),
             kind: "scope",
@@ -1198,11 +1198,11 @@ impl OpenContext {
             Some("token") => {
                 let ticket = text(r, "ticket").filter(|t| perms::ticket_ok(t));
                 let title: String = text(r, "title").unwrap_or_default().chars().take(60).collect();
-                let ticket = ticket.ok_or_else(|| RoxError::new("internal", "the plugin sent no ticket"))?;
+                let ticket = ticket.ok_or_else(|| MiniError::new("internal", "the plugin sent no ticket"))?;
                 Ok((format!("@{}:{scope}:{ticket}", self.prepared.plugin.short), title))
             }
-            Some("error") => Err(RoxError::new("tool_error", text(r, "message").unwrap_or("it did not resolve"))),
-            _ => Err(RoxError::new("internal", "the plugin's resolve gave no token")),
+            Some("error") => Err(MiniError::new("tool_error", text(r, "message").unwrap_or("it did not resolve"))),
+            _ => Err(MiniError::new("internal", "the plugin's resolve gave no token")),
         }
     }
 
@@ -1226,16 +1226,16 @@ impl OpenContext {
     }
 
     /// The app's view of the files chosen: ids, names, sizes, types.
-    fn picked(&self, paths: Vec<PathBuf>, max_bytes: u64) -> Result<Value, RoxError> {
+    fn picked(&self, paths: Vec<PathBuf>, max_bytes: u64) -> Result<Value, MiniError> {
         let mut out = Vec::new();
         let mut files = Vec::new();
         for path in paths {
-            let meta = std::fs::metadata(&path).map_err(|_| RoxError::new("not_found", "the file is gone"))?;
+            let meta = std::fs::metadata(&path).map_err(|_| MiniError::new("not_found", "the file is gone"))?;
             if !meta.is_file() {
                 return Err(invalid("not a file"));
             }
             if meta.len() > max_bytes {
-                return Err(RoxError::new("quota_exceeded", format!("files are at most {max_bytes} bytes")));
+                return Err(MiniError::new("quota_exceeded", format!("files are at most {max_bytes} bytes")));
             }
             let id = keys::random_id();
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1249,20 +1249,20 @@ impl OpenContext {
 
     fn read_picked(self: &Arc<Self>, id: String, reply: AnyReply) {
         if self.session.check_live().is_err() {
-            return reject(reply, RoxError::new("closed", "the app was closed"));
+            return reject(reply, MiniError::new("closed", "the app was closed"));
         }
         let file = self.files.lock().unwrap_or_else(|e| e.into_inner()).get(&id).map(|f| (f.path.clone(), f.max_bytes));
         let Some((path, max)) = file else { return reject(reply, invalid("no such file")) };
         let me = self.clone();
         std::thread::spawn(move || {
-            let gone = || RoxError::new("not_found", "the file can't be read");
+            let gone = || MiniError::new("not_found", "the file can't be read");
             let r = match std::fs::metadata(&path) {
-                Ok(m) if m.len() > max => Err(RoxError::new("quota_exceeded", "the file grew past the limit")),
+                Ok(m) if m.len() > max => Err(MiniError::new("quota_exceeded", "the file grew past the limit")),
                 Ok(_) => std::fs::read(&path).map_err(|_| gone()),
                 Err(_) => Err(gone()),
             };
             let r = match r {
-                Ok(_) if me.session.check_live().is_err() => Err(RoxError::new("closed", "the app was closed")),
+                Ok(_) if me.session.check_live().is_err() => Err(MiniError::new("closed", "the app was closed")),
                 r => r.map(|bytes| Value::String(keys::b64_std(&bytes))),
             };
             answer(reply, r);
@@ -1304,7 +1304,7 @@ impl OpenContext {
         let Some(tool) = text(&data, "tool").map(str::to_owned) else { return reject(reply, invalid("tool is a string")) };
         if !self.prepared.permissions.tools.contains(&tool) {
             let _ = self.admit();
-            return reject(reply, RoxError::new("not_declared", format!("{tool:?} is not in this app's tools")));
+            return reject(reply, MiniError::new("not_declared", format!("{tool:?} is not in this app's tools")));
         }
         let args = match data.get("args") {
             None | Some(Value::Null) => json!({}),
@@ -1347,7 +1347,7 @@ impl OpenContext {
             return reject(reply, e);
         }
         let Some(store) = self.storage.clone() else {
-            return reject(reply, RoxError::new("not_supported", "storage is not granted"));
+            return reject(reply, MiniError::new("not_supported", "storage is not granted"));
         };
         let job: Box<dyn FnOnce() + Send> = Box::new(move || {
             let key = text(&data, "key").unwrap_or_default();
@@ -1375,7 +1375,7 @@ impl OpenContext {
 }
 
 /// The dialog `options` asks for, within `grant` (7.7).
-fn pick_request(grant: &perms::PickGrant, options: &Value) -> Result<PickRequest, RoxError> {
+fn pick_request(grant: &perms::PickGrant, options: &Value) -> Result<PickRequest, MiniError> {
     let o = match options {
         Value::Null => &Map::new(),
         Value::Object(o) => o,
@@ -1432,9 +1432,9 @@ fn mime(name: &str) -> &'static str {
 /// What `buwiz.call` resolves to from a tool result (7.3): its
 /// `structuredContent`, else its text joined with `\n`; `isError` rejects
 /// `tool_error` with its first text; over the limit, `result_too_large`.
-pub fn tool_result(result: Value, max: usize) -> Result<Value, RoxError> {
+pub fn tool_result(result: Value, max: usize) -> Result<Value, MiniError> {
     if result.to_string().len() > max {
-        return Err(RoxError::new("result_too_large", "the result is over 1 MiB"));
+        return Err(MiniError::new("result_too_large", "the result is over 1 MiB"));
     }
     let texts = || {
         result
@@ -1447,7 +1447,7 @@ pub fn tool_result(result: Value, max: usize) -> Result<Value, RoxError> {
     };
     if result.get("isError") == Some(&Value::Bool(true)) {
         let first = texts().next().unwrap_or("the tool failed");
-        return Err(RoxError::new("tool_error", first));
+        return Err(MiniError::new("tool_error", first));
     }
     if let Some(s) = result.get("structuredContent").filter(|s| !s.is_null()) {
         return Ok(s.clone());
@@ -1460,7 +1460,7 @@ pub fn tool_result(result: Value, max: usize) -> Result<Value, RoxError> {
 /// and the title in `structuredContent.title`, if any. `isError` rejects
 /// `tool_error`; no HTML, `tool_error`; HTML over `max` bytes,
 /// `result_too_large`.
-pub fn preview_document(result: Value, max: usize) -> Result<(String, Option<String>), RoxError> {
+pub fn preview_document(result: Value, max: usize) -> Result<(String, Option<String>), MiniError> {
     if result.get("isError") == Some(&Value::Bool(true)) {
         // rejects tool_error with its first text, as buwiz.call does
         tool_result(result.clone(), usize::MAX)?;
@@ -1473,10 +1473,10 @@ pub fn preview_document(result: Value, max: usize) -> Result<(String, Option<Str
         .find(|r| r.get("mimeType").and_then(Value::as_str).is_some_and(is_html))
         .and_then(|r| r.get("text").and_then(Value::as_str));
     let Some(html) = html else {
-        return Err(RoxError::new("tool_error", "the tool returned no HTML document to preview"));
+        return Err(MiniError::new("tool_error", "the tool returned no HTML document to preview"));
     };
     if html.len() > max {
-        return Err(RoxError::new("result_too_large", format!("the document is over {} KiB", max / 1024)));
+        return Err(MiniError::new("result_too_large", format!("the document is over {} KiB", max / 1024)));
     }
     let title = result
         .pointer("/structuredContent/title")

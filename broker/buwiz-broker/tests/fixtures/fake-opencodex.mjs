@@ -53,7 +53,7 @@ export const SCRIPTS = {
   "note-then-tool": [use("react", { emoji: "👀" }, { text: "Checking that for you." }), say("All checked.")],
   thinking: [{ content: [{ type: "thinking", thinking: "Let me think.", signature: "sig-1" }, { type: "text", text: "Thought it through." }], stop_reason: "end_turn" }],
   pause: [
-    { content: [{ type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "rox" } }], stop_reason: "pause_turn" },
+    { content: [{ type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "buwiz" } }], stop_reason: "pause_turn" },
     {
       content: [
         { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", url: "https://example.com/", title: "Example", encrypted_content: "x", page_age: null }] },

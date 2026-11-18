@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::press;
-use crate::mini_v1::{RoxError, jcs, keys};
+use crate::mini_v1::{MiniError, jcs, keys};
 
 /// Who says yes, as the record names them: the one person at this Bot.
 const PERSON: &str = "person.owner";
@@ -153,9 +153,9 @@ fn lock() -> std::sync::MutexGuard<'static, Option<OpenPress>> {
 const BUSY: &str = "A card for the AI's last press is still waiting, so this one was refused and nothing was sent.";
 const NO_HASH: &str = "These values can't be shown exactly, so the press was refused and nothing was sent.";
 
-fn refused(said: &str) -> RoxError {
+fn refused(said: &str) -> MiniError {
     press::note_refused(press::Held::Said(said.to_owned()));
-    RoxError::new("permission_denied", said)
+    MiniError::new("permission_denied", said)
 }
 
 /// A fresh one-time id, like `press-…`.
@@ -165,7 +165,7 @@ fn mint() -> Option<OnceId> {
 }
 
 /// Opens a press for a call with `args`: its one-time id.
-pub fn open(args: &Value) -> Result<OnceId, RoxError> {
+pub fn open(args: &Value) -> Result<OnceId, MiniError> {
     let hash = args_hash(args).ok_or_else(|| refused(NO_HASH))?;
     let mut open = lock();
     if open.is_some() {

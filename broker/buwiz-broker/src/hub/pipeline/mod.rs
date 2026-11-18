@@ -231,7 +231,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_stage_gets_its_tsconfig_and_loses_old_candidates() {
-        let dir = std::env::temp_dir().join(format!("rox-stage-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buwiz-stage-{}", std::process::id()));
         let stage = dir.join(".stage");
         std::fs::create_dir_all(stage.join("out-R1")).unwrap();
         std::fs::create_dir_all(stage.join(".nsh")).unwrap();

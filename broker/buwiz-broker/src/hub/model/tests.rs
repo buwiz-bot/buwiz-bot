@@ -129,7 +129,7 @@ async fn model_stream_accumulates_every_block_kind_split_across_chunks() {
     let msg = message(
         json!([
             {"type": "thinking", "thinking": "Let me think — é.", "signature": "sig-1"},
-            {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "rox"}},
+            {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "buwiz"}},
             {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [{"type": "web_search_result", "url": "https://example.com/", "title": "Example", "encrypted_content": "x", "page_age": null}]},
             {"type": "text", "text": "Found it, naïvely."},
             {"type": "tool_use", "id": "toolu_1", "name": "generate_app", "input": {"title": "Card", "code": "export default function R() { return <Text>hi</Text>; }"}},
@@ -448,7 +448,7 @@ async fn model_images_draw_through_the_relay_or_fall_back_to_an_svg() {
     let s = settings(&fake, &[]);
     let api = client(&s);
     let local = Local::default();
-    let dir = std::env::temp_dir().join(format!("rox-model-images-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("buwiz-model-images-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let b64 = base64::engine::general_purpose::STANDARD.encode(PNG);
     use base64::Engine;
@@ -511,7 +511,7 @@ async fn model_images_draw_through_the_relay_or_fall_back_to_an_svg() {
 async fn model_models_route_folds_fast_twins_efforts_images_and_connections() {
     let fake = Fake::start().await;
     let s = settings(&fake, &[]);
-    let home = std::env::temp_dir().join(format!("rox-model-home-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("buwiz-model-home-{}", std::process::id()));
     std::fs::create_dir_all(home.join(".opencodex")).unwrap();
     std::fs::write(home.join(".opencodex/config.json"), r#"{"defaultProvider":"openai","providers":{"openai":{"authMode":"chatgpt","label":"ChatGPT"},"anthropic-apikey":{"authMode":"apikey"}}}"#)
         .unwrap();

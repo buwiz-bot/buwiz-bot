@@ -12,18 +12,16 @@
 #
 # Its icon is app/resources/AppIcon.icns, the Buwiz logo.
 #
-# It also packages the broker Rox starts when none answers (plan 7.2) into
+# It also packages the broker Buwiz Bot starts when none answers into
 # Contents/Resources/broker/: buwiz-broker (a release build with
-# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one; rox-broker, its old
-# name, links to it) and the static files it
+# RUSTC_WRAPPER= unless BUWIZ_BROKER_BIN names one) and the static files it
 # serves, `server/` being its --assets and `node_modules/` beside it, and
 # in bin/: nsh and nsh-macos-host (widget builds and pop-outs; a Finder-
-# launched Rox has no nsh on PATH), release builds of this checkout's nsh
+# launched Buwiz Bot has no nsh on PATH), release builds of this checkout's nsh
 # submodule (`cargo build --release -p nsh-cli -p nsh-macos-host` in nsh/).
 #   BUWIZ_APP=<dir>/<name>.app  bundle elsewhere (a dry run); it is not
 #                           registered with LaunchServices, and Rox.app is
-#                           left registered (ROX_APP, its old name, still
-#                           works)
+#                           left registered
 #   BUWIZ_BROKER_BIN=<path>   the buwiz-broker to package
 #   NSH_BIN=<path>, NSH_HOST_BIN=<path>   the nsh and nsh-macos-host to
 #                           package (both, or neither)
@@ -37,13 +35,10 @@
 #                           Word and sheet views draw with (default
 #                           office/node_modules/@betteroffice/fonts)
 set -euo pipefail
+. "$(dirname "$0")/../scripts/lib/no-old-names.sh"
 
 DEFAULT_APP="$HOME/Applications/Buwiz Bot.app"
 OLD_APP="$HOME/Applications/Rox.app"
-if [ -z "${BUWIZ_APP+x}" ] && [ -n "${ROX_APP+x}" ]; then
-  echo "ROX_APP is an old name; use BUWIZ_APP" >&2
-  BUWIZ_APP="$ROX_APP"
-fi
 APP="${BUWIZ_APP:-$DEFAULT_APP}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${CARGO_TARGET_DIR:-$ROOT/app/target}/debug/buwiz-bot"
@@ -145,15 +140,14 @@ cat > "$APP/Contents/MacOS/buwiz-bot" <<SH
 # external volume waits on a files-and-folders permission.
 # A new automation token every launch, readable only by this user (the
 # per-user temp dir is 0700); \`scripts/buwiz-drive\` hands it to gpui-agent.
-# The same token under its old name too (rox-gpui-agent-token), for a
-# scripts/rox-agent from before the rename.
+# The same token under rox-gpui-agent-token too, which scripts/buwiz-drive
+# falls back to.
 TOKEN_FILE="\$(getconf DARWIN_USER_TEMP_DIR)buwiz-gpui-agent-token"
 ( umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' > "\$TOKEN_FILE" )
 ( umask 077 && cp "\$TOKEN_FILE" "\$(getconf DARWIN_USER_TEMP_DIR)rox-gpui-agent-token" )
-# BUWIZ_FPS by its old name too: the binary may be a build from before it
 # The Bot reads the token from the file: the environment is open to any
 # process of this user, and the shell's sandbox shuts the file, not that.
-export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 BUWIZ_FPS=0 ROX_FPS=0
+export GPUI_AGENT=1 GPUI_AGENT_ALLOW_RELEASE=1 BUWIZ_FPS=0
 export GPUI_AGENT_ADDR="\${GPUI_AGENT_ADDR:-127.0.0.1:17421}" GPUI_AGENT_TOKEN_FILE="\$TOKEN_FILE"
 BIN="\$(dirname "\$0")/buwiz-bot-bin"
 [ -x "\$BIN" ] || BIN="$BIN"
@@ -186,9 +180,6 @@ fi
 rm -rf "$B"
 mkdir -p "$B/bin" "$B/server/office/editor" "$B/node_modules"
 cp "$BUWIZ_BROKER_BIN" "$B/buwiz-broker"
-# its name before the rename, for one release: an app binary built before
-# it (a buwiz-bot-bin not refreshed yet) starts broker/rox-broker
-ln -s buwiz-broker "$B/rox-broker"
 cp "$NSH_BIN" "$B/bin/nsh"
 cp "$NSH_HOST_BIN" "$B/bin/nsh-macos-host"
 cp "$OFFICE/viewer.html" "$B/server/office/viewer.html"

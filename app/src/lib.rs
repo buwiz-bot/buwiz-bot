@@ -1,4 +1,4 @@
-//! Rox: an all-Rust chat shell on nsh, edited live by ra-jit.
+//! Buwiz Bot: an all-Rust chat shell on nsh, edited live by ra-jit.
 //!
 //! The root is a thin shell ([`App`]): a `dynamic` mounts [`hot::hot_area`]
 //! — which the daemon's patches cause to rebuild — and hands it the
@@ -162,7 +162,7 @@ pub fn fonts() -> Vec<Vec<u8>> {
 const BG: AdaptiveColor = tone(hsla(0.17, 0.10, 0.95, 1.0), hsla(0.60, 0.11, 0.07, 1.0));
 
 /// The app's UI set for nsh tooling (`nsh.json` `"rust"`).
-#[native_module("rox/native")]
+#[native_module("buwiz/native")]
 fn native(registry: &mut Registry) {
     registry.register::<App>();
 }
@@ -182,7 +182,7 @@ pub fn App() -> impl IntoElement {
     // print preview, `links::viewable` only) opened from another app
     // or a mini app (the dev bundle declares the scheme): the root never
     // remounts, so this handler lives as long as the app. `open_os_link`
-    // makes nothing until the person acts in Rox (a new chat or a mini app
+    // makes nothing until the person acts in Buwiz Bot (a new chat or a mini app
     // asks first).
     // Other URLs are ignored here — the router would hand them to the
     // system, which for `buwiz://` sends them straight back.
@@ -199,7 +199,7 @@ pub fn App() -> impl IntoElement {
             {
                 live::store().open_os_link(url);
             } else {
-                log::warn!("rox: ignoring opened URL {url}");
+                log::warn!("buwiz: ignoring opened URL {url}");
             }
         }
     });

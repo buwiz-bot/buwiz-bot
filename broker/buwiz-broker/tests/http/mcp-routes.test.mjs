@@ -138,7 +138,7 @@ test("/mcp/attachment/rename names a token everywhere, \"\" restores it; /mcp/de
   assert.deepEqual(gone.json, { ok: false, error: "no attachment a2" });
 });
 
-test("/mcp/open hands only Rox links to the system; an app link carries a one-time pass that /mcp/open/pass redeems once", async () => {
+test("/mcp/open hands only Buwiz Bot links to the system; an app link carries a one-time pass that /mcp/open/pass redeems once", async () => {
   const bad = await postJson("/mcp/open", { url: "https://example.com/" });
 
   assert.equal(bad.status, 400);

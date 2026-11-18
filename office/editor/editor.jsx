@@ -47,12 +47,12 @@ function saveBytes(bytes) {
   });
 }
 
-// Rox's Save (its ⌘S, its ⌘K menu): the editor's own save — the same
+// Buwiz Bot's Save (its ⌘S, its ⌘K menu): the editor's own save — the same
 // export its toolbar's Save runs, whose bytes land in onSave and so in
 // /file/write (which keeps each save as a new version). An editor with no
 // save() on its ref gets the Cmd+S its own keymap answers.
 let editorRef = null;
-window.roxSave = async () => {
+window.buwizSave = async () => {
   const ed = editorRef?.current;
   if (ed?.save) {
     await ed.flushPendingInput?.();

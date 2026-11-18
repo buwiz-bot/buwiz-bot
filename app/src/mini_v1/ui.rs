@@ -1,4 +1,4 @@
-//! The person-facing side of v1 plugins in Rox: what the store keeps for
+//! The person-facing side of v1 plugins in Buwiz Bot: what the store keeps for
 //! them ([`V1`], `Store::v1`), the consent sheet's v1 questions (9.7), the
 //! chat seam attachments go through (10.3), `buwiz://app/` links (9.4), the
 //! composer's tokens and commands (9.2, 9.3), tool-result and inline cards
@@ -22,7 +22,7 @@ use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
 use super::{
-    RoxError, V1Key, badge,
+    MiniError, V1Key, badge,
     cards::{self, CardAction, CardMeta, OpenCard, Opener, Placement},
     connect, consent,
     host_api::{self, HttpBroker, PluginAction},
@@ -103,7 +103,7 @@ pub struct V1 {
     /// Inline cards settled (`buwiz.settle`), by module key: the one line
     /// each shows instead of its app, for the rest of this run.
     pub settled: Signal<HashMap<String, String>>,
-    /// Rox's records (attachments, pins), as last saved.
+    /// Buwiz Bot's records (attachments, pins), as last saved.
     pub records: Signal<Records>,
     /// Connect Apps: the review on screen, what is running, the install
     /// form, the plugin page shown.
@@ -138,7 +138,7 @@ pub struct V1 {
 }
 
 /// What a refused sign-in says: `needs_setup` is the setup it lacks.
-pub fn signin_error(e: &RoxError) -> String {
+pub fn signin_error(e: &MiniError) -> String {
     match (e.code.as_str(), e.message.is_empty()) {
         ("needs_setup", true) => "Add your Google client in Setup".to_owned(),
         _ => e.message.clone(),
@@ -239,7 +239,7 @@ fn broker() -> HttpBroker {
     HttpBroker::configured()
 }
 
-/// Rox's data dir (records live there).
+/// Buwiz Bot's data dir (records live there).
 fn data_dir() -> std::path::PathBuf {
     crate::vault::data_dir()
 }
@@ -275,7 +275,7 @@ fn answer(id: u64, yes: bool) {
     }
 }
 
-/// Changes the records in Rox's data dir under the lock, then shows them.
+/// Changes the records in Buwiz Bot's data dir under the lock, then shows them.
 fn change_records<R>(f: impl FnOnce(&mut Records) -> R) -> R {
     let _held = RECORDS.lock().unwrap_or_else(|e| e.into_inner());
     let dir = data_dir();
@@ -619,7 +619,7 @@ impl Store {
             return;
         }
         std::thread::Builder::new()
-            .name("rox-mini-prewarm".to_owned())
+            .name("buwiz-mini-prewarm".to_owned())
             .spawn(move || {
                 // after start-up's own work, one app at a time
                 std::thread::sleep(std::time::Duration::from_secs(2));
@@ -767,7 +767,7 @@ impl Store {
 
     /// A `buwiz://app/` link of a v1 plugin (9.4): true when it was one
     /// (opened, asked about, or refused); false for a v0 link, which goes
-    /// the v0 way. From outside Rox (`os`) it always asks (9.7).
+    /// the v0 way. From outside Buwiz Bot (`os`) it always asks (9.7).
     pub fn v1_link(&'static self, url: &str, os: bool) -> bool {
         let quick = self.v1.entries.with_untracked(|e| links::route(url, e));
         if quick == links::Route::NotV1 && !url_names_plugin_id(url) {
@@ -1569,7 +1569,7 @@ impl Store {
     fn v1_job<T: Send + 'static>(
         &'static self,
         label: &str,
-        work: impl FnOnce() -> Result<T, RoxError> + Send + 'static,
+        work: impl FnOnce() -> Result<T, MiniError> + Send + 'static,
         then: impl FnOnce(T) + 'static,
     ) {
         self.v1_job_ended(label, work, move |r| match r {
@@ -1584,8 +1584,8 @@ impl Store {
     fn v1_job_ended<T: Send + 'static>(
         &'static self,
         label: &str,
-        work: impl FnOnce() -> Result<T, RoxError> + Send + 'static,
-        ended: impl FnOnce(Option<Result<T, RoxError>>) + 'static,
+        work: impl FnOnce() -> Result<T, MiniError> + Send + 'static,
+        ended: impl FnOnce(Option<Result<T, MiniError>>) + 'static,
     ) {
         self.v1.busy.set(label.to_owned());
         Owner::detached().run(|| {
@@ -1630,7 +1630,7 @@ impl Store {
                 // the line on its cards ends even when the install never answered
                 let (r, review) = match done {
                     Some(Ok(done)) => done,
-                    _ => (Err(RoxError::new("internal", "The install did not finish")), asked),
+                    _ => (Err(MiniError::new("internal", "The install did not finish")), asked),
                 };
                 store().v1_installing(&review.id, false);
                 let r = match r {
@@ -1717,7 +1717,7 @@ impl Store {
     /// the card) or gone (the broker restarted and forgot it), checked every
     /// 2 s for as long as the broker keeps the flow ([`connect::SIGNIN_WAIT`]),
     /// or Cancel; then Sign in shows again. `failed` hears a refusal.
-    pub fn v1_signin(&'static self, plugin: &str, account: &str, label: &str, failed: impl FnOnce(RoxError) + 'static) {
+    pub fn v1_signin(&'static self, plugin: &str, account: &str, label: &str, failed: impl FnOnce(MiniError) + 'static) {
         let key = signing_key(plugin, account, label.trim());
         if self.v1.signing.with_untracked(|s| s.contains(&key)) {
             return;
@@ -2355,7 +2355,7 @@ fn gone_card(card: OpenCard) -> impl IntoElement {
     let c = card.clone();
     gone_card_with(card.title.clone(), plugin_title, open, move || match (&entry, &listed) {
         (Some(e), Some(l)) => super::gone::read(Arc::new(broker()), e, l, &c),
-        _ => Err(RoxError::new("not_found", "the plugin is not listed")),
+        _ => Err(MiniError::new("not_found", "the plugin is not listed")),
     })
 }
 
@@ -2365,7 +2365,7 @@ fn gone_card(card: OpenCard) -> impl IntoElement {
 /// until it is: "Open in plugin" (`open`: the plugin's full-screen app),
 /// when it has one. `read` runs off the main thread, and what it answers
 /// lives in this card only.
-pub fn gone_card_with(title: String, plugin_title: String, open: Option<(V1Key, String)>, read: impl FnOnce() -> Result<super::gone::Text, RoxError> + Send + 'static) -> impl IntoElement {
+pub fn gone_card_with(title: String, plugin_title: String, open: Option<(V1Key, String)>, read: impl FnOnce() -> Result<super::gone::Text, MiniError> + Send + 'static) -> impl IntoElement {
     // None: still reading
     let found: Signal<Option<Option<super::gone::Text>>> = signal(None);
     spawn(async move {
@@ -2460,7 +2460,7 @@ fn card_row_live(card: OpenCard, card_id: String, collapsed: bool) -> AnyElement
         .into_element()
 }
 
-/// The full-screen v1 app's Pin: in Rox's records, `{plugin, app,
+/// The full-screen v1 app's Pin: in Buwiz Bot's records, `{plugin, app,
 /// ticket?, placement}` and its title (the sidebar lists them).
 pub fn pin_button(key: &str, n: u64) -> impl IntoElement {
     let (k1, k2) = (key.to_owned(), key.to_owned());
@@ -2658,7 +2658,7 @@ pub fn sent_attachments(items: Vec<(String, String)>) -> impl IntoElement {
 /// aged one) shows its header only, with the plugin's name, until the
 /// chevron opens it; opening it is the consent.
 ///
-/// The app may hand Rox its card's chrome (7.12 to 7.14): a status in the
+/// The app may hand Buwiz Bot its card's chrome (7.12 to 7.14): a status in the
 /// header (`buwiz.meta`), footer buttons under the app (`buwiz.actions`), and
 /// the one line the card settles to (`buwiz.settle`), which replaces the
 /// whole card and unmounts the app, as an answered approval card does.
@@ -2841,7 +2841,7 @@ fn card_meta(key: &str) -> impl IntoElement {
     })
 }
 
-/// An inline app's footer buttons (`buwiz.actions`), as Rox's own cards
+/// An inline app's footer buttons (`buwiz.actions`), as Buwiz Bot's own cards
 /// draw theirs: 28-point pills, right-aligned, the primary first. A
 /// disabled one is dimmed and does nothing; a press goes to the app.
 fn card_footer(key: &str) -> impl IntoElement {
@@ -3455,9 +3455,9 @@ mod tests {
     fn a_plugin_off_for_the_chats_bot_cannot_attach_there() {
         struct Says(Result<Value, ()>);
         impl host_api::Broker for Says {
-            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, super::super::RoxError> {
+            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, super::super::MiniError> {
                 assert_eq!(route, "/v1/host/tools/off?thread=t1");
-                self.0.clone().map_err(|_| super::super::RoxError::new("plugin_unavailable", "down"))
+                self.0.clone().map_err(|_| super::super::MiniError::new("plugin_unavailable", "down"))
             }
         }
         let books = PluginEntry { id: "app.buwiz.books".into(), title: "Books".into(), ..Default::default() };
@@ -3496,9 +3496,9 @@ mod tests {
 
     #[test]
     fn a_sign_in_that_needs_setup_says_what_is_missing() {
-        assert_eq!(signin_error(&RoxError::new("needs_setup", "")), "Add your Google client in Setup");
-        assert_eq!(signin_error(&RoxError::new("needs_setup", "Add your Google client in Setup first")), "Add your Google client in Setup first");
-        assert_eq!(signin_error(&RoxError::new("internal", "the broker answered 500")), "the broker answered 500");
+        assert_eq!(signin_error(&MiniError::new("needs_setup", "")), "Add your Google client in Setup");
+        assert_eq!(signin_error(&MiniError::new("needs_setup", "Add your Google client in Setup first")), "Add your Google client in Setup first");
+        assert_eq!(signin_error(&MiniError::new("internal", "the broker answered 500")), "the broker answered 500");
         assert_eq!(signing_key("app.buwiz.gws", "google", "work"), "app.buwiz.gws|google/work");
     }
 

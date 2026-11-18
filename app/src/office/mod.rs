@@ -6,7 +6,7 @@
 //! The viewer routes a file here by its extension while the
 //! `office.native` setting is on (the default; kept in `/state/rox-office`):
 //! every other format, and these with the setting off, keep the web view.
-//! A file opens natively only where Rox can read and watch it: a file on
+//! A file opens natively only where Buwiz Bot can read and watch it: a file on
 //! this Mac, or a reply's file in the broker's files folder (whose saves
 //! go through `/file/write`, so they become versions as the web editor's
 //! did).
@@ -114,7 +114,7 @@ fn files_dir() -> Option<PathBuf> {
     Some(token.parent()?.join("generated/files"))
 }
 
-/// The file behind a viewer path, if Rox can read it here.
+/// The file behind a viewer path, if Buwiz Bot can read it here.
 fn file_of(f: &Attach) -> Option<(PathBuf, Sink, Option<PathBuf>)> {
     if f.path.starts_with('/') {
         return Some((PathBuf::from(&f.path), Sink::File, None));
@@ -245,7 +245,7 @@ impl<D: Document> Control for Session<D> {
     }
 }
 
-/// Takes the file as it changed outside Rox (dropping the edits).
+/// Takes the file as it changed outside Buwiz Bot (dropping the edits).
 pub(crate) fn reload() {
     control(|s| s.reload());
 }

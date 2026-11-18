@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn popout_binary_identity_follows_the_bytes() {
-        let d = std::env::temp_dir().join(format!("rox-popout-id-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        let d = std::env::temp_dir().join(format!("buwiz-popout-id-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
         std::fs::create_dir_all(&d).unwrap();
         let bin = d.join("nsh");
         std::fs::write(&bin, "one").unwrap();
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn popout_host_output_appends_to_its_log() {
-        let d = std::env::temp_dir().join(format!("rox-popout-log-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        let d = std::env::temp_dir().join(format!("buwiz-popout-log-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
         std::fs::create_dir_all(&d).unwrap();
         let log = d.join("host.log");
         std::fs::write(&log, "before\n").unwrap();

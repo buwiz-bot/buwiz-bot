@@ -81,7 +81,7 @@ pub const WARN: AdaptiveColor = tone(hsla(0.09, 0.95, 0.36, 1.0), hsla(0.105, 0.
 pub const WARN_TINT: AdaptiveColor = tone(hsla(0.105, 0.95, 0.50, 0.15), hsla(0.105, 0.95, 0.60, 0.13));
 
 /// The generation placeholder's dot grid (`dotgrid.rs`): a resting dot is
-/// a faint speck of the ink; a filled one is Rox's blue (#3b82f6).
+/// a faint speck of the ink; a filled one is Buwiz Bot's blue (#3b82f6).
 pub const DOT_IDLE: AdaptiveColor = tone(hsla(0.0, 0.0, 0.11, 0.16), hsla(0.0, 0.0, 0.96, 0.16));
 pub const DOT_FILL: AdaptiveColor = tone(hsla(0.603, 0.91, 0.60, 1.0), hsla(0.603, 0.91, 0.60, 1.0));
 

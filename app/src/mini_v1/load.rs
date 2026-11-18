@@ -13,7 +13,7 @@
 
 use serde_json::{Map, Value};
 
-use super::{RoxError, V1Key, host_api, keys, perms::Permissions};
+use super::{MiniError, V1Key, host_api, keys, perms::Permissions};
 
 /// The source size limit (6.1).
 pub const MAX_SOURCE: usize = 512 * 1024;
@@ -478,20 +478,20 @@ fn compile_error(error: &str) -> (String, Option<usize>) {
 /// `source` (the app's, checked) as the module the engine runs: compiled,
 /// its `buwiz` imports bound, the shim in front, its default export mounted.
 /// `title` names it in errors.
-pub fn build(app_id: &str, title: &str, source: &str) -> Result<String, RoxError> {
+pub fn build(app_id: &str, title: &str, source: &str) -> Result<String, MiniError> {
     if let Err(spec) = check_source_imports(source) {
-        return Err(RoxError::new("unsupported_import", say::unsupported(title, &spec)));
+        return Err(MiniError::new("unsupported_import", say::unsupported(title, &spec)));
     }
     let homed = crate::mini::current_homes(source);
     let sets: Vec<nsh_core::element::description::SetDescription> =
         vec![nsh_base::registry().into(), crate::registry().into()];
     let js = nsh_bundler::compile_module(&format!("{app_id}.tsx"), &homed, &sets).map_err(|e| {
         let (first, line) = compile_error(&e);
-        RoxError::new("compile_error", say::compile(title, &first, line))
+        MiniError::new("compile_error", say::compile(title, &first, line))
     })?;
-    let js = bind_buwiz_imports(&js).map_err(|spec| RoxError::new("unsupported_import", say::unsupported(title, &spec)))?;
+    let js = bind_buwiz_imports(&js).map_err(|spec| MiniError::new("unsupported_import", say::unsupported(title, &spec)))?;
     let (js, target, deprecated) =
-        mount_target(&js).map_err(|e| RoxError::new("compile_error", say::compile(title, &e, None)))?;
+        mount_target(&js).map_err(|e| MiniError::new("compile_error", say::compile(title, &e, None)))?;
     if deprecated {
         log::warn!("mini v1: {app_id} has no default export; mounting its R binding (deprecated, v0 only)");
     }
@@ -593,22 +593,22 @@ impl Prepared {
 /// Everything before an open's session: the plugin and app as listed,
 /// their permissions, the props, the source, its fingerprint, the import
 /// table, the module. Errors carry the 6.7 text as their message.
-pub fn prepare(broker: &dyn host_api::Broker, key: &str) -> Result<Prepared, RoxError> {
+pub fn prepare(broker: &dyn host_api::Broker, key: &str) -> Result<Prepared, MiniError> {
     prepare_in(broker, key, None)
 }
 
 /// [`prepare`] with the compiled-module cache under `cache_root` (the
 /// plugins dir; spec 14.6): a hit skips the source fetch and the compile.
-pub fn prepare_in(broker: &dyn host_api::Broker, key: &str, cache_root: Option<&std::path::Path>) -> Result<Prepared, RoxError> {
+pub fn prepare_in(broker: &dyn host_api::Broker, key: &str, cache_root: Option<&std::path::Path>) -> Result<Prepared, MiniError> {
     let t0 = std::time::Instant::now();
     let key = V1Key::parse(key)?;
     let plugin = host_api::plugins(broker)?
         .iter()
         .filter_map(PluginEntry::from_json)
         .find(|p| p.id == key.plugin)
-        .ok_or_else(|| RoxError::new("not_found", format!("{} is not installed.", key.plugin)))?;
+        .ok_or_else(|| MiniError::new("not_found", format!("{} is not installed.", key.plugin)))?;
     if !plugin.enabled {
-        return Err(RoxError::new("plugin_unavailable", format!("{} is disabled.", plugin.title)));
+        return Err(MiniError::new("plugin_unavailable", format!("{} is disabled.", plugin.title)));
     }
     let listed = t0.elapsed();
     let r = prepare_cached(broker, key, plugin, cache_root);
@@ -624,7 +624,7 @@ pub fn prepare_cached(
     mut key: V1Key,
     plugin: PluginEntry,
     cache_root: Option<&std::path::Path>,
-) -> Result<Prepared, RoxError> {
+) -> Result<Prepared, MiniError> {
     let Some(root) = cache_root else { return prepare_with(broker, key, plugin) };
     // a native screen has no module to cache
     if plugin.app(&key.app).is_some_and(|a| a.get("native").is_some()) {
@@ -638,7 +638,7 @@ pub fn prepare_cached(
         let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
         let permissions_json = app.get("permissions").cloned();
         let permissions = Permissions::parse(permissions_json.as_ref())
-            .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
+            .map_err(|e| MiniError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
         ticket_prop(&mut key, app.get("props"));
         super::props::validate(&key.props, app.get("props"))?;
         log::info!("mini v1 timing: {}/{} cache hit {} ms (no fetch, no compile)", plugin.id, key.app, t0.elapsed().as_millis());
@@ -652,20 +652,20 @@ pub fn prepare_cached(
 /// Prewarm (spec 14.6): fetches, checks and compiles `app` of `plugin` into
 /// the cache under `root` unless it is there. No props, no session, no
 /// engine. Whether it compiled (false: a hit).
-pub fn warm(broker: &dyn host_api::Broker, plugin: &PluginEntry, app: &str, root: &std::path::Path) -> Result<bool, RoxError> {
-    let entry = plugin.app(app).ok_or_else(|| RoxError::new("not_found", format!("{} has no app {app}", plugin.id)))?;
+pub fn warm(broker: &dyn host_api::Broker, plugin: &PluginEntry, app: &str, root: &std::path::Path) -> Result<bool, MiniError> {
+    let entry = plugin.app(app).ok_or_else(|| MiniError::new("not_found", format!("{} has no app {app}", plugin.id)))?;
     let declared = entry.get("fingerprint").and_then(Value::as_str).unwrap_or_default();
-    let rox = super::cache::build_id();
-    if super::cache::get(root, &plugin.id, app, declared, &rox).is_some() {
+    let build_id = super::cache::build_id();
+    if super::cache::get(root, &plugin.id, app, declared, &build_id).is_some() {
         return Ok(false);
     }
     let title = entry.get("title").and_then(Value::as_str).unwrap_or(app);
     let (source, served) = host_api::app_source(broker, &plugin.id, app)?;
     if fingerprint(&source) != declared || served != declared || source.len() > MAX_SOURCE {
-        return Err(RoxError::new("fingerprint_mismatch", say::FINGERPRINT));
+        return Err(MiniError::new("fingerprint_mismatch", say::FINGERPRINT));
     }
     let js = build(app, title, &source)?;
-    super::cache::put(root, &plugin.id, app, declared, &rox, &js);
+    super::cache::put(root, &plugin.id, app, declared, &build_id, &js);
     Ok(true)
 }
 
@@ -675,13 +675,13 @@ pub fn native_screen(app: &Value) -> Option<&str> {
 }
 
 /// [`prepare`] for a plugin already listed.
-pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: PluginEntry) -> Result<Prepared, RoxError> {
+pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: PluginEntry) -> Result<Prepared, MiniError> {
     let app = plugin.app(&key.app).cloned().ok_or_else(|| {
-        RoxError::new("not_found", format!("{} has no app {}.", plugin.title, key.app))
+        MiniError::new("not_found", format!("{} has no app {}.", plugin.title, key.app))
     })?;
     let title = app.get("title").and_then(Value::as_str).unwrap_or(&key.app).to_owned();
     if app.get("sdk").and_then(Value::as_str).is_some_and(|sdk| sdk != "1") {
-        return Err(RoxError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
+        return Err(MiniError::new("not_supported", format!("{title} needs a newer Buwiz Bot.")));
     }
     // `native: {screen, abi}` (protocol 1.0): a screen compiled into this
     // build, for a first-party plugin only (the broker refuses others too)
@@ -690,23 +690,23 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
     }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
-        .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
+        .map_err(|e| MiniError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
     ticket_prop(&mut key, app.get("props"));
     super::props::validate(&key.props, app.get("props"))?;
     let t_fetch = std::time::Instant::now();
     let (source, served) = host_api::app_source(broker, &plugin.id, &key.app).map_err(|e| match e.code.as_str() {
-        "fingerprint_mismatch" => RoxError::new("fingerprint_mismatch", say::FINGERPRINT),
-        "plugin_unavailable" => RoxError::new("plugin_unavailable", say::unavailable(&plugin.title)),
+        "fingerprint_mismatch" => MiniError::new("fingerprint_mismatch", say::FINGERPRINT),
+        "plugin_unavailable" => MiniError::new("plugin_unavailable", say::unavailable(&plugin.title)),
         _ => e,
     })?;
     let declared = app.get("fingerprint").and_then(Value::as_str).unwrap_or_default();
     let actual = fingerprint(&source);
     if source.len() > MAX_SOURCE {
-        return Err(RoxError::new("invalid_args", say::compile(&title, "its code is over 512 KiB", None)));
+        return Err(MiniError::new("invalid_args", say::compile(&title, "its code is over 512 KiB", None)));
     }
     if actual != declared || served != declared {
         log::warn!("mini v1: {}/{}: fingerprint {actual} is not the manifest's {declared}", plugin.id, key.app);
-        return Err(RoxError::new("fingerprint_mismatch", say::FINGERPRINT));
+        return Err(MiniError::new("fingerprint_mismatch", say::FINGERPRINT));
     }
     let t_compile = std::time::Instant::now();
     let js = build(&key.app, &title, &source)?;
@@ -724,21 +724,21 @@ pub fn prepare_with(broker: &dyn host_api::Broker, mut key: V1Key, plugin: Plugi
 /// as a TSX app's, the screen found among those compiled in. A screen this
 /// build lacks (another id, or an abi it was not built with) says it needs
 /// a newer Buwiz Bot.
-fn prepare_native(mut key: V1Key, plugin: PluginEntry, app: &Value, title: String) -> Result<Prepared, RoxError> {
+fn prepare_native(mut key: V1Key, plugin: PluginEntry, app: &Value, title: String) -> Result<Prepared, MiniError> {
     let t0 = std::time::Instant::now();
     if !plugin.first_party {
-        return Err(RoxError::new("permission_denied", say::native_first_party(&title)));
+        return Err(MiniError::new("permission_denied", say::native_first_party(&title)));
     }
     let native = app.get("native");
     let screen = native_screen(app).unwrap_or_default().to_owned();
     let abi = native.and_then(|n| n.get("abi")).and_then(Value::as_u64).and_then(|a| u32::try_from(a).ok()).unwrap_or(0);
     if super::screens::find(&plugin.id, &screen, abi).is_none() {
         log::info!("mini v1: {}/{}: no native screen {screen:?} of abi {abi} in this build", plugin.id, key.app);
-        return Err(RoxError::new("not_supported", say::native(&title)));
+        return Err(MiniError::new("not_supported", say::native(&title)));
     }
     let permissions_json = app.get("permissions").cloned();
     let permissions = Permissions::parse(permissions_json.as_ref())
-        .map_err(|e| RoxError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
+        .map_err(|e| MiniError::new("manifest_invalid", format!("{title}'s permissions are invalid: {}", e.message)))?;
     ticket_prop(&mut key, app.get("props"));
     super::props::validate(&key.props, app.get("props"))?;
     log::info!("mini v1 timing: {}/{} native screen {screen} found {} ms (no fetch, no compile)", plugin.id, key.app, t0.elapsed().as_millis());
@@ -844,9 +844,6 @@ mod tests {
         let js = build("card", "Card", "import { buwiz, BuwizError as E } from \"buwiz\";\nimport { Text } from \"nsh\";\nexport default function Card() { return <Text>{buwiz.app.app + String(E)}</Text>; }").unwrap();
         assert!(js.contains("const buwiz = globalThis.buwiz;const E = globalThis.BuwizError;"), "{js}");
         assert!(!js.contains("from \"buwiz\""), "{js}");
-        // Rox's module is gone (protocol 1.0)
-        assert_eq!(check_source_imports("import { rox } from \"rox\";"), Err("rox".to_owned()));
-        assert_eq!(check_source_imports("import { RoxError } from \"buwiz\";"), Err("RoxError from buwiz".to_owned()));
     }
 
     #[test]
@@ -874,7 +871,7 @@ mod tests {
     }
 
     impl host_api::Broker for Serves {
-        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, MiniError> {
             match route {
                 "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
                     "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0",
@@ -883,7 +880,7 @@ mod tests {
                 "/v1/host/apps/source" => {
                     Ok(serde_json::json!({"source": self.served, "fingerprint": self.listed["fingerprint"]}))
                 }
-                _ => Err(RoxError::new("not_found", route)),
+                _ => Err(MiniError::new("not_found", route)),
             }
         }
     }
@@ -909,13 +906,13 @@ mod tests {
     }
 
     impl host_api::Broker for ListsNative {
-        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, MiniError> {
             match route {
                 "/v1/host/plugins" => Ok(serde_json::json!({"plugins": [{
                     "id": "app.buwiz.fixture", "short": "fx", "title": "Fixture", "version": "1.0.0", "protocol": "1.0.0",
                     "enabled": true, "generation": 1, "first_party": self.first_party, "apps": [self.listed],
                 }]})),
-                _ => Err(RoxError::new("not_found", format!("{route}: a native screen fetches nothing"))),
+                _ => Err(MiniError::new("not_found", format!("{route}: a native screen fetches nothing"))),
             }
         }
     }
@@ -942,7 +939,7 @@ mod tests {
     #[test]
     fn a_first_party_native_screen_prepares_with_nothing_fetched_or_compiled() {
         super::super::test_screens::register();
-        let root = std::env::temp_dir().join(format!("rox-native-prep-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("buwiz-native-prep-{}", std::process::id()));
         // with the module cache too: there is nothing to cache
         let p = prepare_in(&ListsNative { listed: native_app("fx.board", 1), first_party: true }, KEY, Some(&root)).unwrap();
         assert_eq!(p.native, Some(NativeScreen { screen: "fx.board".to_owned(), abi: 1 }));
@@ -963,7 +960,7 @@ mod tests {
     struct ListsBooks;
 
     impl host_api::Broker for ListsBooks {
-        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+        fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, MiniError> {
             match route {
                 "/v1/host/plugins" => {
                     let mut books = books_mini_app::manifest::unsigned("test");
@@ -973,7 +970,7 @@ mod tests {
                     m.insert("first_party".to_owned(), true.into());
                     Ok(serde_json::json!({ "plugins": [books] }))
                 }
-                _ => Err(RoxError::new("not_found", format!("{route}: a native screen fetches nothing"))),
+                _ => Err(MiniError::new("not_found", format!("{route}: a native screen fetches nothing"))),
             }
         }
     }
@@ -1008,10 +1005,10 @@ mod tests {
         // the broker's own refusal shows the same words
         struct Refuses;
         impl host_api::Broker for Refuses {
-            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, RoxError> {
+            fn request(&self, _: &str, route: &str, _: Option<Value>, _: std::time::Duration) -> Result<Value, MiniError> {
                 match route {
                     "/v1/host/plugins" => Serves { listed: card(CARD), served: String::new() }.request("GET", route, None, Default::default()),
-                    _ => Err(RoxError::new("fingerprint_mismatch", "sha256 differs")),
+                    _ => Err(MiniError::new("fingerprint_mismatch", "sha256 differs")),
                 }
             }
         }

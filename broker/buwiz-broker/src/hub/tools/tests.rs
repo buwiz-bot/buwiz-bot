@@ -183,7 +183,7 @@ impl PluginView for Arc<Fake> {
 }
 
 fn with_plugins(label: &str, fake: &Arc<Fake>) -> Arc<HubCtx> {
-    let dir = std::env::temp_dir().join(format!("rox-tools-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    let dir = std::env::temp_dir().join(format!("buwiz-tools-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     let mut ctx = HubCtx::new(dir, Clock::manual());
     ctx.store.load().unwrap();
     ctx.ext.insert(PluginsSeam(Arc::new(fake.clone())));
@@ -249,7 +249,7 @@ async fn agt_09_routine_tools_are_offered_except_in_a_routines_own_turn() {
     assert!(!in_routine.iter().any(|n| n.starts_with("routine_")), "AGT-09: a v0 routine's turn gets none");
     assert!(in_routine.contains(&"fx_echo".to_owned()), "AGT-09: the rest stays");
     // the calls themselves are routines' handlers (5.5); the loop reaches them
-    let mut c = HubCtx::new(std::env::temp_dir().join("rox-agt09-reg"), Clock::manual());
+    let mut c = HubCtx::new(std::env::temp_dir().join("buwiz-agt09-reg"), Clock::manual());
     c.tools.register("routine_list", |_: Arc<HubCtx>, t: TurnCtx, _: Value| async move {
         crate::hub::types::ToolResult { content: json!(format!("routine {}", t.routine.unwrap_or_default())), is_error: t.job.is_none() }
     });
@@ -263,7 +263,7 @@ async fn rsv_06_reserved_names_are_absent_and_refused() {
     let fake = Fake::new("");
     let ctx = with_plugins("rsv06", &fake);
     let run = run_in(&ctx, TurnCtx::default());
-    assert!(!names(&run).await.iter().any(|n| n.starts_with("rox.")), "RSV-06");
+    assert!(!names(&run).await.iter().any(|n| n.starts_with("buwiz.")), "RSV-06");
     assert_eq!(call(&run, "buwiz.provision", json!({})).await.is_error, Some(true), "RSV-06");
 }
 
@@ -413,7 +413,7 @@ async fn card_01_an_answer_card_keeps_its_size_and_snapshot_a_bad_size_drops_it(
     assert_eq!(st.v1_cards[0]["size"], "small", "CARD-01");
     assert_eq!(st.v1_cards[0]["props"]["snapshot"], json!({"due": 2}));
     assert!(st.v1_cards[0]["props"]["as_of"].is_number());
-    assert_eq!(st.link_turn.as_ref().unwrap().links[0]["card"]["size"], "small", "CARD-01: Rox reads it off the link");
+    assert_eq!(st.link_turn.as_ref().unwrap().links[0]["card"]["size"], "small", "CARD-01: Buwiz Bot reads it off the link");
     drop(st);
     let main = run_in(&ctx, TurnCtx::default());
     call(&main, "fx_open", json!({})).await;
@@ -599,7 +599,7 @@ fn which(bin: &str) -> Option<String> {
 }
 
 async fn mcp_ctx(label: &str) -> (Arc<HubCtx>, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("rox-magt-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    let dir = std::env::temp_dir().join(format!("buwiz-magt-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
     ctx.store.load().unwrap();
     ctx.mcp = Some(crate::helper::mcp_servers::McpHost::new(&dir.join("generated").join("app.db"), 8798).unwrap());
@@ -789,7 +789,7 @@ async fn account_required_without_the_google_client_asks_for_setup_first() {
 /// once read that as a pass and stored modules nothing had compiled).
 #[tokio::test]
 async fn generate_app_refuses_when_nsh_cannot_run() {
-    let dir = std::env::temp_dir().join(format!("rox-tools-no-nsh-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    let dir = std::env::temp_dir().join(format!("buwiz-tools-no-nsh-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
     ctx.store.load().unwrap();
     ctx.nsh = Some(Arc::new(crate::hub::pipeline::nsh::tests::stub(&dir.join("stubs.log"), "missing")));
@@ -856,7 +856,7 @@ fn bot_pressing(ctx: &Arc<HubCtx>, tool: &'static str) -> Pressing {
 fn press_bed(label: &str, plugin: &str, wait: std::time::Duration) -> (Arc<HubCtx>, Run) {
     use crate::hub::policy::{ask::AskWait, host_set, CHATS};
     let fake = Fake::new("");
-    let dir = std::env::temp_dir().join(format!("rox-tools-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
+    let dir = std::env::temp_dir().join(format!("buwiz-tools-{label}-{}-{}", std::process::id(), crate::hub::store::now_ms()));
     let mut ctx = HubCtx::new(dir, Clock::manual());
     ctx.store.load().unwrap();
     ctx.ext.insert(PluginsSeam(Arc::new(fake.clone())));

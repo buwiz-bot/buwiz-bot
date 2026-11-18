@@ -48,7 +48,7 @@ macro_rules! four {
 }
 
 /// The package's manifest, in its order (lookups take the first match).
-/// The CJK faces are `@betteroffice/fonts-cjk`'s, which Rox doesn't ship:
+/// The CJK faces are `@betteroffice/fonts-cjk`'s, which Buwiz Bot doesn't ship:
 /// they resolve, and a missing file leaves them out of a chain.
 static BUNDLED: [BundledFace; 70] = {
     let [c0, c1, c2, c3] = four!("Carlito", "Calibri", "Carlito");

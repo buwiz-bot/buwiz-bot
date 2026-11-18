@@ -93,7 +93,7 @@ struct FakeBroker {
 }
 
 impl host_api::Broker for FakeBroker {
-    fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, RoxError> {
+    fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, MiniError> {
         let body = body.unwrap_or(Value::Null);
         match route {
             "/v1/host/call" => {
@@ -185,11 +185,11 @@ impl host_api::Broker for FakeBroker {
                 let gone = body["label"] == "gone";
                 self.switched.lock().unwrap().push((route.to_owned(), body));
                 if gone {
-                    return Err(RoxError::new("needs_signin", "gone needs a sign-in again; work@example.com is active"));
+                    return Err(MiniError::new("needs_signin", "gone needs a sign-in again; work@example.com is active"));
                 }
                 Ok(json!({"ok": true}))
             }
-            _ => Err(RoxError::new("not_found", route)),
+            _ => Err(MiniError::new("not_found", route)),
         }
     }
 }
@@ -340,7 +340,7 @@ impl HostUi for TestUi {
     fn copy(&self, text: &str) {
         self.copied.lock().unwrap().push(text.to_owned());
     }
-    fn preview(&self, doc: Preview) -> Result<(), RoxError> {
+    fn preview(&self, doc: Preview) -> Result<(), MiniError> {
         self.previews.lock().unwrap().push(doc);
         Ok(())
     }
@@ -849,7 +849,7 @@ fn a_host_that_cant_tell_says_the_agent() {
 }
 
 #[test]
-fn rox_call_maps_tool_errors_big_results_and_bad_args() {
+fn buwiz_call_maps_tool_errors_big_results_and_bad_args() {
     let mut o = Open::start(
         board_perms(),
         r#"
@@ -926,7 +926,7 @@ fn brg_13_open_url_is_https_to_listed_origins_and_asks_every_time() {
 }
 
 #[test]
-fn rox_open_app_pushes_declared_apps_without_asking() {
+fn buwiz_open_app_pushes_declared_apps_without_asking() {
     let mut o = Open::start(
         board_perms(),
         &format!(
@@ -965,7 +965,7 @@ fn brg_14_pick_file_returns_no_path_and_read_after_close_rejects_closed() {
         const f = files[0];
         const bytes = await f.read();
         const text = String.fromCharCode(...bytes);
-        return "picked " + refused.join(",") + " " + Object.keys(f).sort().join(",") + " " + f.name + " " + f.size + " " + f.type + " " + JSON.stringify(text) + " " + JSON.stringify(files).includes("rox-mini-v1-pick");
+        return "picked " + refused.join(",") + " " + Object.keys(f).sort().join(",") + " " + f.name + " " + f.size + " " + f.type + " " + JSON.stringify(text) + " " + JSON.stringify(files).includes("buwiz-mini-v1-pick");
         "#,
         Limits::default(),
         move |ui| *ui.files.lock().unwrap() = vec![f2],
@@ -1164,7 +1164,7 @@ fn ready_reaches_an_inline_card_and_full_screen_ignores_it() {
 }
 
 #[test]
-fn brg_19_an_inline_card_takes_rox_drawn_actions_and_a_press_reaches_the_app() {
+fn brg_19_an_inline_card_takes_buwiz_drawn_actions_and_a_press_reaches_the_app() {
     let script = r#"
         const got = [];
         const off = buwiz.onAction((id) => got.push("other " + id));
@@ -1474,7 +1474,7 @@ fn preview_documents_are_embedded_html_resources_within_the_limit() {
     let named = json!({"content": doc("text/html", "<p>a</p>")["content"], "structuredContent": {"title": " Form 2551Q "}});
     assert_eq!(preview_document(named, 64).unwrap().1.as_deref(), Some("Form 2551Q"));
     let failed = json!({"isError": true, "content": [{"type": "text", "text": "no saved return"}]});
-    assert_eq!(preview_document(failed, 64).unwrap_err(), RoxError::new("tool_error", "no saved return"));
+    assert_eq!(preview_document(failed, 64).unwrap_err(), MiniError::new("tool_error", "no saved return"));
 }
 
 #[test]

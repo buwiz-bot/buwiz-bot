@@ -1,4 +1,0 @@
-#!/bin/sh
-# The old name of scripts/buwiz-test, kept so existing commands still work.
-echo "scripts/test-rox is an old name; use scripts/buwiz-test" >&2
-exec "$(dirname "$0")/buwiz-test" "$@"

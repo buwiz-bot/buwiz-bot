@@ -6,7 +6,7 @@
 //!
 //! The worker owns the file too: a save writes a temp file beside it and
 //! renames it over (a crash mid-save leaves the old file whole), and the
-//! file is watched — a change from outside Rox (the AI's office tools, a
+//! file is watched — a change from outside Buwiz Bot (the AI's office tools, a
 //! sync) reloads it silently while the document is clean and asks while
 //! it holds edits.
 
@@ -62,7 +62,7 @@ pub struct State {
     /// It holds edits not saved.
     pub dirty: bool,
     pub saving: bool,
-    /// The file changed outside Rox while it held edits: the UI asks.
+    /// The file changed outside Buwiz Bot while it held edits: the UI asks.
     pub conflict: bool,
     /// The file it saves to (a `.xls` becomes its `.xlsx` once saved).
     pub path: PathBuf,
@@ -126,7 +126,7 @@ impl<D: Document> Session<D> {
     pub fn open(path: PathBuf, sink: Sink, emit: impl Fn(Event<D::Out>) + Send + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
-            .name("rox-office".to_owned())
+            .name("buwiz-office".to_owned())
             .spawn(move || Worker::<D, _>::run(path, sink, rx, emit))
             .expect("spawn the office worker");
         Session { tx }
@@ -341,7 +341,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.rox-save-{}", std::process::id()));
+    let tmp = dir.join(format!(".{name}.buwiz-save-{}", std::process::id()));
     let result = (|| {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
@@ -429,7 +429,7 @@ mod tests {
     }
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-office-session-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("buwiz-office-session-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

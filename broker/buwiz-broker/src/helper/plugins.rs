@@ -34,7 +34,7 @@ use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use super::keystore::Keystore;
 use super::mcp::{self, Conn, Hooks, RpcError, Spec};
 use crate::js;
-use crate::v1::manifest::{self, MANIFEST_URI, ROX_MANIFEST_URI};
+use crate::v1::manifest::{self, MANIFEST_URI};
 use crate::v1::package::{self, Package};
 use crate::v1::trust::Trust;
 use crate::v1::{get, kind_of, tpl, V1Error};
@@ -663,10 +663,6 @@ impl Host {
         let prov = match self.reserved(conn, "buwiz.provision", args, self.timeouts.reserved).await {
             Ok(p) => p,
             Err(e) => {
-                // a plugin built for Rox: it serves rox://manifest, or asks for rox.provision
-                if let Some(title) = self.rox_era(conn, known, e.message().contains("rox.provision must come first")).await {
-                    return refuse("protocol_unsupported", manifest::rox_message(&title));
-                }
                 return refuse("plugin_invalid", format!("buwiz.provision failed: {}", js::slice_utf16(once_prefixed(e.message()), 200)));
             }
         };
@@ -681,32 +677,10 @@ impl Host {
         Ok((manifest, sha256, tools, instructions))
     }
 
-    /// A plugin built for Rox (`asked`: it said so, asking for
-    /// rox.provision; else it lists rox://manifest): its title, from the
-    /// rox manifest, the install record or its id.
-    async fn rox_era(&self, conn: &Conn, known: &str, asked: bool) -> Option<String> {
-        let listed = conn.request("resources/list", json!({}), mcp::DEFAULT_TIMEOUT).await.ok();
-        let lists = listed.as_ref().and_then(|l| get(l, "resources")).and_then(Value::as_array).is_some_and(|r| r.iter().any(|r| get(r, "uri").and_then(Value::as_str) == Some(ROX_MANIFEST_URI)));
-        if !asked && !lists {
-            return None;
-        }
-        let rox = match conn.request("resources/read", json!({"uri": ROX_MANIFEST_URI}), mcp::DEFAULT_TIMEOUT).await {
-            Ok(read) => first_text(&read).map(|t| parse(&t, json!({}))).unwrap_or(json!({})),
-            Err(_) => json!({}),
-        };
-        let text = |v: Option<&Value>| v.and_then(Value::as_str).filter(|t| !t.is_empty()).map(|t| js::slice_utf16(t, 80));
-        let row = (!known.is_empty()).then(|| self.row(known)).flatten().map(|r| r.manifest());
-        Some(text(get(&rox, "title")).or_else(|| text(row.as_ref().and_then(|m| get(m, "title")))).or_else(|| text(get(&rox, "id"))).unwrap_or_else(|| if known.is_empty() { "this mini app".into() } else { known.to_owned() }))
-    }
-
     async fn read_verified(&self, conn: &Conn) -> Result<(Value, String, Vec<Value>, String), Fail> {
         let listed = conn.request("resources/list", json!({}), mcp::DEFAULT_TIMEOUT).await?;
         let resources = get(&listed, "resources").and_then(Value::as_array).cloned().unwrap_or_default();
         if !resources.iter().any(|r| get(r, "uri").and_then(Value::as_str) == Some(MANIFEST_URI)) {
-            if resources.iter().any(|r| get(r, "uri").and_then(Value::as_str) == Some(ROX_MANIFEST_URI)) {
-                let title = self.rox_era(conn, "", true).await.unwrap_or_else(|| "this mini app".into());
-                return refuse("protocol_unsupported", manifest::rox_message(&title));
-            }
             return refuse("manifest_invalid", "the plugin lists no buwiz://manifest");
         }
         let read = conn.request("resources/read", json!({"uri": MANIFEST_URI}), mcp::DEFAULT_TIMEOUT).await?;
@@ -1363,7 +1337,8 @@ impl Host {
     pub fn set_tool(&self, id: &str, tool: Option<&Value>, disabled: Option<&Value>) -> Res {
         let row = self.must_row(id)?;
         let known = parse(&row.tools, json!([]));
-        if !known.as_array().into_iter().flatten().any(|t| crate::v1::same(get(t, "name"), tool)) {
+        let own = format!("{}_", row.short);
+        if !known.as_array().into_iter().flatten().any(|t| crate::v1::same(get(t, "name"), tool) && tpl(get(t, "name")).starts_with(&own)) {
             return V1Error::err("not_found", format!("{id} has no tool {}", js::slice_utf16(&tpl(tool), 80)));
         }
         if kind_of(disabled) != "boolean" {
@@ -1648,19 +1623,10 @@ impl Sink {
     }
 }
 
-/// Why an installed plugin can't start under this host: a Rox-era record
-/// (its tools name `rox.*`, whatever protocol it names; Rox used 1.0 and
-/// 1.1 too), one that names 2.0.x or 2.1.x (1.0's pre-release numbers), or
-/// one older than this host's major.
+/// Why an installed plugin can't start under this host: its record names
+/// a protocol older than this host's major.
 fn older_protocol(row: &Row) -> Option<String> {
     let title = || get(&row.manifest(), "title").filter(|t| js::truthy(t)).map(js::string_of).unwrap_or_else(|| row.id.clone());
-    let rox = parse(&row.tools, json!([])).as_array().into_iter().flatten().any(|t| get(t, "name").and_then(Value::as_str).is_some_and(|n| n.starts_with("rox.")));
-    if rox {
-        return Some(manifest::rox_message(&title()));
-    }
-    if manifest::pre_release(&row.protocol) {
-        return Some(manifest::pre_release_message(&title(), &row.protocol));
-    }
     let major = |p: &str| p.split('.').next().and_then(|m| m.parse::<u64>().ok());
     if !matches!((major(&row.protocol), major(manifest::HOST_PROTOCOL)), (Some(theirs), Some(ours)) if theirs < ours) {
         return None;
@@ -1991,14 +1957,6 @@ mod tests {
 
     #[test]
     fn a_record_from_an_older_protocol_says_why_it_cannot_start() {
-        // Rox's plugins named 1.0 and 1.1 too: their rox.* tools tell them apart
-        let rox = r#"[{"name":"rox.provision","description":"","readOnly":false},{"name":"gws_search","description":"","readOnly":true}]"#;
-        for p in ["1.0.0", "1.1.0", "2.0.0"] {
-            assert_eq!(older_protocol(&row_with("dev.goldcoders.google-workspace", p, rox)).unwrap(), "Google Workspace was made for Rox, an older protocol; install its 1.0 version");
-        }
-        for p in ["2.0.0", "2.1.0"] {
-            assert_eq!(older_protocol(&row_of("app.buwiz.google-workspace", p)).unwrap(), format!("Google Workspace uses the pre-release mini app protocol {p}; install its 1.0 version"));
-        }
         let buwiz = r#"[{"name":"buwiz.provision","description":"","readOnly":false}]"#;
         assert_eq!(older_protocol(&row_with("app.buwiz.google-workspace", manifest::HOST_PROTOCOL, buwiz)), None);
         assert_eq!(older_protocol(&row_of("app.buwiz.google-workspace", "1.0.4")), None);
@@ -2011,7 +1969,7 @@ mod tests {
 
     #[test]
     fn a_doubled_mcp_error_prefix_is_said_once() {
-        assert_eq!(once_prefixed("MCP error -32600: MCP error -32600: rox.provision must come first"), "MCP error -32600: rox.provision must come first");
+        assert_eq!(once_prefixed("MCP error -32600: MCP error -32600: buwiz.provision must come first"), "MCP error -32600: buwiz.provision must come first");
         assert_eq!(once_prefixed("MCP error -32001: Request timed out"), "MCP error -32001: Request timed out");
         assert_eq!(once_prefixed("refused"), "refused");
     }
@@ -2046,7 +2004,7 @@ mod tests {
     fn the_sink_redacts_both_forms_of_the_seed_and_carries_partial_lines() {
         let seed = buwiz_protocol::keys::b64(&[0xfb; 32]);
         let std = buwiz_protocol::keys::b64_std(&[0xfb; 32]).trim_end_matches('=').to_owned();
-        let dir = std::env::temp_dir().join(format!("rox-sink-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buwiz-sink-{}", std::process::id()));
         let file = dir.join("p.log");
         let mut sink = Sink::new(Some(file.clone()), &seed);
         assert!(!sink.write("hello "));

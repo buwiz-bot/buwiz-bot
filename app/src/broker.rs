@@ -1,12 +1,12 @@
-//! Rox starts its broker (plan 7.2, decision O6; no LaunchAgent). At
+//! Buwiz Bot starts its broker (plan 7.2, decision O6; no LaunchAgent). At
 //! launch, when nothing answers on the broker's default origin
-//! ([`client::DEFAULT_GEN`]), Rox runs the `buwiz-broker` its own bundle
+//! ([`client::DEFAULT_GEN`]), Buwiz Bot runs the `buwiz-broker` its own bundle
 //! carries (`Contents/Resources/broker/`, put there by `bundle-dev.sh`):
 //! the hub on, hosting the v1 plugins and MCP servers, on the
 //! owner's broker folder (`~/Library/Application Support/Buwiz Broker`,
 //! moved there from `Grok Shell` once, just before this start:
 //! [`move_data_dir`]). It runs detached, in its own process
-//! group, so it outlives Rox; its log is `~/Library/Logs/Buwiz Bot/broker.log`.
+//! group, so it outlives Buwiz Bot; its log is `~/Library/Logs/Buwiz Bot/broker.log`.
 //!
 //! Never started:
 //! - when something answers already (the owner's broker, run today by
@@ -15,7 +15,7 @@
 //!   `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR` set (what `scripts/buwiz-test`
 //!   sets);
 //! - by a build outside a bundle (no `buwiz-broker` beside it);
-//! - while another Rox holds the start lock (`<Rox data dir>/broker.lock`,
+//! - while another Buwiz Bot holds the start lock (`<Buwiz Bot data dir>/broker.lock`,
 //!   held until the broker it started answers). The broker binds its port
 //!   before anything else, so a second one exits at once anyway.
 //!
@@ -40,7 +40,7 @@ pub enum Answer {
     Nothing,
 }
 
-/// Whether this Rox starts the broker, and why not.
+/// Whether this Buwiz Bot starts the broker, and why not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Start,
@@ -48,9 +48,9 @@ pub enum Decision {
     TestInstance,
     /// the origin answers already
     Answering(Answer),
-    /// no `buwiz-broker` in this Rox's bundle (a bare build)
+    /// no `buwiz-broker` in this Buwiz Bot's bundle (a bare build)
     NotBundled,
-    /// another Rox holds the start lock: it is starting one
+    /// another Buwiz Bot holds the start lock: it is starting one
     LockHeld,
 }
 
@@ -170,31 +170,24 @@ pub fn refusal() -> Option<String> {
 }
 
 /// A test instance: `BUWIZ_BACKEND` set at all (it names its own broker;
-/// even empty, the owner's Rox never sets it), `BUWIZ_BACKGROUND=1`, or
+/// even empty, the owner's Buwiz Bot never sets it), `BUWIZ_BACKGROUND=1`, or
 /// `BUWIZ_DATA_DIR` set (`scripts/buwiz-test` sets it for every instance).
 pub fn is_test_instance(backend: Option<&str>, background: Option<&str>, data_dir: Option<&str>) -> bool {
     backend.is_some() || background == Some("1") || data_dir.is_some_and(|d| !d.is_empty())
 }
 
-/// [`is_test_instance`] over the environment `get` reads, by the Buwiz
-/// names and, apart, by their old ones (`ROX_BACKEND`, `ROX_BACKGROUND`,
-/// `ROX_DATA_DIR`): a bench that sets either is a test instance, so it never
-/// starts a broker on the owner's port or data.
+/// [`is_test_instance`] over the environment `get` reads
+/// (`BUWIZ_BACKEND`, `BUWIZ_BACKGROUND`, `BUWIZ_DATA_DIR`): a bench that
+/// sets one is a test instance, so it never starts a broker on the owner's
+/// port or data.
 pub fn test_instance_in(get: impl Fn(&str) -> Option<OsString>) -> bool {
-    let s = |k: &str| get(k).map(|v| v.to_string_lossy().into_owned());
-    let by = |names: [&str; 3]| is_test_instance(s(names[0]).as_deref(), s(names[1]).as_deref(), s(names[2]).as_deref());
-    let new = ["BUWIZ_BACKEND", "BUWIZ_BACKGROUND", "BUWIZ_DATA_DIR"];
-    let test = by(new) || by(new.map(|n| buwiz_protocol::env::old_name(n).unwrap_or(n)));
-    // the old names' warning, once
-    for n in new {
-        let _ = buwiz_protocol::env::var_in(n, &get);
-    }
-    test
+    let s = |k: &str| buwiz_protocol::env::var_in(k, &get).map(|v| v.to_string_lossy().into_owned());
+    is_test_instance(s("BUWIZ_BACKEND").as_deref(), s("BUWIZ_BACKGROUND").as_deref(), s("BUWIZ_DATA_DIR").as_deref())
 }
 
 /// The start decision. `probe` asks the origin (twice when it starts: a
-/// broker another Rox started between the first probe and the lock
-/// answers by then); `lock` takes the start lock, true when this Rox got
+/// broker another Buwiz Bot started between the first probe and the lock
+/// answers by then); `lock` takes the start lock, true when this Buwiz Bot got
 /// it. Neither runs for a test instance, and the lock is taken only when
 /// nothing answers and there is a broker to start.
 pub fn decide(test: bool, mut probe: impl FnMut() -> Answer, bundled: bool, lock: impl FnOnce() -> bool) -> Decision {
@@ -250,20 +243,18 @@ fn probe(addr: SocketAddr) -> Answer {
     }
 }
 
-/// The bundled broker's file name, and its name before the rename (an app
-/// binary updated in a bundle `bundle-dev.sh` has not repackaged yet).
+/// The bundled broker's file name.
 pub const BROKER_NAME: &str = "buwiz-broker";
-pub const OLD_BROKER_NAME: &str = "rox-broker";
 
 /// The broker in the bundle `exe` runs from (`<app>/Contents/MacOS/<exe>`
-/// → `<app>/Contents/Resources/broker/buwiz-broker`, else `…/rox-broker`
-/// when only that one `is_file`); `None` outside a bundle or with neither.
+/// → `<app>/Contents/Resources/broker/buwiz-broker`) when it `is_file`;
+/// `None` outside a bundle or without it.
 pub fn bundled_broker(exe: &Path, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let shape = macos.file_name()? == "MacOS" && contents.file_name()? == "Contents";
     let dir = shape.then(|| contents.join("Resources").join("broker"))?;
-    [BROKER_NAME, OLD_BROKER_NAME].iter().map(|n| dir.join(n)).find(|b| is_file(b))
+    Some(dir.join(BROKER_NAME)).filter(|b| is_file(b))
 }
 
 /// How the broker is started.
@@ -272,8 +263,8 @@ pub struct Launch {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub env: Vec<(&'static str, OsString)>,
-    /// Rox's own variables the broker and its plugins must not inherit
-    /// (the automation token, a port meant for Rox's tests).
+    /// Buwiz Bot's own variables the broker and its plugins must not inherit
+    /// (the automation token, a port meant for Buwiz Bot's tests).
     pub env_remove: Vec<&'static str>,
     pub data: PathBuf,
     pub log: PathBuf,
@@ -315,7 +306,7 @@ pub fn move_data_dir(home: &Path, busy: &dyn Fn() -> bool) -> buwiz_protocol::br
 /// on: it needs no flag and no switch (`--no-node` and `BUWIZ_BROKER_HUB` and
 /// the like are still accepted by it, and no longer passed).
 /// `nsh` and `nsh-macos-host` are the bundle's (`broker/bin/`, as Grok
-/// Shell.app set them): a Finder-launched Rox has no nsh on PATH. The
+/// Shell.app set them): a Finder-launched Buwiz Bot has no nsh on PATH. The
 /// widget pipeline runs `nsh build`/`check`, pop-outs `nsh-macos-host`,
 /// which loads generated modules from `NSH_CHUNK_DIR`.
 pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
@@ -330,28 +321,24 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
         "--assets".into(),
         assets.into(),
     ];
-    // by the Buwiz names and the old ones: the bundle's broker may be an
-    // older build that reads only the old names
-    let both = |k: &'static str, v: OsString| buwiz_protocol::env::with_old(k).map(move |n| (n, v.clone()));
-    let env = both("BUWIZ_BROKER_DATA_DIR", data.clone().into())
-        .chain([
-            ("NSH", dir.join("bin").join("nsh").into()),
-            ("NSH_HOST", dir.join("bin").join("nsh-macos-host").into()),
-            ("NSH_CHUNK_DIR", data.join("chunks").into()),
-        ])
-        .collect();
+    let env = vec![
+        ("BUWIZ_BROKER_DATA_DIR", data.clone().into()),
+        ("NSH", dir.join("bin").join("nsh").into()),
+        ("NSH_HOST", dir.join("bin").join("nsh-macos-host").into()),
+        ("NSH_CHUNK_DIR", data.join("chunks").into()),
+    ];
     let mut env_remove = vec!["GPUI_AGENT", "GPUI_AGENT_TOKEN", "GPUI_AGENT_TOKEN_FILE", "GPUI_AGENT_ADDR", "GPUI_AGENT_ALLOW_RELEASE", "PORT"];
     // a release binary doesn't name it: `scripts/release/build.sh` checks
     #[cfg(feature = "dev-agent")]
     env_remove.push("GPUI_AGENT_ACTOR");
-    env_remove.extend(buwiz_protocol::env::with_old("BUWIZ_PUBLIC_PORT"));
+    env_remove.push("BUWIZ_PUBLIC_PORT");
     let log = crate::identity::logs_dir(home).join("broker.log");
     Launch { program: broker.to_owned(), args, env, env_remove, data, log }
 }
 
 /// Starts `l` detached: its own process group, stdin closed, output
 /// appended to its log, working in `/`. A thread reaps it if it exits
-/// while Rox runs; it outlives Rox otherwise.
+/// while Buwiz Bot runs; it outlives Buwiz Bot otherwise.
 fn spawn(l: &Launch) -> std::io::Result<u32> {
     use std::os::unix::process::CommandExt;
     if let Some(dir) = l.log.parent() {
@@ -378,7 +365,7 @@ fn spawn(l: &Launch) -> std::io::Result<u32> {
     Ok(pid)
 }
 
-/// The start lock: held while this Rox starts the broker. `Ok(None)` when
+/// The start lock: held while this Buwiz Bot starts the broker. `Ok(None)` when
 /// another holds it; an error when it can't be taken at all.
 fn try_lock(path: &Path) -> std::io::Result<Option<File>> {
     if let Some(dir) = path.parent() {
@@ -493,9 +480,6 @@ mod tests {
             ] {
                 assert!(refused(EXE, None, &[("BUWIZ_BACKEND", backend), DATA]).is_some(), "{backend:?}");
             }
-            // a blank new name shadows a good old one, and the client goes to the default
-            let shadow = [("BUWIZ_BACKEND", "   "), ("ROX_BACKEND", "http://127.0.0.1:8821"), DATA];
-            assert!(refused(EXE, None, &shadow).is_some());
         }
 
         #[test]
@@ -537,8 +521,6 @@ mod tests {
         #[test]
         fn a_test_bundle_with_its_own_setup_starts() {
             assert_eq!(refused(EXE, Some("dev.buwiz.bot.test-gws"), &[BROKER, DATA]), None);
-            let old = [("ROX_BACKEND", "http://127.0.0.1:8821"), ("ROX_DATA_DIR", "/tmp/x")];
-            assert_eq!(refused(EXE, None, &old), None);
             let nobody = [("BUWIZ_BACKEND", "http://127.0.0.1:1"), DATA];
             assert_eq!(refused(EXE, None, &nobody), None);
             // no scheme is a typo: the client goes to an address nothing answers on
@@ -566,6 +548,9 @@ mod tests {
             let body = &body[body.find('{').unwrap() + 1..];
             let first = body.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//")).unwrap();
             assert_eq!(first, "if let Some(why) = buwiz_bot::broker::refusal() {");
+            // and the old variable names are refused right after, still before anything opens
+            let second = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).nth(4).unwrap();
+            assert_eq!(second, "if let Err(why) = buwiz_protocol::env::refuse_old_names() {");
             assert!(!source.contains("#[ctor"), "nothing runs before main");
         }
     }
@@ -584,23 +569,19 @@ mod tests {
         assert!(!is_test_instance(None, None, Some("")));
     }
 
-    /// A bench that still sets the old names is a test instance, as is one
-    /// that sets the new; the owner's app (neither) is not.
+    /// A bench that sets a test name is a test instance; the owner's app
+    /// (none of them) is not.
     #[test]
-    fn a_test_instance_by_its_old_or_new_names() {
+    fn a_test_instance_by_its_names() {
         let env = |pairs: &[(&str, &str)]| {
             let pairs: Vec<(String, OsString)> = pairs.iter().map(|(k, v)| (k.to_string(), OsString::from(v))).collect();
             move |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
         };
         assert!(!test_instance_in(env(&[])));
         assert!(!test_instance_in(env(&[("HOME", "/Users/u"), ("BUWIZ_BACKGROUND", "0")])));
-        for (new, old, v) in [("BUWIZ_BACKEND", "ROX_BACKEND", "http://127.0.0.1:8798"), ("BUWIZ_BACKGROUND", "ROX_BACKGROUND", "1"), ("BUWIZ_DATA_DIR", "ROX_DATA_DIR", "/tmp/r/data")] {
-            assert!(test_instance_in(env(&[(new, v)])), "{new}");
-            assert!(test_instance_in(env(&[(old, v)])), "{old}");
+        for (name, v) in [("BUWIZ_BACKEND", "http://127.0.0.1:8798"), ("BUWIZ_BACKGROUND", "1"), ("BUWIZ_DATA_DIR", "/tmp/r/data")] {
+            assert!(test_instance_in(env(&[(name, v)])), "{name}");
         }
-        // an old name says so even when the new one says otherwise
-        assert!(test_instance_in(env(&[("BUWIZ_BACKGROUND", "0"), ("ROX_BACKGROUND", "1")])));
-        assert!(test_instance_in(env(&[("BUWIZ_DATA_DIR", ""), ("ROX_DATA_DIR", "/tmp/r/data")])));
     }
 
     /// Runs [`decide`] against canned answers; → (decision, probes made,
@@ -645,13 +626,13 @@ mod tests {
     }
 
     #[test]
-    fn a_held_lock_means_another_rox_is_starting_it() {
+    fn a_held_lock_means_another_buwiz_is_starting_it() {
         use Answer::*;
         assert_eq!(run_decide(false, &[Nothing, Nothing], true, false), (Decision::LockHeld, 1, true));
     }
 
     #[test]
-    fn a_broker_started_by_another_rox_before_the_lock_is_found() {
+    fn a_broker_started_by_another_buwiz_before_the_lock_is_found() {
         use Answer::*;
         assert_eq!(run_decide(false, &[Nothing, Healthy], true, true), (Decision::Answering(Healthy), 2, true));
     }
@@ -679,23 +660,20 @@ mod tests {
     fn the_broker_is_in_the_bundles_resources() {
         let any = |_: &Path| true;
         assert_eq!(
-            bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), any),
-            Some(PathBuf::from("/A/Rox.app/Contents/Resources/broker/buwiz-broker"))
+            bundled_broker(Path::new("/A/Buwiz Bot.app/Contents/MacOS/buwiz-bot-bin"), any),
+            Some(PathBuf::from("/A/Buwiz Bot.app/Contents/Resources/broker/buwiz-broker"))
         );
-        // a bundle packaged before the rename: its broker has the old name
-        let old = |b: &Path| b.ends_with("broker/rox-broker");
-        assert_eq!(
-            bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), old),
-            Some(PathBuf::from("/A/Rox.app/Contents/Resources/broker/rox-broker"))
-        );
-        assert_eq!(bundled_broker(Path::new("/A/Rox.app/Contents/MacOS/rox-bin"), |_: &Path| false), None);
+        // only the broker's own name counts
+        let other = |b: &Path| b.ends_with("broker/other-broker");
+        assert_eq!(bundled_broker(Path::new("/A/Buwiz Bot.app/Contents/MacOS/buwiz-bot-bin"), other), None);
+        assert_eq!(bundled_broker(Path::new("/A/Buwiz Bot.app/Contents/MacOS/buwiz-bot-bin"), |_: &Path| false), None);
         assert_eq!(bundled_broker(Path::new("/r/app/target/debug/buwiz-bot"), any), None);
-        assert_eq!(bundled_broker(Path::new("/rox"), any), None);
+        assert_eq!(bundled_broker(Path::new("/buwiz-bot"), any), None);
     }
 
     #[test]
     fn the_command_line_names_the_owners_data_dir_and_no_switches() {
-        let b = Path::new("/A/Rox.app/Contents/Resources/broker/buwiz-broker");
+        let b = Path::new("/A/Buwiz Bot.app/Contents/Resources/broker/buwiz-broker");
         let l = launch(b, Path::new("/Users/u"), 8787);
         let data = "/Users/u/Library/Application Support/Buwiz Broker";
         assert_eq!(l.program, PathBuf::from(b));
@@ -708,7 +686,7 @@ mod tests {
                 "--data",
                 data,
                 "--assets",
-                "/A/Rox.app/Contents/Resources/broker/server"
+                "/A/Buwiz Bot.app/Contents/Resources/broker/server"
             ]
         );
         let env: Vec<(&str, &str)> = l.env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
@@ -716,25 +694,24 @@ mod tests {
             env,
             [
                 ("BUWIZ_BROKER_DATA_DIR", data),
-                ("GROK_DATA_DIR", data),
-                ("NSH", "/A/Rox.app/Contents/Resources/broker/bin/nsh"),
-                ("NSH_HOST", "/A/Rox.app/Contents/Resources/broker/bin/nsh-macos-host"),
+                ("NSH", "/A/Buwiz Bot.app/Contents/Resources/broker/bin/nsh"),
+                ("NSH_HOST", "/A/Buwiz Bot.app/Contents/Resources/broker/bin/nsh-macos-host"),
                 ("NSH_CHUNK_DIR", "/Users/u/Library/Application Support/Buwiz Broker/chunks")
             ]
         );
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN"));
         assert!(l.env_remove.contains(&"GPUI_AGENT_TOKEN_FILE"));
-        assert!(l.env_remove.contains(&"BUWIZ_PUBLIC_PORT") && l.env_remove.contains(&"ROX_PUBLIC_PORT"));
+        assert!(l.env_remove.contains(&"BUWIZ_PUBLIC_PORT"));
         assert_eq!(l.data, PathBuf::from(data));
         assert_eq!(l.log, PathBuf::from("/Users/u/Library/Logs/Buwiz Bot/broker.log"));
     }
 
     #[test]
     fn nsh_is_the_bundles_and_chunks_go_to_the_data_dir() {
-        let l = launch(Path::new("/B/Rox.app/Contents/Resources/broker/buwiz-broker"), Path::new("/Users/v"), 8800);
+        let l = launch(Path::new("/B/Buwiz Bot.app/Contents/Resources/broker/buwiz-broker"), Path::new("/Users/v"), 8800);
         let get = |k: &str| l.env.iter().find(|(n, _)| *n == k).map(|(_, v)| PathBuf::from(v));
-        assert_eq!(get("NSH"), Some(PathBuf::from("/B/Rox.app/Contents/Resources/broker/bin/nsh")));
-        assert_eq!(get("NSH_HOST"), Some(PathBuf::from("/B/Rox.app/Contents/Resources/broker/bin/nsh-macos-host")));
+        assert_eq!(get("NSH"), Some(PathBuf::from("/B/Buwiz Bot.app/Contents/Resources/broker/bin/nsh")));
+        assert_eq!(get("NSH_HOST"), Some(PathBuf::from("/B/Buwiz Bot.app/Contents/Resources/broker/bin/nsh-macos-host")));
         assert_eq!(get("NSH_CHUNK_DIR"), Some(l.data.join("chunks")));
     }
 
@@ -773,7 +750,7 @@ mod tests {
         assert!(old_dir(&home).symlink_metadata().unwrap().file_type().is_symlink() && new.join(MOVED_MARKER).is_file());
         let copy = rusqlite::Connection::open(backup.join("app.db")).unwrap();
         assert_eq!(copy.query_row("SELECT x FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
-        let l = launch(Path::new("/A/Rox.app/Contents/Resources/broker/buwiz-broker"), &home, 8787);
+        let l = launch(Path::new("/A/Buwiz Bot.app/Contents/Resources/broker/buwiz-broker"), &home, 8787);
         assert_eq!(l.data, new);
         assert!(l.args.contains(&new.clone().into_os_string()));
         assert_eq!(move_data_dir(&home, &|| false), Move::AlreadyThere, "once");
@@ -787,7 +764,7 @@ mod tests {
         let home = home_with_grok_shell("busy");
         assert_eq!(move_data_dir(&home, &|| true), Move::Busy);
         assert!(!new_dir(&home).exists());
-        assert_eq!(launch(Path::new("/A/Rox.app/Contents/Resources/broker/buwiz-broker"), &home, 8787).data, old_dir(&home));
+        assert_eq!(launch(Path::new("/A/Buwiz Bot.app/Contents/Resources/broker/buwiz-broker"), &home, 8787).data, old_dir(&home));
         let _ = std::fs::remove_dir_all(home);
     }
 }

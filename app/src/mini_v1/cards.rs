@@ -1,6 +1,6 @@
 //! v1 app cards in a chat (spec 6.5, 9.6, Q9).
 //!
-//! A tool result's `_meta["buwiz/open"]` reaches Rox as a card on the reply
+//! A tool result's `_meta["buwiz/open"]` reaches Buwiz Bot as a card on the reply
 //! (the broker adds it to the turn's `links`, provider `buwiz-app`, with the
 //! checked open under `card`). A full app's card has the title and
 //! **Open**; an inline app is one card whose header's chevron expands it.
@@ -11,15 +11,15 @@
 //! `inline.max_height` ([`fit_height`]). A user's own command, token or pin mounts an
 //! inline app at once (Q9); a tool result or link waits for the chevron.
 //!
-//! An inline app may hand Rox its card's chrome (7.12 to 7.14, protocol
-//! 1.1): footer buttons Rox draws in its own style (`buwiz.actions`,
+//! An inline app may hand Buwiz Bot its card's chrome (7.12 to 7.14, protocol
+//! 1.1): footer buttons Buwiz Bot draws in its own style (`buwiz.actions`,
 //! [`parse_actions`]), a short status in the header (`buwiz.meta`,
 //! [`parse_meta`]), and the one line the card settles to (`buwiz.settle`,
 //! [`parse_settle`]).
 
 use serde_json::{Map, Value};
 
-use super::{RoxError, V1Key, perms};
+use super::{MiniError, V1Key, perms};
 
 /// Inline width and height ranges (5.5, Appendix A).
 pub const WIDTH: (f32, f32) = (240.0, 960.0);
@@ -340,13 +340,13 @@ pub struct CardMeta {
     pub pill: bool,
 }
 
-fn invalid(m: impl Into<String>) -> RoxError {
-    RoxError::new("invalid_args", m)
+fn invalid(m: impl Into<String>) -> MiniError {
+    MiniError::new("invalid_args", m)
 }
 
 /// `v` as one line of text, trimmed: 1 to `max` characters, no line
 /// breaks or other control characters.
-fn one_line(v: Option<&Value>, what: &str, max: usize) -> Result<String, RoxError> {
+fn one_line(v: Option<&Value>, what: &str, max: usize) -> Result<String, MiniError> {
     let t = v.and_then(Value::as_str).ok_or_else(|| invalid(format!("{what} is a string")))?.trim();
     if t.is_empty() {
         return Err(invalid(format!("{what} is empty")));
@@ -361,7 +361,7 @@ fn one_line(v: Option<&Value>, what: &str, max: usize) -> Result<String, RoxErro
 }
 
 /// Field `k` of `o` as a boolean, false when absent or null.
-fn flag(o: &Map<String, Value>, k: &str) -> Result<bool, RoxError> {
+fn flag(o: &Map<String, Value>, k: &str) -> Result<bool, MiniError> {
     match o.get(k) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(b)) => Ok(*b),
@@ -373,7 +373,7 @@ fn flag(o: &Map<String, Value>, k: &str) -> Result<bool, RoxError> {
 /// `{id, label, primary?, disabled?}` and no other key; ids unique, of
 /// `[A-Za-z0-9_.:-]`, at most [`MAX_ACTION_ID`]; labels one line, at most
 /// [`MAX_LABEL`] characters; at most one primary. `[]` clears the footer.
-pub fn parse_actions(v: Option<&Value>) -> Result<Vec<CardAction>, RoxError> {
+pub fn parse_actions(v: Option<&Value>) -> Result<Vec<CardAction>, MiniError> {
     let list = v.and_then(Value::as_array).ok_or_else(|| invalid("buwiz.actions takes a list"))?;
     if list.len() > MAX_ACTIONS {
         return Err(invalid(format!("a card has at most {MAX_ACTIONS} actions")));
@@ -407,14 +407,14 @@ pub fn parse_actions(v: Option<&Value>) -> Result<Vec<CardAction>, RoxError> {
 }
 
 /// The footer's order: the primary first, then the rest as the app listed
-/// them (the row is right-aligned, as Rox's own cards).
+/// them (the row is right-aligned, as Buwiz Bot's own cards).
 pub fn footer_order(actions: &[CardAction]) -> Vec<&CardAction> {
     actions.iter().filter(|a| a.primary).chain(actions.iter().filter(|a| !a.primary)).collect()
 }
 
 /// `buwiz.meta({text, pill?})` checked (7.13): `text` one line of at most
 /// [`MAX_META`] characters, `pill` a boolean; `null` clears it.
-pub fn parse_meta(v: Option<&Value>) -> Result<Option<CardMeta>, RoxError> {
+pub fn parse_meta(v: Option<&Value>) -> Result<Option<CardMeta>, MiniError> {
     let o = match v {
         None | Some(Value::Null) => return Ok(None),
         Some(Value::Object(o)) => o,
@@ -428,7 +428,7 @@ pub fn parse_meta(v: Option<&Value>) -> Result<Option<CardMeta>, RoxError> {
 
 /// `buwiz.settle(text)` checked (7.14): one line of at most [`MAX_SETTLE`]
 /// characters, trimmed.
-pub fn parse_settle(v: Option<&Value>) -> Result<String, RoxError> {
+pub fn parse_settle(v: Option<&Value>) -> Result<String, MiniError> {
     one_line(v, "the outcome", MAX_SETTLE)
 }
 

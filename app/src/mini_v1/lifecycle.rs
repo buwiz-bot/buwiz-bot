@@ -81,7 +81,7 @@ pub fn running_again(event: &Value, plugin: &str) -> bool {
     id == Some(plugin) && event.get("state").and_then(Value::as_str) == Some("running")
 }
 
-/// The apps of `plugin` whose source Rox holds (`loaded`) but that are not
+/// The apps of `plugin` whose source Buwiz Bot holds (`loaded`) but that are not
 /// running: after the plugin changed, they fetch its new code before they
 /// show again. A running open keeps its own until Reload (LCY-04).
 pub fn idle_sources<'a>(loaded: impl Iterator<Item = &'a String>, running: &[String], plugin: &str) -> Vec<String> {
@@ -96,7 +96,7 @@ pub fn reconnecting(title: &str) -> String {
     format!("{title} is reconnecting…")
 }
 
-/// Whether a broker `plugin` event repeats the last one Rox heard for its
+/// Whether a broker `plugin` event repeats the last one Buwiz Bot heard for its
 /// plugin (the same state, code, generation, enabled and waiting
 /// update): no news, so no list and no reload. `last` keeps what each plugin last said.
 pub fn repeated(last: &mut std::collections::HashMap<String, String>, event: &Value) -> bool {

@@ -102,7 +102,7 @@ fn migrate_data_with(over: Option<&OsStr>, home: &Path, rename: &Rename) -> Resu
     // nsh's storage of the root's app id; none is kept today, so a failure
     // here is no reason to stop
     if let Err(e) = migrate_dir(&support.join(OLD_APP_ID), &support.join(APP_ID), rename) {
-        log::warn!("rox: {OLD_APP_ID}'s storage was not moved: {e}");
+        log::warn!("buwiz: {OLD_APP_ID}'s storage was not moved: {e}");
     }
     Ok(done)
 }
@@ -125,7 +125,7 @@ fn migrate_dir(old: &Path, new: &Path, rename: &Rename) -> Result<Migration, Str
             std::fs::rename(&partial, new).map_err(|e| format!("{}: {e}", new.display()))?;
             // the copy is complete and in place: the old dir has nothing left to give
             if let Err(e) = std::fs::remove_dir_all(old) {
-                log::warn!("rox: {} was copied but not removed: {e}", old.display());
+                log::warn!("buwiz: {} was copied but not removed: {e}", old.display());
             }
             Migration::Copied
         }
@@ -173,7 +173,7 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-identity-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("buwiz-identity-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join(SUPPORT)).unwrap();
         d
@@ -181,7 +181,7 @@ mod tests {
 
     /// A Rox data dir as a migrated install has it: the v0 migration done
     /// at `migrated_at` 1234, a logins table, a plugin's files.
-    fn rox_dir(home: &Path) -> PathBuf {
+    fn old_data_dir(home: &Path) -> PathBuf {
         let old = home.join(SUPPORT).join(OLD_DIR_NAME);
         std::fs::create_dir_all(old.join("plugins/dev.example.p")).unwrap();
         std::fs::write(old.join("mini-v1.json"), r#"{"attachments":[],"pins":[],"opened":[],"migrated_at":1234,"sent":[],"versions":[]}"#).unwrap();
@@ -200,9 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn rox_data_moves_to_buwiz_bot_once_with_a_marker() {
+    fn old_data_moves_to_buwiz_bot_once_with_a_marker() {
         let home = scratch("move");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         assert_eq!(data_dir_in(None, &home), old, "before the migration the data is Rox's");
         assert_eq!(migrate_data(None, &home).unwrap(), Migration::Moved);
         let new = new_dir(&home);
@@ -218,9 +218,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_rename_copies_then_removes_rox_data() {
+    fn a_failed_rename_copies_then_removes_old_data() {
         let home = scratch("copy");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         let refuse = |_: &Path, _: &Path| -> std::io::Result<()> { Err(std::io::Error::other("cross-device link")) };
         assert_eq!(migrate_data_with(None, &home, &refuse).unwrap(), Migration::Copied);
         let new = new_dir(&home);
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn both_dirs_present_are_left_alone() {
         let home = scratch("both");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         let new = new_dir(&home);
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(new.join("logins.db"), b"newer").unwrap();
@@ -250,9 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn rox_data_dir_overrides_and_nothing_moves() {
+    fn an_old_data_dir_overrides_and_nothing_moves() {
         let home = scratch("override");
-        let old = rox_dir(&home);
+        let old = old_data_dir(&home);
         let own = home.join("own");
         assert_eq!(migrate_data(Some(own.as_os_str()), &home).unwrap(), Migration::Overridden);
         assert_eq!(data_dir_in(Some(own.as_os_str()), &home), own);
@@ -358,15 +358,12 @@ mod tests {
         assert!(script.contains("/buwiz-bot-bin\""));
         // the checkout's debug build by the binary's own name
         assert!(script.contains("/debug/buwiz-bot\""), "{script}");
-        // the broker by its name, and by its old one (a link) for an app
-        // binary built before the rename
         let broker = app.join("Contents/Resources/broker");
         assert!(broker.join("buwiz-broker").is_file());
-        assert_eq!(std::fs::read_link(broker.join("rox-broker")).unwrap(), Path::new("buwiz-broker"));
-        // the token by its new file name and, for an older scripts/rox-agent,
-        // its old one; BUWIZ_FPS by both names
+        assert!(!broker.join("rox-broker").exists());
+        // the token by its file name, and also by the older one
         assert!(script.contains("buwiz-gpui-agent-token") && script.contains("rox-gpui-agent-token"));
-        assert!(script.contains("BUWIZ_FPS=0 ROX_FPS=0"));
+        assert!(script.contains("BUWIZ_FPS=0") && !script.contains("ROX_FPS"));
         assert!(!app.join("Contents/MacOS/rox").exists());
         // a dry run leaves LaunchServices alone
         assert!(!String::from_utf8_lossy(&out.stdout).contains("unregistered"));
@@ -377,7 +374,7 @@ mod tests {
     /// bundle of its own, named apart from Buwiz Bot, with the TEST icon,
     /// signed; the name defaults to the instance dir's.
     #[test]
-    fn test_rox_wraps_a_test_bundle_apart_from_buwiz_bot() {
+    fn buwiz_test_wraps_a_test_bundle_apart_from_buwiz_bot() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let dir = scratch("buwiz-test");
         let fake = dir.join("fake-bin");
@@ -418,17 +415,6 @@ mod tests {
         // no --name: the instance dir's, made fit for a bundle id
         let app = run(&[], &dir.join("Bench_2"));
         assert_eq!(app.file_name().unwrap(), "Buwiz Bot test-bench-2.app");
-        // scripts/test-rox, the old name, runs the same and says it is old
-        let out = std::process::Command::new("sh")
-            .arg(manifest.join("../scripts/test-rox"))
-            .args(["--bundle-only", "--name", "books"])
-            .arg(&fake)
-            .arg(dir.join("bench"))
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert_eq!(PathBuf::from(String::from_utf8(out.stdout).unwrap().trim()), dir.join("bench/Buwiz Bot test-books.app"));
-        assert!(String::from_utf8_lossy(&out.stderr).contains("scripts/test-rox is an old name; use scripts/buwiz-test"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -446,5 +432,28 @@ mod tests {
         assert!(include_str!("../ios.sh").contains(&format!("\nID={APP_ID}\n")));
         assert!(include_str!("main.rs").contains(".app_id(buwiz_bot::identity::APP_ID)"));
         assert!(include_str!("main.rs").contains("app_id: buwiz_bot::identity::APP_ID.to_owned()"));
+    }
+
+    /// The scripts that once read a variable under an older name stop with it set:
+    /// exit 2 and the variable's name, before they do anything. Clean, the guard passes.
+    #[test]
+    fn scripts_that_once_read_an_old_name_refuse_it() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let scripts = manifest.join("../scripts");
+        for (script, args, old) in [
+            (scripts.join("broker-live"), vec!["status"], "ROX_APP"),
+            (scripts.join("wait-build"), vec!["true"], "ROX_BUILD_LOCK"),
+            (scripts.join("buwiz-test"), vec!["--bundle-only"], "ROX_BACKEND"),
+            (scripts.join("release/build.sh"), vec![], "ROX_BROKER_BIN"),
+            (manifest.join("bundle-dev.sh"), vec![], "ROX_APP"),
+        ] {
+            let out = std::process::Command::new(&script).args(&args).env(old, "x").env("GROK_DATA_DIR", "x").output().unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(2), "{}: {err}", script.display());
+            assert!(err.contains(&format!("GROK_DATA_DIR, {old};")) && err.contains("use the BUWIZ_ name instead"), "{}: {err}", script.display());
+        }
+        let guard = scripts.join("lib/no-old-names.sh");
+        let clean = std::process::Command::new("/bin/sh").arg("-c").arg(". \"$1\"; echo passed").arg("sh").arg(&guard).env_clear().env("PATH", "/usr/bin:/bin").env("BUWIZ_APP", "x").output().unwrap();
+        assert!(clean.status.success() && String::from_utf8_lossy(&clean.stdout).trim() == "passed", "{}", String::from_utf8_lossy(&clean.stderr));
     }
 }

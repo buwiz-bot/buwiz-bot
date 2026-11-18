@@ -16,6 +16,10 @@ use buwiz_broker::front_door::FrontDoor;
 
 #[tokio::main]
 async fn main() {
+    if let Err(why) = buwiz_protocol::env::refuse_old_names() {
+        eprintln!("buwiz-broker: {why}");
+        std::process::exit(2);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("keystore-check") => std::process::exit(keystore_check(&args[1..])),
@@ -263,7 +267,7 @@ fn plugin_host(data: &std::path::Path, db: &std::path::Path, log_dir: Option<std
     }
     let host = Host::new(Options { db: db.to_path_buf(), keys: keys.clone(), trust_file, log_dir, clock: Clock::system(), timeouts, apps_dir })?;
     host.set_accounts_config(accounts);
-    // Rox's plugin keys, under the new Keychain service before any plugin starts
+    // Buwiz Bot's plugin keys, under the new Keychain service before any plugin starts
     let ids: Vec<String> = host.rows().into_iter().map(|r| r.id).collect();
     match keys.move_from_rox(&ids, &db.with_file_name(buwiz_broker::helper::keystore::MOVED_MARKER)) {
         Ok(0) => {}

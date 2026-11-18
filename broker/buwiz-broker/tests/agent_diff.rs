@@ -66,7 +66,7 @@ async fn call(hub: &Hub, method: Method, url: &str, body: &Value) -> Value {
 }
 
 fn temp(label: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("rox-agent-diff-{label}-{}-{}", std::process::id(), buwiz_broker::hub::store::now_ms()));
+    let d = std::env::temp_dir().join(format!("buwiz-agent-diff-{label}-{}-{}", std::process::id(), buwiz_broker::hub::store::now_ms()));
     std::fs::create_dir_all(d.join("widgets")).unwrap();
     d
 }

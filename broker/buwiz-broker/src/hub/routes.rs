@@ -27,7 +27,7 @@ pub mod mcp_chat;
 
 use hyper::Method;
 
-/// the Rox-facing `/v1/host/*` routes, the `ri_` webhooks and the host
+/// the app-facing `/v1/host/*` routes, the `ri_` webhooks and the host
 /// token (5.5h, track D)
 pub mod host;
 /// `GET /models` (5.3, track B)
@@ -56,7 +56,7 @@ pub enum Track {
     Models,
     /// 5.5, track D: v0 and v1 routines
     Routines,
-    /// 5.5h, track D: the Rox-facing plugin host routes and the host token
+    /// 5.5h, track D: the app-facing plugin host routes and the host token
     Host,
     /// 5.6, track E: agent messaging and buwiz-bridge
     Agents,
@@ -167,7 +167,7 @@ pub const ROUTES: &[Entry] = &[
     e(Any, P("/v1/bridge/"), Hub(Agents)),
     // the webhooks: ah_… (agents) and ri_… (routines)
     e(Any, P("/v1/hooks/"), Hub(Hooks)),
-    // 5.5h the Rox-facing plugin host (finding 1)
+    // 5.5h the app-facing plugin host (finding 1)
     e(Get, X("/v1/host/plugins"), Hub(Host)),
     e(Get, X("/v1/host/events"), Hub(Host)),
     e(Get, X("/v1/host/ui/stream"), Hub(Host)),

@@ -319,7 +319,7 @@ pub(crate) fn with_move(mut items: Vec<CtxItem>, from: &str, kind: &str, id: &st
 }
 
 /// Group `gid`'s artifact `id`, as the sidebar holds it.
-fn group_artifact(gid: &str, id: &str) -> Option<crate::store::RoxApp> {
+fn group_artifact(gid: &str, id: &str) -> Option<crate::store::BuwizApp> {
     store().groups.with_untracked(|gs| {
         gs.iter()
             .find(|g| g.id == gid)?
@@ -333,7 +333,7 @@ fn group_artifact(gid: &str, id: &str) -> Option<crate::store::RoxApp> {
 
 /// A group header's menu: rename, its color, fold, delete (the items
 /// stay).
-pub(crate) fn group_header_items(g: &crate::store::RoxGroup) -> Vec<CtxItem> {
+pub(crate) fn group_header_items(g: &crate::store::BuwizGroup) -> Vec<CtxItem> {
     let folded = untracked(|| store().collapsed.get().get(&g.id).copied().unwrap_or(false));
     let preset = GROUP_COLORS.iter().any(|(_, hex)| g.color.eq_ignore_ascii_case(hex));
     let mut colors: Vec<CtxItem> = GROUP_COLORS
@@ -367,7 +367,7 @@ pub(crate) fn section_header_items(key: &str) -> Vec<CtxItem> {
 /// A group's artifact row: open it (from any chat), its chat, its
 /// details, download (images and files), its link, the groups — and out
 /// of this one.
-pub(crate) fn group_art_items(gid: &str, a: &crate::store::RoxApp) -> Vec<CtxItem> {
+pub(crate) fn group_art_items(gid: &str, a: &crate::store::BuwizApp) -> Vec<CtxItem> {
     let at = format!("{gid}\u{1f}{}", a.app);
     let thread = store().groups.with_untracked(|gs| {
         gs.iter()
@@ -559,7 +559,7 @@ pub(crate) fn msg_items(i: i64) -> Vec<CtxItem> {
 
 /// `botItems` — a bot row's menu (App.tsx:831): pin to the top tiles,
 /// its groups, hide/show, delete.
-pub(crate) fn bot_items(b: &crate::store::RoxBot) -> Vec<CtxItem> {
+pub(crate) fn bot_items(b: &crate::store::BuwizBot) -> Vec<CtxItem> {
     let st = store();
     vec![
         CtxItem::row(
@@ -603,14 +603,14 @@ pub(crate) fn add_items() -> Vec<CtxItem> {
 /// to the chat, details, versions, download, link; then its groups,
 /// Remove from Library and an app's deletion. `at` is the menu's
 /// page position — the Versions picker opens there.
-pub(crate) fn app_items(a: &crate::store::RoxApp, at: (f32, f32)) -> Vec<CtxItem> {
+pub(crate) fn app_items(a: &crate::store::BuwizApp, at: (f32, f32)) -> Vec<CtxItem> {
     if a.kind == "mcp-app" {
         return mcp_items(a);
     }
     let app = a.kind == "app";
     let id = a.app.clone();
     // A connector's file (Google Drive) opens there, copies its Drive link
-    // and has neither Rox versions nor a download.
+    // and has neither Buwiz Bot versions nor a download.
     let remote = a.storage.connector();
     let mut items = vec![
         CtxItem::row(if remote { "Open in Drive" } else { "Open" }, "popout", "lib-open", id.clone()),
@@ -668,7 +668,7 @@ pub(crate) fn app_items(a: &crate::store::RoxApp, at: (f32, f32)) -> Vec<CtxItem
 /// An attached server app's Library row: open it, the chats it's
 /// attached in, its details, its token; pin its app to a group; detach it
 /// from this chat.
-fn mcp_items(a: &crate::store::RoxApp) -> Vec<CtxItem> {
+fn mcp_items(a: &crate::store::BuwizApp) -> Vec<CtxItem> {
     let id = a.app.clone();
     let mut items = vec![
         CtxItem::row("Open", "popout", "lib-open", id.clone()),

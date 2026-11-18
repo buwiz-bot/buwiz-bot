@@ -171,7 +171,7 @@ pub(crate) fn app_card(shell: CardShell) -> impl IntoElement {
                     )
                 })
                 // A generated image opens in the lightbox (a press inside
-                // the mini app never reaches Rox).
+                // the mini app never reaches Buwiz Bot).
                 .when(art.kind == "image" && !art.file.is_empty(), |v| {
                     let (file, title, w, h) = (art.file.clone(), art.title.clone(), art.w, art.h);
                     v.child(

@@ -8,7 +8,7 @@
 
 use serde_json::{Map, Value};
 
-use super::RoxError;
+use super::MiniError;
 
 /// 8 KiB serialized.
 pub const MAX_BYTES: usize = 8 * 1024;
@@ -19,13 +19,13 @@ const MAX_LENGTH_CAP: u64 = 512;
 /// The most properties a schema lists (Appendix A).
 const MAX_PROPERTIES: usize = 16;
 
-fn invalid(m: impl Into<String>) -> RoxError {
-    RoxError::new("invalid_args", m)
+fn invalid(m: impl Into<String>) -> MiniError {
+    MiniError::new("invalid_args", m)
 }
 
 /// Checks `props` against the limits and `schema` (the app's
 /// `apps[].props`, `None` when it declares none).
-pub fn validate(props: &Map<String, Value>, schema: Option<&Value>) -> Result<(), RoxError> {
+pub fn validate(props: &Map<String, Value>, schema: Option<&Value>) -> Result<(), MiniError> {
     let value = Value::Object(props.clone());
     if value.to_string().len() > MAX_BYTES {
         return Err(invalid("props are over 8 KiB"));
@@ -42,7 +42,7 @@ pub fn validate(props: &Map<String, Value>, schema: Option<&Value>) -> Result<()
 }
 
 /// Depth (an object or array is one level), keys and array lengths.
-fn limits(v: &Value, depth: usize) -> Result<(), RoxError> {
+fn limits(v: &Value, depth: usize) -> Result<(), MiniError> {
     match v {
         Value::Object(m) => {
             if depth > MAX_DEPTH {
@@ -73,7 +73,7 @@ fn limits(v: &Value, depth: usize) -> Result<(), RoxError> {
 
 /// Whether `schema` uses only the subset (6.6); anything else is refused,
 /// as the broker refuses it at verification.
-pub fn check_schema(schema: &Value, depth: usize) -> Result<(), RoxError> {
+pub fn check_schema(schema: &Value, depth: usize) -> Result<(), MiniError> {
     let bad = |m: &str| Err(invalid(format!("props schema: {m}")));
     let Some(o) = schema.as_object() else { return bad("a schema is an object") };
     if depth > MAX_DEPTH {
@@ -129,7 +129,7 @@ pub fn check_schema(schema: &Value, depth: usize) -> Result<(), RoxError> {
 }
 
 /// Whether `v` (at `at`) matches `schema`.
-fn matches(v: &Value, schema: &Value, at: &str) -> Result<(), RoxError> {
+fn matches(v: &Value, schema: &Value, at: &str) -> Result<(), MiniError> {
     let fail = |m: &str| Err(invalid(format!("{at}: {m}")));
     if let Some(t) = schema.get("type").and_then(Value::as_str)
         && !of_type(v, t)

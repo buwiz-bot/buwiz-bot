@@ -370,7 +370,6 @@ fn the_grammars_accept_and_refuse_as_node_did() {
         let got = buwiz_protocol::tokens::slash(s[0].as_str().unwrap()).map_or(Value::Null, |x| json!([x.short.unwrap_or(""), x.name, x.args]));
         assert_eq!(got, s[1], "slash {}", s[0]);
     }
-    assert_eq!(buwiz_broker::v1::is_v1("reservedTool", Some(&json!("rox.provision"))), other["rox_provision_is_a_reserved_tool"].as_bool().unwrap());
     let (short, scope, ticket) = buwiz_protocol::tokens::canonical("@fx:item:tkt_0123456789ABCDEFGHJKMNPQRS").unwrap();
     assert_eq!(json!({"short": short, "scope": scope, "ticket": ticket}), other["canonical"]);
 }

@@ -120,12 +120,9 @@ export const postJson = (path, obj) =>
 
 const up = () => request("GET", "/health", { timeout: 2000 }).then((r) => r.status === 200, () => false);
 
-const withOld = (k) => [k, k === "BUWIZ_BROKER_DATA_DIR" ? "GROK_DATA_DIR" : k === "BUWIZ_ALLOWED_ORIGINS" ? "GROK_ALLOWED_ORIGINS" : k.replace(/^BUWIZ_/, "ROX_")];
-
 /** The environment startServer gives the broker: this process's, the test
  *  defaults (PORT, BUWIZ_BROKER_DATA_DIR, MOCK=1, no Keychain, no extra origins, a HOME of its own), then
- *  `env` over them; a key set to `undefined` is removed, by its old name too
- *  (`{MOCK: undefined}` turns MOCK off). */
+ *  `env` over them; a key set to `undefined` is removed (`{MOCK: undefined}` turns MOCK off). */
 export function serverEnv(dataDir, env = {}) {
   const home = join(dataDir, "home");
   // no model provider's setting of the caller's reaches a broker
@@ -136,7 +133,7 @@ export function serverEnv(dataDir, env = {}) {
   };
 
   for (const [k, v] of Object.entries(env)) {
-    if (v === undefined) for (const n of withOld(k)) delete out[n];
+    if (v === undefined) delete out[k];
     else out[k] = String(v);
   }
 

@@ -1,5 +1,5 @@
 //! Each v1 app's private key-value store (spec 11, design §3), kept by
-//! Rox at `<plugins dir>/<plugin id>/apps/<app id>/storage.json`. The app
+//! Buwiz Bot at `<plugins dir>/<plugin id>/apps/<app id>/storage.json`. The app
 //! names keys, never a path: the directory comes from the open's identity,
 //! which lives in Rust, so two apps cannot reach each other's keys.
 //!
@@ -17,7 +17,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::RoxError;
+use super::MiniError;
 
 pub const MAX_KEY: usize = 128;
 /// 64 KiB.
@@ -46,30 +46,30 @@ impl AppStorage {
         AppStorage { file: app_dir(root, plugin, app).join("storage.json"), quota }
     }
 
-    pub fn get(&self, key: &str) -> Result<Option<String>, RoxError> {
+    pub fn get(&self, key: &str) -> Result<Option<String>, MiniError> {
         check_key(key)?;
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         Ok(self.read()?.remove(key))
     }
 
-    pub fn set(&self, key: &str, value: &str) -> Result<(), RoxError> {
+    pub fn set(&self, key: &str, value: &str) -> Result<(), MiniError> {
         check_key(key)?;
         if value.len() > MAX_VALUE {
-            return Err(RoxError::new("quota_exceeded", "a stored value is at most 64 KiB"));
+            return Err(MiniError::new("quota_exceeded", "a stored value is at most 64 KiB"));
         }
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.read()?;
         if !all.contains_key(key) && all.len() >= MAX_KEYS {
-            return Err(RoxError::new("quota_exceeded", "the store holds at most 1000 keys"));
+            return Err(MiniError::new("quota_exceeded", "the store holds at most 1000 keys"));
         }
         all.insert(key.to_owned(), value.to_owned());
         if used(&all) > self.quota {
-            return Err(RoxError::new("quota_exceeded", format!("the store's quota is {} bytes", self.quota)));
+            return Err(MiniError::new("quota_exceeded", format!("the store's quota is {} bytes", self.quota)));
         }
         self.write(&all)
     }
 
-    pub fn remove(&self, key: &str) -> Result<(), RoxError> {
+    pub fn remove(&self, key: &str) -> Result<(), MiniError> {
         check_key(key)?;
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = self.read()?;
@@ -79,22 +79,22 @@ impl AppStorage {
         Ok(())
     }
 
-    pub fn keys(&self) -> Result<Vec<String>, RoxError> {
+    pub fn keys(&self) -> Result<Vec<String>, MiniError> {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         Ok(self.read()?.into_keys().take(MAX_KEYS).collect())
     }
 
-    fn read(&self) -> Result<BTreeMap<String, String>, RoxError> {
+    fn read(&self) -> Result<BTreeMap<String, String>, MiniError> {
         match std::fs::read(&self.file) {
             Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| RoxError::new("internal", format!("the app's store is unreadable: {e}"))),
+                .map_err(|e| MiniError::new("internal", format!("the app's store is unreadable: {e}"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-            Err(e) => Err(RoxError::new("internal", format!("the app's store is unreadable: {e}"))),
+            Err(e) => Err(MiniError::new("internal", format!("the app's store is unreadable: {e}"))),
         }
     }
 
-    fn write(&self, all: &BTreeMap<String, String>) -> Result<(), RoxError> {
-        let fail = |e: std::io::Error| RoxError::new("internal", format!("the app's store can't be written: {e}"));
+    fn write(&self, all: &BTreeMap<String, String>) -> Result<(), MiniError> {
+        let fail = |e: std::io::Error| MiniError::new("internal", format!("the app's store can't be written: {e}"));
         let dir = self.file.parent().expect("the store's file has a directory");
         make_private_dir(dir).map_err(fail)?;
         let tmp = self.file.with_extension("json.tmp");
@@ -110,11 +110,11 @@ fn used(all: &BTreeMap<String, String>) -> u64 {
 }
 
 /// `^[A-Za-z0-9._:-]+$`, at most 128 chars.
-fn check_key(key: &str) -> Result<(), RoxError> {
+fn check_key(key: &str) -> Result<(), MiniError> {
     let ok = !key.is_empty()
         && key.len() <= MAX_KEY
         && key.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'));
-    if ok { Ok(()) } else { Err(RoxError::new("invalid_args", "a key is 1 to 128 of A-Z a-z 0-9 . _ : -")) }
+    if ok { Ok(()) } else { Err(MiniError::new("invalid_args", "a key is 1 to 128 of A-Z a-z 0-9 . _ : -")) }
 }
 
 /// Makes `dir` (and its parents), readable by this account only.
@@ -149,7 +149,7 @@ pub fn delete_plugin(root: &Path, plugin: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 pub(crate) fn scratch_root(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rox-mini-v1-{name}-{}", super::keys::random_id()));
+    let dir = std::env::temp_dir().join(format!("buwiz-mini-v1-{name}-{}", super::keys::random_id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir
 }

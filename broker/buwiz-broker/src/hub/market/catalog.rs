@@ -130,8 +130,9 @@ fn ident(s: &str) -> bool {
     b.next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') && b.all(|c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
-// `${BUWIZ_FILES_DIR}`, and `${ROX_FILES_DIR}` (its old name) in configs
-// written before
+// `${BUWIZ_FILES_DIR}` is the folder generated files go in; a config stored
+// on a machine may say `${ROX_FILES_DIR}`, which expands the same and is
+// never a setup field
 const BUILTIN: [&str; 9] = ["CLAUDE_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT", "PLUGIN_ROOT", "workspaceFolder", "userHome", "HOME", "USERPROFILE", "BUWIZ_FILES_DIR", "ROX_FILES_DIR"];
 
 fn is_secret_key(k: &str) -> bool {
@@ -233,9 +234,9 @@ pub struct Market {
     pub server: Option<PathBuf>,
     /// `<data>/plugins`
     pub plugins: PathBuf,
-    /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`, old name `${ROX_FILES_DIR}`)
+    /// `<data>/generated/files` (`${BUWIZ_FILES_DIR}`)
     pub out_dir: PathBuf,
-    /// the port Rox reaches (fixed OAuth redirects)
+    /// the port Buwiz Bot reaches (fixed OAuth redirects)
     pub port: u16,
     /// the catalog file's `version` (part of the catalog's rev)
     pub version: String,
@@ -950,6 +951,23 @@ mod tests {
         let ctx = HubCtx::new(dir.clone(), crate::helper::plugins::Clock::manual());
         crate::hub::market::schema(&ctx).unwrap();
         assert_eq!(m.plugin_root(&ctx, "vendored"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mkt_the_files_folder_placeholder_has_two_spellings_and_is_never_a_setup_field() {
+        let dir = data("files-dir");
+        let m = Market::without_assets(&dir, 9);
+        let ctx = HubCtx::new(dir.clone(), crate::helper::plugins::Clock::manual());
+        crate::hub::market::schema(&ctx).unwrap();
+        let cfg = json!({ "command": "x", "env": { "NEW": "${BUWIZ_FILES_DIR}/a", "STORED": "${ROX_FILES_DIR}/a", "ASKED": "${ASKED_KEY}" } });
+        let servers = json!({ "s": cfg.clone() }).as_object().unwrap().clone();
+        let keys: Vec<String> = m.fields_with(&ctx, "demo", &servers).iter().map(|f| f["key"].as_str().unwrap_or("").to_owned()).collect();
+        assert_eq!(keys, ["ASKED_KEY"], "neither spelling is a setup field");
+        let mat = m.materialize(&ctx, "demo", "s", Some(&cfg)).unwrap();
+        let (new, stored) = (mat.env["NEW"].as_str().unwrap(), mat.env["STORED"].as_str().unwrap());
+        assert!(new.ends_with("/a") && new.len() > 2, "{new}");
+        assert_eq!(new, stored, "the stored spelling expands exactly like the current one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

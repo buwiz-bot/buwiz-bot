@@ -6,7 +6,7 @@
 //! one in the open chat (`POST /routine/from-template`).
 //!
 //! Run now: a plugin routine's (`POST /v1/host/routines/run`) answers at
-//! once and runs in the broker; Rox shows "Running…" on its row until the
+//! once and runs in the broker; Buwiz Bot shows "Running…" on its row until the
 //! plugin list says it is done, then the run's result line for a moment.
 //! A v0 routine's (`POST /routine/run`) answers once its tick is done.
 //! The keys, states and lines are here; the calls in `mini_v1/ui.rs`.

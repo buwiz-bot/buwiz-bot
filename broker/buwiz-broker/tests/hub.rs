@@ -122,7 +122,7 @@ fn the_hub_answers_every_route_and_unknown_paths_404() {
     assert_eq!(request(b.port, "POST", "/highlight", b"{}").unwrap(), (404, "not found".to_owned()));
     // the hub's since 6.3 (/popout)
     assert_eq!(request(b.port, "POST", "/popout", br#"{"name":"R1"}"#).unwrap(), (200, r#"{"ok":false,"error":"no such module"}"#.to_owned()));
-    // deleted: Rox draws every diagram natively
+    // deleted: Buwiz Bot draws every diagram natively
     assert_eq!(request(b.port, "GET", "/mermaid", b"").unwrap(), (404, "not found".to_owned()));
     // a path no broker has: the hub's last resort
     assert_eq!(request(b.port, "POST", "/echo?x=1", b"{\"a\":1}").unwrap(), (404, "not found".to_owned()));
@@ -134,7 +134,7 @@ fn the_hub_answers_every_route_and_unknown_paths_404() {
 #[test]
 fn the_old_flag_and_switches_are_accepted_and_change_nothing() {
     for (name, value) in [("old-on", "1"), ("old-off", "0")] {
-        let switches = [("BUWIZ_BROKER_HUB", value), ("ROX_BROKER_HUB", value), ("BUWIZ_BROKER_V1_HOST", value), ("BUWIZ_BROKER_MCP_HOST", value), ("ROX_BROKER_MCP_HOST", value)];
+        let switches = [("BUWIZ_BROKER_HUB", value), ("BUWIZ_BROKER_V1_HOST", value), ("BUWIZ_BROKER_MCP_HOST", value)];
         let b = start_env(name, true, &switches);
         let (status, root) = request(b.port, "GET", "/", b"").unwrap();
         assert!(status == 200 && root.starts_with("app-server ok — "), "{name}: {status} {root}");

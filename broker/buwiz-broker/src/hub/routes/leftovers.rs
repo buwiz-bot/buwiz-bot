@@ -466,7 +466,7 @@ mod tests {
     }
 
     fn temp(label: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("rox-left-{label}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("buwiz-left-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("generated/files/t1")).unwrap();
         d

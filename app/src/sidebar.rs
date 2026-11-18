@@ -8,7 +8,7 @@ use nsh_core::prelude::*;
 use crate::avatar::bot_avatar;
 use crate::icons::{icon, icon_sized};
 use crate::live::store;
-use crate::store::{spawn_detached, GroupRow, RoxApp, RoxBot, RoxGroup, ThreadMeta, Work};
+use crate::store::{spawn_detached, GroupRow, BuwizApp, BuwizBot, BuwizGroup, ThreadMeta, Work};
 use crate::theme;
 
 /// The rail/full sidebar — `sideEff` (`sideShown ? sideMode : "hidden"`).
@@ -38,7 +38,7 @@ pub(crate) fn sidebar() -> impl IntoElement {
 
 /// Which rows show and where, as far as the Bots say: rows can swap places
 /// with the ids and every size the same.
-pub(crate) fn what_shows(bots: &[RoxBot]) -> Vec<(String, bool, bool, String)> {
+pub(crate) fn what_shows(bots: &[BuwizBot]) -> Vec<(String, bool, bool, String)> {
     bots.iter().map(|b| (b.id.clone(), b.pinned, b.hidden, b.section.clone())).collect()
 }
 
@@ -708,7 +708,7 @@ fn rail_rule() -> impl IntoElement {
 /// `railBtn` (App.tsx:1183) — the bot's rail plate: a 54px rounded plate
 /// holding the 44px mark in a 36px cell, the `:rail` gaze, the run state
 /// and the ambient overlay over a photo.
-fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
+fn rail_btn(b: ReadSignal<BuwizBot>) -> impl IntoElement {
     let b0 = b.get();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();
@@ -837,7 +837,7 @@ fn rail_btn(b: ReadSignal<RoxBot>) -> impl IntoElement {
 struct AvatarFace(Memo<(String, String, String, Option<crate::store::Crop>)>);
 
 impl AvatarFace {
-    fn of(b: ReadSignal<RoxBot>) -> Self {
+    fn of(b: ReadSignal<BuwizBot>) -> Self {
         Self(computed(move || {
             let b = b.get();
             (b.shape, b.color, b.image, b.crop)
@@ -900,7 +900,7 @@ fn rail_app(gid: String, key: String, title: String) -> impl IntoElement {
 
 /// A group's artifact in the rail: its tile on the rail's plate; a mini
 /// app's hover shows its card; press opens it with its kind's handler.
-fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
+fn rail_art(gid: String, a: ReadSignal<BuwizApp>) -> impl IntoElement {
     let a0 = a.get_untracked();
     let hovered = signal(false);
     let node = element_ref();
@@ -928,7 +928,7 @@ fn rail_art(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
                     let st = store();
                     if st.pop_seq.get() == seq {
                         st.rail_pop.set(Some(crate::store::RailPop {
-                            bot: RoxBot {
+                            bot: BuwizBot {
                                 name: a.title.clone(),
                                 desc: if a.description.is_empty() {
                                     "Mini app".to_owned()
@@ -1164,7 +1164,7 @@ fn full_sidebar() -> impl IntoElement {
                                 ))
                         },
                     ))
-                    // v1 plugins' pinned apps (spec 12.3), kept by Rox
+                    // v1 plugins' pinned apps (spec 12.3), kept by Buwiz Bot
                     .child(crate::mini_v1::ui::pins_section())
                     // `chats` — the plain list; bot threads live behind
                     // their persona rows.
@@ -1663,9 +1663,9 @@ impl Dragged {
 /// The ghost's icon, by kind.
 #[derive(Clone, PartialEq)]
 enum Face {
-    Bot(Box<RoxBot>),
+    Bot(Box<BuwizBot>),
     Chat(String),
-    Art(Box<RoxApp>),
+    Art(Box<BuwizApp>),
 }
 
 /// Where a drop lands: group `gid` before its visible row `slot` (its
@@ -2058,7 +2058,7 @@ fn sec_header(
 
 /// A group: its header, then — unless folded — its members, each in its
 /// kind's row look.
-fn group_block(g: ReadSignal<RoxGroup>) -> impl IntoElement {
+fn group_block(g: ReadSignal<BuwizGroup>) -> impl IntoElement {
     let gid = g.get_untracked().id;
     let (gid2, gid3) = (gid.clone(), gid.clone());
     let block = view().child(group_header(g)).child(when(
@@ -2119,7 +2119,7 @@ fn group_block(g: ReadSignal<RoxGroup>) -> impl IntoElement {
 /// A group's header: `secHeader`'s row with the group's color dot, its
 /// name and member count; a press folds it, the context menu renames,
 /// recolors, folds or deletes it.
-fn group_header(g: ReadSignal<RoxGroup>) -> impl IntoElement {
+fn group_header(g: ReadSignal<BuwizGroup>) -> impl IntoElement {
     let gid = g.get_untracked().id;
     let (gid2, gid3, gid4) = (gid.clone(), gid.clone(), gid.clone());
     let hovered = signal(false);
@@ -2208,7 +2208,7 @@ impl Member {
 
 /// A Bot row's record, kept up to date from the live list. Not a keyed `each`:
 /// those, nested in a group section, lost rows when a record changed.
-fn live_bot(b: RoxBot) -> ReadSignal<RoxBot> {
+fn live_bot(b: BuwizBot) -> ReadSignal<BuwizBot> {
     let id = b.id.clone();
     let row = signal(b);
     effect(move || {
@@ -2281,7 +2281,7 @@ fn group_app_row(gid: String, key: String, title: String) -> impl IntoElement {
 /// A group's artifact row: its kind's tile (an app's icon, an image's
 /// picture, a file's type tile), its title and the kind's subtitle; a
 /// press opens it with its kind's handler from whatever chat is open.
-fn group_art_row(gid: String, a: ReadSignal<RoxApp>) -> impl IntoElement {
+fn group_art_row(gid: String, a: ReadSignal<BuwizApp>) -> impl IntoElement {
     let hovered = signal(false);
     let gid2 = gid.clone();
     let key = format!("artifact:{}", a.get_untracked().app);
@@ -2437,7 +2437,7 @@ fn thread_row(t: ReadSignal<ThreadMeta>, src: Option<Src>) -> impl IntoElement {
 
 /// A bot's row; `src` makes it draggable into groups (and says which
 /// group it shows in).
-fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
+fn bot_row(b: ReadSignal<BuwizBot>, src: Option<Src>) -> impl IntoElement {
     let hovered = signal(false);
     let b0 = b.get();
     let key = format!("bot:{}", b0.id);
@@ -2594,7 +2594,7 @@ fn bot_row(b: ReadSignal<RoxBot>, src: Option<Src>) -> impl IntoElement {
 /// and the name under it.
 /// The primary Bot's star (Grok Bot's "Main Bot" badge): an orange disc
 /// ringed in the page color on the avatar's bottom-right.
-fn main_badge(b: ReadSignal<RoxBot>, size: f32) -> impl IntoElement {
+fn main_badge(b: ReadSignal<BuwizBot>, size: f32) -> impl IntoElement {
     when(
         move || store().is_main_bot(&b.get().id),
         move || {
@@ -2620,7 +2620,7 @@ fn main_badge(b: ReadSignal<RoxBot>, size: f32) -> impl IntoElement {
     )
 }
 
-fn pin_tile(b: ReadSignal<RoxBot>) -> impl IntoElement {
+fn pin_tile(b: ReadSignal<BuwizBot>) -> impl IntoElement {
     let b0 = b.get();
     let bid = b0.id.clone();
     let bid3 = b0.id.clone();

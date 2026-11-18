@@ -465,7 +465,7 @@ mod tests {
         use crate::hub::traits::Clock;
         use crate::hub::types::{ToolResult, TurnCtx};
 
-        let dir = std::env::temp_dir().join(format!("rox-turn-tools-{}", crate::hub::store::uuidv7()));
+        let dir = std::env::temp_dir().join(format!("buwiz-turn-tools-{}", crate::hub::store::uuidv7()));
         let mut ctx = HubCtx::new(dir.clone(), Clock::manual());
         ctx.store.load().unwrap();
         ctx.local = Some(Arc::new(crate::hub::model::testkit::Local::default()));
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn turn_a_step_on_a_screen_reads_as_what_it_did() {
-        let dir = std::env::temp_dir().join(format!("rox-turn-steps-{}", crate::hub::store::uuidv7()));
+        let dir = std::env::temp_dir().join(format!("buwiz-turn-steps-{}", crate::hub::store::uuidv7()));
         let ctx = crate::hub::ctx::HubCtx::new(dir, crate::hub::traits::Clock::manual());
         let line = |u: Value| step_line(&ctx, &u);
         assert_eq!(line(json!({"name": "ui_look"})), "Looked at the screen");

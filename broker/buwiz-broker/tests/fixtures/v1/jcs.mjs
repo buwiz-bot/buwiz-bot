@@ -1,7 +1,7 @@
 // v1/jcs.mjs — JSON Canonicalization Scheme (RFC 8785) and I-JSON parsing.
 //
 // Every signed object of the Mini App Protocol (the manifest, session
-// certificates, call envelopes) is signed over its JCS bytes, and Rox's
+// certificates, call envelopes) is signed over its JCS bytes, and Buwiz Bot's
 // Rust canonicalizer must produce the same bytes (both are tested against
 // broker/buwiz-protocol/src/jcs-vectors.json). Signed objects carry integers only, so
 // the signing form refuses any other number instead of trusting two float

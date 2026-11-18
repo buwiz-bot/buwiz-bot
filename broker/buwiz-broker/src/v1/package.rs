@@ -125,24 +125,11 @@ fn file_of(v: &Value, at: &str, path: Option<&str>) -> Res<File> {
     Ok(File { path, asset: asset.to_owned(), sha256: sha256.to_owned() })
 }
 
-/// `name` says who in a refusal: the block's id, when it has one.
-fn protocol_ok(p: &str, host: &str, name: &str) -> Res<()> {
-    let two = |s: &str| {
-        let mut it = s.split('.').map(|x| x.parse::<u64>().ok());
-        (it.next().flatten(), it.next().flatten())
-    };
-    let (Some(maj), Some(min)) = two(p) else { return Err(bad("buwiz.protocol must be a semver string")) };
+fn protocol_ok(p: &str, host: &str) -> Res<()> {
     if !super::manifest::is_semver(Some(&json!(p))) {
         return Err(bad("buwiz.protocol must be a semver string"));
     }
-    if super::manifest::pre_release(p) {
-        return Err(V1Error::new("protocol_unsupported", super::manifest::pre_release_message(name, p)));
-    }
-    let (hmaj, hmin) = two(host);
-    if Some(maj) != hmaj || Some(min) > hmin {
-        return Err(V1Error::new("protocol_unsupported", format!("the package is for protocol {p}; this Buwiz Bot supports {host}")));
-    }
-    Ok(())
+    super::manifest::check_protocol(p, host, "package")
 }
 
 /// The block's shape (§7.3's table), signature not checked; `platform`
@@ -155,8 +142,7 @@ pub fn parse(raw: &str, host: &str, platform: &str) -> Res<Package> {
     let Some(top) = plugin.as_object() else { return Err(bad("must be a JSON object")) };
     let Some(b) = top.get(BLOCK).and_then(Value::as_object) else { return Err(bad("has no buwiz block")) };
     let protocol = text_of(b, "protocol")?;
-    let name = b.get("id").and_then(Value::as_str).filter(|id| buwiz_protocol::ids::plugin_id_ok(id)).unwrap_or("this mini app");
-    protocol_ok(&protocol, host, name)?;
+    protocol_ok(&protocol, host)?;
     let id = text_of(b, "id")?;
     if !buwiz_protocol::ids::plugin_id_ok(&id) {
         return Err(bad("buwiz.id must be a plugin id"));
@@ -467,18 +453,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_package_names_protocol_1_0_and_2_x_was_its_pre_release() {
+    fn a_package_names_protocol_1_0() {
         assert_eq!(HOST, "1.0.0");
         for p in ["1.0.0", "1.0.2"] {
             assert_eq!(verify(&plugin_json("p", |b| b["buwiz"]["protocol"] = json!(p)).to_string(), &trust(&[ID]), HOST, "p").unwrap().protocol, p);
         }
-        for p in ["2.0.0", "2.1.0"] {
+        // any other number gets the one refusal
+        for p in ["1.1.0", "3.0.0", "2.0.0", "2.1.0", "2.1.4", "2.2.0", "0.9.0"] {
             let e = refused(|b| b["buwiz"]["protocol"] = json!(p));
-            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("{ID} uses the pre-release mini app protocol {p}; install its 1.0 version")));
-        }
-        for p in ["1.1.0", "3.0.0"] {
-            let e = refused(|b| b["buwiz"]["protocol"] = json!(p));
-            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("the package is for protocol {p}; this Buwiz Bot supports 1.0.0")));
+            assert_eq!((e.code.as_str(), e.message), ("protocol_unsupported", format!("the package implements protocol {p}; this Buwiz Bot supports 1.0")));
         }
     }
 
@@ -538,7 +521,7 @@ pub(crate) mod tests {
 
     #[test]
     fn skills_are_the_listed_skill_md_files_under_a_root() {
-        let dir = std::env::temp_dir().join(format!("rox-package-skills-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buwiz-package-skills-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("skills/triage")).unwrap();
         std::fs::write(dir.join("skills/triage/SKILL.md"), "---\nname: triage\ndescription: Triage the inbox\n---\nbody").unwrap();
         let p = parse(&plugin_json("p", |p| p["buwiz"]["files"]["docs/x/SKILL.md"] = json!({"asset": "d", "sha256": "a".repeat(64)})).to_string(), HOST, "p").unwrap();

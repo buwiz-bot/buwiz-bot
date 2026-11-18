@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn a_v1_app_row_is_removed() {
         use crate::hub::traits::Clock;
-        let dir = std::env::temp_dir().join(format!("rox-groups-v1-{}-{}", std::process::id(), time_id("t")));
+        let dir = std::env::temp_dir().join(format!("buwiz-groups-v1-{}-{}", std::process::id(), time_id("t")));
         std::fs::create_dir_all(dir.join("widgets")).unwrap();
         let ctx = HubCtx::new(dir.clone(), Clock::manual());
         ctx.store.load().unwrap();

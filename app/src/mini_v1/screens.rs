@@ -19,7 +19,7 @@ use nsh_core::element::Root;
 use serde_json::{Map, Value};
 
 use super::{
-    RoxError,
+    MiniError,
     bridge::{self, Emit, Handler, OpenContext, Reply},
     load::say,
 };
@@ -89,7 +89,7 @@ impl Reply for Answer {
         (self.0)(Ok(value));
     }
 
-    fn reject(self: Box<Self>, e: RoxError) {
+    fn reject(self: Box<Self>, e: MiniError) {
         (self.0)(Err(BuwizError::new(e.code, e.retryable, e.message)))
     }
 }
@@ -142,7 +142,7 @@ pub struct Mounted {
 /// handlers. `viewport` is the first one; `fail` hears the screen's
 /// failures (its error banner). A screen this build lacks says it needs a
 /// newer Buwiz Bot; one whose build panics fails as a TSX app's load does.
-pub fn mount(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + Send + Sync>) -> Result<Mounted, RoxError> {
+pub fn mount(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + Send + Sync>) -> Result<Mounted, MiniError> {
     mount_from(ctx, viewport, fail, None)
 }
 
@@ -164,14 +164,14 @@ pub fn props_with_origin(mut params: serde_json::Map<String, Value>, origin: Opt
 
 /// [`mount`] for a card whose chat knows the tool call that made it
 /// (`origin`, [`super::cards::origin`]).
-pub fn mount_from(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + Send + Sync>, origin: Option<Value>) -> Result<Mounted, RoxError> {
+pub fn mount_from(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str) + Send + Sync>, origin: Option<Value>) -> Result<Mounted, MiniError> {
     let t0 = std::time::Instant::now();
     let p = &ctx.prepared;
     let def = p
         .native
         .as_ref()
         .and_then(|n| find(&p.plugin.id, &n.screen, n.abi))
-        .ok_or_else(|| RoxError::new("not_supported", say::native(&p.title)))?;
+        .ok_or_else(|| MiniError::new("not_supported", say::native(&p.title)))?;
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     let params = Arc::new(Mutex::new(props_with_origin(bridge::params(p, viewport), origin)));
     let listeners: Arc<Mutex<Vec<Listener>>> = Arc::default();
@@ -196,7 +196,7 @@ pub fn mount_from(ctx: &Arc<OpenContext>, viewport: Value, fail: Arc<dyn Fn(&str
             .map(String::as_str)
             .or_else(|| panic.downcast_ref::<&str>().copied())
             .unwrap_or("it panicked");
-        RoxError::new("internal", say::runtime(&p.title, message))
+        MiniError::new("internal", say::runtime(&p.title, message))
     })?;
     log::info!("mini v1 timing: {}/{} native screen {} built {} ms", p.plugin.id, p.key.app, def.id, t0.elapsed().as_millis());
     Ok(Mounted { root, emit })

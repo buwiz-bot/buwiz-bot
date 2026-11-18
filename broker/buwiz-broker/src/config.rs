@@ -7,7 +7,7 @@
 //! scripts) still pass the flag. It goes in a later release. `--node` and
 //! `--node-script` are unknown arguments.
 //! The same goes for the variables `BUWIZ_BROKER_HUB`, `BUWIZ_BROKER_V1_HOST`
-//! and `BUWIZ_BROKER_MCP_HOST` (and their `ROX_` names): each is
+//! and `BUWIZ_BROKER_MCP_HOST`: each is
 //! accepted and ignored: the hub, the plugin host and the MCP host are always on. Other repos' test
 //! scripts still set them.
 //! `--assets` is the folder of the static files the broker serves and

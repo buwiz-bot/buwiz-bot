@@ -127,7 +127,7 @@ pub fn child_env(spec: &Spec) -> Vec<(String, String)> {
 
 /// [`child_env`] over `base`, the inherited part. A v1 plugin gets
 /// [`tool_path`]'s PATH as a v0 server does (whose spec carries it): a
-/// Dock-launched Rox's plugin finds `uvx` too. The spec's own env wins.
+/// Dock-launched Buwiz Bot's plugin finds `uvx` too. The spec's own env wins.
 pub fn child_env_from(spec: &Spec, mut env: Vec<(String, String)>) -> Vec<(String, String)> {
     if !spec.inherit_all {
         let var = |k: &str| env.iter().find(|(e, _)| e == k).map(|(_, v)| v.clone()).unwrap_or_default();

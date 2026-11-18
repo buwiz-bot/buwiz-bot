@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 
-use super::RoxError;
+use super::MiniError;
 
 /// The spec's limits on permission values (Appendix A).
 const MAX_TOOLS: usize = 64;
@@ -69,7 +69,7 @@ pub const FIT: &str = "buwiz.fit";
 /// An inline app's data is in: its card may show (a post; an optional
 /// addition under 1.0 that apps feature-detect, `buwiz.ready?.()`).
 pub const READY: &str = "buwiz.ready";
-/// An inline card's chrome, drawn by Rox (7.12 to 7.14, protocol 1.1):
+/// An inline card's chrome, drawn by Buwiz Bot (7.12 to 7.14, protocol 1.1):
 /// its footer buttons, the outcome it settles to, its header status.
 pub const ACTIONS: &str = "buwiz.actions";
 pub const SETTLE: &str = "buwiz.settle";
@@ -80,7 +80,7 @@ pub const STORAGE: [&str; 4] = ["buwiz.storage.get", "buwiz.storage.set", "buwiz
 
 impl Permissions {
     /// Parses `apps[].permissions` (absent: nothing).
-    pub fn parse(v: Option<&Value>) -> Result<Permissions, RoxError> {
+    pub fn parse(v: Option<&Value>) -> Result<Permissions, MiniError> {
         let Some(v) = v.filter(|v| !v.is_null()) else { return Ok(Permissions::default()) };
         let o = object(v, "permissions")?;
         let mut p = Permissions::default();
@@ -136,15 +136,15 @@ impl Permissions {
     }
 }
 
-fn invalid(m: &str) -> RoxError {
-    RoxError::new("invalid_args", m)
+fn invalid(m: &str) -> MiniError {
+    MiniError::new("invalid_args", m)
 }
 
-fn object<'a>(v: &'a Value, what: &str) -> Result<&'a serde_json::Map<String, Value>, RoxError> {
+fn object<'a>(v: &'a Value, what: &str) -> Result<&'a serde_json::Map<String, Value>, MiniError> {
     v.as_object().ok_or_else(|| invalid(&format!("{what} is an object")))
 }
 
-fn strings(v: &Value, what: &str, max: usize, ok: fn(&str) -> bool) -> Result<Vec<String>, RoxError> {
+fn strings(v: &Value, what: &str, max: usize, ok: fn(&str) -> bool) -> Result<Vec<String>, MiniError> {
     let items = v.as_array().ok_or_else(|| invalid(&format!("{what} is an array")))?;
     if items.len() > max {
         return Err(invalid(&format!("{what} has more than {max} entries")));
@@ -158,7 +158,7 @@ fn strings(v: &Value, what: &str, max: usize, ok: fn(&str) -> bool) -> Result<Ve
         .collect()
 }
 
-fn open(v: &Value) -> Result<OpenGrant, RoxError> {
+fn open(v: &Value) -> Result<OpenGrant, MiniError> {
     let mut g = OpenGrant::default();
     for (k, v) in object(v, "open")? {
         match k.as_str() {
@@ -172,7 +172,7 @@ fn open(v: &Value) -> Result<OpenGrant, RoxError> {
     Ok(g)
 }
 
-fn pick(v: &Value) -> Result<PickGrant, RoxError> {
+fn pick(v: &Value) -> Result<PickGrant, MiniError> {
     let mut g = PickGrant { max_bytes: MAX_PICK_BYTES, ..Default::default() };
     for (k, v) in object(v, "pick_file")? {
         match k.as_str() {
@@ -193,7 +193,7 @@ fn pick(v: &Value) -> Result<PickGrant, RoxError> {
     Ok(g)
 }
 
-fn storage(v: &Value) -> Result<u64, RoxError> {
+fn storage(v: &Value) -> Result<u64, MiniError> {
     let mut quota = DEFAULT_QUOTA;
     for (k, v) in object(v, "storage")? {
         match (k.as_str(), v.as_u64()) {
@@ -205,7 +205,7 @@ fn storage(v: &Value) -> Result<u64, RoxError> {
     Ok(quota)
 }
 
-fn preview(v: &Value) -> Result<u64, RoxError> {
+fn preview(v: &Value) -> Result<u64, MiniError> {
     let mut max = MAX_PREVIEW;
     for (k, v) in object(v, "preview")? {
         match (k.as_str(), v.as_u64()) {

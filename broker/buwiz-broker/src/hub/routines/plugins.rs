@@ -1,6 +1,6 @@
 //! What routines and the plugin list read of the v1 plugins: the records, each plugin's runtime,
 //! the trust store, tool calls, and the plugin list GET /v1/host/plugins
-//! hands Rox with each routine's state merged (`describe`). The host is
+//! hands Buwiz Bot with each routine's state merged (`describe`). The host is
 //! `helper::plugins::Host`; tests hand a fake.
 
 use std::sync::Arc;
@@ -147,14 +147,18 @@ pub fn read_only(t: &Value) -> bool {
     hint.or_else(|| t.get("readOnly")) == Some(&Value::Bool(true))
 }
 
+/// A plugin's tools are all `<short>_<name>` (6.2 checks it at install); a
+/// record holding another name is not one this host installed, and none of
+/// that name is listed or switchable.
+fn own_tools(row: &Row, tools: Vec<Value>) -> Vec<Value> {
+    let prefix = format!("{}_", row.short);
+    tools.into_iter().filter(|t| t.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with(&prefix))).collect()
+}
+
 /// The tools the views read: the live ones when connected, else the record's.
 fn known_tools(p: &dyn PluginView, row: &Row) -> Vec<Value> {
     let rt = p.runtime(&row.id);
-    if rt.conn {
-        rt.tools
-    } else {
-        parse(&row.tools, json!([])).as_array().cloned().unwrap_or_default()
-    }
+    own_tools(row, if rt.conn { rt.tools } else { parse(&row.tools, json!([])).as_array().cloned().unwrap_or_default() })
 }
 
 /// 6.7: a routine reads only approved plugins' readOnlyHint tools
@@ -221,7 +225,7 @@ pub fn describe_with(p: &dyn PluginView, row: &Row, info: &dyn Fn(&str, &Value) 
     let m = row.manifest();
     let rt = p.runtime(&row.id);
     let off = disabled_of(row);
-    let tools: Vec<Value> = if rt.conn { rt.tools.clone() } else { parse(&row.tools, json!([])).as_array().cloned().unwrap_or_default() };
+    let tools: Vec<Value> = own_tools(row, if rt.conn { rt.tools.clone() } else { parse(&row.tools, json!([])).as_array().cloned().unwrap_or_default() });
     let mut out = Map::new();
     out.insert("id".into(), json!(row.id));
     out.insert("short".into(), json!(row.short));

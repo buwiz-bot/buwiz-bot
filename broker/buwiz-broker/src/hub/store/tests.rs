@@ -27,7 +27,7 @@ use crate::hub::traits::Clock;
 use crate::pins;
 
 fn temp(label: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("rox-store-{label}-{}", super::uuidv7()));
+    let d = std::env::temp_dir().join(format!("buwiz-store-{label}-{}", super::uuidv7()));
     std::fs::create_dir_all(d.join("widgets")).unwrap();
     d
 }

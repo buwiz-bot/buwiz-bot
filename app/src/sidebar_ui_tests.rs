@@ -319,7 +319,7 @@ fn bots_running(n: usize) {
 
 /// The first `n` Bots in a group, as the broker gives groups.
 fn group(n: usize) {
-    store().groups.set(vec![crate::store::RoxGroup {
+    store().groups.set(vec![crate::store::BuwizGroup {
         id: "g1".to_owned(),
         name: "Team".to_owned(),
         items: (0..n)
@@ -925,10 +925,10 @@ fn a_layout_at_the_same_height_places_nothing() {
 /// What shows can change with the ids the same: a pin, a hide, a new section.
 #[test]
 fn what_shows_follows_pins_and_hiding() {
-    let bots = || vec![crate::store::RoxBot { id: "a".to_owned(), ..Default::default() }];
+    let bots = || vec![crate::store::BuwizBot { id: "a".to_owned(), ..Default::default() }];
     let before = crate::sidebar::what_shows(&bots());
     for change in [
-        (|b: &mut crate::store::RoxBot| b.pinned = true) as fn(&mut crate::store::RoxBot),
+        (|b: &mut crate::store::BuwizBot| b.pinned = true) as fn(&mut crate::store::BuwizBot),
         |b| b.hidden = true,
         |b| b.section = "team".to_owned(),
     ] {

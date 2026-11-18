@@ -2,20 +2,14 @@
 # One heavy build at a time across agents and sessions: waits while a hold
 # file exists, then takes a mutex (a directory) for the command's run.
 #   scripts/wait-build cargo build -p buwiz-bot
-# BUWIZ_BUILD_LOCK / BUWIZ_BUILD_HOLD move the mutex and the hold file
-# (ROX_BUILD_LOCK / ROX_BUILD_HOLD, their old names, still work).
+# BUWIZ_BUILD_LOCK / BUWIZ_BUILD_HOLD move the mutex and the hold file.
 #
 # Checkouts from before the rename take rox-build.mutex and wait on
 # rox-build.hold only, so this one honours both: it waits while either hold
 # file exists and takes buwiz-build.mutex, then rox-build.mutex, keeping
 # builds serialized across old and new checkouts. (Always in that order, so
 # two new ones never hold one each.)
-for v in LOCK HOLD; do
-  if [ -z "$(eval echo "\${BUWIZ_BUILD_$v+x}")" ] && [ -n "$(eval echo "\${ROX_BUILD_$v+x}")" ]; then
-    echo "ROX_BUILD_$v is an old name; use BUWIZ_BUILD_$v" >&2
-    eval "BUWIZ_BUILD_$v=\$ROX_BUILD_$v"
-  fi
-done
+. "$(dirname "$0")/lib/no-old-names.sh"
 T=${TMPDIR:-/tmp}
 LOCK=${BUWIZ_BUILD_LOCK:-$T/buwiz-build.mutex}
 HOLD=${BUWIZ_BUILD_HOLD:-$T/buwiz-build.hold}

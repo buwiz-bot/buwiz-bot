@@ -1,5 +1,5 @@
 //! Agents messaging each other (drafts/agent-messaging.md §4.1, §6): the
-//! broker's payloads as Rox reads them, and the lines it draws from them.
+//! broker's payloads as Buwiz Bot reads them, and the lines it draws from them.
 //!
 //! An agents' conversation lives in its own thread (`agents` on the
 //! `/threads` row): never a sidebar row nor a ⌘1–9 slot, never restored as
@@ -13,7 +13,7 @@
 //! the header pill in `hot.rs`, the read-only line in `composer.rs`, the
 //! Details sections in `pane.rs`.
 
-use crate::store::{RoxBot, ThreadMeta};
+use crate::store::{BuwizBot, ThreadMeta};
 
 fn s(v: &serde_json::Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned()
@@ -316,13 +316,13 @@ pub fn listed_chat(t: &ThreadMeta) -> bool {
 
 /// Whether bot `b` is a sidebar row (and a slot): any but a temporary
 /// helper.
-pub fn listed_bot(b: &RoxBot) -> bool {
+pub fn listed_bot(b: &BuwizBot) -> bool {
     b.helper.is_none()
 }
 
 /// Bot `id`'s name, or the id when it is gone. An outside endpoint
 /// (`ext:…`) has no bot: "External".
-pub fn name_of(id: &str, bots: &[RoxBot]) -> String {
+pub fn name_of(id: &str, bots: &[BuwizBot]) -> String {
     bots.iter()
         .find(|b| b.id == id)
         .map(|b| b.name.clone())
@@ -336,7 +336,7 @@ pub fn is_external(id: &str) -> bool {
 
 /// A participant's name: its bot's, else the name its messages carry (an
 /// outside endpoint's "CI"), else [`name_of`].
-pub fn participant_name(id: &str, bots: &[RoxBot], seen: &[Peer]) -> String {
+pub fn participant_name(id: &str, bots: &[BuwizBot], seen: &[Peer]) -> String {
     if let Some(b) = bots.iter().find(|b| b.id == id) {
         return b.name.clone();
     }
@@ -357,7 +357,7 @@ pub fn peers_in(messages: impl IntoIterator<Item = AgentMessage>) -> Vec<Peer> {
 }
 
 /// A neutral avatar's letters for a participant with no bot: "CI",
-/// "Claude Code · rox" → "CC".
+/// "Claude Code · buwiz" → "CC".
 pub fn initials(name: &str) -> String {
     let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
     match words.as_slice() {
@@ -390,14 +390,14 @@ pub fn read_only_target(a: &AgentsOf) -> String {
 }
 
 /// "Made by Scout" for an agent another one made; None otherwise.
-pub fn made_by_line(b: &RoxBot, bots: &[RoxBot]) -> Option<String> {
+pub fn made_by_line(b: &BuwizBot, bots: &[BuwizBot]) -> Option<String> {
     let parent = b.helper.as_ref().map(|h| h.parent.as_str()).filter(|p| !p.is_empty()).unwrap_or(&b.made_by);
     (!parent.is_empty()).then(|| format!("Made by {}", name_of(parent, bots)))
 }
 
 /// A sidebar row's subtitle: its preview, after "Made by <parent>" for an
 /// agent another one made.
-pub fn subtitle(b: &RoxBot, bots: &[RoxBot]) -> String {
+pub fn subtitle(b: &BuwizBot, bots: &[BuwizBot]) -> String {
     match made_by_line(b, bots) {
         Some(m) if b.desc.is_empty() || b.desc == "No messages yet" => m,
         Some(m) => format!("{m} · {}", b.desc),
@@ -408,7 +408,7 @@ pub fn subtitle(b: &RoxBot, bots: &[RoxBot]) -> String {
 /// The thread to open at launch for the server's `active`: never an
 /// agents' conversation (its starter's chat instead, else the first
 /// listed row).
-pub fn restore_target(active: &str, rows: &[ThreadMeta], bots: &[RoxBot]) -> String {
+pub fn restore_target(active: &str, rows: &[ThreadMeta], bots: &[BuwizBot]) -> String {
     let Some(a) = rows.iter().find(|t| t.id == active).and_then(|t| t.agents.as_ref()) else {
         return active.to_owned();
     };
@@ -421,9 +421,9 @@ pub fn restore_target(active: &str, rows: &[ThreadMeta], bots: &[RoxBot]) -> Str
 }
 
 /// Bot `parent`'s temporary helpers: (live ones, past ones), newest first.
-pub fn helpers_of(parent: &str, bots: &[RoxBot]) -> (Vec<RoxBot>, Vec<RoxBot>) {
-    let mut mine: Vec<RoxBot> = bots.iter().filter(|b| b.helper.as_ref().is_some_and(|h| h.parent == parent)).cloned().collect();
-    let at = |b: &RoxBot| b.helper.as_ref().map(|h| h.created_at).unwrap_or(0.0);
+pub fn helpers_of(parent: &str, bots: &[BuwizBot]) -> (Vec<BuwizBot>, Vec<BuwizBot>) {
+    let mut mine: Vec<BuwizBot> = bots.iter().filter(|b| b.helper.as_ref().is_some_and(|h| h.parent == parent)).cloned().collect();
+    let at = |b: &BuwizBot| b.helper.as_ref().map(|h| h.created_at).unwrap_or(0.0);
     mine.sort_by(|x, y| at(y).total_cmp(&at(x)));
     mine.into_iter().partition(|b| b.helper.as_ref().is_some_and(|h| h.ended_at <= 0.0))
 }
@@ -434,8 +434,8 @@ mod tests {
     use crate::store::{ThreadBot, Turn};
     use serde_json::json;
 
-    fn bot(id: &str, name: &str, thread: &str) -> RoxBot {
-        RoxBot { id: id.into(), name: name.into(), thread_id: thread.into(), desc: "No messages yet".into(), ..Default::default() }
+    fn bot(id: &str, name: &str, thread: &str) -> BuwizBot {
+        BuwizBot { id: id.into(), name: name.into(), thread_id: thread.into(), desc: "No messages yet".into(), ..Default::default() }
     }
 
     fn conv(id: &str, participants: &[&str], subject: &str, at: f64) -> ThreadMeta {
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(participant_name("scout", &bots, &[]), "Scout");
         assert!(is_external("ext:ah_1") && !is_external("scout"));
         assert_eq!(initials("CI"), "CI");
-        assert_eq!(initials("Claude Code · rox"), "CC");
+        assert_eq!(initials("Claude Code · buwiz"), "CC");
         assert_eq!(initials("watcher"), "W");
         assert_eq!(initials(""), "?");
     }

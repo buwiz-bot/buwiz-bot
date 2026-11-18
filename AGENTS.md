@@ -36,7 +36,8 @@ are lost at the next rebuild.
   keystrokes. Buwiz Bot's dev hook (`$(getconf DARWIN_USER_TEMP_DIR)buwiz-agent-menu`,
   read by `app/src/hot.rs`) runs commands: `cmd <command-id>`.
 - Start a test instance with `scripts/buwiz-test`. Environment variables have
-  Buwiz names (`BUWIZ_*`); `broker/buwiz-protocol/src/env.rs` has the table.
+  Buwiz names (`BUWIZ_*`); a `ROX_*` variable (or `GROK_DATA_DIR`,
+  `GROK_ALLOWED_ORIGINS`, `GROK_BUNDLE_ID`) stops the app and the broker at start.
 - Point `gpui-agent` at your own instance by address: `--addr
   127.0.0.1:<your agent port>` (or `GPUI_AGENT_ADDR`), never `--connect`
   (by bundle id or `last`). `--connect` finds whichever Buwiz Bot is

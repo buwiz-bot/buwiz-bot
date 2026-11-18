@@ -244,7 +244,7 @@ test("RTH-03 GET /v1/host/events: the comment first, then each plugin event in o
   assert.equal(a.status, 200);
   assert.equal(a.headers["content-type"], "text/event-stream");
   assert.equal(a.headers["cache-control"], "no-cache");
-  assert.equal(a.raw, ": rox broker events\n\n");
+  assert.equal(a.raw, ": buwiz broker events\n\n");
   assert.deepEqual((await host("POST", `/v1/host/plugins/${FX}/disable`, {})).json, { ok: true, state: "stopped" });
   assert.deepEqual((await host("POST", `/v1/host/plugins/${FX}/enable`, {})).json, { ok: true, state: "running", code: null, message: "", generation: 2 });
   assert.deepEqual((await host("POST", `/v1/host/plugins/${FX}/tools`, { tool: "fx_secret", disabled: true })).json, { ok: true, tool: "fx_secret", disabled: true });
@@ -263,7 +263,7 @@ test("RTH-03 GET /v1/host/events: the comment first, then each plugin event in o
   assert.ok(await waitFor(() => a.events.length >= want.length, 5000), a.raw);
   assert.equal(a.raw.split("\n\n").filter(Boolean).length, 1 + want.length, "nothing else on the stream");
   assert.deepEqual(a.events, want);
-  assert.equal(a.raw.slice(0, 80), `: rox broker events\n\nevent: plugin\ndata: ${JSON.stringify(want[0])}`.slice(0, 80));
+  assert.equal(a.raw.slice(0, 80), `: buwiz broker events\n\nevent: plugin\ndata: ${JSON.stringify(want[0])}`.slice(0, 80));
   assert.deepEqual(c.events, want.slice(0, 4), "a closed listener hears no more");
   a.close();
 });

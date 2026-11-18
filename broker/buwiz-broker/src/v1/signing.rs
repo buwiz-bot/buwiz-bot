@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn the_cli_signs_a_block_with_a_key_file() {
-        let dir = std::env::temp_dir().join(format!("rox-sign-block-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buwiz-sign-block-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (key, input, out) = (dir.join("k.key"), dir.join("plugin.json"), dir.join("signed.json"));
         std::fs::write(&key, buwiz_protocol::keys::b64(&[5; 32])).unwrap();

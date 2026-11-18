@@ -1,8 +1,7 @@
-//! The Rox side of the Mini App Protocol v1 (`drafts/rox-mini-app-protocol-v1.md`,
-//! host design in `drafts/mini-app-v1-host-design.md`): what runs between
+//! The Buwiz Bot side of the Mini App Protocol v1: what runs between
 //! a v1 plugin's app and the broker.
 //!
-//! The broker owns the plugin processes and checks every call; Rox owns
+//! The broker owns the plugin processes and checks every call; Buwiz Bot owns
 //! the app's sandbox and the key that signs its calls. An open goes:
 //!
 //! 1. [`load`]: the source from the broker, its fingerprint checked again,
@@ -63,7 +62,7 @@ pub const PROTOCOL: &str = "1.0.0";
 
 /// A bridge rejection (spec 14.1): what the app's promise rejects with.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoxError {
+pub struct MiniError {
     pub code: String,
     pub retryable: bool,
     pub message: String,
@@ -72,12 +71,12 @@ pub struct RoxError {
 /// The codes spec 14.1 marks retryable.
 const RETRYABLE: [&str; 5] = ["rate_limited", "timeout", "plugin_unavailable", "plugin_restarted", "internal"];
 
-impl RoxError {
+impl MiniError {
     /// `code` with its spec retryability; the message is capped at 500
     /// chars (Appendix A).
-    pub fn new(code: &str, message: impl Into<String>) -> RoxError {
+    pub fn new(code: &str, message: impl Into<String>) -> MiniError {
         let message: String = message.into();
-        RoxError {
+        MiniError {
             code: code.to_owned(),
             retryable: RETRYABLE.contains(&code),
             message: message.chars().take(500).collect(),
@@ -86,20 +85,20 @@ impl RoxError {
 
     /// The broker's refusal `{ok:false, code, message, retryable}`; a body
     /// without a code is `internal`.
-    pub fn from_body(body: &Value) -> RoxError {
+    pub fn from_body(body: &Value) -> MiniError {
         let code = body.get("code").and_then(Value::as_str).unwrap_or("internal");
         let message = body.get("message").and_then(Value::as_str).unwrap_or(code);
-        RoxError::new(code, message)
+        MiniError::new(code, message)
     }
 
     /// The text the app's `Error` carries: the shim parses it back into a
-    /// `RoxError`.
+    /// `MiniError`.
     pub fn to_wire(&self) -> String {
         json!({"code": self.code, "retryable": self.retryable, "message": self.message}).to_string()
     }
 }
 
-impl std::fmt::Display for RoxError {
+impl std::fmt::Display for MiniError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}: {}", self.code, self.message)
     }
@@ -116,8 +115,8 @@ pub struct V1Key {
 
 impl V1Key {
     /// Parses `v1:<plugin>/<app>[?ticket=…][&props=<percent-encoded JSON>]`.
-    pub fn parse(key: &str) -> Result<V1Key, RoxError> {
-        let bad = |m: &str| RoxError::new("invalid_args", m);
+    pub fn parse(key: &str) -> Result<V1Key, MiniError> {
+        let bad = |m: &str| MiniError::new("invalid_args", m);
         let rest = key.strip_prefix("v1:").ok_or_else(|| bad("not a v1 app key"))?;
         let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
         let (plugin, app) = path.split_once('/').ok_or_else(|| bad("a v1 key names a plugin and an app"))?;
@@ -213,7 +212,7 @@ pub fn run_store_jobs(store: &'static crate::store::Store) {
     }
 }
 
-/// Rox's data directory for plugins: `<BUWIZ_DATA_DIR or ~/Library/Application Support/Buwiz Bot>/plugins`.
+/// Buwiz Bot's data directory for plugins: `<BUWIZ_DATA_DIR or ~/Library/Application Support/Buwiz Bot>/plugins`.
 pub fn plugins_dir() -> std::path::PathBuf {
     crate::vault::data_dir().join("plugins")
 }
@@ -274,12 +273,12 @@ mod tests {
     }
 
     #[test]
-    fn rox_errors_take_the_specs_retryability() {
-        assert!(RoxError::new("timeout", "").retryable);
-        assert!(!RoxError::new("permission_denied", "").retryable);
-        let e = RoxError::from_body(&json!({"ok": false, "code": "replayed", "message": "seen", "retryable": true}));
+    fn buwiz_errors_take_the_specs_retryability() {
+        assert!(MiniError::new("timeout", "").retryable);
+        assert!(!MiniError::new("permission_denied", "").retryable);
+        let e = MiniError::from_body(&json!({"ok": false, "code": "replayed", "message": "seen", "retryable": true}));
         assert_eq!((e.code.as_str(), e.retryable), ("replayed", false));
-        assert_eq!(RoxError::from_body(&json!({})).code, "internal");
-        assert_eq!(RoxError::new("x", "y".repeat(900)).message.len(), 500);
+        assert_eq!(MiniError::from_body(&json!({})).code, "internal");
+        assert_eq!(MiniError::new("x", "y".repeat(900)).message.len(), 500);
     }
 }

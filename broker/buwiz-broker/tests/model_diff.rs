@@ -154,7 +154,7 @@ async fn run(s: &Settings, api: &dyn ModelApi, data: &Path, sc: &Value) -> Value
 
 /// Runs the scenarios against the fake and compares each with its pin.
 async fn differ(mode: &str, scenarios: Value) {
-    let data = std::env::temp_dir().join(format!("rox-model-diff-{mode}-{}", std::process::id()));
+    let data = std::env::temp_dir().join(format!("buwiz-model-diff-{mode}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
     let (mut driver, fake) = Driver::start(&data, &scenarios);

@@ -269,7 +269,7 @@ test("LOOP-08 pause_turn: the same conversation goes back with the paused messag
   assert.equal(fake.calls().length, 2);
   assert.deepEqual(second.body.messages, [
     ...first.body.messages,
-    { role: "assistant", content: [{ type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "rox" } }] },
+    { role: "assistant", content: [{ type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "buwiz" } }] },
   ]);
   assert.ok(st.events.some((e) => e.phase === "searching" && e.detail === "Digging around"));
   assert.equal((await turnsOf(thread)).at(-1).text, "Found it after the pause.");

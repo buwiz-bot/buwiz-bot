@@ -52,7 +52,7 @@ status bar, under a millisecond, with all state (threads, transcript,
 draft, scroll) intact.
 
 Rules for patchable code (`src/hot.rs` and everything it pulls in — see
-`.devin/skills/rox-live/SKILL.md` for the full list):
+`.devin/skills/buwiz-live/SKILL.md` for the full list):
 
 - Persistent state goes through `crate::live::store()` or
   `crate::live::keep("name", init)`. No `static`, `thread_local!` or
@@ -164,10 +164,11 @@ logging to `~/Library/Logs/Buwiz Bot/broker.log` (`app/src/broker.rs`).
 
 ### Environment variables
 
-Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …); the
-table, with the other names each one is also read by, is in
-`broker/buwiz-protocol/src/env.rs`. A test instance is one that sets
-`BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR`.
+Every variable has a Buwiz name (`BUWIZ_DATA_DIR`, `BUWIZ_BACKEND`, …). A
+variable of an earlier name (any `ROX_*`, or `GROK_DATA_DIR`,
+`GROK_ALLOWED_ORIGINS`, `GROK_BUNDLE_ID`) is not read: the app and the broker
+refuse to start while one is set, and say which. A test instance is one that
+sets `BUWIZ_BACKEND`, `BUWIZ_BACKGROUND=1` or `BUWIZ_DATA_DIR`.
 
 The broker gets `NSH`, `NSH_HOST` and `NSH_CHUNK_DIR` (`<data>/chunks`)
 from Buwiz Bot: `bundle-dev.sh` packages `nsh` and `nsh-macos-host` into
