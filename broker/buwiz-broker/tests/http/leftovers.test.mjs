@@ -181,6 +181,31 @@ test("LEFT-08 POST /file/save: the save panel, then a copy where it says", async
   assert.deepEqual(readdirSync(OUTSIDE), []);
 });
 
+test("LEFT-07b POST /file/open shows in Finder a file open would run", async () => {
+  const opens = () => stubCalls(LOG).filter((c) => c.bin === "open");
+  for (const f of ["run.command", "run.terminal", "x.scpt", "a.fileloc"]) {
+    writeFileSync(join(FILES, "t1", f), "x");
+    const before = opens().length;
+    assert.deepEqual(json200(await postJson("/file/open", { path: `t1/${f}` })), { ok: true });
+    await waitFor(() => opens().length > before, 5000);
+    assert.deepEqual(opens().at(-1).argv, ["-R", join(FILES, "t1", f)], f);
+  }
+});
+
+test("LEFT-10 the file routes answer 401 without the host token", async () => {
+  writeFileSync(join(FILES, "t1", "evil.command"), "x");
+  const before = stubCalls(LOG).length;
+  for (const route of ["/file/write", "/file/open", "/file/save"]) {
+    for (const headers of [{}, { "X-Buwiz-Host": "a-guess" }, { "X-Buwiz-Host": "" }]) {
+      const r = await request("POST", route, { headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ path: "t1/evil.command", data: "eA==" }), noToken: true });
+      assert.equal(r.status, 401, `${route} ${JSON.stringify(headers)}`);
+      assert.equal(r.json?.code, "unauthorized");
+    }
+  }
+  assert.equal(readFileSync(join(FILES, "t1", "evil.command"), "utf8"), "x");
+  assert.deepEqual(stubCalls(LOG).slice(before), []);
+});
+
 test("LEFT-09 these routes match the URL exactly: a query string is not found", async () => {
   for (const [method, url] of [["POST", "/file/write?x=1"], ["POST", "/file/open?"]]) {
     const r = method === "POST" ? await raw(url, "{}") : await request(method, url);

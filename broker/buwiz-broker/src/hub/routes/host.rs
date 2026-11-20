@@ -176,10 +176,25 @@ pub const TEST_TOKEN: &str = "unit-test-host-token";
 /// `/mcp/tools/state` and `/mcp/server/delete` are the leaf's, locked there), a market
 /// plugin (`/plugins/install`; `/plugins/connect` adds and enables its server;
 /// `/plugins/settings` changes the env its servers run with) and a skill (`/skills`
-/// creates or rewrites one; `/skills/state`, `/skills/delete`), and a person's Stop on a run
-/// (`/job/stop`). The app sends the host token to them; a Bot's shell, which can reach the port
-/// but not the token, gets 401. [`LOCKED_READS`] are the same for a GET.
-pub const LOCKED: [&str; 8] = ["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete", "/job/stop"];
+/// creates or rewrites one; `/skills/state`, `/skills/delete`), a person's Stop on a run
+/// (`/job/stop`), and the viewer's file routes (`/file/write` writes any bytes under any name in
+/// the files folder, `/file/open` hands a file to macOS `open`, `/file/save` copies one where the
+/// save panel says), which together would run a script a Bot wrote. The app sends the host token
+/// to them; a Bot's shell, which can reach the port but not the token, gets 401.
+/// [`LOCKED_READS`] are the same for a GET.
+pub const LOCKED: [&str; 11] = [
+    "/mcp/servers",
+    "/plugins/install",
+    "/plugins/connect",
+    "/plugins/settings",
+    "/skills",
+    "/skills/state",
+    "/skills/delete",
+    "/job/stop",
+    "/file/write",
+    "/file/open",
+    "/file/save",
+];
 
 /// The routes whose GET is locked: every Bot's runs, which no Bot reads.
 pub const LOCKED_READS: [&str; 1] = ["/jobs/running"];

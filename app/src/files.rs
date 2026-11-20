@@ -1595,6 +1595,11 @@ fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
             .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
             .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
             .opacity(move || if url() { 1.0f32 } else { 0.0 })
+            .on_load(move |n: &WebNavigation| {
+                if n.url.starts_with(&format!("{}/office/editor/", crate::client::backend())) {
+                    give_office_page_the_token(office_page);
+                }
+            })
             // shows through the (transparent) WKWebView until the page
             // paints: light is the Office editor page's own `#f5f5f5` body.
             .bg(move || {
@@ -2567,6 +2572,7 @@ pub(crate) fn viewer_save() {
         return;
     }
     if let Some(page) = OFFICE_PAGE.with(std::cell::Cell::get) {
+        give_office_page_the_token(page);
         page.inject_java_script("window.buwizSave && window.buwizSave(); true;");
     }
     let path = f.path.clone();
@@ -2575,6 +2581,15 @@ pub(crate) fn viewer_save() {
         load_file_versions(&path);
         store().refresh_thread_apps();
     });
+}
+
+/// The broker's host token on the Office editor page (`window.buwizHost`): its saves go to
+/// `/file/write`, which answers only the token. Read at each call, as the broker makes a new
+/// one when it restarts.
+fn give_office_page_the_token(page: ElementRef) {
+    if let Some(token) = crate::client::host_token() {
+        page.inject_java_script(format!("window.buwizHost = {}; true;", serde_json::Value::String(token)));
+    }
 }
 
 /// What Print can do with the open file: text (code, markdown, JSON,

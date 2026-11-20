@@ -39,10 +39,12 @@ function b64(buf) {
   return btoa(bin);
 }
 
+// /file/write takes the broker's host token, which Buwiz Bot puts on the
+// page (window.buwizHost) when it loads and before its Save.
 function saveBytes(bytes) {
   return fetch("/file/write", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-buwiz-host": window.buwizHost || "" },
     body: JSON.stringify({ path, data: b64(bytes) }),
   });
 }
