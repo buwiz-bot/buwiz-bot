@@ -43,6 +43,9 @@ pub mod links;
 pub mod load;
 #[cfg(target_os = "macos")]
 pub mod native;
+#[cfg(target_os = "linux")]
+#[path = "native_linux.rs"]
+pub mod native;
 pub mod perms;
 pub mod props;
 pub mod records;

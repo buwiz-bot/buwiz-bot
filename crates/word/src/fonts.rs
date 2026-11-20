@@ -18,7 +18,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2_core_foundation::{CFData, CFRetained};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2_core_text::{CTFont, CTFontTableOptions};
 
 use buwiz_office_kit as office;
@@ -41,6 +43,12 @@ fn stand_in(family: &str) -> &'static str {
 
 /// The face's tables as one sfnt (a face of a collection too: the shaper
 /// reads single fonts only).
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn sfnt(font: &office::fonts::NoFont) -> Option<Vec<u8>> {
+    match *font {}
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn sfnt(font: &CTFont) -> Option<Vec<u8>> {
     // SAFETY: a valid font; the array holds unboxed table tags.
     let tags = unsafe { font.available_tables(CTFontTableOptions::NoOptions) }?;

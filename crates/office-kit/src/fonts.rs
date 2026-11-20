@@ -9,8 +9,9 @@
 //! copies them from `office/node_modules/@betteroffice/fonts/assets` into
 //! `Contents/Resources/fonts/office/`. Dev runs and tests read them from
 //! there, from `BUWIZ_OFFICE_FONTS`, or from the checkout's node_modules.
-//! They are registered with CoreText before the first paint ([`register`])
-//! so the canvas draws by family name ("Carlito") from the very files the
+//! On Apple platforms CoreText registers them before the first paint
+//! ([`register`]); on Linux the root passes their bytes to nsh's per-app
+//! font map. The canvas draws by family name ("Carlito") from the files the
 //! engines measure with.
 
 use std::collections::HashMap;
@@ -302,10 +303,16 @@ pub fn bytes(face: &'static BundledFace) -> Option<Arc<[u8]>> {
     read.entry(face.file).or_insert_with(|| std::fs::read(dir()?.join(face.file)).ok().map(Arc::from)).clone()
 }
 
+/// The bundled font files available to the app renderer.
+pub fn bundled_bytes() -> Vec<Vec<u8>> {
+    BUNDLED.iter().filter_map(bytes).map(|bytes| bytes.to_vec()).collect()
+}
+
 /// Registers every bundled file there is with CoreText, for this process,
 /// once (a later caller waits for the first). Before anything draws them:
 /// the canvas caches the font each family resolved to. About 1 ms a file
 /// once CoreText is warm.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn register() {
     use objc2_core_foundation::{CFRetained, CFURL};
     use objc2_core_text::{CTFontManagerRegisterFontsForURL, CTFontManagerScope};
@@ -332,6 +339,19 @@ pub fn register() {
     });
 }
 
+/// No CoreText here: only the bundled files' bytes are used.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub fn register() {}
+
+/// An installed font: none are looked up off Apple platforms.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub enum NoFont {}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub fn installed(_family: &str, _bold: bool, _italic: bool) -> Option<NoFont> {
+    None
+}
+
 /// A face the shaper holds, as the canvas names it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Face {
@@ -351,6 +371,7 @@ impl Face {
 
 /// `family` as nsh's canvas makes it (`nsh-platform-macos` `family_font`
 /// and `make_font`): `None` when it isn't installed.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn installed(family: &str, bold: bool, italic: bool) -> Option<objc2_core_foundation::CFRetained<objc2_core_text::CTFont>> {
     use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType};
     use objc2_core_text::{CTFont, CTFontDescriptor, CTFontSymbolicTraits, kCTFontFamilyNameAttribute, kCTFontTraitsAttribute, kCTFontWeightTrait};
@@ -389,7 +410,12 @@ pub fn canvas_width(font: &str, text: &str) -> f32 {
 
 /// The width CoreText sets `text` in, in `face` at `px` (the canvas's
 /// `measureText`), for checking the shaper against it.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(all(any(test, feature = "testing"), not(any(target_os = "macos", target_os = "ios"))))]
+pub fn coretext_width(_face: &Face, px: f64, text: &str) -> f64 {
+    px * 0.5 * text.chars().count() as f64
+}
+
+#[cfg(all(any(test, feature = "testing"), any(target_os = "macos", target_os = "ios")))]
 pub fn coretext_width(face: &Face, px: f64, text: &str) -> f64 {
     use objc2_core_foundation::{CFAttributedString, CFMutableAttributedString, CFRange, CFString};
     use objc2_core_text::{CTLine, kCTFontAttributeName};

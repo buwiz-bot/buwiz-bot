@@ -89,6 +89,9 @@ security-framework = "3.7"
 # pasteboard, the full-screen stack).
 dispatch2 = "0.3"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { path = "../nsh/crates/nsh-platform-linux" }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 nsh-platform-ios = { path = "../nsh/crates/nsh-platform-ios", default-features = false }
 nsh-ios-app = { path = "../nsh/crates/nsh-ios-app", default-features = false }

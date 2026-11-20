@@ -542,7 +542,11 @@ mod tests {
         fn the_check_is_the_first_thing_main_does() {
             let source = include_str!("main.rs");
             let mains: Vec<&str> = source.match_indices("fn main()").map(|(at, _)| &source[at..]).collect();
-            assert_eq!(mains.len(), 3, "macOS, iOS, elsewhere");
+            let added_platforms = ["#[cfg(target_os = \"linux\")]\nfn main()", "#[cfg(windows)]\nfn main()"]
+                .iter()
+                .filter(|cfg| source.contains(**cfg))
+                .count();
+            assert_eq!(mains.len(), 3 + added_platforms, "macOS, iOS, Linux/Windows, elsewhere");
             let macos = source.find("#[cfg(target_os = \"macos\")]\nfn main()").expect("the macOS main");
             let body = &source[macos..];
             let body = &body[body.find('{').unwrap() + 1..];

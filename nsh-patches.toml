@@ -129,6 +129,13 @@ pr = 0
 status = "local"
 note = "AppView::set_error_handler: Buwiz Bot shows a v1 mini app's load, uncaught and budget errors (Mini App Protocol 6.7)"
 
+[[topic]]
+branch = "pr/linux-appview-error-handler"
+kind = "feature"
+pr = 0
+status = "local"
+note = "Linux AppView::set_error_handler so the Bot shows a mini app's error banner; in buwiz via hexuria/nsh#22; the topic branch is on codeitlikemiley/nsh (cut from main) and is not yet upstream"
+
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
 # stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
 # verified, carried in `buwiz`; kept in the fork, not upstreamed. The macOS-only
