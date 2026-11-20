@@ -90,3 +90,16 @@ test("a body that is not application/json is refused", async () => {
   const list = await request("GET", "/mcp/servers");
   assert.deepEqual(list.json.servers, []);
 });
+
+test("a request for a foreign Host is refused (DNS rebinding)", async () => {
+  for (const path of ["/state?name=x", "/prefs", "/file/raw/x.txt", "/files/attachments/x", "/health", "/mcp/servers", "/thread/list"]) {
+    const r = await request("GET", path, { headers: { Host: `rebind.example:${PORT}` } });
+    assert.equal(r.status, 403, path);
+    assert.match(r.json.error, /rebind\.example/, path);
+  }
+
+  for (const host of [`127.0.0.1:${PORT}`, `localhost:${PORT}`]) {
+    const r = await request("GET", "/health", { headers: { Host: host } });
+    assert.equal(r.status, 200, host);
+  }
+});

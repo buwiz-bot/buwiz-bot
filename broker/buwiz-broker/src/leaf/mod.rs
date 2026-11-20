@@ -121,6 +121,11 @@ impl Leaf {
         Self { data, allowed, db: Mutex::new(None), waiting: Mutex::new(state::Waiting::default()) }
     }
 
+    /// The origins the guard lets through.
+    pub fn allowed(&self) -> &[String] {
+        &self.allowed
+    }
+
     pub async fn serve(&self, route: Route, req: Request<Incoming>) -> Response<Body> {
         let origin = req.headers().get(ORIGIN).cloned();
         if let Some((status, error)) = crate::guard::refusal(req.method(), req.headers(), &self.allowed) {
