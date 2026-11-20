@@ -1843,6 +1843,13 @@ mod imp {
                 ..Default::default()
             });
             self.replace_view(view);
+            let (key, title) = (module.to_owned(), prepared.title.clone());
+            self.view.set_error_handler(move |text| {
+                if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
+                    let key = key.clone();
+                    crate::mini_v1::to_store(move |st| st.v1_error(&key, message));
+                }
+            });
             let channel = self.view.host();
             *self.shared.on_viewport.borrow_mut() = Some(Box::new(move |v| {
                 let _ = channel.send("buwiz.viewport", v);
@@ -1899,6 +1906,18 @@ mod imp {
             if crate::mini_v1::is_v1(&module) {
                 return self.load_v1(&module, &js);
             }
+            let key = module.clone();
+            self.view.set_error_handler(move |text| {
+                if let Some(message) = super::run_error(text) {
+                    let key = key.clone();
+                    crate::mini_v1::to_store(move |st| {
+                        let err = st.mini_err(&key);
+                        if err.get_untracked() != message {
+                            err.set(message);
+                        }
+                    });
+                }
+            });
             self.view.load(nsh_platform_linux::App::Js(super::mini_bundle(&module, js, call.as_deref())));
             self.settle();
         }
