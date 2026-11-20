@@ -385,7 +385,9 @@ fn handed(what: &str, how: system_open::Handed) {
 
 /// Opens an https `url` the person agreed to in the browser.
 fn open_in_browser(url: &str) {
-    if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(url);
+    if let Err(e) = system_open::spawn_reaped(&mut cmd) {
         log::warn!("mini v1: the browser did not open: {e}");
     }
 }
