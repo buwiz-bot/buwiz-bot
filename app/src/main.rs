@@ -256,7 +256,7 @@ fn main() -> impl std::process::Termination {
 fn refuse_start(why: &str) -> ! {
     use std::io::Write;
     eprintln!("buwiz-bot: {why}");
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default();
+    let home = buwiz_bot::identity::home();
     let path = buwiz_protocol::env::var_os("BUWIZ_JANK_LOG").map(std::path::PathBuf::from)
         .unwrap_or_else(|| buwiz_bot::identity::logs_dir(std::path::Path::new(&home)).join("jank.log"));
     if let Some(dir) = path.parent() {
@@ -278,7 +278,7 @@ fn main() -> impl std::process::Termination {
         refuse_start(&why);
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default());
+    let home = buwiz_bot::identity::home();
     match buwiz_bot::identity::migrate_data(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home) {
         Ok(done) => log::info!("buwiz: data dir migration: {done:?}"),
         Err(e) => log::error!("buwiz: Buwiz Bot's data dir was not moved (it is used where it is): {e}"),

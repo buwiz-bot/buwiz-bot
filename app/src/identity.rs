@@ -26,8 +26,12 @@ pub const MIGRATED_MARKER: &str = ".migrated-from-rox";
 
 const SUPPORT: &str = "Library/Application Support";
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+/// HOME, falling back to USERPROFILE on Windows.
+pub fn home() -> PathBuf {
+    let home = std::env::var_os("HOME");
+    #[cfg(windows)]
+    let home = home.filter(|h| !h.is_empty()).or_else(|| std::env::var_os("USERPROFILE"));
+    PathBuf::from(home.unwrap_or_default())
 }
 
 /// Where the app keeps its data: `BUWIZ_DATA_DIR`, else

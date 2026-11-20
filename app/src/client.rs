@@ -52,7 +52,10 @@ pub(crate) fn host_token_path(env: Option<&str>, home: &str) -> std::path::PathB
 /// broker makes a new one when it restarts. `None` when there is none.
 /// Never logged.
 pub(crate) fn host_token() -> Option<String> {
+    #[cfg(not(windows))]
     let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = crate::identity::home().to_string_lossy().into_owned();
     let env = buwiz_protocol::env::var("BUWIZ_HOST_TOKEN_FILE");
     token_in(&token_file(env.as_deref(), &home, crate::broker::in_test_bundle())?)
 }

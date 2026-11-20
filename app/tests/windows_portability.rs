@@ -1,5 +1,7 @@
 #![cfg(windows)]
 
+use std::{path::PathBuf, process::Command};
+
 use buwiz_bot::{agent_hub, mini_v1::{attribution::Actor, document}};
 
 #[test]
@@ -45,5 +47,29 @@ fn pele_gantt_uses_the_windows_localtime_shim() {
         let offset = pele::diagrams::gantt::clock::offset_at(millis);
         assert!(offset.is_finite());
         assert!(offset.abs() < 86_400_000.0);
+    }
+}
+
+#[test]
+fn home_prefers_home_then_windows_profile() {
+    if let Ok(expected) = std::env::var("BUWIZ_WINDOWS_HOME_CASE") {
+        let expected = PathBuf::from(expected);
+        assert_eq!(buwiz_bot::identity::home(), expected);
+        assert_eq!(buwiz_bot::identity::data_dir(), expected.join("Library/Application Support/Buwiz Bot"));
+        return;
+    }
+    for home in [Some(r"C:\buwiz-test-home"), Some(""), None] {
+        let profile = r"C:\buwiz-test-profile";
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.args(["--exact", "home_prefers_home_then_windows_profile", "--nocapture"])
+            .env_remove("HOME")
+            .env_remove("BUWIZ_DATA_DIR")
+            .env("USERPROFILE", profile)
+            .env("BUWIZ_WINDOWS_HOME_CASE", home.filter(|h| !h.is_empty()).unwrap_or(profile));
+        if let Some(home) = home {
+            child.env("HOME", home);
+        }
+        let output = child.output().unwrap();
+        assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     }
 }
