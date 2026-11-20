@@ -53,7 +53,10 @@ impl FrontDoor {
         // a mini app account's sign-in: the plugin host's, whatever else is hosted
         let accounts = self.accounts.as_ref().filter(|_| method == Method::GET && path.starts_with("/oauth/callback/account:"));
         let mcp = self.mcp.as_ref().filter(|_| leaf::mcp::route(&method, &target));
-        let (res, side) = if path == "/health" {
+        // every route, /health and the sign-in callbacks too, answers only a loopback Host
+        let (res, side) = if let Some((status, error)) = crate::guard::host_refusal(req.headers(), self.leaf.allowed()) {
+            (json(status, serde_json::json!({ "ok": false, "error": error })), "rust")
+        } else if path == "/health" {
             (self.health(), "rust")
         } else if path == "/meta" {
             (self.meta(), "rust")
