@@ -136,6 +136,14 @@ pr = 0
 status = "local"
 note = "Linux AppView::set_error_handler so the Bot shows a mini app's error banner; in buwiz via hexuria/nsh#22; the topic branch is on codeitlikemiley/nsh (cut from main) and is not yet upstream"
 
+[[topic]]
+branch = "buwiz-windows-error-handler"
+base = "facd7f449f2b48584bebce7f62162e845eb53132"
+kind = "feature"
+pr = 0
+status = "local"
+note = "Windows AppView::set_error_handler so the Bot shows a mini app's error banner; in buwiz via hexuria/nsh#26; the topic branch is on codeitlikemiley/nsh (cut from buwiz) and is not yet upstream"
+
 # The shared gpui-agent adapter (nsh-testing strict mode + nsh-gpui-agent), a
 # stack on hexuria/nsh: Linux/Android <- Windows, and <- web. Reviewed and
 # verified, carried in `buwiz`; kept in the fork, not upstreamed. The macOS-only
