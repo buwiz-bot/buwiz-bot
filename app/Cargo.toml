@@ -96,6 +96,10 @@ nsh-platform-linux = { path = "../nsh/crates/nsh-platform-linux" }
 nsh-platform-ios = { path = "../nsh/crates/nsh-platform-ios", default-features = false }
 nsh-ios-app = { path = "../nsh/crates/nsh-ios-app", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+nsh-platform-windows = { path = "../nsh/crates/nsh-platform-windows" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # The office crates build with the app: one lockfile and target dir.
 [workspace]
 members = ["../crates/office-kit", "../crates/word", "../crates/spreadsheet"]

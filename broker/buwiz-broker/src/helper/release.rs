@@ -427,6 +427,7 @@ async fn fetch_package(release: &Value, plain: bool, source: String, trust: &Tru
 /// The package's files (50 MiB in all), its binary (200 MiB, 0755) and
 /// plugin.json into `tmp`, each checked.
 async fn stage_package(release: &Value, p: &Package, text: &str, plain: bool, tmp: &Path) -> Result<(), String> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
     let mut left = package::FILES_BYTES_MAX as usize;
@@ -446,7 +447,12 @@ async fn stage_package(release: &Value, p: &Package, text: &str, plain: bool, tm
             return Err(format!("{} does not match plugin.json's sha256", f.path));
         }
         if is_bin {
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+            {
+                #[cfg(unix)]
+                { std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)) }
+                #[cfg(windows)]
+                { Ok::<(), std::io::Error>(()) }
+            }.map_err(|e| e.to_string())?;
         } else {
             left -= n;
         }
@@ -456,6 +462,7 @@ async fn stage_package(release: &Value, p: &Package, text: &str, plain: bool, tm
 
 /// The manifest and binary into `tmp`, checked.
 async fn stage(release: &Value, ix: &Index, plain: bool, tmp: &Path) -> Result<(), String> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
     let manifest = small(&asset_url(release, &ix.manifest.asset)?, "application/octet-stream", plain, SMALL_MAX).await?;
@@ -469,7 +476,12 @@ async fn stage(release: &Value, ix: &Index, plain: bool, tmp: &Path) -> Result<(
     if sha != ix.binary.sha256 {
         return Err(format!("{} does not match the index's sha256", ix.binary.asset));
     }
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
+    {
+        #[cfg(unix)]
+        { std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)) }
+        #[cfg(windows)]
+        { Ok::<(), std::io::Error>(()) }
+    }.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -474,9 +474,15 @@ fn io_problem(e: std::io::Error) -> Problem {
 }
 
 fn private_dir(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).map_err(io_problem)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io_problem)
+    {
+        #[cfg(unix)]
+        { std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
+        #[cfg(windows)]
+        { Ok::<(), std::io::Error>(()) }
+    }.map_err(io_problem)
 }
 
 /// A key pair for computer `id` in `folder`, made by `ssh-keygen`: the public line.

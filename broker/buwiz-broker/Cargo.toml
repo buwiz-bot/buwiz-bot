@@ -79,6 +79,9 @@ objc2-foundation = { version = "0.3", features = [
     "NSString",
 ] }
 
+[target.'cfg(windows)'.dependencies]
+same-file = "1"
+
 [dev-dependencies]
 buwiz-computer = { path = "../buwiz-computer", features = ["mock"] }
 # a box's tunnel WebSocket on loopback, for the tunnel client's tests (already in the tree, through

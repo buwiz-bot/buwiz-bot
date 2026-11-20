@@ -294,10 +294,20 @@ fn local_offset_ms(utc: f64) -> f64 {
     let t = (utc / 1000.0) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: both pointers are to live locals
-    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+    #[cfg(unix)]
+    let failed = unsafe { libc::localtime_r(&t, &mut tm) }.is_null();
+    #[cfg(windows)]
+    let failed = unsafe { libc::localtime_s(&mut tm, &t) } != 0;
+    if failed {
         return 0.0;
     }
-    tm.tm_gmtoff as f64 * 1000.0
+    #[cfg(unix)]
+    { tm.tm_gmtoff as f64 * 1000.0 }
+    #[cfg(windows)]
+    {
+        let days = days_from_civil(tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64);
+        (days * 86400 + tm.tm_hour as i64 * 3600 + tm.tm_min as i64 * 60 + tm.tm_sec as i64 - t) as f64 * 1000.0
+    }
 }
 
 /// `n.toString(36)` of a non-negative integer.

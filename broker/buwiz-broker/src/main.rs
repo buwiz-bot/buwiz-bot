@@ -64,7 +64,7 @@ async fn main() {
     // the owner's folder: Grok Shell moves to Buwiz Broker once, before
     // anything opens it (buwiz_protocol::broker_dir). This broker holds its port
     // now; on another port it checks that none answers on the owner's.
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let home = home();
     let own_port = config.port;
     let busy = move || own_port != buwiz_protocol::broker_dir::OWNER_PORT && buwiz_protocol::broker_dir::port_answers(buwiz_protocol::broker_dir::OWNER_PORT);
     match config.settle_owner_dir(buwiz_protocol::env::var("BUWIZ_BROKER_DATA_DIR").as_deref(), &home, &busy) {
@@ -131,8 +131,8 @@ async fn main() {
         eprintln!("buwiz-broker: --assets has no trust.json and BUWIZ_TRUST_FILE is not set, so off: the plugin trust list");
     }
 
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-    let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT handler");
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -146,8 +146,7 @@ async fn main() {
                     let _ = http1::Builder::new().keep_alive(true).serve_connection(TokioIo::new(stream), service).await;
                 });
             }
-            _ = term.recv() => break,
-            _ = int.recv() => break,
+            _ = &mut shutdown => break,
         }
     }
     drop(listener);
@@ -161,6 +160,20 @@ async fn main() {
         mcp.stop_all().await;
     }
     eprintln!("buwiz-broker: stopped");
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT handler");
+        tokio::select! {
+            _ = term.recv() => {},
+            _ = int.recv() => {},
+        }
+    }
+    #[cfg(windows)]
+    tokio::signal::ctrl_c().await.expect("Ctrl-C handler");
 }
 
 /// `buwiz-broker keystore-check <plugin id> [--data DIR]`: whether the
@@ -244,7 +257,10 @@ fn manifest_op(args: &[String]) -> i32 {
 }
 
 fn home() -> std::path::PathBuf {
-    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default()
+    #[cfg(unix)]
+    { std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default() }
+    #[cfg(windows)]
+    { std::env::home_dir().unwrap_or_default() }
 }
 
 /// The keystore of a broker on `data` ([`Keystore::for_data`]).

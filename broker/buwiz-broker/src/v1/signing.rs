@@ -1,6 +1,7 @@
 //! App fingerprints and manifest signatures (spec 11.2, 5.2;
 //! signing and `sign-manifest`).
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::{json, Value};
@@ -128,7 +129,9 @@ pub fn cli(args: &[String]) -> Result<(), String> {
 
 /// A key file must be the owner's alone, as ssh insists for private keys.
 fn read_key_file(path: &str) -> Result<String, String> {
+    #[cfg(unix)]
     let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    #[cfg(unix)]
     if meta.permissions().mode() & 0o077 != 0 {
         return Err(format!("{path} is readable by others; chmod 600 it"));
     }

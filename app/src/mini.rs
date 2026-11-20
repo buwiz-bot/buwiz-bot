@@ -659,7 +659,7 @@ fn pin_button(key: &str, n: u64) -> impl IntoElement {
 /// widget nor an MCP app: network, web views, clipboard, picker, status bar,
 /// open URLs, host functions, files, processes and sockets. NSH does not yet
 /// gate `nsh/desktop` window/menu commands or `os.homedir()`.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
     nsh_engine::Policy {
         declared: Some(nsh_core::access::Capabilities::default()),
@@ -676,14 +676,14 @@ pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
 /// exact paths, so `/state/R280` and `/state/R28/x` stay out; nothing else.
 /// Any other name, or an origin-configuration error, gets
 /// [`deny_all_policy`].
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn widget_policy(module: &str, call: Option<&str>) -> nsh_engine::Policy {
     widget_state_policy(module, call).unwrap_or_else(|_| deny_all_policy())
 }
 
 /// One exact-path grant on the server's origin: the one place the widget's
 /// two grants (its state, its `call` path) are built.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result<nsh_core::access::HttpGrant, String> {
     let mut grant = nsh_core::access::HttpGrant::default();
     grant.host = nsh_core::access::HostPattern::new(host)?;
@@ -694,7 +694,7 @@ fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result
     Ok(grant)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn widget_state_policy(module: &str, call: Option<&str>) -> Result<nsh_engine::Policy, String> {
     let name = crate::store::app_name(module);
     // the server's state names (`/^[\w.-]+$/`), and not `.` / `..`, which
@@ -793,11 +793,11 @@ pub(crate) fn widget_helper(call: Option<&str>) -> String {
 /// The app server's routes an MCP app may call: its tools (`/mcp/call`),
 /// another app or a new chat (`/mcp/open`) and the file picker
 /// (`/attach/pick`), all POST.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const MCP_APP_POSTS: [&str; 3] = ["/mcp/call", "/mcp/open", "/attach/pick"];
 
 /// What an MCP app may read: generated files and the asset base's images.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 
 /// MCP apps call the server for their data; allow only the routes they use
@@ -805,7 +805,7 @@ const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 /// settings, `/data/*`, `/state/*` and the chats stay out of reach. NSH
 /// checks a WebSocket as a GET of the same URL, so only the read prefixes
 /// would pass one; the server has no WebSocket routes.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     let (host, port) = mcp_app_server_host_port()?;
     let host = nsh_core::access::HostPattern::new(&host)?;
@@ -831,7 +831,7 @@ pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn mcp_app_server_host_port() -> Result<(String, u16), String> {
     let origin = nsh_core::access::parse_url(crate::client::backend())
         .ok_or_else(|| "invalid app server origin".to_owned())?;
@@ -846,7 +846,7 @@ fn mcp_app_server_host_port() -> Result<(String, u16), String> {
 
 /// The module key, not the server-supplied title, selects the bundle policy.
 /// Any origin-configuration error falls back to deny-all.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn mini_bundle(module: &str, js: String, call: Option<&str>) -> nsh_engine::Bundle {
     let policy = if module.starts_with("mcp:") {
         mcp_app_policy().unwrap_or_else(|_| deny_all_policy())
@@ -859,6 +859,15 @@ pub(crate) fn mini_bundle(module: &str, js: String, call: Option<&str>) -> nsh_e
 // ---------------------------------------------------------------------------
 // The macOS component: an AppView per element, loaded from the `source` prop.
 // ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[path = "mini_windows.rs"]
+mod imp;
+
+#[cfg(windows)]
+pub fn register_mini_app(components: &nsh_platform_windows::Components) {
+    components.register("buwiz/mini-app", std::rc::Rc::new(|ctx| Box::new(imp::MiniApp::new(ctx))));
+}
 
 #[cfg(target_os = "macos")]
 mod imp {

@@ -879,9 +879,15 @@ fn io_problem(e: std::io::Error) -> Problem {
 /// A folder only this user reads, whatever the umask: `create_dir` modes are filtered by it, and
 /// the folder may already be there.
 fn private_dir(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).map_err(io_problem)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io_problem)
+    {
+        #[cfg(unix)]
+        { std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
+        #[cfg(windows)]
+        { Ok::<(), std::io::Error>(()) }
+    }.map_err(io_problem)
 }
 
 /// The secrets, on disk for as long as this lives: dropped, however a start ends, they're gone.
@@ -903,6 +909,7 @@ impl Drop for Staged {
 
 fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     private_dir(dir)?;
     let bearer = machine.egress.as_ref().filter(|e| e.tunnel).and_then(|e| e.bearer.as_ref()).map(|b| (EGRESS_FILE, b));
@@ -913,7 +920,13 @@ fn stage_secrets(dir: &Path, machine: &Machine) -> Result<()> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io_problem(e)),
             _ => {}
         }
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).map_err(io_problem)?;
+        let mut f = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            options
+        }.open(path).map_err(io_problem)?;
         f.write_all(secret.expose().as_bytes()).map_err(io_problem)?;
     }
     Ok(())
@@ -930,12 +943,19 @@ fn clear_secrets(dir: &Path) {
 /// reaches no site until a set is put in force.
 pub fn stage_rules(machine_dir: &Path, rules: &[u8]) -> Result<()> {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     let dir = secret_dir(machine_dir);
     private_dir(&dir)?;
     let (path, next) = (dir.join(RULES_FILE), dir.join(format!("{RULES_FILE}.new")));
     let _ = std::fs::remove_file(&next);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&next).map_err(io_problem)?;
+    let mut f = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options
+    }.open(&next).map_err(io_problem)?;
     f.write_all(rules).map_err(io_problem)?;
     f.sync_all().map_err(io_problem)?;
     std::fs::rename(&next, &path).map_err(io_problem)

@@ -15,6 +15,7 @@
 //! every website has that origin, and so has a planted page, and either could then read any file.
 
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -304,7 +305,10 @@ fn versions_of_file(leaf: &Leaf, rel: &str) -> Result<Vec<Value>, String> {
         .into_iter()
         .map(|(v, f)| {
             let st = std::fs::metadata(format!("{dir}/{f}")).map_err(|e| e.to_string())?;
+            #[cfg(unix)]
             let mtime_ms = st.mtime() as f64 * 1000.0 + st.mtime_nsec() as f64 / 1e6;
+            #[cfg(windows)]
+            let mtime_ms = st.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
             let mut m = Map::new();
             m.insert("v".into(), Value::from(v));
             m.insert("at".into(), Value::from((mtime_ms + 0.5).floor()));

@@ -30,7 +30,10 @@ pub const PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 /// The SDK's default request timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(unix)]
 const INHERITED: &[&str] = &["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"];
+#[cfg(windows)]
+const INHERITED: &[&str] = &["HOME", "PATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot", "TEMP", "TMP", "PATHEXT", "COMSPEC", "USERNAME"];
 
 pub const REQUEST_TIMEOUT: i64 = -32001;
 pub const CONNECTION_CLOSED: i64 = -32000;
@@ -109,6 +112,21 @@ pub struct Conn {
 /// An app started from Finder gets launchd's bare
 /// PATH, without the folders npx, uvx and bunx usually live in.
 pub fn tool_path(path: &str, home: &str) -> String {
+    #[cfg(windows)]
+    {
+        let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(path).collect();
+        if !home.is_empty() {
+            for extra in [".local/bin", ".cargo/bin", ".bun/bin"] {
+                let extra = std::path::Path::new(home).join(extra);
+                if !paths.contains(&extra) {
+                    paths.push(extra);
+                }
+            }
+        }
+        return std::env::join_paths(paths).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_owned());
+    }
+    #[cfg(unix)]
+    {
     let mut have: Vec<String> = path.split(':').filter(|p| !p.is_empty()).map(str::to_owned).collect();
     for extra in [format!("{home}/.local/bin"), format!("{home}/.cargo/bin"), format!("{home}/.bun/bin"), "/opt/homebrew/bin".into(), "/usr/local/bin".into()] {
         if !have.contains(&extra) {
@@ -116,6 +134,7 @@ pub fn tool_path(path: &str, home: &str) -> String {
         }
     }
     have.join(":")
+    }
 }
 
 /// The environment the child starts with.
@@ -131,7 +150,11 @@ pub fn child_env(spec: &Spec) -> Vec<(String, String)> {
 pub fn child_env_from(spec: &Spec, mut env: Vec<(String, String)>) -> Vec<(String, String)> {
     if !spec.inherit_all {
         let var = |k: &str| env.iter().find(|(e, _)| e == k).map(|(_, v)| v.clone()).unwrap_or_default();
-        let path = tool_path(&var("PATH"), &var("HOME"));
+        #[cfg(unix)]
+        let home = var("HOME");
+        #[cfg(windows)]
+        let home = var("USERPROFILE");
+        let path = tool_path(&var("PATH"), &home);
         env.retain(|(e, _)| e != "PATH");
         env.push(("PATH".to_owned(), path));
     }
@@ -144,10 +167,18 @@ pub fn child_env_from(spec: &Spec, mut env: Vec<(String, String)>) -> Vec<(Strin
 
 /// The text for a spawn that failed (`spawn <cmd> ENOENT`).
 fn spawn_error(command: &str, e: &std::io::Error) -> String {
+    #[cfg(unix)]
     let code = match e.raw_os_error() {
         Some(libc::ENOENT) => "ENOENT",
         Some(libc::EACCES) => "EACCES",
         Some(libc::ENOTDIR) => "ENOTDIR",
+        _ => return format!("spawn {command}: {e}"),
+    };
+    #[cfg(windows)]
+    let code = match e.kind() {
+        std::io::ErrorKind::NotFound => "ENOENT",
+        std::io::ErrorKind::PermissionDenied => "EACCES",
+        std::io::ErrorKind::NotADirectory => "ENOTDIR",
         _ => return format!("spawn {command}: {e}"),
     };
     format!("spawn {command} {code}")
@@ -287,6 +318,7 @@ impl Conn {
     pub async fn close(&self) {
         self.stdin.lock().await.take();
         let Some(mut child) = self.child.lock().await.take() else { return };
+        #[cfg(unix)]
         for signal in [Some(libc::SIGTERM), Some(libc::SIGKILL), None] {
             if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_ok() {
                 break;
@@ -299,6 +331,10 @@ impl Conn {
                     let _ = child.wait().await;
                 }
             }
+        }
+        #[cfg(windows)]
+        if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+            let _ = child.kill().await;
         }
         // the reader's end (a grandchild may hold stdout open: don't wait long)
         let _ = tokio::time::timeout(Duration::from_secs(2), self.exited.notified()).await;

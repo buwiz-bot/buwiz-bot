@@ -46,6 +46,9 @@ pub mod native;
 #[cfg(target_os = "linux")]
 #[path = "native_linux.rs"]
 pub mod native;
+#[cfg(windows)]
+#[path = "native_windows.rs"]
+pub mod native;
 pub mod perms;
 pub mod props;
 pub mod records;

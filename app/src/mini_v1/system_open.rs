@@ -222,6 +222,7 @@ pub struct Copied {
     pub fresh: bool,
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Copied {
     /// A copy this hand-off made.
     #[cfg(any(target_os = "macos", target_os = "linux"))]

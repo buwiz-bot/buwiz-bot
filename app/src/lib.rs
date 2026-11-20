@@ -17,7 +17,7 @@ compile_error!("a release build has no gpui-agent server: build with --no-defaul
 
 #[cfg(target_os = "macos")]
 pub mod agent_hub;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[path = "agent_hub_linux.rs"]
 pub mod agent_hub;
 mod agents;
@@ -52,6 +52,8 @@ mod network;
 mod office;
 pub mod mini;
 pub mod mini_v1;
+#[cfg(windows)]
+mod windows_time;
 mod models;
 mod palette;
 mod pane;

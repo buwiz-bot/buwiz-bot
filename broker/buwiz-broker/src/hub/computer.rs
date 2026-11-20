@@ -500,12 +500,19 @@ impl Computers {
     /// Whole or not at all: the record goes to a new file, then takes the old one's place.
     fn save_machine(ctx: &HubCtx, id: &str, machine: &Machine) -> Result<(), Problem> {
         use std::io::Write;
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
         let failed = |e: std::io::Error| Problem::Failed(e.to_string());
         let (path, next) = (Self::dir(ctx, id).join("machine.json"), Self::dir(ctx, id).join("machine.json.new"));
         let text = serde_json::to_vec(machine).map_err(|e| Problem::Failed(e.to_string()))?;
         let _ = std::fs::remove_file(&next);
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&next).map_err(failed)?;
+        let mut f = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            options
+        }.open(&next).map_err(failed)?;
         f.write_all(&text).map_err(failed)?;
         f.sync_all().map_err(failed)?;
         std::fs::rename(&next, &path).map_err(failed)

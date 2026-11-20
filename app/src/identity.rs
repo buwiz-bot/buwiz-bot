@@ -149,7 +149,17 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
         let kind = entry.file_type()?;
         if kind.is_symlink() {
+            #[cfg(unix)]
             std::os::unix::fs::symlink(std::fs::read_link(&src)?, &dst)?;
+            #[cfg(windows)]
+            {
+                let target = std::fs::read_link(&src)?;
+                if src.is_dir() {
+                    std::os::windows::fs::symlink_dir(target, &dst)?;
+                } else {
+                    std::os::windows::fs::symlink_file(target, &dst)?;
+                }
+            }
         } else if kind.is_dir() {
             copy_tree(&src, &dst)?;
         } else {

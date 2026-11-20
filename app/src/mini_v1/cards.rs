@@ -218,6 +218,7 @@ pub fn as_of_label(ms: i64) -> String {
 
 /// Local (year, day of year, hour, minute, month 0..12, day of month) of
 /// unix time `secs`.
+#[cfg(not(windows))]
 fn local(secs: i64) -> (i32, i32, u32, u32, i32, i32) {
     #[repr(C)]
     struct Tm {
@@ -242,6 +243,12 @@ fn local(secs: i64) -> (i32, i32, u32, u32, i32, i32) {
         localtime_r(&secs, &mut tm);
         tm
     };
+    (tm.year, tm.yday, tm.hour as u32, tm.min as u32, tm.mon, tm.mday)
+}
+
+#[cfg(windows)]
+fn local(secs: i64) -> (i32, i32, u32, u32, i32, i32) {
+    let tm = crate::windows_time::local(secs).unwrap_or_default();
     (tm.year, tm.yday, tm.hour as u32, tm.min as u32, tm.mon, tm.mday)
 }
 

@@ -404,11 +404,6 @@ pub fn canvas_width(font: &str, text: &str) -> f32 {
 
 /// The width CoreText sets `text` in, in `face` at `px` (the canvas's
 /// `measureText`), for checking the shaper against it.
-#[cfg(all(any(test, feature = "testing"), not(any(target_os = "macos", target_os = "ios"))))]
-pub fn coretext_width(_face: &Face, px: f64, text: &str) -> f64 {
-    px * 0.5 * text.chars().count() as f64
-}
-
 #[cfg(all(any(test, feature = "testing"), any(target_os = "macos", target_os = "ios")))]
 pub fn coretext_width(face: &Face, px: f64, text: &str) -> f64 {
     use objc2_core_foundation::{CFAttributedString, CFMutableAttributedString, CFRange, CFString};
@@ -426,6 +421,11 @@ pub fn coretext_width(face: &Face, px: f64, text: &str) -> f64 {
         let line = CTLine::with_attributed_string(&string);
         line.typographic_bounds(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
     }
+}
+
+#[cfg(all(any(test, feature = "testing"), not(any(target_os = "macos", target_os = "ios"))))]
+pub fn coretext_width(_face: &Face, px: f64, text: &str) -> f64 {
+    px * 0.5 * text.chars().count() as f64
 }
 
 #[cfg(test)]

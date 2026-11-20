@@ -115,13 +115,25 @@ pub fn init_token(rs: &Routines, data: &Path) {
 
 fn write_token(file: &Path, token: &str) -> std::io::Result<()> {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(file)?;
+    let mut f = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options
+    }.open(file)?;
     f.write_all(token.as_bytes())?;
-    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
+    {
+        #[cfg(unix)]
+        { std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)) }
+        #[cfg(windows)]
+        { Ok::<(), std::io::Error>(()) }
+    }
 }
 
 /// The broker's proof of identity; it takes no token.

@@ -220,10 +220,17 @@ struct StagedKey(PathBuf);
 
 impl StagedKey {
     fn new(dir: &Path, key: &Secret) -> Result<Self> {
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
         let path = dir.join(KEY_FILE);
         let _ = std::fs::remove_file(&path);
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| io_failed(&e))?;
+        let mut file = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            options
+        }.open(&path).map_err(|e| io_failed(&e))?;
         std::io::Write::write_all(&mut file, key.expose().as_bytes()).map_err(|e| io_failed(&e))?;
         // `ssh` reads a key to its end, and a key's last line must have one
         std::io::Write::write_all(&mut file, b"\n").map_err(|e| io_failed(&e))?;
@@ -269,9 +276,15 @@ impl Master {
         let key = key.ok_or_else(|| Failed::Said(Problem::Remote("This computer has no SSH key: remove it and add it again.".to_owned())))?;
         let dir = computer.join(FOLDER);
         {
+            #[cfg(unix)]
             use std::os::unix::fs::PermissionsExt;
             std::fs::create_dir_all(&dir).map_err(|e| said(io_failed(&e)))?;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| said(io_failed(&e)))?;
+            {
+                #[cfg(unix)]
+                { std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) }
+                #[cfg(windows)]
+                { Ok::<(), std::io::Error>(()) }
+            }.map_err(|e| said(io_failed(&e)))?;
         }
         std::fs::write(dir.join(KNOWN_HOSTS), format!("{ALIAS} {pin}\n")).map_err(|e| said(io_failed(&e)))?;
         Self::end_old_master(program, &dir, at).await;

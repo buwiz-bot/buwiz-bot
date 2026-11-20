@@ -43,11 +43,6 @@ fn stand_in(family: &str) -> &'static str {
 
 /// The face's tables as one sfnt (a face of a collection too: the shaper
 /// reads single fonts only).
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-fn sfnt(font: &office::fonts::NoFont) -> Option<Vec<u8>> {
-    match *font {}
-}
-
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn sfnt(font: &CTFont) -> Option<Vec<u8>> {
     // SAFETY: a valid font; the array holds unboxed table tags.
@@ -95,6 +90,11 @@ fn sfnt(font: &CTFont) -> Option<Vec<u8>> {
     }
     out.extend_from_slice(&body);
     Some(out)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn sfnt(font: &office::fonts::NoFont) -> Option<Vec<u8>> {
+    match *font {}
 }
 
 /// What the layout says a run of text needs (`layout_font_requirements_json`).

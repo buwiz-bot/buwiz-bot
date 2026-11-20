@@ -90,14 +90,26 @@ fn local_midnight_ms(now: f64) -> f64 {
     let secs = (now / 1000.0).floor() as libc::time_t;
     unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&secs, &mut tm).is_null() {
+        #[cfg(unix)]
+        let failed = libc::localtime_r(&secs, &mut tm).is_null();
+        #[cfg(windows)]
+        let failed = libc::localtime_s(&mut tm, &secs) != 0;
+        if failed {
             return f64::NAN;
         }
         tm.tm_hour = 0;
         tm.tm_min = 0;
         tm.tm_sec = 0;
         tm.tm_isdst = -1;
-        libc::mktime(&mut tm) as f64 * 1000.0
+        #[cfg(unix)]
+        { libc::mktime(&mut tm) as f64 * 1000.0 }
+        #[cfg(windows)]
+        {
+            extern "C" {
+                fn _mktime64(tm: *mut libc::tm) -> i64;
+            }
+            _mktime64(&mut tm) as f64 * 1000.0
+        }
     }
 }
 

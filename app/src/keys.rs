@@ -1001,6 +1001,7 @@ fn menu_plan() -> (BTreeSet<String>, serde_json::Map<String, serde_json::Value>)
 /// work on the main thread: the menu items' key equivalents, the actions
 /// commands send, and Settings' key recorder (its keys come back as `key`
 /// events).
+#[cfg(target_os = "macos")]
 pub(crate) fn host() -> impl IntoElement {
     native("buwiz/keys")
         .prop("menu", || serde_json::Value::Object(menu_plan().1))
@@ -1023,6 +1024,11 @@ pub(crate) fn host() -> impl IntoElement {
         .top(px(0.0))
         .left(px(0.0))
         .size(px(0.0))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn host() -> impl IntoElement {
+    view()
 }
 
 #[cfg(target_os = "macos")]
