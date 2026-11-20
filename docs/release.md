@@ -90,6 +90,9 @@ nsh's GTK 4 backend (`main.rs`'s Linux `main`, `mini.rs`'s GTK `imp`,
   vault; the web view needs nsh's `webview` feature.
 - Installed fonts aren't looked up (CoreText only); the bundled ones are.
 
+The Linux and Windows brokers default to a file keystore under their data
+directory rather than using the macOS login Keychain.
+
 Windows is also a commented-out entry in `release.yml`'s matrix. The app
 and broker build on Windows x64, using nsh's Win32 backend (`main.rs`'s
 Windows `main`, `mini_windows.rs`, `mini_v1/native_windows.rs`), with these
