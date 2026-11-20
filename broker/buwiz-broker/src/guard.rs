@@ -25,27 +25,28 @@ pub fn allowed_origins(port: u16, extra: Option<&str>) -> Vec<String> {
     out
 }
 
-/// Why a request's `Host` is refused, or `None`: it must be the authority
-/// (`127.0.0.1:<port>`, `localhost:<port>`, an extra origin's) of an allowed
-/// origin. A request with no `Host` is not a browser's, so it passes.
+/// Why a request's `Host` is refused, or `None`: its name must be `127.0.0.1`, `localhost`,
+/// `[::1]` or an allowed origin's. A rebinding page sends its own name, so the port is not
+/// compared. A request with no `Host` is not a browser's, so it passes.
 pub fn host_refusal(headers: &HeaderMap, allowed: &[String]) -> Option<(StatusCode, String)> {
     let host = headers.get(HOST)?;
     let host = String::from_utf8_lossy(host.as_bytes());
-    let host = host.trim();
-    let known = allowed.iter().filter_map(|a| a.split_once("://")).any(|(scheme, authority)| {
-        // a client leaves out the scheme's default port
-        let bare = match scheme {
-            "http" => authority.strip_suffix(":80"),
-            "https" => authority.strip_suffix(":443"),
-            _ => None,
-        };
-        authority.eq_ignore_ascii_case(host) || bare.is_some_and(|b| b.eq_ignore_ascii_case(host))
-    });
-    if known {
+    let name = host_name(host.trim());
+    let known = ["127.0.0.1", "localhost", "[::1]"].iter().any(|l| l.eq_ignore_ascii_case(name))
+        || allowed.iter().filter_map(|a| a.split_once("://")).any(|(_, authority)| host_name(authority).eq_ignore_ascii_case(name));
+    if known && !name.is_empty() {
         return None;
     }
     let shown: String = host.chars().take(100).collect();
     Some((StatusCode::FORBIDDEN, format!("requests for host {shown} are refused: this server answers Buwiz Bot and its apps on 127.0.0.1 and localhost")))
+}
+
+/// `host[:port]` without its port.
+fn host_name(authority: &str) -> &str {
+    match authority.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => authority,
+    }
 }
 
 /// Why a request is refused — (status, error) — or `None`.
@@ -103,20 +104,15 @@ mod tests {
     #[test]
     fn a_foreign_host_is_refused() {
         let allowed = allowed_origins(8787, Some("https://a.example"));
-        for host in ["127.0.0.1:8787", "localhost:8787", "LocalHost:8787", "a.example"] {
+        for host in ["127.0.0.1:8787", "localhost:8787", "LocalHost:8787", "[::1]:8787", "127.0.0.1", "localhost:80", "a.example", "a.example:443"] {
             let h = HeaderMap::from_iter([(HOST, HeaderValue::from_str(host).unwrap())]);
             assert_eq!(refusal(&Method::GET, &h, &allowed), None, "{host}");
         }
-        for host in ["evil.example:8787", "rebind.example:8787", "127.0.0.1:8788", "127.0.0.1", "localhost", "127.0.0.1:8787.evil.example", ""] {
+        for host in ["evil.example:8787", "rebind.example:8787", "rebind.example", "127.0.0.1.evil.example:8787", "127.0.0.1:8787.evil.example", ":8787", ""] {
             let h = HeaderMap::from_iter([(HOST, HeaderValue::from_str(host).unwrap())]);
             let (status, error) = refusal(&Method::GET, &h, &allowed).expect(host);
             assert_eq!(status, StatusCode::FORBIDDEN, "{host}");
             assert!(error.contains("host"), "{error}");
-        }
-        let on_80 = allowed_origins(80, None);
-        for host in ["127.0.0.1", "localhost:80"] {
-            let h = HeaderMap::from_iter([(HOST, HeaderValue::from_str(host).unwrap())]);
-            assert_eq!(refusal(&Method::GET, &h, &on_80), None, "{host}");
         }
         let rebound = headers(&[("host", "evil.example:8787"), ("origin", "http://127.0.0.1:8787")]);
         assert_eq!(refusal(&Method::GET, &rebound, &allowed).unwrap().0, StatusCode::FORBIDDEN);
