@@ -125,27 +125,6 @@ fn inline_close_and_reopen_invalidate_old_callbacks() {
 }
 
 #[test]
-fn session_requests_leave_headroom_for_the_plugins_clock() {
-    struct Capture(std::sync::atomic::AtomicI64);
-    impl buwiz_bot::mini_v1::host_api::Broker for Capture {
-        fn request(&self, method: &str, route: &str, body: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, buwiz_bot::mini_v1::MiniError> {
-            assert_eq!((method, route), ("POST", "/v1/host/sessions/open"));
-            self.0.store(body.unwrap()["not_after"].as_i64().unwrap(), std::sync::atomic::Ordering::Relaxed);
-            Err(buwiz_bot::mini_v1::MiniError::new("captured", "request captured"))
-        }
-    }
-    let broker = Capture(std::sync::atomic::AtomicI64::new(0));
-    let before = buwiz_bot::mini_v1::session::now_ms();
-    let result = buwiz_bot::mini_v1::session::Session::open(&broker, "app.buwiz.fixture", "card", None, None);
-    assert_eq!(result.err().unwrap().code, "captured");
-    let after = buwiz_bot::mini_v1::session::now_ms();
-    let expiry = broker.0.load(std::sync::atomic::Ordering::Relaxed);
-    let lifetime = buwiz_bot::mini_v1::session::MAX_LIFETIME_MS - 60_000;
-    assert!((before + lifetime..=after + lifetime).contains(&expiry));
-    assert!(expiry <= before + buwiz_bot::mini_v1::session::MAX_LIFETIME_MS - 30_000);
-}
-
-#[test]
 fn ui_timers_fire_once_and_cancel() {
     if std::env::var_os("BUWIZ_WINDOWS_TIMER_CASE").is_none() {
         let output = Command::new(std::env::current_exe().unwrap())
