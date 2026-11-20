@@ -284,6 +284,10 @@ mod tests {
             r.headers.insert("x-buwiz-host", HeaderValue::from_str(token).unwrap());
             r
         };
+        // a Bot's shell must not attach an integration or rewrite any Bot's instructions
+        for p in ["/bot/new", "/bot/update", "/bot/memory", "/bot/integration", "/bot/delete"] {
+            assert!(routes::host::LOCKED.contains(&p), "{p}");
+        }
         for p in routes::host::LOCKED {
             // each is one of the hub's own POST routes
             assert!(matches!(routes::classify(&Method::POST, p).map(|e| e.owner), Some(routes::Owner::Hub(_))), "{p}");
