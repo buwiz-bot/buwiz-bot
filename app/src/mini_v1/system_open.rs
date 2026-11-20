@@ -686,10 +686,24 @@ pub fn is_marked(path: &Path) -> bool {
     unsafe { libc::lgetxattr(path.as_ptr(), MARK.as_ptr(), std::ptr::null_mut(), 0) >= 0 }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn spawn_reaped(cmd: &mut std::process::Command) -> io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Opens the copy in the desktop's default app for its kind (`xdg-open`).
 #[cfg(target_os = "linux")]
 pub fn open_copy(copy: &Path) -> bool {
-    is_marked(copy) && std::process::Command::new("xdg-open").arg(copy).spawn().is_ok()
+    if !is_marked(copy) {
+        return false;
+    }
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(copy);
+    spawn_reaped(&mut cmd).is_ok()
 }
 
 #[cfg(test)]
@@ -1465,6 +1479,13 @@ mod tests {
         assert_eq!(quarantine(&path).as_deref(), Some("plugin"));
         assert!(mark_downloaded(&path));
         assert_eq!(quarantine(&path).as_deref(), Some("1"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_reaped_starts_a_command() {
+        let mut cmd = std::process::Command::new("true");
+        assert!(spawn_reaped(&mut cmd).is_ok());
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

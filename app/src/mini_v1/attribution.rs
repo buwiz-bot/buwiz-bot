@@ -282,8 +282,7 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     with(Attribution::watch);
 }
 
-/// No input stream to listen to on this backend: the person is the only
-/// actor until the agent acts.
+/// Enables desktop input attribution before the first window is made.
 #[cfg(any(target_os = "linux", windows))]
 pub fn watch_desktop() {
     with(Attribution::watch);
@@ -316,6 +315,66 @@ macro_rules! host_methods {
 
 #[cfg(any(target_os = "linux", windows))]
 pub(crate) use host_methods;
+
+#[cfg(target_os = "linux")]
+static LINUX_HELD: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+fn with_linux_held<R>(f: impl FnOnce(&mut HashSet<u32>) -> R) -> R {
+    f(LINUX_HELD.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_input(surface: u64, gesture: Gesture) {
+    with(|a| a.person_input(surface, gesture, Instant::now()));
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn watch_linux_widget(widget: &nsh_platform_linux::gtk4::Widget, surface: u64) {
+    use nsh_platform_linux::gtk4::{self as gtk, prelude::*};
+
+    let click = gtk::GestureClick::new();
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    click.connect_pressed(move |click, _, _, _| {
+        let gesture = if click.current_button() == 1 { Gesture::Activation } else { Gesture::Nothing };
+        linux_input(surface, gesture);
+    });
+    widget.add_controller(click);
+
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed(move |keys, key, keycode, _| {
+        let in_text = keys
+            .widget()
+            .and_then(|widget| widget.root())
+            .and_then(|root| root.downcast::<gtk::Window>().ok())
+            .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
+            .is_some_and(|focus| focus.is::<gtk::Editable>() || focus.is::<gtk::TextView>());
+        let gesture = with_linux_held(|held| {
+            if !held.insert(keycode) {
+                return Gesture::Nothing;
+            }
+            if in_text || !matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter | gtk::gdk::Key::space) {
+                Gesture::Typing
+            } else {
+                Gesture::Activation
+            }
+        });
+        // Linux does not distinguish synthesized agent input from a person's.
+        linux_input(surface, gesture);
+        gtk::glib::Propagation::Proceed
+    });
+    keys.connect_key_released(|_, _, keycode, _| {
+        with_linux_held(|held| {
+            held.remove(&keycode);
+        });
+    });
+    widget.add_controller(keys);
+
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_leave(|_| with_linux_held(|held| held.clear()));
+    widget.add_controller(focus);
+}
 
 /// What a piece of the person's input is to a hand-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

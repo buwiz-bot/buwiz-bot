@@ -9,8 +9,9 @@
 //! copies them from `office/node_modules/@betteroffice/fonts/assets` into
 //! `Contents/Resources/fonts/office/`. Dev runs and tests read them from
 //! there, from `BUWIZ_OFFICE_FONTS`, or from the checkout's node_modules.
-//! They are registered with CoreText before the first paint ([`register`])
-//! so the canvas draws by family name ("Carlito") from the very files the
+//! On Apple platforms CoreText registers them before the first paint
+//! ([`register`]); on Linux the root passes their bytes to nsh's per-app
+//! font map. The canvas draws by family name ("Carlito") from the files the
 //! engines measure with.
 
 use std::collections::HashMap;
@@ -300,6 +301,11 @@ pub fn bytes(face: &'static BundledFace) -> Option<Arc<[u8]>> {
     static READ: OnceLock<Mutex<Read>> = OnceLock::new();
     let mut read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     read.entry(face.file).or_insert_with(|| std::fs::read(dir()?.join(face.file)).ok().map(Arc::from)).clone()
+}
+
+/// The bundled font files available to the app renderer.
+pub fn bundled_bytes() -> Vec<Vec<u8>> {
+    BUNDLED.iter().filter_map(bytes).map(|bytes| bytes.to_vec()).collect()
 }
 
 /// Registers every bundled file there is with CoreText, for this process,

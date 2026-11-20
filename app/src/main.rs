@@ -130,10 +130,23 @@ mod jank_log {
 pub fn app_root() -> nsh_core::element::Root {
     // `buwiz://` links the system opens the app with reach `lib.rs`'s
     // listener (`next_url_scheme_open`) only for a scheme the root claims.
-    let root = nsh_core::element::Root::of::<buwiz_bot::App>()
-        .app_id(buwiz_bot::identity::APP_ID)
-        .url_schemes(["buwiz"]);
+    let root = nsh_core::element::Root::of::<buwiz_bot::App>();
+    #[cfg(target_os = "linux")]
+    let root = root.app_id(app_id()).url_schemes(["buwiz"]);
+    #[cfg(not(target_os = "linux"))]
+    let root = root.app_id(buwiz_bot::identity::APP_ID).url_schemes(["buwiz"]);
     buwiz_bot::fonts().into_iter().fold(root, |root, font| root.font(font))
+}
+
+#[cfg(target_os = "linux")]
+fn app_id() -> String {
+    if let Some(dir) = buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").filter(|dir| !dir.is_empty()) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        dir.hash(&mut hasher);
+        return format!("{}.test{:016x}", buwiz_bot::identity::APP_ID, hasher.finish());
+    }
+    buwiz_bot::identity::APP_ID.to_owned()
 }
 
 /// The UI sets the engine serves: nsh's base components and the app's.
@@ -243,8 +256,12 @@ fn main() -> impl std::process::Termination {
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
         title: buwiz_bot::app_name().to_owned(),
+        #[cfg(target_os = "linux")]
+        app_id: app_id(),
+        #[cfg(not(target_os = "linux"))]
         app_id: buwiz_bot::identity::APP_ID.to_owned(),
         size: (1280, 800),
+        schemes: vec!["buwiz".to_owned()],
         data_dir: buwiz_bot::identity::nsh_data_dir_in(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref()),
         ..Default::default()
     };

@@ -20,6 +20,7 @@ use std::{
 };
 
 use crate::agent_hub::hold::{Answer, Card};
+use nsh_platform_linux::gtk4::gdk::prelude::DisplayExt;
 use nsh_platform_linux::AppView;
 use buwiz_agent::OnceId;
 use serde_json::Value;
@@ -316,7 +317,11 @@ fn open_panel(_pick: &PickRequest) -> Vec<PathBuf> {
 }
 
 fn write_pasteboard(text: &str) {
-    nsh_core::prelude::set_clipboard(text.to_owned());
+    if let Some(display) = nsh_platform_linux::gtk4::gdk::Display::default() {
+        display.clipboard().set_text(text);
+    } else {
+        log::warn!("mini v1: could not copy to the clipboard: no display");
+    }
 }
 
 
@@ -367,7 +372,9 @@ fn handed(what: &str, how: system_open::Handed) {
 
 /// Opens an https `url` the person agreed to in the browser.
 fn open_in_browser(url: &str) {
-    if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(url);
+    if let Err(e) = system_open::spawn_reaped(&mut cmd) {
         log::warn!("mini v1: the browser did not open: {e}");
     }
 }
@@ -452,8 +459,8 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
     VIEWS.with_borrow_mut(|v| v.insert(id, Rc::downgrade(view)));
     crate::agent_hub::opened(id);
     let channel = view.host();
-    // one window, one person: no surface is told from another here
-    let surface = 0;
+    let surface = id;
+    attribution::watch_linux_widget(&view.widget(), surface);
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     let slot = Arc::new(Slot::default());
     let s = slot.clone();
