@@ -162,7 +162,16 @@ fn ui_timers_fire_once_and_cancel() {
     let count = fired.clone();
     let cancelled = buwiz_bot::mini_v1::native::after(std::time::Duration::from_millis(10), move || count.set(count.get() + 100)).unwrap();
     drop(cancelled);
-    let until = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    let app = serde_json::json!({"inline": {"wait_ready": true}});
+    let wait_ready = buwiz_bot::mini_v1::cards::wait_ready(&app);
+    let hold = std::rc::Rc::new(std::cell::Cell::new(buwiz_bot::mini_v1::settle::Hold::start(true, wait_ready)));
+    let held = hold.clone();
+    let started = std::time::Instant::now();
+    let cap = buwiz_bot::mini_v1::settle::CAP_READY;
+    let _cap = buwiz_bot::mini_v1::native::after(cap, move || {
+        held.set(held.get().hear("settled", false).unwrap());
+    }).unwrap();
+    let until = started + cap + std::time::Duration::from_millis(100);
     loop {
         // SAFETY: this isolated child owns the dispatcher and pumps its UI thread.
         unsafe {
@@ -171,8 +180,12 @@ fn ui_timers_fire_once_and_cancel() {
                 DispatchMessageW(&message);
             }
         }
+        if started.elapsed() + std::time::Duration::from_millis(50) < cap {
+            assert!(!hold.get().revealed(), "wait_ready must keep the child hidden until the cap");
+        }
         if std::time::Instant::now() >= until { break; }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(fired.get(), 1);
+    assert!(hold.get().revealed());
 }

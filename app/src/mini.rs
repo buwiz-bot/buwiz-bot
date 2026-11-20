@@ -219,6 +219,8 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
         .on_native_event(move |e: &NativeEvent| heard(e))
         .w(px(w))
         .h(move || px(h()));
+    #[cfg(windows)]
+    let app_view = app_view.style_when(move || wait_ready && !hold.get().revealed(), |s| s.invisible());
     let key = format!("settle:{app}");
     hold_cleanup(hold, key.clone());
     view()
