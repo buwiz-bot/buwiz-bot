@@ -477,8 +477,8 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
     VIEWS.with_borrow_mut(|v| v.insert(id, Rc::downgrade(view)));
     crate::agent_hub::opened(id);
     let channel = view.host();
-    // one window, one person: no surface is told from another here
-    let surface = 0;
+    let surface = id;
+    attribution::watch_linux_widget(&view.widget(), surface);
     let inline = viewport.get("placement").and_then(Value::as_str) == Some("inline");
     let slot = Arc::new(Slot::default());
     let s = slot.clone();
