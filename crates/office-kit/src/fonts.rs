@@ -305,7 +305,7 @@ pub fn bytes(face: &'static BundledFace) -> Option<Arc<[u8]>> {
 
 /// The bundled font files available to the app renderer.
 pub fn bundled_bytes() -> Vec<Vec<u8>> {
-    BUNDLED.iter().filter_map(|face| bytes(face)).map(|bytes| bytes.to_vec()).collect()
+    BUNDLED.iter().filter_map(bytes).map(|bytes| bytes.to_vec()).collect()
 }
 
 /// Registers every bundled file there is with CoreText, for this process,
