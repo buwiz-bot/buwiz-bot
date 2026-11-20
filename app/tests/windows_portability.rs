@@ -2,7 +2,8 @@
 
 use std::{path::PathBuf, process::Command};
 
-use buwiz_bot::{agent_hub, mini_v1::{attribution::{self, Actor}, document}};
+use buwiz_bot::{agent_hub, mini_v1::{attribution::{self, Actor}, document, settle::OpenSettle}};
+use nsh_platform_windows::windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, MSG, PM_REMOVE};
 
 #[test]
 fn installed_fonts_are_unavailable_for_every_family_and_style() {
@@ -92,4 +93,65 @@ fn desktop_attribution_starts_with_the_person_and_tracks_agent_activity() {
     attribution::agent_call(false);
     assert_eq!(attribution::agent_calls(), 0);
     assert_eq!(attribution::actor(0), Actor::Agent);
+}
+
+#[test]
+fn inline_ready_and_timer_settle_only_once_in_either_order() {
+    for first in ["ready", "timer"] {
+        let mut hold = OpenSettle::default();
+        assert_eq!(hold.current(), None);
+        assert!(!hold.settle(0));
+        let open = hold.start();
+        assert!(hold.settle(open), "{first} reveals the card");
+        assert!(!hold.settle(open), "the later callback emits nothing");
+        assert_eq!(hold.current(), None);
+    }
+}
+
+#[test]
+fn inline_close_and_reopen_invalidate_old_callbacks() {
+    let mut hold = OpenSettle::default();
+    let old = hold.start();
+    hold.cancel();
+    assert!(!hold.settle(old), "destroyed components cannot emit");
+    let open = hold.start();
+    assert_ne!(open, old);
+    assert!(!hold.settle(old), "a queued old timer cannot reveal a new open");
+    assert!(hold.settle(open));
+    let reopened = hold.start();
+    assert!(!hold.settle(open));
+    assert!(hold.settle(reopened));
+    assert!(!hold.settle(reopened));
+}
+
+#[test]
+fn ui_timers_fire_once_and_cancel() {
+    if std::env::var_os("BUWIZ_WINDOWS_TIMER_CASE").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "ui_timers_fire_once_and_cancel", "--nocapture"])
+            .env("BUWIZ_WINDOWS_TIMER_CASE", "1")
+            .output().unwrap();
+        assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    buwiz_bot::mini_v1::native::init();
+    let fired = std::rc::Rc::new(std::cell::Cell::new(0));
+    let count = fired.clone();
+    let _once = buwiz_bot::mini_v1::native::after(std::time::Duration::from_millis(10), move || count.set(count.get() + 1)).unwrap();
+    let count = fired.clone();
+    let cancelled = buwiz_bot::mini_v1::native::after(std::time::Duration::from_millis(10), move || count.set(count.get() + 100)).unwrap();
+    drop(cancelled);
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        // SAFETY: this isolated child owns the dispatcher and pumps its UI thread.
+        unsafe {
+            let mut message = MSG::default();
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&message);
+            }
+        }
+        if std::time::Instant::now() >= until { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(fired.get(), 1);
 }

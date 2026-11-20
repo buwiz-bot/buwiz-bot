@@ -1,4 +1,4 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::{Cell, RefCell}, rc::Rc};
 
 use nsh_core::JsonValue;
 use nsh_platform_windows::{
@@ -17,7 +17,7 @@ use nsh_platform_windows::{
     },
 };
 
-use crate::mini_v1::native::V1Open;
+use crate::mini_v1::{native::{self, V1Open}, settle};
 
 pub struct MiniApp {
     ctx: ComponentContext,
@@ -30,7 +30,8 @@ pub struct MiniApp {
     placement: String,
     theme: String,
     paused: bool,
-    settled: Cell<bool>,
+    settle: Rc<RefCell<settle::OpenSettle>>,
+    timer: RefCell<Option<native::Timer>>,
     wait_ready: bool,
 }
 
@@ -48,7 +49,7 @@ impl MiniApp {
         Self {
             ctx, window, view: None, last: None, v1: None, viewport_sink: None,
             size: Cell::new((340.0, 200.0)), placement: "full".into(),
-            theme: String::new(), paused: false, settled: Cell::new(false), wait_ready: false,
+            theme: String::new(), paused: false, settle: Rc::default(), timer: RefCell::new(None), wait_ready: false,
         }
     }
 
@@ -66,6 +67,8 @@ impl MiniApp {
     }
 
     fn clear(&mut self) {
+        self.timer.get_mut().take();
+        self.settle.borrow_mut().cancel();
         self.viewport_sink.take();
         self.v1.take();
         if let Some(view) = self.view.take() {
@@ -75,10 +78,40 @@ impl MiniApp {
         }
     }
 
+    fn finish(&self) {
+        let Some(open) = self.settle.borrow().current() else { return };
+        let done = self.settle.borrow_mut().settle(open);
+        if done {
+            self.timer.borrow_mut().take();
+            self.ctx.emit("settled", JsonValue::Null);
+        }
+    }
+
+    fn arm_timer(&self) {
+        if self.placement != "inline" || self.view.is_none() || self.timer.borrow().is_some() {
+            return;
+        }
+        let Some(open) = self.settle.borrow().current() else { return };
+        let hold = Rc::downgrade(&self.settle);
+        let ctx = self.ctx.clone();
+        let cap = if self.wait_ready { settle::CAP_READY } else { settle::CAP };
+        let timer = native::after(cap, move || {
+            let Some(hold) = hold.upgrade() else { return };
+            let done = hold.borrow_mut().settle(open);
+            if done {
+                ctx.emit("settled", JsonValue::Null);
+            }
+        });
+        if timer.is_none() {
+            self.finish();
+        }
+        *self.timer.borrow_mut() = timer;
+    }
+
     fn load(&mut self) {
         let Some((module, js, call)) = self.last.clone() else { return };
         self.clear();
-        self.settled.set(false);
+        self.settle.borrow_mut().start();
         self.wait_ready = false;
         let mut options = AppOptions {
             title: "Buwiz Bot mini app".into(),
@@ -138,6 +171,7 @@ impl MiniApp {
             self.viewport_sink = Some(Box::new(move |v| { let _ = channel.send("buwiz.viewport", v); }));
         }
         self.view = Some(view);
+        self.arm_timer();
         self.ctx.redraw();
     }
 }
@@ -161,8 +195,8 @@ impl NativeComponent for MiniApp {
         if changed && let Some(send) = &self.viewport_sink {
             send(self.viewport());
         }
-        if !self.paused && !self.wait_ready && !self.settled.replace(true) {
-            self.ctx.emit("settled", JsonValue::Null);
+        if !self.paused && !self.wait_ready {
+            self.finish();
         }
     }
 
@@ -181,6 +215,10 @@ impl NativeComponent for MiniApp {
             }
             "placement" => {
                 self.placement = if value.and_then(JsonValue::as_str) == Some("inline") { "inline" } else { "full" }.into();
+                if self.placement != "inline" {
+                    self.timer.borrow_mut().take();
+                }
+                self.arm_timer();
                 if let Some(send) = &self.viewport_sink { send(self.viewport()); }
             }
             "design" => {
@@ -193,12 +231,13 @@ impl NativeComponent for MiniApp {
             "ready" => {
                 if value.and_then(JsonValue::as_u64).is_some_and(|n| self.v1.as_ref().is_some_and(|o| o.n() == n)) {
                     self.wait_ready = false;
+                    self.finish();
                     self.ctx.redraw();
                 }
             }
             "hold" => {
                 if value.and_then(JsonValue::as_bool) == Some(true) {
-                    self.settled.set(false);
+                    self.arm_timer();
                     self.ctx.redraw();
                 }
             }

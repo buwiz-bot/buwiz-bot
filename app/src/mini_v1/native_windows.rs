@@ -1,11 +1,12 @@
 //! Windows session and UI bridge for v1 mini apps.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     path::PathBuf,
     rc::{Rc, Weak},
     sync::{Arc, Mutex, atomic::{AtomicBool, AtomicIsize, Ordering}},
+    time::Duration,
 };
 
 use buwiz_agent::OnceId;
@@ -15,8 +16,8 @@ use nsh_platform_windows::{AppView, windows::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::{Shell::ShellExecuteW, WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, HWND_MESSAGE, PostMessageW, RegisterClassW,
-            SW_SHOWNORMAL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WNDCLASSW,
+            CreateWindowExW, DefWindowProcW, HWND_MESSAGE, KillTimer, PostMessageW, RegisterClassW, SetTimer,
+            SW_SHOWNORMAL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_TIMER, WNDCLASSW,
         }},
     },
 }};
@@ -34,6 +35,47 @@ use super::{
 
 const CALL: u32 = WM_APP + 1;
 static DISPATCHER: AtomicIsize = AtomicIsize::new(0);
+
+thread_local! {
+    static TIMERS: RefCell<HashMap<usize, Box<dyn FnOnce()>>> = RefCell::default();
+    static NEXT_TIMER: Cell<usize> = const { Cell::new(1) };
+}
+
+/// A UI-thread timer, cancelled when dropped on that thread.
+pub struct Timer {
+    hwnd: HWND,
+    id: usize,
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        // SAFETY: this timer belongs to the dispatcher on this UI thread.
+        let _ = unsafe { KillTimer(Some(self.hwnd), self.id) };
+        TIMERS.with(|timers| timers.borrow_mut().remove(&self.id));
+    }
+}
+
+/// Calls once from the UI message loop; must be armed on that thread.
+pub fn after(wait: Duration, f: impl FnOnce() + 'static) -> Option<Timer> {
+    let hwnd = DISPATCHER.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return None;
+    }
+    let hwnd = HWND(hwnd as *mut _);
+    let id = NEXT_TIMER.with(|next| {
+        let id = next.get();
+        next.set(id.checked_add(1)?);
+        Some(id)
+    })?;
+    let ms = wait.as_millis().clamp(1, u32::MAX as u128) as u32;
+    // SAFETY: the dispatcher receives WM_TIMER on its UI thread.
+    if unsafe { SetTimer(Some(hwnd), id, ms, None) } == 0 {
+        log::warn!("mini v1: cannot start a UI timer");
+        return None;
+    }
+    TIMERS.with(|timers| timers.borrow_mut().insert(id, Box::new(f)));
+    Some(Timer { hwnd, id })
+}
 
 /// Called by AppView's component-registration hook on the UI thread.
 pub fn init() {
@@ -75,6 +117,15 @@ pub fn on_main(f: impl FnOnce() + Send + 'static) {
 }
 
 unsafe extern "system" fn dispatch(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_TIMER {
+        // SAFETY: timers here belong to this dispatcher and fire only once.
+        let _ = unsafe { KillTimer(Some(hwnd), wparam.0) };
+        let job = TIMERS.with(|timers| timers.borrow_mut().remove(&wparam.0));
+        if let Some(job) = job {
+            job();
+        }
+        return LRESULT(0);
+    }
     if msg == CALL {
         // SAFETY: only on_main sends CALL, transferring this box.
         let job = unsafe { Box::from_raw(lparam.0 as *mut Box<dyn FnOnce() + Send>) };
