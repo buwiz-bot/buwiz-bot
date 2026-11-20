@@ -260,6 +260,20 @@ pub mod markdown {
 
     use serde_json::{json, Value};
 
+    /// Maximum on-disk package size for a rendered file.
+    const MAX_RENDER_FILE: u64 = 64 << 20;
+    /// Maximum total inflated size for a rendered package.
+    const MAX_RENDER_INFLATED: u64 = 128 << 20;
+
+    fn read_package(path: &Path, max_file: u64, max_inflated: u64) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > max_file {
+            return Err("file too large".into());
+        }
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let _ = ooxml_opc::unzip_parts_with_limits(&bytes, max_inflated)?;
+        Ok(bytes)
+    }
+
     fn find<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
         v.get(key).filter(|x| !x.is_null())
     }
@@ -404,7 +418,7 @@ pub mod markdown {
 
     /// mammoth's HTML to markdown.
     pub fn docx(path: &Path) -> Result<String, String> {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let bytes = read_package(path, MAX_RENDER_FILE, MAX_RENDER_INFLATED)?;
         let doc = betteroffice_docx::Document::open(&bytes).map_err(|e| e.to_string())?;
         let model = doc.model();
         let styles_json = serde_json::to_value(&model.styles).unwrap_or(Value::Null);
@@ -463,7 +477,7 @@ pub mod markdown {
     /// column widths.
     pub fn sheets(path: &Path) -> Result<Value, String> {
         use betteroffice_xlsx::CellValue;
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let bytes = read_package(path, MAX_RENDER_FILE, MAX_RENDER_INFLATED)?;
         let wb = betteroffice_xlsx::Workbook::open_for_read(&bytes).map_err(|e| e.to_string())?;
         let model = wb.model();
         let mut out = Vec::new();
@@ -509,5 +523,26 @@ pub mod markdown {
             out.push(json!({ "name": sheet.name, "rows": rows, "bold": bold, "widths": widths }));
         }
         Ok(Value::Array(out))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn read_package_enforces_file_and_inflated_size_limits() {
+            let dir = std::env::temp_dir().join(format!("buwiz-render-test-{}", crate::office::proto::uuid()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("package.zip");
+            let bytes = ooxml_opc::rezip_parts(&[("a.xml".into(), vec![0u8; 2 << 20])]).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+
+            let err = read_package(&path, 64 << 20, 1 << 20).unwrap_err();
+            assert!(err.contains("inflated size exceeds"), "{err}");
+            assert_eq!(read_package(&path, 64 << 20, 4 << 20).unwrap(), bytes);
+            assert_eq!(read_package(&path, 10, 4 << 20).unwrap_err(), "file too large");
+
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 }
