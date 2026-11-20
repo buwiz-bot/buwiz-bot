@@ -26,7 +26,7 @@ use serde_json::Value;
 
 use super::{
     MiniError, V1Key,
-    attribution::{self, Actor},
+    attribution,
     bridge::{self, Consent, Emit, HostUi, Live, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
     document::{self, Document},
@@ -89,25 +89,7 @@ impl HostUi for LinuxUi {
         }
     }
 
-    fn actor(&self) -> Actor {
-        attribution::actor(self.surface)
-    }
-
-    fn fresh_press(&self) -> Option<u64> {
-        attribution::fresh_press(self.surface)
-    }
-
-    fn spend_press(&self, press: u64) -> bool {
-        attribution::spend_press(self.surface, press)
-    }
-
-    fn agent_call(&self, running: bool) {
-        attribution::agent_call(running);
-    }
-
-    fn agent_write(&self, running: bool) {
-        attribution::agent_write(running);
-    }
+    attribution::host_methods!(surface);
 
     fn hold(&self, once: OnceId, card: Card, done: Box<dyn FnOnce(Answer) + Send>) {
         crate::agent_hub::show_card(self.n, once, card, done);

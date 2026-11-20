@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, process::Command};
 
-use buwiz_bot::{agent_hub, mini_v1::{attribution::Actor, document}};
+use buwiz_bot::{agent_hub, mini_v1::{attribution::{self, Actor}, document}};
 
 #[test]
 fn installed_fonts_are_unavailable_for_every_family_and_style() {
@@ -72,4 +72,24 @@ fn home_prefers_home_then_windows_profile() {
         let output = child.output().unwrap();
         assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     }
+}
+
+#[test]
+fn desktop_attribution_starts_with_the_person_and_tracks_agent_activity() {
+    assert_eq!(attribution::actor(0), Actor::Agent);
+    attribution::watch_desktop();
+    assert_eq!(attribution::actor(0), Actor::Person);
+    assert_eq!(attribution::fresh_press(0), None);
+    assert!(attribution::spend_press(0, 1));
+    assert!(!attribution::spend_press(0, 1));
+    attribution::agent_opened();
+    assert_eq!(attribution::actor(0), Actor::Agent);
+    assert_eq!(attribution::actor(1), Actor::Agent);
+    attribution::agent_call(true);
+    attribution::agent_write(true);
+    assert_eq!(attribution::agent_calls(), 1);
+    attribution::agent_write(false);
+    attribution::agent_call(false);
+    assert_eq!(attribution::agent_calls(), 0);
+    assert_eq!(attribution::actor(0), Actor::Agent);
 }

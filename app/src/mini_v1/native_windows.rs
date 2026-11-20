@@ -25,6 +25,7 @@ use serde_json::Value;
 use crate::agent_hub::hold::{Answer, Card};
 use super::{
     MiniError, V1Key,
+    attribution,
     bridge::{self, Consent, Emit, HostUi, OpenContext, PickRequest, Press},
     cards::{CardAction, CardMeta},
     document, host_api, load, load::Prepared, screens,
@@ -126,10 +127,13 @@ struct WindowsUi {
     key: String,
     title: String,
     n: u64,
+    surface: u64,
     inline: bool,
 }
 
 impl HostUi for WindowsUi {
+    attribution::host_methods!(surface);
+
     fn consent(&self, ask: Consent, answer: Box<dyn FnOnce(bool) + Send>) {
         match CONSENT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(f) => f(ask, answer),
@@ -358,7 +362,7 @@ pub fn start(prepared: Arc<Prepared>, view: &Rc<AppView>, key: String, viewport:
                 return super::to_store(move |st| st.mini_err(&key).set(text));
             }
         };
-        let ui = Arc::new(WindowsUi { key: key.clone(), title: p.title.clone(), n: id, inline });
+        let ui = Arc::new(WindowsUi { key: key.clone(), title: p.title.clone(), n: id, surface: 0, inline });
         let dir = super::plugins_dir();
         let ctx = OpenContext::new(prepared.clone(), session, broker, ui, &dir, bridge::Limits::default());
         {

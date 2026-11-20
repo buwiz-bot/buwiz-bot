@@ -239,7 +239,7 @@ fn main() -> impl std::process::Termination {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     std::thread::spawn(buwiz_bot::mini_v1::system_open::sweep_while_running);
     buwiz_bot::broker::ensure_started();
-    buwiz_bot::mini_v1::attribution::watch_linux();
+    buwiz_bot::mini_v1::attribution::watch_desktop();
     platform::set_ui_sets(ui_sets());
     let options = platform::AppOptions {
         title: buwiz_bot::app_name().to_owned(),
@@ -285,6 +285,7 @@ fn main() -> impl std::process::Termination {
     }
     buwiz_bot::broker::ensure_started();
     buwiz_bot::agent_hub::start();
+    buwiz_bot::mini_v1::attribution::watch_desktop();
     platform::set_ui_sets(ui_sets());
     platform::set_components(|_| buwiz_bot::mini_v1::native::init());
     let options = platform::AppOptions {
