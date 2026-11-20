@@ -604,9 +604,10 @@ mod inflate {
         fn stops_at_the_output_cap() {
             let d = bomb(8000);
             assert_eq!(super::inflate(&d, 4 << 20).map(|o| o.len()), Some(1 + 8000 * 258));
+            let big = bomb(2_000_000);
             let t = std::time::Instant::now();
             assert!(super::inflate(&d, 1 << 20).is_none());
-            assert!(super::inflate(&bomb(2_000_000), 1 << 20).is_none());
+            assert!(super::inflate(&big, 1 << 20).is_none());
             assert!(t.elapsed() < std::time::Duration::from_secs(2));
             // stored block past the cap
             assert!(super::inflate(&[0x01, 0x02, 0x00, 0xfd, 0xff, b'h', b'i'], 1).is_none());
