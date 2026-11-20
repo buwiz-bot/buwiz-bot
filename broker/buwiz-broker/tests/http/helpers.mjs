@@ -76,7 +76,7 @@ export const modelEnv = (fake, log, extra = {}) => ({
 // The routes the app reaches with the host token (X-Buwiz-Host) and a Bot's
 // shell does not: request() adds the token of the broker started last to
 // them, unless the test names the header itself or asks for none.
-const LOCKED = new Set(["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete", "/job/stop", "/mcp/server/state", "/mcp/tools/state", "/mcp/server/delete", "/file/write", "/file/open", "/file/save"]);
+const LOCKED = new Set(["/mcp/servers", "/plugins/install", "/plugins/connect", "/plugins/settings", "/skills", "/skills/state", "/skills/delete", "/bot/new", "/bot/update", "/bot/memory", "/bot/integration", "/bot/delete", "/job/stop", "/mcp/server/state", "/mcp/tools/state", "/mcp/server/delete", "/file/write", "/file/open", "/file/save"]);
 const LOCKED_READS = new Set(["/jobs/running"]);
 let hostToken = "";
 

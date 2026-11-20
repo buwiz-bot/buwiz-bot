@@ -76,12 +76,13 @@ pub(crate) fn token_in(path: &std::path::Path) -> Option<String> {
 /// The routes outside `/v1/host/` locked to the host token: a Bot's shell
 /// must not add, install or switch on a server, plugin or skill through
 /// them (the old switch routes, `/mcp/servers`, the market's install,
-/// connect and settings, and `/skills`), and only a person stops a run
+/// connect and settings, and `/skills`), nor make, rewrite or delete a Bot,
+/// its memories or its integrations (`/bot/*`), and only a person stops a run
 /// (`/job/stop`) or lists every Bot's runs (`/jobs/running`), and only the
 /// viewer writes, opens or saves a reply's file (`/file/write`,
 /// `/file/open`, `/file/save`: together they would run a script a Bot
 /// wrote). Their GETs, which read, get the token too.
-const LOCKED: [&str; 15] = [
+const LOCKED: [&str; 20] = [
     "/mcp/tools/state",
     "/mcp/server/state",
     "/mcp/server/delete",
@@ -92,6 +93,11 @@ const LOCKED: [&str; 15] = [
     "/plugins/install",
     "/plugins/connect",
     "/plugins/settings",
+    "/bot/new",
+    "/bot/update",
+    "/bot/memory",
+    "/bot/integration",
+    "/bot/delete",
     "/job/stop",
     "/jobs/running",
     "/file/write",
@@ -327,11 +333,15 @@ mod tests {
         for p in ["/mcp/servers", "/skills", "/plugins/install", "/plugins/connect", "/plugins/settings"] {
             assert!(super::is_host_route(p), "{p}");
         }
+        // what makes, rewrites or deletes a Bot, or attaches an integration to it
+        for p in ["/bot/new", "/bot/update", "/bot/memory", "/bot/integration", "/bot/delete"] {
+            assert!(super::is_host_route(p), "{p}");
+        }
         // what writes a reply's file or hands one to another app
         for p in ["/file/write", "/file/open", "/file/save"] {
             assert!(super::is_host_route(p), "{p}");
         }
-        for p in ["/file/raw/t1/a.pdf", "/file/render", "/mcp/tools", "/plugins/inspect", "/plugins/uninstall", "/plugins/catalog", "/mcp/tools/state/x", "/skills/statex", "/mcp/server/deleted", "/chat"] {
+        for p in ["/file/raw/t1/a.pdf", "/file/render", "/mcp/tools", "/plugins/inspect", "/plugins/uninstall", "/plugins/catalog", "/mcp/tools/state/x", "/skills/statex", "/mcp/server/deleted", "/chat", "/bot/updates", "/bots"] {
             assert!(!super::is_host_route(p), "{p}");
         }
         assert!(super::is_host_route("/v1/host/tools?bot=b1"));

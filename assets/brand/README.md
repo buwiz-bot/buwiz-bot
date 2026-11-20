@@ -45,5 +45,6 @@ done; done
 `wiz-avatar.json` is Wiz's avatar as the app saves it (`outline`, `color`,
 `layers`, `eyes`, `solids`): the hat as a custom body with the smile as a
 layer, its eyes placed on the cone, and the brim a lathe solid. Send it to
-the broker's `/bot/update` with the bot's `id` and `"shape": "custom"`, or
-draw it with `app/tools/mark-sheet`.
+the broker's `/bot/update` with the bot's `id` and `"shape": "custom"`, and the
+host token as `X-Buwiz-Host` (the `host-token` file in the broker's data dir;
+without it the broker answers 401), or draw it with `app/tools/mark-sheet`.

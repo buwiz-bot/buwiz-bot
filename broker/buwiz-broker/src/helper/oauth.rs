@@ -958,10 +958,9 @@ impl OAuthState {
         }
         let Some(row) = self.pending_row(id) else { return ("refused", String::new()) };
         let want = store.load_auth(id).get("state").map(crate::js::string_of).filter(|s| !s.is_empty());
-        if let (Some(_), Some(w)) = (code, &want) {
-            if state != Some(w.as_str()) {
-                return ("refused", String::new());
-            }
+        // a code or an error alike: the flow ends only for the state it sent
+        if want.is_none() || state != want.as_deref() {
+            return ("refused", String::new());
         }
         if error.is_some() {
             self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(id);

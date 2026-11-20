@@ -2107,6 +2107,12 @@ mod tests {
         assert_eq!(b.host.account_callback(&flow, Some("c"), Some("stale"), None).await.0, "refused");
         assert_eq!(row("default").unwrap()["error"], "The sign-in answer did not match. Sign in again.");
         assert_eq!(row("default").unwrap()["pending"], true);
+        // an error without the flow's state: refused, its text not shown, the flow still waits
+        for st in [None, Some("forged")] {
+            assert_eq!(b.host.account_callback(&flow, None, st, Some("mallory says hi")).await.0, "refused");
+            assert_eq!(row("default").unwrap()["error"], "The sign-in answer did not match. Sign in again.");
+            assert_eq!(row("default").unwrap()["pending"], true);
+        }
         // the user closed Google's page with an error: failed, no longer pending
         assert_eq!(b.host.account_callback(&flow, None, Some(&state), Some("access_denied")).await.0, "failed");
         let r = row("default").unwrap();

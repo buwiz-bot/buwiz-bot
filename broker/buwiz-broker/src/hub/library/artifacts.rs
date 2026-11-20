@@ -175,6 +175,11 @@ fn doc_cache() -> &'static DocCache {
     C.get_or_init(Default::default)
 }
 
+/// The largest office file docMeta opens.
+const MAX_OFFICE_FILE: u64 = 64 << 20;
+/// The largest zip entry docMeta inflates: it reads small XML parts only.
+const MAX_ENTRY: usize = 4 << 20;
+
 /// A PDF's pages, a deck's slides, a workbook's
 /// sheet names, a Word file's page count when it recorded one; read once
 /// per file version.
@@ -195,7 +200,8 @@ pub fn doc_meta(path: &Path) -> Map<String, Value> {
             }
         }
     } else if ["docx", "pptx", "xlsx", "xlsm"].contains(&ext.as_str()) {
-        if let Some(z) = std::fs::read(path).ok().and_then(|b| zip::Zip::read(b)) {
+        let small = std::fs::metadata(path).is_ok_and(|m| m.len() <= MAX_OFFICE_FILE);
+        if let Some(z) = small.then(|| std::fs::read(path).ok()).flatten().and_then(zip::Zip::read) {
             if ext == "pptx" {
                 let n = z.names().filter(|f| f.strip_prefix("ppt/slides/slide").and_then(|r| r.strip_suffix(".xml")).is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))).count();
                 if n > 0 {
@@ -272,7 +278,9 @@ fn sheet_names(wb: &str) -> Vec<String> {
 mod zip {
     pub struct Zip {
         data: Vec<u8>,
-        entries: Vec<(String, u16, usize, usize)>,
+        /// Name, method, local header offset, compressed and declared
+        /// uncompressed size.
+        entries: Vec<(String, u16, usize, usize, usize)>,
     }
 
     fn u16_at(b: &[u8], i: usize) -> Option<u16> {
@@ -294,10 +302,11 @@ mod zip {
                 }
                 let method = u16_at(&data, at + 10)?;
                 let size = u32_at(&data, at + 20)? as usize;
+                let full = u32_at(&data, at + 24)? as usize;
                 let (n, e, c) = (u16_at(&data, at + 28)? as usize, u16_at(&data, at + 30)? as usize, u16_at(&data, at + 32)? as usize);
                 let local = u32_at(&data, at + 42)? as usize;
                 let name = String::from_utf8_lossy(data.get(at + 46..at + 46 + n)?).into_owned();
-                entries.push((name, method, local, size));
+                entries.push((name, method, local, size, full));
                 at += 46 + n + e + c;
             }
             Some(Zip { data, entries })
@@ -308,19 +317,75 @@ mod zip {
         }
 
         pub fn text(&self, name: &str) -> Option<String> {
-            let (_, method, local, size) = self.entries.iter().find(|e| e.0 == name)?;
+            let (_, method, local, size, full) = self.entries.iter().find(|e| e.0 == name)?;
+            if *full > super::MAX_ENTRY || (*method == 0 && *size > super::MAX_ENTRY) {
+                return None;
+            }
             let d = &self.data;
             if u32_at(d, *local)? != 0x0403_4b50 {
                 return None;
             }
             let start = local + 30 + u16_at(d, local + 26)? as usize + u16_at(d, local + 28)? as usize;
-            let raw = d.get(start..start + size)?;
+            let raw = d.get(start..start.checked_add(*size)?)?;
             let bytes = match method {
                 0 => raw.to_vec(),
-                8 => super::inflate::inflate(raw)?,
+                8 => super::inflate::inflate(raw, super::MAX_ENTRY)?,
                 _ => return None,
             };
             Some(String::from_utf8_lossy(&bytes).into_owned())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Zip;
+
+        /// A one-entry zip of `raw` stored with `method`, declaring `full`
+        /// uncompressed bytes.
+        fn one(name: &str, method: u16, raw: &[u8], full: u32) -> Vec<u8> {
+            let mut z = Vec::new();
+            let head = |sig: u32, z: &mut Vec<u8>| {
+                z.extend(sig.to_le_bytes());
+                if sig == 0x0201_4b50 {
+                    z.extend([20, 0]);
+                }
+                z.extend([20, 0, 0, 0]);
+                z.extend(method.to_le_bytes());
+                z.extend([0; 8]);
+                z.extend((raw.len() as u32).to_le_bytes());
+                z.extend(full.to_le_bytes());
+                z.extend((name.len() as u16).to_le_bytes());
+                z.extend([0, 0]);
+            };
+            head(0x0403_4b50, &mut z);
+            z.extend(name.as_bytes());
+            z.extend(raw);
+            let cd = z.len();
+            head(0x0201_4b50, &mut z);
+            z.extend([0; 14]);
+            z.extend(name.as_bytes());
+            let cd_len = z.len() - cd;
+            z.extend(0x0605_4b50u32.to_le_bytes());
+            z.extend([0, 0, 0, 0, 1, 0, 1, 0]);
+            z.extend((cd_len as u32).to_le_bytes());
+            z.extend((cd as u32).to_le_bytes());
+            z.extend([0, 0]);
+            z
+        }
+
+        #[test]
+        fn reads_small_entries_and_skips_bombs() {
+            let z = Zip::read(one("a.xml", 0, b"<Pages>3</Pages>", 16)).unwrap();
+            assert_eq!(z.text("a.xml").as_deref(), Some("<Pages>3</Pages>"));
+            let bomb = super::super::inflate::tests::bomb(20_000);
+            let z = Zip::read(one("a.xml", 8, &bomb, 1 + 20_000 * 258)).unwrap();
+            assert_eq!(z.text("a.xml"), None);
+            // a lying declared size still stops at the cap
+            let z = Zip::read(one("a.xml", 8, &bomb, 100)).unwrap();
+            assert_eq!(z.text("a.xml"), None);
+            let small = super::super::inflate::tests::bomb(10);
+            let z = Zip::read(one("a.xml", 8, &small, 2581)).unwrap();
+            assert_eq!(z.text("a.xml").map(|t| t.len()), Some(2581));
         }
     }
 }
@@ -394,10 +459,13 @@ mod inflate {
     const DBASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
     const DEXT: [u8; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
 
-    fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Huff, dist: &Huff) -> Option<()> {
+    fn codes(b: &mut Bits, out: &mut Vec<u8>, max: usize, lit: &Huff, dist: &Huff) -> Option<()> {
         loop {
             let s = decode(b, lit)? as usize;
             if s < 256 {
+                if out.len() >= max {
+                    return None;
+                }
                 out.push(s as u8);
             } else if s == 256 {
                 return Some(());
@@ -406,7 +474,7 @@ mod inflate {
                 let len = *LBASE.get(s)? as usize + b.need(*LEXT.get(s)? as u32)? as usize;
                 let ds = decode(b, dist)? as usize;
                 let d = *DBASE.get(ds)? as usize + b.need(*DEXT.get(ds)? as u32)? as usize;
-                if d > out.len() {
+                if d > out.len() || out.len() + len > max {
                     return None;
                 }
                 let from = out.len() - d;
@@ -418,7 +486,8 @@ mod inflate {
         }
     }
 
-    pub fn inflate(d: &[u8]) -> Option<Vec<u8>> {
+    /// `d` inflated, or None when it is malformed or inflates past `max` bytes.
+    pub fn inflate(d: &[u8], max: usize) -> Option<Vec<u8>> {
         let mut b = Bits { d, pos: 0, buf: 0, cnt: 0 };
         let mut out = Vec::new();
         loop {
@@ -429,6 +498,9 @@ mod inflate {
                     b.cnt = 0;
                     let len = u16::from_le_bytes([*d.get(b.pos)?, *d.get(b.pos + 1)?]) as usize;
                     b.pos += 4;
+                    if out.len() + len > max {
+                        return None;
+                    }
                     out.extend_from_slice(d.get(b.pos..b.pos + len)?);
                     b.pos += len;
                 }
@@ -442,7 +514,7 @@ mod inflate {
                             _ => 8,
                         };
                     }
-                    codes(&mut b, &mut out, &build(&l), &build(&[5u8; 30]))?;
+                    codes(&mut b, &mut out, max, &build(&l), &build(&[5u8; 30]))?;
                 }
                 2 => {
                     let nlen = b.need(5)? as usize + 257;
@@ -473,7 +545,7 @@ mod inflate {
                             }
                         }
                     }
-                    codes(&mut b, &mut out, &build(&lens[..nlen]), &build(&lens[nlen..]))?;
+                    codes(&mut b, &mut out, max, &build(&lens[..nlen]), &build(&lens[nlen..]))?;
                 }
                 _ => return None,
             }
@@ -484,21 +556,61 @@ mod inflate {
     }
 
     #[cfg(test)]
-    mod tests {
+    pub(super) mod tests {
         #[test]
         fn inflates_stored_fixed_and_dynamic_blocks() {
             // stored: "hi"
-            assert_eq!(super::inflate(&[0x01, 0x02, 0x00, 0xfd, 0xff, b'h', b'i']).unwrap(), b"hi");
+            assert_eq!(super::inflate(&[0x01, 0x02, 0x00, 0xfd, 0xff, b'h', b'i'], 1 << 20).unwrap(), b"hi");
             // fixed Huffman: zlib's raw deflate of "hello hello hello"
             let fixed = [0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40, 0x90, 0x00];
-            assert_eq!(super::inflate(&fixed).unwrap(), b"hello hello hello");
+            assert_eq!(super::inflate(&fixed, 1 << 20).unwrap(), b"hello hello hello");
             // dynamic Huffman: zlib level 9 of 1411 bytes of words (Python's)
             let hex = "5554496ec3300cbcf319f980ce045afd814f90502339244581e650f8f515879b8cc4b2cc65480e29ddc7eb35cee33de67a3e7e1fc7f1d65debfa93dbdfedeb789ab2f5f1fc798c255a7ff5c027b76e5e0cc340fa1eafe31306b5080580c0766d1812c2a706b41d9cb113d758887027d11077cd5cb87266f831134ce0694a5b4fd4407bf2adc38aad2601224088c5d0ac70a10ca8fed0b4ce8e819793a0d0f124a43922146cb1230a12087867b016d50aa988a368268349378f9ecea6d0fc5c18991ac71469799024c18836f033cad47a69631d8ccfe26dab79237a7a8822b2e4c584c9ac1cf15abd8d8b544faff58c66aaa82646b2909d7aca010c728af12541381b596c5728d2f9363761f26120c9294db64402d2f30442c1572e958f67054b9fb9cdd77a825535997aeb50638ef2b8d4a198bbad38ac9f91e922a7d77b94e3911a88ab8034a8a65d2946eb734c85e294ce9cce6b7bb76937809ad0edbb96a22c2b63a7014ed7eb6425e2f954b084d94e5e7cd2e55ada12a84b81ec905713b79e6687242b75f09ab07deef2f07805760d594fdd59a9f41ed9eb1f";
             let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
-            let out = super::inflate(&bytes).unwrap();
+            let out = super::inflate(&bytes, 1 << 20).unwrap();
             use sha1::{Digest, Sha1};
             let sum: String = Sha1::digest(&out).iter().map(|b| format!("{b:02x}")).collect();
             assert_eq!((out.len(), sum.as_str()), (1411, "36287b948b82dec36d5ed953eb4078a1963b042c"));
+        }
+
+        /// A fixed-Huffman block: one zero byte, then `refs` copies of
+        /// (length 258, distance 1).
+        pub fn bomb(refs: usize) -> Vec<u8> {
+            let (mut out, mut acc, mut n) = (Vec::new(), 0u32, 0);
+            let mut put = |v: u32, bits: u32, msb: bool| {
+                for i in 0..bits {
+                    let bit = if msb { (v >> (bits - 1 - i)) & 1 } else { (v >> i) & 1 };
+                    acc |= bit << n;
+                    n += 1;
+                    if n == 8 {
+                        out.push(acc as u8);
+                        (acc, n) = (0, 0);
+                    }
+                }
+            };
+            put(1, 1, false);
+            put(1, 2, false);
+            put(0x30, 8, true);
+            for _ in 0..refs {
+                put(0xc5, 8, true);
+                put(0, 5, true);
+            }
+            put(0, 7, true);
+            put(0, 7, false);
+            out
+        }
+
+        #[test]
+        fn stops_at_the_output_cap() {
+            let d = bomb(8000);
+            assert_eq!(super::inflate(&d, 4 << 20).map(|o| o.len()), Some(1 + 8000 * 258));
+            let big = bomb(2_000_000);
+            let t = std::time::Instant::now();
+            assert!(super::inflate(&d, 1 << 20).is_none());
+            assert!(super::inflate(&big, 1 << 20).is_none());
+            assert!(t.elapsed() < std::time::Duration::from_secs(2));
+            // stored block past the cap
+            assert!(super::inflate(&[0x01, 0x02, 0x00, 0xfd, 0xff, b'h', b'i'], 1).is_none());
         }
     }
 }

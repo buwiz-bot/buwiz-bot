@@ -997,8 +997,8 @@ impl Host {
         if code.is_none() && error.is_none() {
             return ("refused", String::new());
         }
-        if code.is_some() && state != Some(p.state.as_str()) {
-            // a stale or forged answer: the flow stays; the row says so
+        if state != Some(p.state.as_str()) {
+            // a stale or forged answer, a code or an error alike: the flow stays; the row says so
             self.accounts.errors().insert(token_ref(&p.plugin, &p.account, &p.label), ("The sign-in answer did not match. Sign in again.".to_owned(), false));
             self.emit(&p.plugin);
             return ("refused", String::new());
