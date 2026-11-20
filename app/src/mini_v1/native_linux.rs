@@ -20,6 +20,7 @@ use std::{
 };
 
 use crate::agent_hub::hold::{Answer, Card};
+use nsh_platform_linux::gtk4::gdk::prelude::DisplayExt;
 use nsh_platform_linux::AppView;
 use buwiz_agent::OnceId;
 use serde_json::Value;
@@ -334,7 +335,11 @@ fn open_panel(_pick: &PickRequest) -> Vec<PathBuf> {
 }
 
 fn write_pasteboard(text: &str) {
-    nsh_core::prelude::set_clipboard(text.to_owned());
+    if let Some(display) = nsh_platform_linux::gtk4::gdk::Display::default() {
+        display.clipboard().set_text(text);
+    } else {
+        log::warn!("mini v1: could not copy to the clipboard: no display");
+    }
 }
 
 
