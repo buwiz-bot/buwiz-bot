@@ -31,7 +31,16 @@ pub fn allowed_origins(port: u16, extra: Option<&str>) -> Vec<String> {
 pub fn host_refusal(headers: &HeaderMap, allowed: &[String]) -> Option<(StatusCode, String)> {
     let host = headers.get(HOST)?;
     let host = String::from_utf8_lossy(host.as_bytes());
-    let known = allowed.iter().filter_map(|a| a.split_once("://").map(|(_, authority)| authority)).any(|a| a.eq_ignore_ascii_case(host.trim()));
+    let host = host.trim();
+    let known = allowed.iter().filter_map(|a| a.split_once("://")).any(|(scheme, authority)| {
+        // a client leaves out the scheme's default port
+        let bare = match scheme {
+            "http" => authority.strip_suffix(":80"),
+            "https" => authority.strip_suffix(":443"),
+            _ => None,
+        };
+        authority.eq_ignore_ascii_case(host) || bare.is_some_and(|b| b.eq_ignore_ascii_case(host))
+    });
     if known {
         return None;
     }
@@ -103,6 +112,11 @@ mod tests {
             let (status, error) = refusal(&Method::GET, &h, &allowed).expect(host);
             assert_eq!(status, StatusCode::FORBIDDEN, "{host}");
             assert!(error.contains("host"), "{error}");
+        }
+        let on_80 = allowed_origins(80, None);
+        for host in ["127.0.0.1", "localhost:80"] {
+            let h = HeaderMap::from_iter([(HOST, HeaderValue::from_str(host).unwrap())]);
+            assert_eq!(refusal(&Method::GET, &h, &on_80), None, "{host}");
         }
         let rebound = headers(&[("host", "evil.example:8787"), ("origin", "http://127.0.0.1:8787")]);
         assert_eq!(refusal(&Method::GET, &rebound, &allowed).unwrap().0, StatusCode::FORBIDDEN);
