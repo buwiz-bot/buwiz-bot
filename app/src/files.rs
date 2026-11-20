@@ -1595,6 +1595,12 @@ fn kept_pages(page: Memo<Option<WebPage>>) -> impl IntoElement {
             .w(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
             .h(sized(|p| p.with(|p| matches!(p, Some(WebPage::Url(..))))))
             .opacity(move || if url() { 1.0f32 } else { 0.0 })
+            .on_load_start(move |_: &WebNavigation| OFFICE_EDITOR.with(|e| e.set(None)))
+            .on_load(move |n: &WebNavigation| {
+                if n.url.starts_with(&format!("{}/office/editor/", crate::client::backend())) {
+                    keep_the_token_on_the_office_page(office_page);
+                }
+            })
             // shows through the (transparent) WKWebView until the page
             // paints: light is the Office editor page's own `#f5f5f5` body.
             .bg(move || {
@@ -2436,6 +2442,10 @@ fn audio_player_view(f: &Attach) -> impl IntoElement {
 thread_local! {
     /// The viewer's Office editor page, while one shows (its Save).
     static OFFICE_PAGE: std::cell::Cell<Option<ElementRef>> = const { std::cell::Cell::new(None) };
+    /// The load of the broker's Office editor page the viewer's web view shows, if it shows
+    /// it: each such load is the next number, any other load clears it.
+    static OFFICE_EDITOR: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static OFFICE_EDITOR_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The open file's versions: (its key — a mini app's name, a file's own
@@ -2567,6 +2577,7 @@ pub(crate) fn viewer_save() {
         return;
     }
     if let Some(page) = OFFICE_PAGE.with(std::cell::Cell::get) {
+        give_office_page_the_token(page);
         page.inject_java_script("window.buwizSave && window.buwizSave(); true;");
     }
     let path = f.path.clone();
@@ -2574,6 +2585,35 @@ pub(crate) fn viewer_save() {
         timer(std::time::Duration::from_millis(1500)).await;
         load_file_versions(&path);
         store().refresh_thread_apps();
+    });
+}
+
+/// The broker's host token on the Office editor page (`window.buwizHost`): its saves go to
+/// `/file/write`, which answers only the token. Only while the web view shows the broker's
+/// editor page, never a page it went on to. The token given, if any.
+fn give_office_page_the_token(page: ElementRef) -> Option<String> {
+    OFFICE_EDITOR.with(std::cell::Cell::get)?;
+    let token = crate::client::host_token()?;
+    page.inject_java_script(format!("window.buwizHost = {}; true;", serde_json::Value::String(token.clone())));
+    Some(token)
+}
+
+/// The token on a newly loaded editor page, and again whenever it changes while the page
+/// shows (a restarted broker makes a new one, and the toolbar's Save would send the old).
+fn keep_the_token_on_the_office_page(page: ElementRef) {
+    let load = OFFICE_EDITOR_LOADS.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    OFFICE_EDITOR.with(|e| e.set(Some(load)));
+    spawn(async move {
+        let mut given = None;
+        while OFFICE_EDITOR.with(std::cell::Cell::get) == Some(load) {
+            if crate::client::host_token() != given {
+                given = give_office_page_the_token(page);
+            }
+            timer(std::time::Duration::from_secs(2)).await;
+        }
     });
 }
 

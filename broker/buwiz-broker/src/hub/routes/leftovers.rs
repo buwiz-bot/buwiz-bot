@@ -353,14 +353,31 @@ fn viewer_of(ctx: &HubCtx, dirs: &Dirs, path: Option<&Value>) -> Result<Option<S
     }
 }
 
-/// `POST /file/open {path}`: the file in its own app (`open`, not waited for).
+/// The kinds macOS `open` runs, installs or follows rather than shows: apps and bundles, the
+/// scripts Terminal, Script Editor or a launcher runs, Automator actions, installers and disk
+/// images, profiles, and links to another file or URL.
+const RUNNABLE: [&str; 42] = [
+    "app", "command", "tool", "terminal", "sh", "bash", "zsh", "csh", "tcsh", "ksh", "fish", "py", "pyw", "pl", "rb", "php", "scpt",
+    "scptd", "applescript", "workflow", "action", "definition", "caction", "shortcut", "pkg", "mpkg", "dmg", "jar", "prefpane", "saver", "plugin",
+    "bundle", "kext", "osax", "qlgenerator", "mobileconfig", "fileloc", "inetloc", "webloc", "url", "service", "systemextension",
+];
+
+/// Whether `open` on `p` would run something: a folder (an `.app` is one) or a [`RUNNABLE`]
+/// kind. Those are only shown in Finder.
+fn runs_when_opened(p: &str) -> bool {
+    Path::new(p).is_dir() || RUNNABLE.contains(&ext_of_path(p).as_str())
+}
+
+/// `POST /file/open {path}`: the file in its own app (`open`, not waited for); a file `open`
+/// would run is shown in Finder instead (`open -R`).
 async fn file_open(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     let dirs = Dirs::of(&ctx);
     let p = body_json(&req).ok().and_then(|b| if b.is_null() { None } else { viewer_of(&ctx, &dirs, get(Some(&b), "path")).ok().flatten() });
     let Some(p) = p.filter(|p| exists(p)) else { return ok(&json!({ "ok": false })) };
+    let args = if runs_when_opened(&p) { vec!["-R".to_owned(), p] } else { vec![p] };
     let tools = local(&ctx);
     tokio::spawn(async move {
-        let _ = tools.run(LocalCommand { program: "open".into(), args: vec![p], ..Default::default() }).await;
+        let _ = tools.run(LocalCommand { program: "open".into(), args, ..Default::default() }).await;
     });
     ok(&json!({ "ok": true }))
 }
@@ -456,6 +473,7 @@ mod tests {
     async fn call(hub: &Hub, method: Method, url: &str, body: &str) -> (u16, String) {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert("x-buwiz-host", HeaderValue::from_static(crate::hub::routes::host::TEST_TOKEN));
         let req = HubRequest { method, url: url.into(), headers, body: Bytes::from(body.to_owned()), params: Vec::new() };
         let res = hub.answer(req).await;
         (res.status().as_u16(), String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned())
@@ -551,6 +569,36 @@ mod tests {
             assert_eq!(call(&hub, Method::POST, "/file/write", &json!({ "path": path }).to_string()).await.1, r#"{"ok":false,"error":"bad path"}"#, "{path}");
         }
         assert_eq!(call(&hub, Method::POST, "/file/write", "nope").await.1, r#"{"ok":false,"error":"Unexpected token 'o', \"nope\" is not valid JSON"}"#);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    /// A file `open` would run (a script, an app, a link) is only shown in Finder.
+    #[tokio::test]
+    async fn left_07_file_open_reveals_what_open_would_run() {
+        let data = temp("open");
+        let (hub, stub) = hub(&data, printed("", 0));
+        let files = data.join("generated/files");
+        for f in ["doc.pdf", "run.command", "run.COMMAND", "run.terminal", "x.scpt", "go.workflow", "a.fileloc", "s.sh"] {
+            std::fs::write(files.join("t1").join(f), "x").unwrap();
+        }
+        std::fs::create_dir_all(files.join("t1/Evil.app")).unwrap();
+        async fn opened(stub: &Stub) -> LocalCommand {
+            for _ in 0..200 {
+                if let Some(c) = stub.calls.lock().unwrap().pop() {
+                    return c;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("open never ran");
+        }
+        assert_eq!(call(&hub, Method::POST, "/file/open", r#"{"path":"t1/doc.pdf"}"#).await.1, r#"{"ok":true}"#);
+        let c = opened(&stub).await;
+        assert_eq!((c.program.as_str(), c.args.clone()), ("open", vec![files.join("t1/doc.pdf").to_string_lossy().into_owned()]));
+        for f in ["run.command", "run.COMMAND", "run.terminal", "x.scpt", "go.workflow", "a.fileloc", "s.sh", "Evil.app"] {
+            assert_eq!(call(&hub, Method::POST, "/file/open", &json!({ "path": format!("t1/{f}") }).to_string()).await.1, r#"{"ok":true}"#, "{f}");
+            let c = opened(&stub).await;
+            assert_eq!(c.args, ["-R".to_owned(), files.join("t1").join(f).to_string_lossy().into_owned()], "{f}");
+        }
         let _ = std::fs::remove_dir_all(data);
     }
 

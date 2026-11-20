@@ -39,12 +39,17 @@ function b64(buf) {
   return btoa(bin);
 }
 
-function saveBytes(bytes) {
-  return fetch("/file/write", {
+// /file/write takes the broker's host token, which Buwiz Bot puts on the
+// page (window.buwizHost) when it loads, whenever it changes and before its
+// Save. A save the broker refuses or fails rejects.
+async function saveBytes(bytes) {
+  const r = await fetch("/file/write", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-buwiz-host": window.buwizHost || "" },
     body: JSON.stringify({ path, data: b64(bytes) }),
   });
+  const out = r.ok ? await r.json().catch(() => null) : null;
+  if (!out?.ok) throw new Error(out?.error || `save: ${r.status}`);
 }
 
 // Buwiz Bot's Save (its ⌘S, its ⌘K menu): the editor's own save — the same
@@ -70,6 +75,7 @@ function App() {
   const [bytes, setBytes] = useState(null);
   const [fonts, setFonts] = useState(null);
   const [err, setErr] = useState(null);
+  const [saveErr, setSaveErr] = useState(null);
   useEffect(() => {
     fetch(raw)
       .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`file: ${r.status}`))))
@@ -79,7 +85,14 @@ function App() {
   }, []);
   // Editors wire onSave into effect deps — an unstable closure re-runs the
   // effect on every render and loops into React #185. Same for props objects.
-  const onSave = useCallback((b) => saveBytes(b).catch(() => {}), []);
+  const onSave = useCallback(
+    (b) =>
+      saveBytes(b).then(
+        () => setSaveErr(null),
+        (e) => setSaveErr(String(e.message || e))
+      ),
+    []
+  );
   // className is NOT passed to the editors: it would replace their scoped
   // .oox-root class that styles.css is compiled under, leaving all chrome
   // unstyled (the overflow rail then measures ~15kpx and loops into #185).
@@ -98,7 +111,12 @@ function App() {
         ? h(XlsxEditor, { ...common, file: fileU8 })
         : h(PptxEditor, { ...common, file: fileU8, fonts });
   // The window's own title bar carries the name — the page adds no chrome.
-  return h("div", { id: "shell" }, h("div", { className: "bo-editor" }, editor));
+  return h(
+    "div",
+    { id: "shell" },
+    saveErr && h("div", { id: "save-err", role: "alert" }, `Couldn't save — ${saveErr}`),
+    h("div", { className: "bo-editor" }, editor)
+  );
 }
 
 createRoot(document.getElementById("root")).render(h(App));
