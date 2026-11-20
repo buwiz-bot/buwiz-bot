@@ -76,13 +76,17 @@ impl Session {
     ) -> Result<Arc<Session>, MiniError> {
         let key = keys::SessionKey::generate();
         let now = now_ms();
+        let not_after = now + MAX_LIFETIME_MS;
+        // Leave room for the plugin's clock to lag the Windows system clock.
+        #[cfg(windows)]
+        let not_after = not_after - SKEW_MS;
         let ask = host_api::SessionAsk {
             plugin: plugin.to_owned(),
             app: app.to_owned(),
             open_id: keys::random_id(),
             ks_pub: key.public(),
             perms_sha256: keys::perms_sha256(permissions).map_err(|e| MiniError::new("invalid_args", e))?,
-            not_after: now + MAX_LIFETIME_MS,
+            not_after,
         };
         let answer = host_api::session_open(broker, &ask)?;
         let not_after = verify_cert(&answer, &ask, now)?;
