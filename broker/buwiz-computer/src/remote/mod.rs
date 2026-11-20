@@ -85,6 +85,10 @@ impl Asked {
     /// The record this asks for, kept in `dir`. Nothing is reached yet.
     pub fn machine(&self, dir: &Path) -> Result<Machine> {
         let reach = target(&self.url)?;
+        #[cfg(windows)]
+        if matches!(reach, Reach::Ssh { .. }) {
+            ssh::available()?;
+        }
         let filled = |s: &Option<Secret>| s.clone().filter(|s| !s.expose().trim().is_empty());
         let (token, password) = (filled(&self.token), filled(&self.viewer_password));
         let boxed = token.is_some() || password.is_some();
@@ -346,6 +350,8 @@ impl RemoteProvider {
     }
 
     fn up(&self, machine: &Machine) -> Result<Arc<Open>> {
+        #[cfg(windows)]
+        available(machine)?;
         self.link_of(machine).filter(|o| o.alive()).ok_or(Problem::Asleep)
     }
 
@@ -381,6 +387,8 @@ impl RemoteProvider {
     /// the way in works. No box token or viewer password goes: those wait for their yes, and
     /// [`RemoteProvider::probe`]. Over TLS that leaves the handshake, and over SSH the login.
     pub async fn trial(&self, machine: &Machine) -> Result<Probed> {
+        #[cfg(windows)]
+        available(machine)?;
         let link = link_of(machine)?;
         match &machine.reach {
             Reach::Url { url } => match tls::look(&tls::Far::parse(url)?, link.pin.as_deref(), self.dial, self.root.as_deref()).await? {
@@ -413,6 +421,8 @@ impl RemoteProvider {
     /// Asks the far end who it is and whether it answers, with this record, its secrets included:
     /// for after a person's yes. Leaves nothing open.
     pub async fn probe(&self, machine: &Machine) -> Result<Probed> {
+        #[cfg(windows)]
+        available(machine)?;
         let link = link_of(machine)?;
         match &machine.reach {
             Reach::Ssh { host, port, .. } if link.pin.is_none() => {
@@ -450,6 +460,8 @@ impl RemoteProvider {
     }
 
     async fn connect(&self, machine: &Machine) -> Result<Arc<Open>> {
+        #[cfg(windows)]
+        available(machine)?;
         let link = link_of(machine)?;
         let open = match &machine.reach {
             Reach::Ssh { host, user, port } => {
@@ -514,6 +526,14 @@ pub(crate) async fn answers(open: &Open) -> Result<()> {
     let viewer = info.pointer("/capabilities/viewer/kind").and_then(Value::as_str);
     if viewer != Some("voxl") || !guest.ready_within(FIRST_ANSWER).await || guest.listed().await.is_err() {
         return Err(Problem::Remote(NO_BOX.to_owned()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn available(machine: &Machine) -> Result<()> {
+    if matches!(machine.reach, Reach::Ssh { .. }) {
+        ssh::available()?;
     }
     Ok(())
 }
@@ -591,6 +611,8 @@ impl Provider for RemoteProvider {
 
     /// From what's held here, with no call to the far end: this is read every few seconds.
     async fn power(&self, machine: &Machine) -> Result<Power> {
+        #[cfg(windows)]
+        available(machine)?;
         Ok(if self.link_of(machine).is_some_and(|o| o.alive()) { Power::Awake } else { Power::Asleep })
     }
 

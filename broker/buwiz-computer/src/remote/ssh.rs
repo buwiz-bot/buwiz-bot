@@ -26,6 +26,14 @@ use crate::{Problem, Result, Secret};
 pub const SSH: &str = "/usr/bin/ssh";
 pub const KEYSCAN: &str = "/usr/bin/ssh-keyscan";
 
+#[cfg(windows)]
+pub const UNAVAILABLE: &str = "SSH computers aren't available on Windows yet";
+
+#[cfg(windows)]
+pub fn available() -> Result<()> {
+    Err(Problem::Refused { code: "ssh_unavailable", message: UNAVAILABLE.to_owned() })
+}
+
 /// What a test of a connection's folder is called, under `computers`.
 pub const PROBE_PREFIX: &str = "probe-";
 const FOLDER: &str = "ssh";
@@ -92,6 +100,8 @@ pub fn fingerprint(pin: &str) -> Result<String> {
 
 /// Asks `host` for its key, trusting nothing: the answer is for a person to check.
 pub async fn scan(program: &Path, host: &str, port: Option<u16>) -> Result<(String, String)> {
+    #[cfg(windows)]
+    available()?;
     let port = port.unwrap_or(22).to_string();
     let child = Command::new(program)
         .args(["-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", &port, "--", host])
@@ -271,6 +281,8 @@ pub struct Master {
 impl Master {
     /// Logs in and starts the forwards, each `(port here, port on that machine's loopback)`.
     pub async fn open(program: &Path, computer: &Path, at: &At, pin: &str, key: Option<&Secret>, forwards: &[(u16, u16)]) -> std::result::Result<Self, Failed> {
+        #[cfg(windows)]
+        available().map_err(Failed::Said)?;
         let said = Failed::Said;
         check_pin(pin).map_err(said)?;
         let key = key.ok_or_else(|| Failed::Said(Problem::Remote("This computer has no SSH key: remove it and add it again.".to_owned())))?;

@@ -105,6 +105,14 @@ fn fields(kind: ProviderKind) -> &'static [Field] {
 }
 
 fn notes(kind: ProviderKind) -> Vec<String> {
+    #[cfg(windows)]
+    if matches!(kind, ProviderKind::Ec2 | ProviderKind::Boat | ProviderKind::Remote) {
+        let mut notes = vec![buwiz_computer::remote::ssh::UNAVAILABLE.to_owned()];
+        if kind == ProviderKind::Remote {
+            notes.push("Connect a remote computer over HTTPS instead.".to_owned());
+        }
+        return notes;
+    }
     match kind {
         ProviderKind::Docker => vec!["Runs on this Mac, walled off from it. Needs Docker Desktop running.".to_owned()],
         ProviderKind::Ec2 => vec![
@@ -128,6 +136,10 @@ fn offered(kind: ProviderKind) -> bool {
 }
 
 fn can_default(kind: ProviderKind) -> bool {
+    #[cfg(windows)]
+    if available(kind).is_err() {
+        return false;
+    }
     offered(kind) && kind != ProviderKind::Remote
 }
 
@@ -729,6 +741,8 @@ impl Computers {
     /// Saves what a person gave `kind`, once it works. `values` holds the fields they filled in (a
     /// blank secret keeps the one there), and `clear` the ones to empty.
     pub async fn save_provider(&self, ctx: &HubCtx, kind: ProviderKind, values: &Map<String, Value>, clear: &[String]) -> Result<Value, Problem> {
+        #[cfg(windows)]
+        available(kind)?;
         if fields(kind).is_empty() {
             return Err(refusal("nothing_to_set", format!("{} has nothing to set here.", kind.label())));
         }
@@ -938,6 +952,8 @@ impl Computers {
 
     /// A person's Check of what `kind` has now. `Ok` is the sentence to show.
     pub async fn check_provider(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<String, Problem> {
+        #[cfg(windows)]
+        available(kind)?;
         match kind {
             ProviderKind::Remote => Ok("A remote computer is tested when you connect it, from a Bot's Computer tab.".to_owned()),
             ProviderKind::Docker => {
@@ -1008,6 +1024,8 @@ impl Computers {
     }
 
     fn choosable(&self, ctx: &HubCtx, kind: ProviderKind) -> Result<(), Problem> {
+        #[cfg(windows)]
+        available(kind)?;
         if kind == ProviderKind::Remote {
             return Err(refusal("cant_default", "A remote computer can't be where new computers go: connect one from a Bot's Computer tab.".to_owned()));
         }
@@ -1063,7 +1081,19 @@ fn next_of(kind: ProviderKind, before: &Saved, values: &Map<String, Value>, clea
 
 /// Whether this build makes computers of `kind`: not a slot with no code yet.
 fn built(kind: ProviderKind) -> bool {
+    #[cfg(windows)]
+    if available(kind).is_err() {
+        return false;
+    }
     matches!(kind, ProviderKind::Docker | ProviderKind::Ec2 | ProviderKind::E2b | ProviderKind::Boat | ProviderKind::Remote)
+}
+
+#[cfg(windows)]
+fn available(kind: ProviderKind) -> buwiz_computer::Result<()> {
+    if matches!(kind, ProviderKind::Ec2 | ProviderKind::Boat) {
+        buwiz_computer::remote::ssh::available()?;
+    }
+    Ok(())
 }
 
 fn refusal(code: &'static str, message: String) -> Problem {

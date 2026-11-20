@@ -10,6 +10,8 @@ use hyper_util::rt::TokioIo;
 use buwiz_broker::helper::keystore::Keystore;
 use buwiz_broker::leaf::{self, Leaf};
 use buwiz_broker::office::workspace::Workspace;
+use buwiz_computer::{provider_for, Link, Machine, Network, Provider, ProviderKind, Reach, RemoteProvider, Secret, Spec};
+use buwiz_computer::remote::{self, ssh, Asked};
 
 struct Folder(PathBuf);
 
@@ -25,6 +27,99 @@ impl Drop for Folder {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+fn assert_ssh_unavailable<T>(result: buwiz_computer::Result<T>) {
+    let problem = result.err().expect("SSH computers must be unavailable");
+    assert_eq!(problem.code(), "ssh_unavailable");
+    assert_eq!(problem.sentence(), "SSH computers aren't available on Windows yet");
+}
+
+fn ssh_machine(dir: PathBuf) -> Machine {
+    Machine {
+        provider: ProviderKind::Remote,
+        reach: Reach::Ssh { host: "host.example".into(), user: Some("person".into()), port: None },
+        image: None,
+        token: Secret::new(""),
+        viewer_password: Secret::new(""),
+        dir,
+        link: Some(Link { boxed: false, pin: None, key: None }),
+        egress: None,
+        seen: None,
+    }
+}
+
+#[tokio::test]
+async fn ssh_remote_add_and_existing_computers_are_unavailable() {
+    let dir = Folder::new("ssh-remote");
+    let computer = dir.0.join("computer");
+    let asked = Asked { url: "ssh://person@host.example".into(), key_file: Some(dir.0.join("missing-key")), ..Asked::default() };
+    assert_ssh_unavailable(asked.machine(&computer));
+    let provider = RemoteProvider::new().with_programs(dir.0.join("missing-ssh"), dir.0.join("missing-keyscan"));
+    let mut machine = ssh_machine(computer.clone());
+    for link in [None, machine.link.clone()] {
+        machine.link = link;
+        assert_ssh_unavailable(provider.trial(&machine).await);
+        assert_ssh_unavailable(provider.probe(&machine).await);
+        assert_ssh_unavailable(provider.power(&machine).await);
+        assert_ssh_unavailable(provider.wake(&machine).await);
+        assert_ssh_unavailable(provider.read_file(&machine, "example.txt").await);
+    }
+    assert!(!computer.exists());
+}
+
+#[tokio::test]
+async fn ssh_primitives_refuse_before_spawning_or_staging_keys() {
+    let dir = Folder::new("ssh-programs");
+    let program = dir.0.join("missing-program");
+    let computer = dir.0.join("computer");
+    let at = ssh::At { host: "host.example".into(), user: None, port: None };
+    assert_ssh_unavailable(ssh::scan(&program, &at.host, at.port).await);
+    match ssh::Master::open(&program, &computer, &at, "", None, &[]).await {
+        Err(ssh::Failed::Said(problem)) => assert_ssh_unavailable::<()>(Err(problem)),
+        _ => panic!("SSH must be refused before opening a master"),
+    }
+    assert!(!computer.exists());
+}
+
+#[tokio::test]
+async fn ssh_cloud_providers_refuse_add_and_existing_computers() {
+    let dir = Folder::new("ssh-cloud");
+    let spec = Spec { id: "windows-example".into(), dir: dir.0.join("computer"), network: Network::Plain };
+    for kind in [ProviderKind::Ec2, ProviderKind::Boat] {
+        let provider = provider_for(kind);
+        assert_ssh_unavailable(provider.check().await);
+        assert_ssh_unavailable(provider.verify().await);
+        assert_ssh_unavailable(provider.create(&spec).await);
+        let mut machine = ssh_machine(spec.dir.clone());
+        machine.provider = kind;
+        machine.reach = match kind {
+            ProviderKind::Ec2 => Reach::Instance { id: "i-example".into(), region: "ap-southeast-1".into() },
+            _ => Reach::Sandbox { id: "example".into() },
+        };
+        assert_ssh_unavailable(provider.power(&machine).await);
+        assert_ssh_unavailable(provider.wake(&machine).await);
+        assert_ssh_unavailable(provider.read_file(&machine, "example.txt").await);
+        assert_ssh_unavailable(provider.destroy(&machine).await);
+    }
+    assert!(!spec.dir.exists());
+}
+
+#[tokio::test]
+async fn https_remote_computers_remain_available() {
+    let dir = Folder::new("https-remote");
+    let provider = RemoteProvider::new();
+    provider.check().await.unwrap();
+    let asked = Asked {
+        url: "https://host.example".into(),
+        token: Some(Secret::new("synthetic-token")),
+        viewer_password: Some(Secret::new("synthetic-password")),
+        ..Asked::default()
+    };
+    let machine = asked.machine(&dir.0).unwrap();
+    assert!(matches!(machine.reach, Reach::Url { .. }));
+    assert_eq!(provider.power(&machine).await.unwrap(), buwiz_computer::Power::Asleep);
+    assert!(remote::target("ssh://-bad-host").is_err());
 }
 
 #[test]

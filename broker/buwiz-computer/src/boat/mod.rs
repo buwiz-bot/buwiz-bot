@@ -367,6 +367,8 @@ impl BoatProvider {
     }
 
     fn key(&self) -> Result<Secret> {
+        #[cfg(windows)]
+        ssh::available()?;
         self.settings.get().key.ok_or_else(|| Problem::Refused { code: "no_key", message: "boat needs an API key before it can make a computer. Add it in Settings › Computers.".to_owned() })
     }
 
@@ -755,6 +757,8 @@ impl BoatProvider {
     }
 
     fn up(&self, machine: &Machine) -> Result<Arc<Open>> {
+        #[cfg(windows)]
+        ssh::available()?;
         self.link_of(machine)
             .filter(|o| o.alive())
             .ok_or(Problem::Asleep)

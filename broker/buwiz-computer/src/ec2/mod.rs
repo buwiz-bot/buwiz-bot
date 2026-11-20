@@ -196,6 +196,8 @@ impl Ec2Provider {
     }
 
     fn api(&self, region: &str) -> Result<Arc<Api>> {
+        #[cfg(windows)]
+        ssh::available()?;
         let mut apis = self.apis.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(api) = apis.get(region) {
             return Ok(api.clone());
@@ -218,6 +220,8 @@ impl Ec2Provider {
     }
 
     fn up(&self, machine: &Machine) -> Result<Arc<Open>> {
+        #[cfg(windows)]
+        ssh::available()?;
         self.link_of(machine).filter(|o| o.master.alive()).ok_or(Problem::Asleep)
     }
 
@@ -518,6 +522,8 @@ impl Provider for Ec2Provider {
 
     /// The broker's keys work, and the template is there.
     async fn check(&self) -> Result<()> {
+        #[cfg(windows)]
+        ssh::available()?;
         if !self.ssh.is_file() {
             return Err(Problem::ProviderMissing("ssh".to_owned()));
         }
