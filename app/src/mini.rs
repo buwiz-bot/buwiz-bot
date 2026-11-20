@@ -71,7 +71,7 @@ fn mini_app_with(
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
     let owns = use_context::<OwnsKeys>();
-    native("buwiz/mini-app")
+    let app_view = native("buwiz/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
         .when(heard.is_some(), |n| n.prop("hold", move || JsonValue::Bool(held)))
         .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
@@ -108,7 +108,15 @@ fn mini_app_with(
         .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
-        .when(h <= 0.0, |v| v.flex_1())
+        .when(h <= 0.0, |v| v.flex_1());
+    #[cfg(windows)]
+    let app_view = app_view.style_when(error_covers(app.to_owned()), |s| s.invisible());
+    app_view
+}
+
+#[cfg(windows)]
+fn error_covers(key: String) -> impl Fn() -> bool {
+    move || !store().mini_err(&key).get().is_empty() || store().v1.error.with(|e| e.contains_key(&key))
 }
 
 /// A generated widget card's app (`R<n>`, `mini_app`) held like an inline
@@ -219,6 +227,8 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
         .on_native_event(move |e: &NativeEvent| heard(e))
         .w(px(w))
         .h(move || px(h()));
+    #[cfg(windows)]
+    let app_view = app_view.style_when(error_covers(app.to_owned()), |s| s.invisible());
     #[cfg(windows)]
     let app_view = app_view.style_when(move || wait_ready && !hold.get().revealed(), |s| s.invisible());
     let key = format!("settle:{app}");
