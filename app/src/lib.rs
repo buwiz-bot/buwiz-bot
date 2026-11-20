@@ -152,14 +152,17 @@ fn main_bundle_name() -> Option<(String, String)> {
     Some((identity::APP_ID.to_owned(), "Buwiz Bot".to_owned()))
 }
 
-/// The font files the root registers before it renders (`Root::font`):
-/// the office views' icon font, when the app bundle has it. The office
-/// documents' bundled fonts (`office::fonts`) start registering with
-/// CoreText here too, straight from their files, off the main thread (a
-/// document's worker waits for them before it opens one).
+/// The root registers the office views' icon font and, on Linux, the
+/// bundled office faces (`office::fonts`) before it renders (`Root::font`).
+/// On Apple, the document fonts register with CoreText off the main thread;
+/// a document's worker waits for them before it opens one.
 pub fn fonts() -> Vec<Vec<u8>> {
     std::thread::spawn(office::fonts::register);
-    office::ui::icons::font_data().into_iter().collect()
+    let mut fonts = Vec::new();
+    #[cfg(target_os = "linux")]
+    fonts.extend(office::fonts::bundled_bytes());
+    fonts.extend(office::ui::icons::font_data());
+    fonts
 }
 
 const BG: AdaptiveColor = tone(hsla(0.17, 0.10, 0.95, 1.0), hsla(0.60, 0.11, 0.07, 1.0));
