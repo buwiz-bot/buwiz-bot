@@ -11,14 +11,17 @@
 //! applies it again whenever the content view's frame changes (a window
 //! resize keeps the bounds' scale, but not the root's frame inside).
 
+#[cfg(target_os = "macos")]
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 
+#[cfg(target_os = "macos")]
 use crate::live::store;
 
 /// The element that applies `store().ui_zoom` to its window. 0×0: nsh
 /// hands the mouse to the hosted view its own picking lands on, so one
 /// covering the window took every click.
+#[cfg(target_os = "macos")]
 pub(crate) fn zoom_host() -> impl IntoElement {
     native("buwiz/zoom")
         .prop("zoom", move || JsonValue::from(store().ui_zoom.get() as f64))
@@ -26,6 +29,11 @@ pub(crate) fn zoom_host() -> impl IntoElement {
         .top(px(0.0))
         .left(px(0.0))
         .size(px(0.0))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn zoom_host() -> impl IntoElement {
+    view()
 }
 
 #[cfg(target_os = "macos")]

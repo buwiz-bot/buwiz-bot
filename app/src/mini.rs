@@ -71,7 +71,7 @@ fn mini_app_with(
     let name2 = app.to_owned();
     let hidden = use_context::<OutOfSight>();
     let owns = use_context::<OwnsKeys>();
-    native("buwiz/mini-app")
+    let app_view = native("buwiz/mini-app")
         .prop("paused", move || JsonValue::Bool(hidden.as_ref().is_some_and(|h| (h.0)())))
         .when(heard.is_some(), |n| n.prop("hold", move || JsonValue::Bool(held)))
         .prop("keys_first", move || JsonValue::Bool(owns.as_ref().is_some_and(|o| (o.0)())))
@@ -108,7 +108,15 @@ fn mini_app_with(
         .prop("theme", || JsonValue::String(store().theme_pref.get()))
         .w_full()
         .when(h > 0.0, |v| v.h(px(h)))
-        .when(h <= 0.0, |v| v.flex_1())
+        .when(h <= 0.0, |v| v.flex_1());
+    #[cfg(windows)]
+    let app_view = app_view.style_when(error_covers(app.to_owned()), |s| s.invisible());
+    app_view
+}
+
+#[cfg(windows)]
+fn error_covers(key: String) -> impl Fn() -> bool {
+    move || !store().mini_err(&key).get().is_empty() || store().v1.error.with(|e| e.contains_key(&key))
 }
 
 /// A generated widget card's app (`R<n>`, `mini_app`) held like an inline
@@ -219,6 +227,10 @@ pub(crate) fn mini_app_inline(app: &str, w: f32, h: impl Fn() -> f32 + 'static, 
         .on_native_event(move |e: &NativeEvent| heard(e))
         .w(px(w))
         .h(move || px(h()));
+    #[cfg(windows)]
+    let app_view = app_view.style_when(error_covers(app.to_owned()), |s| s.invisible());
+    #[cfg(windows)]
+    let app_view = app_view.style_when(move || wait_ready && !hold.get().revealed(), |s| s.invisible());
     let key = format!("settle:{app}");
     hold_cleanup(hold, key.clone());
     view()
@@ -391,6 +403,31 @@ pub(crate) fn run_error(text: &str) -> Option<String> {
         message = message.chars().take(600).collect::<String>() + "…";
     }
     Some(format!("it stopped: {message}"))
+}
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn v1_error_handler(key: String, title: String) -> impl Fn(&str) {
+    move |text| {
+        if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
+            let key = key.clone();
+            crate::mini_v1::to_store(move |st| st.v1_error(&key, message));
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn widget_error_handler(key: String) -> impl Fn(&str) {
+    move |text| {
+        if let Some(message) = run_error(text) {
+            let key = key.clone();
+            crate::mini_v1::to_store(move |st| {
+                let err = st.mini_err(&key);
+                if err.get_untracked() != message {
+                    err.set(message);
+                }
+            });
+        }
+    }
 }
 
 thread_local! {
@@ -659,7 +696,7 @@ fn pin_button(key: &str, n: u64) -> impl IntoElement {
 /// widget nor an MCP app: network, web views, clipboard, picker, status bar,
 /// open URLs, host functions, files, processes and sockets. NSH does not yet
 /// gate `nsh/desktop` window/menu commands or `os.homedir()`.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
     nsh_engine::Policy {
         declared: Some(nsh_core::access::Capabilities::default()),
@@ -676,14 +713,14 @@ pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
 /// exact paths, so `/state/R280` and `/state/R28/x` stay out; nothing else.
 /// Any other name, or an origin-configuration error, gets
 /// [`deny_all_policy`].
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn widget_policy(module: &str, call: Option<&str>) -> nsh_engine::Policy {
     widget_state_policy(module, call).unwrap_or_else(|_| deny_all_policy())
 }
 
 /// One exact-path grant on the server's origin: the one place the widget's
 /// two grants (its state, its `call` path) are built.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result<nsh_core::access::HttpGrant, String> {
     let mut grant = nsh_core::access::HttpGrant::default();
     grant.host = nsh_core::access::HostPattern::new(host)?;
@@ -694,7 +731,7 @@ fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result
     Ok(grant)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn widget_state_policy(module: &str, call: Option<&str>) -> Result<nsh_engine::Policy, String> {
     let name = crate::store::app_name(module);
     // the server's state names (`/^[\w.-]+$/`), and not `.` / `..`, which
@@ -793,11 +830,11 @@ pub(crate) fn widget_helper(call: Option<&str>) -> String {
 /// The app server's routes an MCP app may call: its tools (`/mcp/call`),
 /// another app or a new chat (`/mcp/open`) and the file picker
 /// (`/attach/pick`), all POST.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const MCP_APP_POSTS: [&str; 3] = ["/mcp/call", "/mcp/open", "/attach/pick"];
 
 /// What an MCP app may read: generated files and the asset base's images.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 
 /// MCP apps call the server for their data; allow only the routes they use
@@ -805,7 +842,7 @@ const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 /// settings, `/data/*`, `/state/*` and the chats stay out of reach. NSH
 /// checks a WebSocket as a GET of the same URL, so only the read prefixes
 /// would pass one; the server has no WebSocket routes.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     let (host, port) = mcp_app_server_host_port()?;
     let host = nsh_core::access::HostPattern::new(&host)?;
@@ -831,7 +868,7 @@ pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn mcp_app_server_host_port() -> Result<(String, u16), String> {
     let origin = nsh_core::access::parse_url(crate::client::backend())
         .ok_or_else(|| "invalid app server origin".to_owned())?;
@@ -846,7 +883,7 @@ fn mcp_app_server_host_port() -> Result<(String, u16), String> {
 
 /// The module key, not the server-supplied title, selects the bundle policy.
 /// Any origin-configuration error falls back to deny-all.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(crate) fn mini_bundle(module: &str, js: String, call: Option<&str>) -> nsh_engine::Bundle {
     let policy = if module.starts_with("mcp:") {
         mcp_app_policy().unwrap_or_else(|_| deny_all_policy())
@@ -859,6 +896,15 @@ pub(crate) fn mini_bundle(module: &str, js: String, call: Option<&str>) -> nsh_e
 // ---------------------------------------------------------------------------
 // The macOS component: an AppView per element, loaded from the `source` prop.
 // ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[path = "mini_windows.rs"]
+mod imp;
+
+#[cfg(windows)]
+pub fn register_mini_app(components: &nsh_platform_windows::Components) {
+    components.register("buwiz/mini-app", std::rc::Rc::new(|ctx| Box::new(imp::MiniApp::new(ctx))));
+}
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -1843,13 +1889,7 @@ mod imp {
                 ..Default::default()
             });
             self.replace_view(view);
-            let (key, title) = (module.to_owned(), prepared.title.clone());
-            self.view.set_error_handler(move |text| {
-                if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
-                    let key = key.clone();
-                    crate::mini_v1::to_store(move |st| st.v1_error(&key, message));
-                }
-            });
+            self.view.set_error_handler(super::v1_error_handler(module.to_owned(), prepared.title.clone()));
             let channel = self.view.host();
             *self.shared.on_viewport.borrow_mut() = Some(Box::new(move |v| {
                 let _ = channel.send("buwiz.viewport", v);
@@ -1906,18 +1946,7 @@ mod imp {
             if crate::mini_v1::is_v1(&module) {
                 return self.load_v1(&module, &js);
             }
-            let key = module.clone();
-            self.view.set_error_handler(move |text| {
-                if let Some(message) = super::run_error(text) {
-                    let key = key.clone();
-                    crate::mini_v1::to_store(move |st| {
-                        let err = st.mini_err(&key);
-                        if err.get_untracked() != message {
-                            err.set(message);
-                        }
-                    });
-                }
-            });
+            self.view.set_error_handler(super::widget_error_handler(module.clone()));
             self.view.load(nsh_platform_linux::App::Js(super::mini_bundle(&module, js, call.as_deref())));
             self.settle();
         }

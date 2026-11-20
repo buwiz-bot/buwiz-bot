@@ -33,6 +33,39 @@ pub const CAP_READY: Duration = Duration::from_millis(3000);
 /// The placeholder's fade out, in ms.
 pub const FADE_MS: f32 = 175.0;
 
+/// Windows' ready and timer callbacks share one cancellable reveal per open.
+#[cfg(windows)]
+#[derive(Default)]
+pub struct OpenSettle {
+    open: u64,
+    pending: bool,
+}
+
+#[cfg(windows)]
+impl OpenSettle {
+    pub fn start(&mut self) -> u64 {
+        self.open = self.open.wrapping_add(1);
+        self.pending = true;
+        self.open
+    }
+
+    pub fn current(&self) -> Option<u64> {
+        self.pending.then_some(self.open)
+    }
+
+    pub fn cancel(&mut self) {
+        self.pending = false;
+    }
+
+    pub fn settle(&mut self, open: u64) -> bool {
+        if self.current() != Some(open) {
+            return false;
+        }
+        self.pending = false;
+        true
+    }
+}
+
 /// What a tick changed, for the card to draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {

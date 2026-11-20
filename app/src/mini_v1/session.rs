@@ -27,6 +27,8 @@ use super::{MiniError, attribution::Actor, host_api, keys};
 pub const MAX_LIFETIME_MS: i64 = 8 * 3600 * 1000;
 /// Slack for the plugin's clock in `not_after` (spec 8.5's skew).
 const SKEW_MS: i64 = 60_000;
+// A minute under the plugin's 8 h limit leaves a margin for clock skew.
+const REQUEST_LIFETIME_MS: i64 = MAX_LIFETIME_MS - 60_000;
 
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> i64 {
@@ -82,7 +84,7 @@ impl Session {
             open_id: keys::random_id(),
             ks_pub: key.public(),
             perms_sha256: keys::perms_sha256(permissions).map_err(|e| MiniError::new("invalid_args", e))?,
-            not_after: now + MAX_LIFETIME_MS,
+            not_after: now + REQUEST_LIFETIME_MS,
         };
         let answer = host_api::session_open(broker, &ask)?;
         let not_after = verify_cert(&answer, &ask, now)?;
@@ -454,6 +456,27 @@ pub(crate) mod tests {
     fn open_with(tamper: fn(&mut Value, &mut Value)) -> Result<Arc<Session>, MiniError> {
         let b = CertBroker { plugin_key: keys::SessionKey::generate(), tamper };
         Session::open(&b, "app.buwiz.fixture", "card", Some(&json!({"tools": ["fx_echo"]})), None)
+    }
+
+    #[test]
+    fn session_requests_leave_headroom_for_the_plugins_clock() {
+        struct Capture(std::sync::atomic::AtomicI64);
+        impl Broker for Capture {
+            fn request(&self, method: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, MiniError> {
+                assert_eq!((method, route), ("POST", "/v1/host/sessions/open"));
+                self.0.store(body.unwrap()["not_after"].as_i64().unwrap(), std::sync::atomic::Ordering::Relaxed);
+                Err(MiniError::new("captured", "request captured"))
+            }
+        }
+        let broker = Capture(std::sync::atomic::AtomicI64::new(0));
+        let before = now_ms();
+        let result = Session::open(&broker, "app.buwiz.fixture", "card", None, None);
+        assert_eq!(result.err().unwrap().code, "captured");
+        let after = now_ms();
+        let expiry = broker.0.load(std::sync::atomic::Ordering::Relaxed);
+        let lifetime = MAX_LIFETIME_MS - 60_000;
+        assert!((before + lifetime..=after + lifetime).contains(&expiry));
+        assert!(expiry <= before + MAX_LIFETIME_MS - 30_000);
     }
 
     #[test]

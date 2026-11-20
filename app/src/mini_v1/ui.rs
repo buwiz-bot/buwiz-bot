@@ -303,7 +303,7 @@ fn attach_allowed(b: &dyn host_api::Broker, thread: &str, entry: &PluginEntry) -
 /// The chat a v1 app attaches to: the open one.
 struct OpenChat;
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl super::native::Chat for OpenChat {
     fn has_chat(&self, _: &str) -> bool {
         !ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
@@ -334,7 +334,7 @@ impl Store {
     /// uses, the broker's events, the v0 migration.
     pub fn v1_boot(&'static self) {
         self.v1.records.set(Records::load(&data_dir()));
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
             super::native::set_consent(Arc::new(|ask: super::bridge::Consent, answer: Answer| {
                 super::to_store(move |st| st.v1_consent(ask, answer));

@@ -47,9 +47,13 @@ pub fn js_round(x: f64) -> f64 {
 
 /// `fs.statSync(p).mtimeMs`.
 pub fn mtime_ms(p: &Path) -> Option<f64> {
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(p).ok()?;
-    Some(m.mtime() as f64 * 1000.0 + m.mtime_nsec() as f64 / 1e6)
+    #[cfg(unix)]
+    { Some(m.mtime() as f64 * 1000.0 + m.mtime_nsec() as f64 / 1e6) }
+    #[cfg(windows)]
+    { Some(m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64() * 1000.0) }
 }
 
 /// `statSync(p).birthtimeMs || statSync(p).mtimeMs`.

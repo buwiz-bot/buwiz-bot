@@ -165,6 +165,7 @@ impl Document {
     /// Whether what the viewer is about to open is still what was checked: a
     /// copy of the Bot's is; the plugin's path is if it passes the checks
     /// again and is the same file.
+    #[cfg(unix)]
     pub fn still_checked(&self) -> bool {
         use std::os::unix::fs::MetadataExt;
         if self.copy.is_some() {
@@ -172,6 +173,11 @@ impl Document {
         }
         let again = file_in(&self.folder, Path::new(&self.path), true).ok().and_then(|(real, f)| Some((real, f.metadata().ok()?)));
         again.is_some_and(|(real, m)| real == Path::new(&self.path) && (m.dev(), m.ino()) == self.id)
+    }
+
+    #[cfg(not(unix))]
+    pub fn still_checked(&self) -> bool {
+        false
     }
 }
 
@@ -185,6 +191,7 @@ pub fn folder_of(home: Option<&OsStr>, plugin: &str) -> Option<PathBuf> {
 /// Whether `field`, from a call `actor` made to a plugin with data folder
 /// `folder`, may open. `first_party` is the plugin's listing, read as
 /// `FirstPartyAnswerCard` reads it.
+#[cfg(unix)]
 pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Value) -> Result<Document, Refused> {
     use std::os::unix::fs::MetadataExt;
     let (path, name, file) = checked_in(first_party, actor, folder, field, true)?;
@@ -194,6 +201,11 @@ pub fn check(first_party: bool, actor: Actor, folder: Option<&Path>, field: &Val
     let m = file.metadata().map_err(|_| Refused::Missing)?;
     let folder = folder.ok_or(Refused::NoFolder)?.to_owned();
     Ok(Document { path, name, file: std::sync::Arc::new(file), folder, id: (m.dev(), m.ino()), copy: None })
+}
+
+#[cfg(not(unix))]
+pub fn check(_first_party: bool, _actor: Actor, _folder: Option<&Path>, _field: &Value) -> Result<Document, Refused> {
+    Err(Refused::Kind)
 }
 
 /// [`check`]'s first three checks, which `buwiz/open_with` and `buwiz/save`
@@ -312,6 +324,7 @@ fn handed_over(rest: &Path, legacy: bool) -> bool {
 /// walk found (its device and inode): a step swapped for a link after the walk
 /// opens something else, and is refused. What reads from the open file, not
 /// the path, reads what was checked.
+#[cfg(unix)]
 fn file_in(folder: &Path, claimed: &Path, legacy: bool) -> Result<(PathBuf, fs::File), Refused> {
     let linked = fs::symlink_metadata(folder).map_err(|_| Refused::NoFolder)?.file_type().is_symlink();
     if linked {
@@ -355,6 +368,11 @@ fn file_in(folder: &Path, claimed: &Path, legacy: bool) -> Result<(PathBuf, fs::
         return Err(Refused::Link);
     }
     Ok((real, file))
+}
+
+#[cfg(not(unix))]
+fn file_in(_folder: &Path, _claimed: &Path, _legacy: bool) -> Result<(PathBuf, fs::File), Refused> {
+    Err(Refused::Kind)
 }
 
 #[cfg(test)]

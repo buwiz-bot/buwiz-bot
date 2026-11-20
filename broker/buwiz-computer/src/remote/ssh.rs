@@ -26,6 +26,14 @@ use crate::{Problem, Result, Secret};
 pub const SSH: &str = "/usr/bin/ssh";
 pub const KEYSCAN: &str = "/usr/bin/ssh-keyscan";
 
+#[cfg(windows)]
+pub const UNAVAILABLE: &str = "SSH computers aren't available on Windows yet";
+
+#[cfg(windows)]
+pub fn available() -> Result<()> {
+    Err(Problem::Refused { code: "ssh_unavailable", message: UNAVAILABLE.to_owned() })
+}
+
 /// What a test of a connection's folder is called, under `computers`.
 pub const PROBE_PREFIX: &str = "probe-";
 const FOLDER: &str = "ssh";
@@ -92,6 +100,8 @@ pub fn fingerprint(pin: &str) -> Result<String> {
 
 /// Asks `host` for its key, trusting nothing: the answer is for a person to check.
 pub async fn scan(program: &Path, host: &str, port: Option<u16>) -> Result<(String, String)> {
+    #[cfg(windows)]
+    available()?;
     let port = port.unwrap_or(22).to_string();
     let child = Command::new(program)
         .args(["-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", &port, "--", host])
@@ -220,10 +230,17 @@ struct StagedKey(PathBuf);
 
 impl StagedKey {
     fn new(dir: &Path, key: &Secret) -> Result<Self> {
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
         let path = dir.join(KEY_FILE);
         let _ = std::fs::remove_file(&path);
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| io_failed(&e))?;
+        let mut file = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            options
+        }.open(&path).map_err(|e| io_failed(&e))?;
         std::io::Write::write_all(&mut file, key.expose().as_bytes()).map_err(|e| io_failed(&e))?;
         // `ssh` reads a key to its end, and a key's last line must have one
         std::io::Write::write_all(&mut file, b"\n").map_err(|e| io_failed(&e))?;
@@ -264,14 +281,22 @@ pub struct Master {
 impl Master {
     /// Logs in and starts the forwards, each `(port here, port on that machine's loopback)`.
     pub async fn open(program: &Path, computer: &Path, at: &At, pin: &str, key: Option<&Secret>, forwards: &[(u16, u16)]) -> std::result::Result<Self, Failed> {
+        #[cfg(windows)]
+        available().map_err(Failed::Said)?;
         let said = Failed::Said;
         check_pin(pin).map_err(said)?;
         let key = key.ok_or_else(|| Failed::Said(Problem::Remote("This computer has no SSH key: remove it and add it again.".to_owned())))?;
         let dir = computer.join(FOLDER);
         {
+            #[cfg(unix)]
             use std::os::unix::fs::PermissionsExt;
             std::fs::create_dir_all(&dir).map_err(|e| said(io_failed(&e)))?;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| said(io_failed(&e)))?;
+            {
+                #[cfg(unix)]
+                { std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) }
+                #[cfg(windows)]
+                { Ok::<(), std::io::Error>(()) }
+            }.map_err(|e| said(io_failed(&e)))?;
         }
         std::fs::write(dir.join(KNOWN_HOSTS), format!("{ALIAS} {pin}\n")).map_err(|e| said(io_failed(&e)))?;
         Self::end_old_master(program, &dir, at).await;

@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -62,9 +63,20 @@ fn fresh(data: &Path) -> Result<([u8; 32], PathBuf), String> {
     std::fs::create_dir_all(data).map_err(|e| format!("{}: {e}", data.display()))?;
     let secret: [u8; 32] = random();
     let tmp = data.join(format!(".{FILE}.{}", buwiz_protocol::keys::random_id()));
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let mut f = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        options
+    }.open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     f.write_all(&secret).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    {
+        #[cfg(unix)]
+        { std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) }
+        #[cfg(windows)]
+        { Ok::<(), std::io::Error>(()) }
+    }.map_err(|e| e.to_string())?;
     Ok((secret, tmp))
 }
 

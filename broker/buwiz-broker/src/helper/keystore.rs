@@ -29,6 +29,7 @@
 //! store keeps `provider-creds/<kind>~default.json`.
 
 use std::io::Write as _;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -197,12 +198,28 @@ impl Keystore {
             Keystore::File(dir) => {
                 if !dir.exists() {
                     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+                    let _ = {
+                        #[cfg(unix)]
+                        { std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
+                        #[cfg(windows)]
+                        { Ok::<(), std::io::Error>(()) }
+                    };
                 }
                 let path = dir.join(format!("{id}.key"));
-                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                let mut f = {
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    options.mode(0o600);
+                    options
+                }.open(&path).map_err(|e| e.to_string())?;
                 f.write_all(seed.as_bytes()).map_err(|e| e.to_string())?;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+                {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                }.map_err(|e| e.to_string())
             }
             Keystore::Keychain => ITEMS.put(id, seed),
         }
@@ -243,12 +260,33 @@ impl Keystore {
             Keystore::File(dir) => {
                 let sub = dir.join("account-tokens");
                 std::fs::create_dir_all(&sub).map_err(|e| e.to_string())?;
-                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-                let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+                let _ = {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                };
+                let _ = {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                };
                 let path = Self::token_file(dir, r);
-                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                let mut f = {
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    options.mode(0o600);
+                    options
+                }.open(&path).map_err(|e| e.to_string())?;
                 f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+                {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                }.map_err(|e| e.to_string())
             }
             Keystore::Keychain => ACCOUNT_ITEMS.put(r, &buwiz_protocol::keys::b64(text.as_bytes())),
         }
@@ -290,12 +328,33 @@ impl Keystore {
             Keystore::File(dir) => {
                 let sub = dir.join("computer-keys");
                 std::fs::create_dir_all(&sub).map_err(|e| e.to_string())?;
-                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-                let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+                let _ = {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                };
+                let _ = {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                };
                 let path = Self::computer_file(dir, id);
-                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                let mut f = {
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    options.mode(0o600);
+                    options
+                }.open(&path).map_err(|e| e.to_string())?;
                 f.write_all(key.as_bytes()).map_err(|e| e.to_string())?;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+                {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                }.map_err(|e| e.to_string())
             }
             Keystore::Keychain => {
                 COMPUTER_ITEMS.put(id, &buwiz_protocol::keys::b64(key.as_bytes()))?;
@@ -341,12 +400,33 @@ impl Keystore {
             Keystore::File(dir) => {
                 let sub = dir.join("provider-creds");
                 std::fs::create_dir_all(&sub).map_err(|e| e.to_string())?;
-                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-                let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+                let _ = {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                };
+                let _ = {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                };
                 let path = Self::provider_file(dir, kind);
-                let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+                let mut f = {
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    options.mode(0o600);
+                    options
+                }.open(&path).map_err(|e| e.to_string())?;
                 f.write_all(secrets.as_bytes()).map_err(|e| e.to_string())?;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())
+                {
+                    #[cfg(unix)]
+                    { std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) }
+                    #[cfg(windows)]
+                    { Ok::<(), std::io::Error>(()) }
+                }.map_err(|e| e.to_string())
             }
             Keystore::Keychain => {
                 let account = format!("{kind}/default");

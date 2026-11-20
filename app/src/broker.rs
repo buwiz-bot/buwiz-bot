@@ -340,6 +340,7 @@ pub fn launch(broker: &Path, home: &Path, port: u16) -> Launch {
 /// appended to its log, working in `/`. A thread reaps it if it exits
 /// while Buwiz Bot runs; it outlives Buwiz Bot otherwise.
 fn spawn(l: &Launch) -> std::io::Result<u32> {
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
     if let Some(dir) = l.log.parent() {
         std::fs::create_dir_all(dir)?;
@@ -349,11 +350,16 @@ fn spawn(l: &Launch) -> std::io::Result<u32> {
     let mut cmd = std::process::Command::new(&l.program);
     cmd.args(&l.args)
         .envs(l.env.iter().map(|(k, v)| (*k, v)))
-        .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
-        .stderr(log)
-        .process_group(0);
+        .stderr(log);
+    #[cfg(unix)]
+    cmd.current_dir("/").process_group(0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.current_dir(&l.data).creation_flags(0x00000008 | 0x00000200);
+    }
     for k in &l.env_remove {
         cmd.env_remove(k);
     }

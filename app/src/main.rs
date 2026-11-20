@@ -6,6 +6,8 @@
 //! executable; `../ios.sh` builds it for the simulator, packs the bundle
 //! and launches it.
 
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(target_os = "macos")]
 use nsh_platform_macos as platform;
 
@@ -155,7 +157,7 @@ fn app_id() -> String {
 }
 
 /// The UI sets the engine serves: nsh's base components and the app's.
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux", windows))]
 fn ui_sets() -> Vec<nsh_core::element::Registry> {
     vec![nsh_base::registry(), buwiz_bot::registry()]
 }
@@ -257,7 +259,7 @@ fn main() -> impl std::process::Termination {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     std::thread::spawn(buwiz_bot::mini_v1::system_open::sweep_while_running);
     buwiz_bot::broker::ensure_started();
-    buwiz_bot::mini_v1::attribution::watch_linux();
+    buwiz_bot::mini_v1::attribution::watch_desktop();
     platform::set_ui_sets(ui_sets());
     let test = buwiz_bot::broker::test_instance_in(|k| std::env::var_os(k));
     let options = platform::AppOptions {
@@ -275,7 +277,56 @@ fn main() -> impl std::process::Termination {
     platform::run_app(platform::AppSource::Rust(app_root()), options)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
+#[cfg(windows)]
+fn refuse_start(why: &str) -> ! {
+    use std::io::Write;
+    eprintln!("buwiz-bot: {why}");
+    let home = buwiz_bot::identity::home();
+    let path = buwiz_protocol::env::var_os("BUWIZ_JANK_LOG").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| buwiz_bot::identity::logs_dir(std::path::Path::new(&home)).join("jank.log"));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "buwiz-bot: {why}");
+    }
+    std::process::exit(2);
+}
+
+#[cfg(windows)]
+fn main() -> impl std::process::Termination {
+    use nsh_platform_windows as platform;
+    if let Some(why) = buwiz_bot::broker::refusal() {
+        refuse_start(&why);
+    }
+    if let Err(why) = buwiz_protocol::env::refuse_old_names() {
+        refuse_start(&why);
+    }
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
+    let home = buwiz_bot::identity::home();
+    match buwiz_bot::identity::migrate_data(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref(), &home) {
+        Ok(done) => log::info!("buwiz: data dir migration: {done:?}"),
+        Err(e) => log::error!("buwiz: Buwiz Bot's data dir was not moved (it is used where it is): {e}"),
+    }
+    buwiz_bot::broker::ensure_started();
+    buwiz_bot::agent_hub::start();
+    buwiz_bot::mini_v1::attribution::watch_desktop();
+    platform::set_ui_sets(ui_sets());
+    platform::set_components(|_| buwiz_bot::mini_v1::native::init());
+    let options = platform::AppOptions {
+        title: buwiz_bot::app_name().to_owned(),
+        app_id: buwiz_bot::identity::APP_ID.to_owned(),
+        size: (1100, 760),
+        fps: buwiz_protocol::env::var("BUWIZ_FPS").is_some_and(|v| v != "0"),
+        background: buwiz_protocol::env::var("BUWIZ_BACKGROUND").as_deref() == Some("1"),
+        data_dir: buwiz_bot::identity::nsh_data_dir_in(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref()),
+        ..Default::default()
+    };
+    buwiz_bot::mini::register_mini_app(&options.components);
+    platform::run_app(platform::AppSource::Rust(app_root()), options)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux", windows)))]
 fn main() {
     eprintln!("buwiz-bot runs on macOS (`cargo run`) and iOS (packaged by ../ios.sh)");
     std::process::exit(1);

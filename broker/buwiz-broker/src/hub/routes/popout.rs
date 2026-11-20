@@ -80,7 +80,10 @@ impl Win {
     /// `child.kill()`: SIGTERM, unless it already exited.
     fn kill(&mut self) {
         if !self.exited.load(Ordering::SeqCst) {
+            #[cfg(unix)]
             unsafe { libc::kill(self.pid as i32, libc::SIGTERM) };
+            #[cfg(windows)]
+            let _ = std::process::Command::new("taskkill.exe").args(["/PID", &self.pid.to_string(), "/T", "/F"]).output();
         }
         self.killed = true;
     }
@@ -530,15 +533,16 @@ async fn popout(ctx: Arc<HubCtx>, req: HubRequest) -> HubResponse {
     // the host's own output (a load error, an uncaught exception) lands in
     // the build dir's host.log, appended, not in /dev/null
     let (stdout, stderr) = host_log(&build_dir.join("host.log"));
-    let spawned = tokio::process::Command::new(&host)
-        .arg("--bundle")
+    let mut command = tokio::process::Command::new(&host);
+    command.arg("--bundle")
         .arg(&bundle)
         .args(["--name", &shown_name, "--app-id", &format!("{bundle_id}.widget"), "--window-size", &size])
         .stdin(Stdio::null())
         .stdout(stdout)
-        .stderr(stderr)
-        .process_group(0)
-        .spawn();
+        .stderr(stderr);
+    #[cfg(unix)]
+    command.process_group(0);
+    let spawned = command.spawn();
     // a failed spawn answers the failure
     let mut child = match spawned {
         Ok(c) => c,

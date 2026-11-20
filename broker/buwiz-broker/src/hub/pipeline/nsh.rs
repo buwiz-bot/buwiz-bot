@@ -59,9 +59,12 @@ impl NshCli {
             Ok(Err(_)) => false,
             Err(_) => {
                 // execFile's timeout: SIGTERM, and whatever it printed
+                #[cfg(unix)]
                 if let Some(pid) = child.id() {
                     unsafe { libc::kill(pid as i32, libc::SIGTERM) };
                 }
+                #[cfg(windows)]
+                let _ = child.start_kill();
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                 false
             }

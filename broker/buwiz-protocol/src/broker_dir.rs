@@ -189,7 +189,10 @@ fn move_locked(old: &Path, new: &Path, hooks: &Hooks) -> Move {
         Vec::new()
     };
     // paths outside the database keep resolving
+    #[cfg(unix)]
     let linked = std::os::unix::fs::symlink(DIR_NAME, old).is_ok();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(DIR_NAME, old).is_ok();
     // the backup moved with the folder
     let backup = backup.and_then(|b| b.strip_prefix(old).ok().map(|rel| new.join(rel)));
     let marker = format!(

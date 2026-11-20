@@ -282,11 +282,39 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     with(Attribution::watch);
 }
 
-/// Enables input attribution before the first window is made.
-#[cfg(target_os = "linux")]
-pub fn watch_linux() {
+/// Enables desktop input attribution before the first window is made.
+#[cfg(any(target_os = "linux", windows))]
+pub fn watch_desktop() {
     with(Attribution::watch);
 }
+
+#[cfg(any(target_os = "linux", windows))]
+macro_rules! host_methods {
+    ($surface:ident) => {
+        fn actor(&self) -> $crate::mini_v1::attribution::Actor {
+            $crate::mini_v1::attribution::actor(self.$surface)
+        }
+
+        fn fresh_press(&self) -> Option<u64> {
+            $crate::mini_v1::attribution::fresh_press(self.$surface)
+        }
+
+        fn spend_press(&self, press: u64) -> bool {
+            $crate::mini_v1::attribution::spend_press(self.$surface, press)
+        }
+
+        fn agent_call(&self, running: bool) {
+            $crate::mini_v1::attribution::agent_call(running);
+        }
+
+        fn agent_write(&self, running: bool) {
+            $crate::mini_v1::attribution::agent_write(running);
+        }
+    };
+}
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) use host_methods;
 
 #[cfg(target_os = "linux")]
 static LINUX_HELD: Mutex<Option<HashSet<u32>>> = Mutex::new(None);

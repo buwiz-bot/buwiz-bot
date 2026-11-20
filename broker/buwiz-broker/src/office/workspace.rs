@@ -5,6 +5,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 
@@ -198,7 +199,16 @@ impl Workspace {
         if self.documents.len() >= 10 {
             return Err(ToolError::new("DOCUMENT_LIMIT", "Close a document before opening more than 10."));
         }
-        let mut handle = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&file).map_err(|e| fs_error(&e, "open", &file))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+        }
+        let mut handle = options.open(&file).map_err(|e| fs_error(&e, "open", &file))?;
         let info = self.validate(&file, &handle)?;
         if !info.is_file() || info.len() > 64 * 1024 * 1024 {
             return Err(ToolError::new("FILE_TOO_LARGE", "Open an Office file up to 64 MiB."));
@@ -233,7 +243,13 @@ impl Workspace {
         let canonical = self.path(&file.to_string_lossy())?;
         let current = fs::symlink_metadata(&canonical).map_err(|e| fs_error(&e, "lstat", &canonical))?;
         let opened = handle.metadata().map_err(|e| fs_error(&e, "fstat", file))?;
-        if current.file_type().is_symlink() || current.dev() != opened.dev() || current.ino() != opened.ino() {
+        #[cfg(unix)]
+        let same = current.dev() == opened.dev() && current.ino() == opened.ino();
+        #[cfg(windows)]
+        let same = same_file::Handle::from_path(&canonical)
+            .and_then(|current| handle.try_clone().and_then(same_file::Handle::from_file).map(|opened| current == opened))
+            .map_err(|e| fs_error(&e, "fstat", file))?;
+        if current.file_type().is_symlink() || opened.file_type().is_symlink() || !same {
             return Err(ToolError::new("FILE_CHANGED", "The file changed during access. Retry with a stable workspace."));
         }
         Ok(opened)
@@ -245,7 +261,13 @@ impl Workspace {
         let parent = fs::canonicalize(&dir).map_err(|e| fs_error(&e, "realpath", &dir))?;
         self.contained(&parent)?;
         let file = parent.join(lexical.file_name().unwrap_or_default());
-        let mut handle = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file).map_err(|e| fs_error(&e, "open", &file))?;
+        let mut handle = {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            options
+        }.open(&file).map_err(|e| fs_error(&e, "open", &file))?;
         let written = self.validate(&file, &handle).map(|_| ()).and_then(|_| handle.write_all(bytes).map_err(|e| fs_error(&e, "write", &file)));
         let rel = relative(&self.root, &file);
         if let Err(e) = written {

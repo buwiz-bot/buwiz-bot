@@ -78,7 +78,7 @@ older version leaves it at the newest.
 | --- | --- |
 | macOS arm64 | Built and published |
 | Linux x64 | Runs (GTK 4.14 or later), not packaged |
-| Windows x64 | Off: the app doesn't run there |
+| Windows x64 | Runs (Win32), not packaged |
 
 Linux is a commented-out entry in `release.yml`'s matrix. The app builds on
 nsh's GTK 4 backend (`main.rs`'s Linux `main`, `mini.rs`'s GTK `imp`,
@@ -90,11 +90,22 @@ nsh's GTK 4 backend (`main.rs`'s Linux `main`, `mini.rs`'s GTK `imp`,
   vault; the web view needs nsh's `webview` feature.
 - Installed fonts aren't looked up (CoreText only); the bundled ones are.
 
-The Linux broker defaults to a file keystore under its data directory rather
-than using the macOS login Keychain.
+The Linux and Windows brokers default to a file keystore under their data
+directory rather than using the macOS login Keychain.
 
-Windows is off: `broker/buwiz-protocol` and `broker/buwiz-mcp` use
-Unix-only calls, which stops the app and the broker there.
+Windows is also a commented-out entry in `release.yml`'s matrix. The app
+and broker build on Windows x64, using nsh's Win32 backend (`main.rs`'s
+Windows `main`, `mini_windows.rs`, `mini_v1/native_windows.rs`), with these
+left out for now:
+
+- The Agent Hub uses the same stub (`agent_hub_linux.rs`): no agent drives
+  a screen, and a held press is declined.
+- No file dialog (a pick returns nothing), zoom, keyboard host or Keychain
+  vault. Document opening and file handoff remain disabled pending secure
+  Windows file validation.
+- Installed fonts aren't looked up (CoreText only). Mini-app pause hides
+  the child without stopping its engine; theme changes recreate it, and
+  design size sets its intrinsic size without scaling.
 
 - The packaging here (`build.sh`, `sign.sh`, `dmg.sh`) is macOS-only.
 

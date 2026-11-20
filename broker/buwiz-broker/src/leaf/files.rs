@@ -15,6 +15,7 @@
 //! every website has that origin, and so has a planted page, and either could then read any file.
 
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -93,6 +94,10 @@ fn not_found() -> Answer {
     Answer::bare(404, Vec::new())
 }
 
+fn invalid_url_path(path: &str) -> bool {
+    cfg!(windows) && path.contains(['\\', ':'])
+}
+
 /// `path.join` / `path.normalize` (POSIX).
 pub fn normalize(path: &str) -> String {
     let absolute = path.starts_with('/');
@@ -149,6 +154,9 @@ impl Leaf {
 
     /// `outFile(rel)`: a path under the files folder, else `None`.
     fn out_file(&self, rel: &str) -> Option<String> {
+        if invalid_url_path(rel) {
+            return None;
+        }
         let out = format!("{}/files", self.gen_dir());
         let p = join(&out, rel);
         p.starts_with(&format!("{out}/")).then_some(p)
@@ -304,7 +312,10 @@ fn versions_of_file(leaf: &Leaf, rel: &str) -> Result<Vec<Value>, String> {
         .into_iter()
         .map(|(v, f)| {
             let st = std::fs::metadata(format!("{dir}/{f}")).map_err(|e| e.to_string())?;
+            #[cfg(unix)]
             let mtime_ms = st.mtime() as f64 * 1000.0 + st.mtime_nsec() as f64 / 1e6;
+            #[cfg(windows)]
+            let mtime_ms = st.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
             let mut m = Map::new();
             m.insert("v".into(), Value::from(v));
             m.insert("at".into(), Value::from((mtime_ms + 0.5).floor()));
@@ -326,6 +337,9 @@ pub fn files_dir(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
         return thrown("object null is not iterable (cannot read property Symbol(Symbol.iterator))");
     }
     let Ok(name) = js::decode_uri_component(raw) else { return thrown("URI malformed") };
+    if invalid_url_path(&name) {
+        return not_found();
+    }
     let path = join(&format!("{}/{dir}", leaf.gen_dir()), name.rsplit('/').next().unwrap_or(""));
     if !Path::new(&path).exists() {
         return not_found();
@@ -337,6 +351,9 @@ pub fn files_dir(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
 pub fn asset(leaf: &Leaf, url: &str, range: Option<&str>) -> Answer {
     let rest = url["/asset/generated/assets/".len()..].split('?').next().unwrap_or("");
     let Ok(decoded) = js::decode_uri_component(rest) else { return thrown("URI malformed") };
+    if invalid_url_path(&decoded) {
+        return not_found();
+    }
     let name = decoded.rsplit('/').next().unwrap_or("");
     let path = join(&format!("{}/assets", leaf.gen_dir()), name);
     if name.is_empty() || !Path::new(&path).exists() {
