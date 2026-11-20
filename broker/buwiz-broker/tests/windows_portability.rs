@@ -1,8 +1,14 @@
 #![cfg(windows)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use bytes::Bytes;
+use http_body_util::{BodyExt, Empty};
+use hyper::{Request, service::service_fn};
+use hyper_util::rt::TokioIo;
 use buwiz_broker::helper::keystore::Keystore;
+use buwiz_broker::leaf::{self, Leaf};
 use buwiz_broker::office::workspace::Workspace;
 
 struct Folder(PathBuf);
@@ -58,4 +64,40 @@ fn tool_paths_keep_drive_letters_and_semicolon_separators() {
     assert_eq!(paths[1], PathBuf::from(r"C:\Program Files\nodejs"));
     assert!(paths.contains(&PathBuf::from(home).join(".cargo/bin")));
     assert_eq!(buwiz_mcp::tool_path("", ""), "");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_routes_reject_windows_paths_after_url_decoding() {
+    let dir = Folder::new("file-routes");
+    for folder in ["assets", "attachments", "avatars", "files"] {
+        std::fs::create_dir_all(dir.0.join("generated").join(folder)).unwrap();
+        std::fs::write(dir.0.join("generated").join(folder).join("ok.png"), b"image").unwrap();
+    }
+    std::fs::write(dir.0.join("generated/outside.png"), b"synthetic canary").unwrap();
+    let leaf = Arc::new(Leaf::new(dir.0.clone(), Vec::new()));
+    let (client, server) = tokio::io::duplex(4096);
+    let serving = tokio::spawn(async move {
+        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(server), service_fn(move |req: Request<hyper::body::Incoming>| {
+            let leaf = leaf.clone();
+            async move {
+                let route = leaf::route(req.method(), req.uri().path()).unwrap();
+                Ok::<_, std::convert::Infallible>(leaf.serve(route, req).await)
+            }
+        })).await.unwrap();
+    });
+    let (mut send, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client)).await.unwrap();
+    let connected = tokio::spawn(connection);
+    for prefix in ["/asset/generated/assets/", "/files/attachments/", "/files/avatars/", "/file/raw/", "/file/preview/"] {
+        for (path, expected) in [("ok.png", 200), ("missing.png", 404), ("%GG", 500), ("..%5Coutside.png", 404), ("C%3Aoutside.png", 404), ("%5C%5Cserver%5Cshare", 404), ("ok.png%3Astream", 404)] {
+            let url = format!("{prefix}{path}");
+            let req = Request::builder().uri(&url).body(Empty::<Bytes>::new()).unwrap();
+            let response = send.send_request(req).await.unwrap();
+            let status = response.status().as_u16();
+            response.into_body().collect().await.unwrap();
+            assert_eq!(status, expected, "{url}");
+        }
+    }
+    drop(send);
+    connected.await.unwrap().unwrap();
+    serving.await.unwrap();
 }
