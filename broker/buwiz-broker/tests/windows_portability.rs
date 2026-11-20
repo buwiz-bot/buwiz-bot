@@ -42,6 +42,17 @@ fn file_keystore_round_trips_and_rejects_invalid_names() {
 }
 
 #[test]
+fn default_keystore_is_file_even_for_the_owners_folder() {
+    let home = std::path::Path::new(r"C:\buwiz-test-home");
+    for data in [buwiz_protocol::broker_dir::new_dir(home), buwiz_protocol::broker_dir::old_dir(home)] {
+        assert_eq!(Keystore::for_data("", false, &data, home).unwrap(), Keystore::File(data.join("keys")));
+        assert_eq!(Keystore::for_data("keychain", false, &data, home).unwrap(), Keystore::Keychain);
+        assert_eq!(Keystore::for_data("file:C:\\custom-keys", false, &data, home).unwrap(), Keystore::File(r"C:\custom-keys".into()));
+        assert!(Keystore::for_data("invalid", false, &data, home).is_err());
+    }
+}
+
+#[test]
 fn workspace_creates_empty_files_without_overwriting_or_escaping() {
     let dir = Folder::new("office");
     let mut workspace = Workspace::at(&dir.0).unwrap();

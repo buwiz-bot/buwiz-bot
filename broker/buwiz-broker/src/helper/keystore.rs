@@ -175,10 +175,10 @@ impl Keystore {
 
     /// The keystore of a broker on data dir `data`: the one `spec`
     /// (`BUWIZ_KEYSTORE`) names; with none, the Keychain for the owner's own
-    /// folder under `home`, and `<data>/keys` for any other folder, or with
+    /// folder under `home` on macOS, and `<data>/keys` otherwise, or with
     /// `no_keychain` (`BUWIZ_NO_KEYCHAIN=1`).
     pub fn for_data(spec: &str, no_keychain: bool, data: &Path, home: &Path) -> Result<Keystore, String> {
-        if spec.is_empty() && (no_keychain || !buwiz_protocol::broker_dir::is_owners(home, data)) {
+        if spec.is_empty() && (!cfg!(target_os = "macos") || no_keychain || !buwiz_protocol::broker_dir::is_owners(home, data)) {
             return Ok(Keystore::File(data.join("keys")));
         }
         Keystore::from_spec(spec)
@@ -620,13 +620,15 @@ mod tests {
     /// A broker on any folder but the owner's, or told so, stays off the
     /// login Keychain: a fresh install there replaces the owner's key.
     #[test]
-    fn only_the_owners_folder_gets_the_keychain_by_default() {
+    fn only_the_macos_owners_folder_gets_the_keychain_by_default() {
         let home = Path::new("/Users/u");
         let owners = buwiz_protocol::broker_dir::new_dir(home);
         let test = Path::new("/Volumes/x/inst/broker");
         let keys = |d: &Path, no: bool, spec: &str| Keystore::for_data(spec, no, d, home).unwrap();
-        assert_eq!(keys(&owners, false, ""), Keystore::Keychain);
-        assert_eq!(keys(&buwiz_protocol::broker_dir::old_dir(home), false, ""), Keystore::Keychain);
+        let default = |data: &Path| if cfg!(target_os = "macos") { Keystore::Keychain } else { Keystore::File(data.join("keys")) };
+        assert_eq!(keys(&owners, false, ""), default(&owners));
+        let old = buwiz_protocol::broker_dir::old_dir(home);
+        assert_eq!(keys(&old, false, ""), default(&old));
         assert_eq!(keys(test, false, ""), Keystore::File(test.join("keys")));
         assert_eq!(keys(&owners, true, ""), Keystore::File(owners.join("keys")));
         // what `BUWIZ_KEYSTORE` names wins
