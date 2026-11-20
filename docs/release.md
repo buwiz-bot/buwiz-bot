@@ -90,6 +90,9 @@ nsh's GTK 4 backend (`main.rs`'s Linux `main`, `mini.rs`'s GTK `imp`,
   vault; the web view needs nsh's `webview` feature.
 - Installed fonts aren't looked up (CoreText only); the bundled ones are.
 
+The Linux broker defaults to a file keystore under its data directory rather
+than using the macOS login Keychain.
+
 Windows is off: `broker/buwiz-protocol` and `broker/buwiz-mcp` use
 Unix-only calls, which stops the app and the broker there.
 
