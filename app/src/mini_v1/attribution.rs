@@ -282,6 +282,13 @@ pub fn watch(mtm: nsh_platform_macos::objc2::MainThreadMarker) {
     with(Attribution::watch);
 }
 
+/// No input stream to listen to on this backend: the person is the only
+/// actor until the agent acts.
+#[cfg(target_os = "linux")]
+pub fn watch_linux() {
+    with(Attribution::watch);
+}
+
 /// What a piece of the person's input is to a hand-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {

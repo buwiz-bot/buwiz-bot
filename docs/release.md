@@ -77,20 +77,22 @@ older version leaves it at the newest.
 | Target | State |
 | --- | --- |
 | macOS arm64 | Built and published |
-| Linux x64 | Off: the app doesn't run there |
+| Linux x64 | Runs (GTK 4.14 or later), not packaged |
 | Windows x64 | Off: the app doesn't run there |
 
-Both are commented-out entries in `release.yml`'s matrix. nsh has Linux
-(GTK 4) and Windows (Win32) backends, but the Bot is not on them:
+Linux is a commented-out entry in `release.yml`'s matrix. The app builds on
+nsh's GTK 4 backend (`main.rs`'s Linux `main`, `mini.rs`'s GTK `imp`,
+`mini_v1/native_linux.rs`), with these left out for now:
 
-- `app/src/main.rs`'s `main` only exits outside macOS and iOS, and
-  `app/Cargo.toml` depends on neither backend.
-- `crates/office-kit`'s fonts are CoreText. It doesn't compile on Linux,
-  which stops the app there.
-- `broker/buwiz-protocol` and `broker/buwiz-mcp` use Unix-only calls, which
-  stops the app and the broker on Windows. The broker compiles for Linux.
-- The Agent Hub, native mini-app screens, keyboard handling, zoom and the
-  Keychain vault are macOS-only.
+- The Agent Hub is a stub (`agent_hub_linux.rs`): no agent drives a screen,
+  and a held press is declined.
+- No file dialog (a pick returns nothing), zoom, keyboard host or Keychain
+  vault; the web view needs nsh's `webview` feature.
+- Installed fonts aren't looked up (CoreText only); the bundled ones are.
+
+Windows is off: `broker/buwiz-protocol` and `broker/buwiz-mcp` use
+Unix-only calls, which stops the app and the broker there.
+
 - The packaging here (`build.sh`, `sign.sh`, `dmg.sh`) is macOS-only.
 
 ## The steps

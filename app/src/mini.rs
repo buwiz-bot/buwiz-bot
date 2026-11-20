@@ -659,7 +659,7 @@ fn pin_button(key: &str, n: u64) -> impl IntoElement {
 /// widget nor an MCP app: network, web views, clipboard, picker, status bar,
 /// open URLs, host functions, files, processes and sockets. NSH does not yet
 /// gate `nsh/desktop` window/menu commands or `os.homedir()`.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
     nsh_engine::Policy {
         declared: Some(nsh_core::access::Capabilities::default()),
@@ -676,14 +676,14 @@ pub(crate) fn deny_all_policy() -> nsh_engine::Policy {
 /// exact paths, so `/state/R280` and `/state/R28/x` stay out; nothing else.
 /// Any other name, or an origin-configuration error, gets
 /// [`deny_all_policy`].
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn widget_policy(module: &str, call: Option<&str>) -> nsh_engine::Policy {
     widget_state_policy(module, call).unwrap_or_else(|_| deny_all_policy())
 }
 
 /// One exact-path grant on the server's origin: the one place the widget's
 /// two grants (its state, its `call` path) are built.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result<nsh_core::access::HttpGrant, String> {
     let mut grant = nsh_core::access::HttpGrant::default();
     grant.host = nsh_core::access::HostPattern::new(host)?;
@@ -694,7 +694,7 @@ fn widget_grant(host: &str, port: u16, methods: &[&str], path: String) -> Result
     Ok(grant)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn widget_state_policy(module: &str, call: Option<&str>) -> Result<nsh_engine::Policy, String> {
     let name = crate::store::app_name(module);
     // the server's state names (`/^[\w.-]+$/`), and not `.` / `..`, which
@@ -793,11 +793,11 @@ pub(crate) fn widget_helper(call: Option<&str>) -> String {
 /// The app server's routes an MCP app may call: its tools (`/mcp/call`),
 /// another app or a new chat (`/mcp/open`) and the file picker
 /// (`/attach/pick`), all POST.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const MCP_APP_POSTS: [&str; 3] = ["/mcp/call", "/mcp/open", "/attach/pick"];
 
 /// What an MCP app may read: generated files and the asset base's images.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 
 /// MCP apps call the server for their data; allow only the routes they use
@@ -805,7 +805,7 @@ const MCP_APP_GETS: [&str; 2] = ["/file/raw/", "/asset/generated/assets/"];
 /// settings, `/data/*`, `/state/*` and the chats stay out of reach. NSH
 /// checks a WebSocket as a GET of the same URL, so only the read prefixes
 /// would pass one; the server has no WebSocket routes.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     let (host, port) = mcp_app_server_host_port()?;
     let host = nsh_core::access::HostPattern::new(&host)?;
@@ -831,7 +831,7 @@ pub(crate) fn mcp_app_policy() -> Result<nsh_engine::Policy, String> {
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn mcp_app_server_host_port() -> Result<(String, u16), String> {
     let origin = nsh_core::access::parse_url(crate::client::backend())
         .ok_or_else(|| "invalid app server origin".to_owned())?;
@@ -846,7 +846,7 @@ fn mcp_app_server_host_port() -> Result<(String, u16), String> {
 
 /// The module key, not the server-supplied title, selects the bundle policy.
 /// Any origin-configuration error falls back to deny-all.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn mini_bundle(module: &str, js: String, call: Option<&str>) -> nsh_engine::Bundle {
     let policy = if module.starts_with("mcp:") {
         mcp_app_policy().unwrap_or_else(|_| deny_all_policy())
@@ -1709,6 +1709,195 @@ pub fn register_mini_app(components: &nsh_platform_macos::Components) {
         std::rc::Rc::new(|ctx| {
             Box::new(imp::MiniApp::new(ctx)) as Box<dyn nsh_platform_macos::NativeComponent>
         }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The Linux component (GTK): an AppView per element, filling its frame. No
+// scaling to a design size, no settle hold and no key routing yet.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use nsh_core::JsonValue;
+    use nsh_platform_linux::gtk4::{self as gtk, glib, prelude::*};
+    use nsh_platform_linux::{AppOptions, AppView, ComponentContext, NativeComponent};
+
+    type ViewportCallback = Box<dyn Fn(serde_json::Value)>;
+
+    struct Shared {
+        alive: Cell<bool>,
+        placement: RefCell<String>,
+        viewport: Cell<(f64, f64)>,
+        on_viewport: RefCell<Option<ViewportCallback>>,
+    }
+
+    pub struct MiniApp {
+        holder: gtk::Box,
+        view: Rc<AppView>,
+        last: Option<(String, String)>,
+        theme: String,
+        shared: Rc<Shared>,
+        v1: Option<crate::mini_v1::native::V1Open>,
+    }
+
+    fn viewport(holder: &gtk::Box, shared: &Shared) -> serde_json::Value {
+        serde_json::json!({ "width": holder.width().max(0), "height": holder.height().max(0), "placement": *shared.placement.borrow() })
+    }
+
+    impl MiniApp {
+        pub fn new(ctx: ComponentContext) -> MiniApp {
+            let view = AppView::new(AppOptions {
+                title: "Buwiz Bot mini app".to_owned(),
+                app_id: crate::identity::MINI_APP_ID.to_owned(),
+                size: (340, 200),
+                asset_base: Some(nsh_platform_linux::AssetBase::Http(format!("{}/asset/", crate::client::backend()))),
+                ..Default::default()
+            });
+            ctx.set_size(340.0, 200.0);
+            let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            holder.set_overflow(gtk::Overflow::Hidden);
+            let shared = Rc::new(Shared {
+                alive: Cell::new(true),
+                placement: RefCell::new("full".to_owned()),
+                viewport: Cell::new((0.0, 0.0)),
+                on_viewport: RefCell::new(None),
+            });
+            let (h, s) = (holder.clone(), shared.clone());
+            glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+                if !s.alive.get() {
+                    return glib::ControlFlow::Break;
+                }
+                if let Some(f) = &*s.on_viewport.borrow() {
+                    let v = viewport(&h, &s);
+                    let size = (v["width"].as_f64().unwrap_or(0.0), v["height"].as_f64().unwrap_or(0.0));
+                    if size.0 > 0.0 && size.1 > 0.0 && size != s.viewport.replace(size) {
+                        f(v);
+                    }
+                }
+                glib::ControlFlow::Continue
+            });
+            let mut app = MiniApp { holder, view: view.clone(), last: None, theme: String::new(), shared, v1: None };
+            app.place(&view);
+            app
+        }
+
+        fn place(&mut self, view: &Rc<AppView>) {
+            let w = view.widget();
+            w.set_hexpand(true);
+            w.set_vexpand(true);
+            self.holder.append(&w);
+        }
+
+        fn replace_view(&mut self, view: Rc<AppView>) {
+            self.view.stop();
+            self.holder.remove(&self.view.widget());
+            self.place(&view);
+            self.view = view;
+        }
+
+        fn appearance(&self) -> nsh_platform_linux::Appearance {
+            match super::mini_appearance(&self.theme) {
+                Some(true) => nsh_platform_linux::Appearance::Dark,
+                Some(false) => nsh_platform_linux::Appearance::Light,
+                None => nsh_platform_linux::Appearance::default(),
+            }
+        }
+
+        fn load_v1(&mut self, module: &str, js: &str) {
+            let Some(prepared) = crate::mini_v1::prepared_js(module, js) else {
+                log::warn!("mini v1: {module} was not prepared");
+                let key = module.to_owned();
+                return crate::mini_v1::to_store(move |st| {
+                    st.mini_err(&key).set("Could not open this app: it was not ready. Close it and open it again.".to_owned())
+                });
+            };
+            self.v1.take();
+            let root = crate::mini_v1::plugins_dir();
+            let view = AppView::new(AppOptions {
+                title: prepared.title.clone(),
+                app_id: crate::identity::MINI_V1_APP_ID.to_owned(),
+                size: (340, 200),
+                appearance: self.appearance(),
+                limits: nsh_engine::Limits {
+                    memory_bytes: 256 << 20,
+                    stack_bytes: 4 << 20,
+                    load_budget: std::time::Duration::from_secs(10),
+                    call_budget: std::time::Duration::from_secs(2),
+                    ..Default::default()
+                },
+                storage: Some(crate::mini_v1::storage::engine_storage(&root, &prepared.plugin.id, &prepared.key.app)),
+                ..Default::default()
+            });
+            self.replace_view(view);
+            let channel = self.view.host();
+            *self.shared.on_viewport.borrow_mut() = Some(Box::new(move |v| {
+                let _ = channel.send("buwiz.viewport", v);
+            }));
+            let mut first = viewport(&self.holder, &self.shared);
+            if first["width"].as_f64().unwrap_or(0.0) <= 0.0 {
+                first["width"] = serde_json::json!(1100);
+                first["height"] = serde_json::json!(700);
+            }
+            let native = prepared.native.is_some();
+            let open = crate::mini_v1::native::start(prepared, &self.view, module.to_owned(), first);
+            if native {
+                *self.shared.on_viewport.borrow_mut() = Some(Box::new(open.viewport_sink()));
+            }
+            self.v1 = Some(open);
+        }
+    }
+
+    impl Drop for MiniApp {
+        fn drop(&mut self) {
+            self.shared.alive.set(false);
+            self.shared.on_viewport.borrow_mut().take();
+            self.v1.take();
+        }
+    }
+
+    impl NativeComponent for MiniApp {
+        fn widget(&self) -> gtk::Widget {
+            self.holder.clone().upcast()
+        }
+
+        fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
+            if name == "theme" {
+                self.theme = value.and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+                return;
+            }
+            if name == "placement" {
+                let p = value.and_then(|v| v.as_str()).filter(|p| *p == "inline").unwrap_or("full");
+                *self.shared.placement.borrow_mut() = p.to_owned();
+                return;
+            }
+            if name != "source" {
+                return;
+            }
+            let Some(source) = value.and_then(|v| v.as_object()) else { return };
+            let module = source.get("module").and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+            let js = source.get("js").and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+            if js.is_empty() || self.last.as_ref().is_some_and(|(m, j)| m == &module && j == &js) {
+                return;
+            }
+            let call = source.get("call").and_then(|v| v.as_str()).map(str::to_owned);
+            self.last = Some((module.clone(), js.clone()));
+            if crate::mini_v1::is_v1(&module) {
+                return self.load_v1(&module, &js);
+            }
+            self.view.load(nsh_platform_linux::App::Js(super::mini_bundle(&module, js, call.as_deref())));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn register_mini_app(components: &nsh_platform_linux::Components) {
+    components.register(
+        "buwiz/mini-app",
+        std::rc::Rc::new(|ctx| Box::new(imp::MiniApp::new(ctx)) as Box<dyn nsh_platform_linux::NativeComponent>),
     );
 }
 
