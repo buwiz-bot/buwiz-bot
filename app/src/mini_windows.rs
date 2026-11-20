@@ -158,6 +158,7 @@ impl MiniApp {
         };
         let channel = view.host();
         if let Some(prepared) = prepared {
+            view.set_error_handler(super::v1_error_handler(module.clone(), prepared.title.clone()));
             let native = prepared.native.is_some();
             let open = crate::mini_v1::native::start(prepared, &view, module, self.viewport());
             if native {
@@ -165,6 +166,7 @@ impl MiniApp {
             }
             self.v1 = Some(open);
         } else {
+            view.set_error_handler(super::widget_error_handler(module.clone()));
             view.load(App::Js(super::mini_bundle(&module, js, call.as_deref())));
         }
         if self.viewport_sink.is_none() {

@@ -125,6 +125,15 @@ fn inline_close_and_reopen_invalidate_old_callbacks() {
 }
 
 #[test]
+fn mini_app_runtime_errors_produce_banner_messages() {
+    let message = buwiz_bot::mini_v1::lifecycle::error_message;
+    assert_eq!(message("Check", "Error: windows-click-boom\n    at button (app.js:2)").as_deref(), Some("Check stopped: Error: windows-click-boom."));
+    assert_eq!(message("Check", "").as_deref(), Some("Check stopped: it failed."));
+    assert_eq!(message("Check", "interrupted").as_deref(), Some("Check stopped: it took too long."));
+    assert_eq!(message("Check", "font failed to load: missing.ttf"), None);
+}
+
+#[test]
 fn ui_timers_fire_once_and_cancel() {
     if std::env::var_os("BUWIZ_WINDOWS_TIMER_CASE").is_none() {
         let output = Command::new(std::env::current_exe().unwrap())

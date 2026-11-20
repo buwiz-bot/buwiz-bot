@@ -395,6 +395,31 @@ pub(crate) fn run_error(text: &str) -> Option<String> {
     Some(format!("it stopped: {message}"))
 }
 
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn v1_error_handler(key: String, title: String) -> impl Fn(&str) {
+    move |text| {
+        if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
+            let key = key.clone();
+            crate::mini_v1::to_store(move |st| st.v1_error(&key, message));
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn widget_error_handler(key: String) -> impl Fn(&str) {
+    move |text| {
+        if let Some(message) = run_error(text) {
+            let key = key.clone();
+            crate::mini_v1::to_store(move |st| {
+                let err = st.mini_err(&key);
+                if err.get_untracked() != message {
+                    err.set(message);
+                }
+            });
+        }
+    }
+}
+
 thread_local! {
     /// The full-screen apps ✕ / ⌘W / ⌘[ took off, latest last: ⌘] puts
     /// them back, until another app opens.
@@ -1854,13 +1879,7 @@ mod imp {
                 ..Default::default()
             });
             self.replace_view(view);
-            let (key, title) = (module.to_owned(), prepared.title.clone());
-            self.view.set_error_handler(move |text| {
-                if let Some(message) = crate::mini_v1::lifecycle::error_message(&title, text) {
-                    let key = key.clone();
-                    crate::mini_v1::to_store(move |st| st.v1_error(&key, message));
-                }
-            });
+            self.view.set_error_handler(super::v1_error_handler(module.to_owned(), prepared.title.clone()));
             let channel = self.view.host();
             *self.shared.on_viewport.borrow_mut() = Some(Box::new(move |v| {
                 let _ = channel.send("buwiz.viewport", v);
@@ -1917,18 +1936,7 @@ mod imp {
             if crate::mini_v1::is_v1(&module) {
                 return self.load_v1(&module, &js);
             }
-            let key = module.clone();
-            self.view.set_error_handler(move |text| {
-                if let Some(message) = super::run_error(text) {
-                    let key = key.clone();
-                    crate::mini_v1::to_store(move |st| {
-                        let err = st.mini_err(&key);
-                        if err.get_untracked() != message {
-                            err.set(message);
-                        }
-                    });
-                }
-            });
+            self.view.set_error_handler(super::widget_error_handler(module.clone()));
             self.view.load(nsh_platform_linux::App::Js(super::mini_bundle(&module, js, call.as_deref())));
             self.settle();
         }
