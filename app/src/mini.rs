@@ -1738,6 +1738,7 @@ mod imp {
     pub struct MiniApp {
         holder: gtk::Box,
         view: Rc<AppView>,
+        ctx: ComponentContext,
         last: Option<(String, String)>,
         theme: String,
         shared: Rc<Shared>,
@@ -1780,7 +1781,7 @@ mod imp {
                 }
                 glib::ControlFlow::Continue
             });
-            let mut app = MiniApp { holder, view: view.clone(), last: None, theme: String::new(), shared, v1: None };
+            let mut app = MiniApp { holder, view: view.clone(), ctx, last: None, theme: String::new(), shared, v1: None };
             app.place(&view);
             app
         }
@@ -1805,6 +1806,15 @@ mod imp {
                 Some(false) => nsh_platform_linux::Appearance::Light,
                 None => nsh_platform_linux::Appearance::default(),
             }
+        }
+
+        fn settle(&self) {
+            let (ctx, shared) = (self.ctx.clone(), self.shared.clone());
+            glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                if shared.alive.get() {
+                    ctx.emit("settled", JsonValue::Null);
+                }
+            });
         }
 
         fn load_v1(&mut self, module: &str, js: &str) {
@@ -1848,6 +1858,7 @@ mod imp {
                 *self.shared.on_viewport.borrow_mut() = Some(Box::new(open.viewport_sink()));
             }
             self.v1 = Some(open);
+            self.settle();
         }
     }
 
@@ -1889,6 +1900,7 @@ mod imp {
                 return self.load_v1(&module, &js);
             }
             self.view.load(nsh_platform_linux::App::Js(super::mini_bundle(&module, js, call.as_deref())));
+            self.settle();
         }
     }
 }
