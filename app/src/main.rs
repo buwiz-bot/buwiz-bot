@@ -130,7 +130,14 @@ pub fn app_root() -> nsh_core::element::Root {
     // listener (`next_url_scheme_open`) only for a scheme the root claims.
     let root = nsh_core::element::Root::of::<buwiz_bot::App>();
     #[cfg(target_os = "linux")]
-    let root = root.app_id(app_id()).url_schemes(["buwiz"]);
+    let root = {
+        let root = root.app_id(app_id());
+        if buwiz_bot::broker::test_instance_in(|k| std::env::var_os(k)) {
+            root
+        } else {
+            root.url_schemes(["buwiz"])
+        }
+    };
     #[cfg(not(target_os = "linux"))]
     let root = root.app_id(buwiz_bot::identity::APP_ID).url_schemes(["buwiz"]);
     buwiz_bot::fonts().into_iter().fold(root, |root, font| root.font(font))
@@ -252,6 +259,7 @@ fn main() -> impl std::process::Termination {
     buwiz_bot::broker::ensure_started();
     buwiz_bot::mini_v1::attribution::watch_linux();
     platform::set_ui_sets(ui_sets());
+    let test = buwiz_bot::broker::test_instance_in(|k| std::env::var_os(k));
     let options = platform::AppOptions {
         title: buwiz_bot::app_name().to_owned(),
         #[cfg(target_os = "linux")]
@@ -259,7 +267,7 @@ fn main() -> impl std::process::Termination {
         #[cfg(not(target_os = "linux"))]
         app_id: buwiz_bot::identity::APP_ID.to_owned(),
         size: (1280, 800),
-        schemes: vec!["buwiz".to_owned()],
+        schemes: if test { Vec::new() } else { vec!["buwiz".to_owned()] },
         data_dir: buwiz_bot::identity::nsh_data_dir_in(buwiz_protocol::env::var_os("BUWIZ_DATA_DIR").as_deref()),
         ..Default::default()
     };
