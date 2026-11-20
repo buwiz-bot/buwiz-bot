@@ -27,7 +27,10 @@ patching is ra-jit, from [blaze](https://github.com/indexable-inc/blaze)
   `http://127.0.0.1:8787` — `cd broker && cargo build -p buwiz-broker`, then
   `target/debug/buwiz-broker --data <dir> --assets <dir>` (`--assets` is the
   `server` folder of a bundle's `Contents/Resources/broker/`;
-  `app/bundle-dev.sh` makes one). Its tests: `cd broker && cargo test
+  `app/bundle-dev.sh` makes one). With `--data`, start the app with
+  `BUWIZ_HOST_TOKEN_FILE=<dir>/host-token` so it sends that broker's host
+  token: the locked routes (`/v1/host/*`, `/bot/*`, `/skills`, `/mcp/servers`,
+  ...) answer 401 without it. Its tests: `cd broker && cargo test
   --locked`, and the HTTP tests, plain `node` scripts that drive a built
   broker: `broker/buwiz-broker/tests/http/run.sh <buwiz-broker binary>`; only
   the office group needs `npm ci` in `office/` (`--core` leaves it out).

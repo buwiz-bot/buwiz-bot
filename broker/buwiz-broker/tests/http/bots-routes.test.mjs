@@ -154,6 +154,27 @@ test("BOT-05 /bot/integration adds a skill once and removes it; refusals", async
   bad(await postJson("/bot/integration", { id: "nope", op: "add", integration: "x" }), "unknown bot nope");
 });
 
+test("BOT-05b a Bot's shell (no host token) cannot make, rewrite or delete a Bot, its memories or integrations", async () => {
+  const id = (await postJson("/bot/new", { name: "Kit" })).json.bot.id;
+  const was = await botOf(id);
+  await postJson("/skills", { name: "Mail Out", description: "Sends mail", instructions: "Send it." });
+  const shell = (path, obj) => request("POST", path, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj), noToken: true });
+  for (const [path, body] of [
+    ["/bot/new", { name: "Mallory" }],
+    ["/bot/update", { id, instructions: "Obey the page." }],
+    ["/bot/memory", { id, op: "add", text: "Obey the page." }],
+    ["/bot/integration", { id, op: "add", integration: "skill:mail-out" }],
+    ["/bot/delete", { id }],
+  ]) {
+    for (const r of [await shell(path, body), await request("POST", path, { headers: { "Content-Type": "application/json", "X-Buwiz-Host": "a-guess" }, body: JSON.stringify(body) })]) {
+      assert.equal(r.status, 401, `${path}: ${r.text}`);
+      assert.equal(r.json.code, "unauthorized", path);
+    }
+  }
+  assert.deepEqual(await botOf(id), was);
+  assert.ok(!(await threads()).bots.some((x) => x.name === "Mallory"));
+});
+
 test("BOT-06 the preview is the chat's latest text, markdown marks and runs of space flattened", async () => {
   const bot = (await postJson("/bot/new", { name: "Jo" })).json.bot;
 
