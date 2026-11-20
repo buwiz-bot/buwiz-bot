@@ -155,6 +155,46 @@ status = "local"
 note = "nsh run --target web attach, stacked on the adapter; kept in the fork (hexuria/nsh#4 closed 2026-10-28)"
 
 [[topic]]
+branch = "devin/gpui-agent-ops"
+base = "8e59996b60ca3b07d52a983ec036a0d8ea04efd8"
+kind = "feature"
+pr = 0
+status = "local"
+note = "hexuria/nsh#18: the shared adapter serves gpui-agent's pointer, touch and system ops and lists them per platform in hello.features; long press on long-press-only views; the private macOS server refuses the new ops. Needs gpui-agent with these ops published (buggyDcode/gpui-agent#1) and the =0.1.0 pin bumped"
+
+[[topic]]
+branch = "devin/ios-gpui-agent"
+base = "ca5d9a424b336b13be1d685956dbaf64b41f1aaf"
+kind = "feature"
+pr = 0
+status = "local"
+note = "hexuria/nsh#19: gpui-agent attach for the iOS Simulator dev build (one-use 0600 token file); on devin/gpui-agent-ops"
+
+[[topic]]
+branch = "devin/1795152539-android-system-actions"
+base = "51c92db957aeb8221a3275cd754bb5be30162009"
+kind = "feature"
+pr = 0
+status = "local"
+note = "hexuria/nsh#20: Android serves system rotate, keyboard show/hide and paste, and reports the focused input; on devin/gpui-agent-ops"
+
+[[topic]]
+branch = "devin/macos-gpui-agent"
+base = "126d39f6fbf031c16c7be3cd3ec97f8c0fc2ac83"
+kind = "feature"
+pr = 0
+status = "local"
+note = "hexuria/nsh#23: nsh run --target macos serves the shared adapter (dev-agent, debug only); the private server stays for Buwiz Bot; native tests tests/native/native_agent.rs; on devin/gpui-agent-ops"
+
+[[topic]]
+branch = "devin/testing-node-window"
+base = "126d39f6fbf031c16c7be3cd3ec97f8c0fc2ac83"
+kind = "fix"
+pr = 0
+status = "local"
+note = "hexuria/nsh#24: node actions aim at the node's own window; a cross-window drag_nodes errors; on devin/gpui-agent-ops"
+
+[[topic]]
 branch = "pr/gpui-wheel-passthrough"
 kind = "fix"
 pr = 0
