@@ -934,10 +934,30 @@ mod tests {
         assert!(shared.path.exists());
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn quarantine(path: &Path) -> Option<String> {
         let out = std::process::Command::new("/usr/bin/xattr").args(["-p", "com.apple.quarantine"]).arg(path).output().unwrap();
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn quarantine(path: &Path) -> Option<String> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+        // SAFETY: the path and MARK are NUL-terminated; a null value pointer only queries the size.
+        let size = unsafe { libc::lgetxattr(path.as_ptr(), MARK.as_ptr(), std::ptr::null_mut(), 0) };
+        if size < 0 {
+            return None;
+        }
+        let mut value = vec![0u8; size as usize];
+        // SAFETY: the path and MARK are NUL-terminated and value has the queried size.
+        let read = unsafe { libc::lgetxattr(path.as_ptr(), MARK.as_ptr(), value.as_mut_ptr().cast(), value.len()) };
+        if read < 0 {
+            return None;
+        }
+        value.truncate(read as usize);
+        Some(String::from_utf8_lossy(&value).into_owned())
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1417,7 +1437,7 @@ mod tests {
         assert_eq!(numbered(".hidden", 2), ".hidden (2)");
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_file_the_plugin_marked_already_marks_again_as_the_bots() {
         let bed = Bed::new();
@@ -1428,6 +1448,22 @@ mod tests {
         assert!(mark_downloaded(&path));
         let mark = quarantine(&path).expect("marked");
         assert_ne!(mark, plugin, "the Bot's own mark, written over the plugin's");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_the_plugin_marked_already_marks_again_as_the_bots() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let bed = Bed::new();
+        let path = bed.file("a.pdf");
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let plugin = b"plugin";
+        // SAFETY: path and MARK are NUL-terminated and plugin points to its full byte slice.
+        assert_eq!(unsafe { libc::lsetxattr(c_path.as_ptr(), MARK.as_ptr(), plugin.as_ptr().cast(), plugin.len(), 0) }, 0);
+        assert_eq!(quarantine(&path).as_deref(), Some("plugin"));
+        assert!(mark_downloaded(&path));
+        assert_eq!(quarantine(&path).as_deref(), Some("1"));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
