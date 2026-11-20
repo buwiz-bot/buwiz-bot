@@ -196,7 +196,13 @@ test("the callback refuses a wrong state, an unknown server, an error and a bad 
   const unknown = await request("GET", "/oauth/callback/nobody?code=x");
 
   assert.equal(unknown.status, 400);
-  const denied = await request("GET", "/oauth/callback/cb?error=access_denied");
+  // an error without the flow's state is refused and leaves the flow pending
+  for (const q of ["error=x", "error=x&state=not-the-state"]) {
+    const forged = await request("GET", `/oauth/callback/cb?${q}`);
+
+    assert.equal(forged.status, 400, q);
+  }
+  const denied = await request("GET", `/oauth/callback/cb?error=access_denied&state=${authOf("cb").state}`);
 
   assert.equal(denied.status, 200);
   assert.match(denied.text, /Authentication failed/);
