@@ -1600,6 +1600,16 @@ mod tests {
         inferences().lock().unwrap().insert("chat-test-stop".into(), second_state.clone());
         let second_task = tokio::spawn(collect_inference(second, cancelled, second_state.clone()));
         second_sender.send(Ok(json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "partial"}}))).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !second_state.chunks.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delta is collected before stopping the stream");
         infer_stop(&json!({"open_id": second_open, "id": "chat-test-stop"})).unwrap();
         second_task.await.unwrap();
         assert_eq!(*second_state.chunks.lock().unwrap(), ["partial"]);

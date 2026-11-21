@@ -434,7 +434,11 @@ fn https_origin(o: &Value) -> bool {
 
 fn permissions(p: Option<&Value>, m: &Map<String, Value>, short: &str, at: &str) -> Res {
     let o = obj(p, at)?;
-    only_keys(o, &["tools", "open", "attach", "pick_file", "storage", "copy", "preview"], at)?;
+    only_keys(
+        o,
+        &["tools", "open", "attach", "pick_file", "storage", "copy", "preview", "models"],
+        at,
+    )?;
     for (i, t) in list(o.get("tools"), &format!("{at}.tools"), L::PERM_TOOLS, false)?.iter().enumerate() {
         if is_v1("reservedTool", Some(t)) {
             return Err(invalid(&format!("{at}.tools[{i}]"), format!("{} is reserved for Buwiz Bot", tpl(Some(t)))));
@@ -490,6 +494,11 @@ fn permissions(p: Option<&Value>, m: &Map<String, Value>, short: &str, at: &str)
         if pv.contains_key("max_bytes") {
             int(pv.get("max_bytes"), &format!("{at}.preview.max_bytes"), 1.0, L::PREVIEW_MAX_BYTES as f64)?;
         }
+    }
+    if o.contains_key("models") {
+        let models_at = format!("{at}.models");
+        let models = obj(o.get("models"), &models_at)?;
+        only_keys(models, &[], &models_at)?;
     }
     Ok(())
 }
@@ -957,6 +966,9 @@ fn permission_lines(m: &Value, p: Option<&Value>) -> Vec<String> {
     if truthy(get(p, "preview")) {
         lines.push("Show print previews (static pages, no scripts)".to_owned());
     }
+    if truthy(get(p, "models")) {
+        lines.push("Can ask your AI models.".to_owned());
+    }
     lines
 }
 
@@ -1085,6 +1097,9 @@ pub fn added_permissions(prev: &Value, next: &Value) -> Vec<String> {
         } else if truthy(at(now, "preview")) && preview(now) > preview(was) {
             push(format!("print previews up to {}", mb(Some(&json!(preview(now))))));
         }
+        if truthy(at(now, "models")) && !truthy(at(was, "models")) {
+            push("Can ask your AI models.".to_owned());
+        }
     }
     for r in arr(get(next, "routines")) {
         let was = arr(get(prev, "routines")).iter().find(|x| same(get(x, "id"), get(r, "id")));
@@ -1173,6 +1188,49 @@ mod tests {
         assert_eq!(refused(|m| m["apps"][0]["permissions"]["open"]["external"] = json!(["https://example.com/"])).code, "manifest_invalid");
         assert_eq!(refused(|m| m["apps"][1]["inline"]["width"] = json!(961)).message, "apps[1].inline.width: must be 240 to 960");
         assert_eq!(refused(|m| m["apps"][1]["inline"]["wait_ready"] = json!("yes")).message, "apps[1].inline.wait_ready: must be a boolean");
+    }
+
+    #[test]
+    fn models_permission_is_a_strict_empty_object() {
+        let (text, trust) = signed(|m| m["apps"][0]["permissions"]["models"] = json!({}));
+        assert!(verify(&text, &trust, HOST_PROTOCOL).is_ok());
+
+        let keyed = refused(|m| m["apps"][0]["permissions"]["models"] = json!({"x": 1}));
+        assert_eq!(keyed.code, "manifest_invalid");
+        assert_eq!(
+            keyed.message,
+            "apps[0].permissions.models.x: is not a known key here (refused: unknown keys in access grants fail closed)"
+        );
+
+        let array = refused(|m| m["apps"][0]["permissions"]["models"] = json!([]));
+        assert_eq!(array.code, "manifest_invalid");
+        assert_eq!(array.message, "apps[0].permissions.models: must be an object");
+    }
+
+    #[test]
+    fn models_permission_is_shown_in_install_review() {
+        let mut m: Value = serde_json::from_str(FIXTURE).unwrap();
+        m["apps"][0]["permissions"]["models"] = json!({});
+
+        let review = super::review(&m, &|_| String::new());
+        let lines = review["apps"][0]["lines"].as_array().unwrap();
+        assert!(
+            lines.contains(&json!("Can ask your AI models.")),
+            "{review}"
+        );
+    }
+
+    #[test]
+    fn adding_models_permission_is_reported_for_consent() {
+        let previous: Value = serde_json::from_str(FIXTURE).unwrap();
+        let mut next = previous.clone();
+        next["apps"][0]["permissions"]["models"] = json!({});
+        let title = next["apps"][0]["title"].as_str().unwrap();
+
+        assert_eq!(
+            added_permissions(&previous, &next),
+            [format!("{title}: Can ask your AI models.")]
+        );
     }
 
     #[test]
