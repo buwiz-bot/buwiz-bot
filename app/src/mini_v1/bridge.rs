@@ -413,6 +413,18 @@ pub struct OpenContext {
     store_jobs: Mutex<Option<mpsc::Sender<StoreJob>>>,
     /// When this open last said a hand-off was refused ([`refusal_due`]).
     refused_at: Mutex<Option<Instant>>,
+    chats: Mutex<ChatState>,
+}
+
+#[derive(Default)]
+struct ChatState {
+    active: Option<ChatRun>,
+    recent: VecDeque<Instant>,
+}
+
+#[derive(Default)]
+struct ChatRun {
+    id: Option<String>,
 }
 
 /// How long after one refusal another is said again, per open: an app's
@@ -450,12 +462,27 @@ impl OpenContext {
             files: Mutex::new(HashMap::new()),
             store_jobs: Mutex::new(None),
             refused_at: Mutex::new(None),
+            chats: Mutex::new(ChatState::default()),
         })
     }
 
     /// Ends the open: its session closes (the broker is told), its picked
     /// files can no longer be read, its storage worker stops.
     pub fn close(&self) {
+        let active = self
+            .chats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active
+            .take()
+            .and_then(|run| run.id);
+        if let Some(id) = active {
+            let broker = self.broker.clone();
+            let open_id = self.session.open_id.clone();
+            std::thread::spawn(move || {
+                let _ = host_api::infer_stop(&*broker, &open_id, &id);
+            });
+        }
         self.session.close(self.broker.clone());
         self.files.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.store_jobs.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -500,10 +527,11 @@ pub fn wire(ctx: &Arc<OpenContext>, inline: bool, emit: Emit) -> Vec<(&'static s
     let own = [perms::FIT, perms::READY, perms::ACTIONS, perms::SETTLE, perms::META];
     for method in ctx.prepared.permissions.methods().into_iter().filter(|m| !own.contains(m)) {
         let c = ctx.clone();
+        let events = emit.clone();
         let handler: Handler = Arc::new(move |data: Value, reply: Option<AnyReply>| {
             // a post has no answer to give: the bridge only takes calls
             let Some(reply) = reply else { return };
-            c.dispatch(method, data, reply);
+            c.dispatch(method, data, reply, events.clone());
         });
         out.push((method, handler));
     }
@@ -662,7 +690,7 @@ fn text<'a>(data: &'a Value, k: &str) -> Option<&'a str> {
 
 impl OpenContext {
     /// Runs granted method `method`'s handler.
-    fn dispatch(self: &Arc<Self>, method: &'static str, data: Value, reply: AnyReply) {
+    fn dispatch(self: &Arc<Self>, method: &'static str, data: Value, reply: AnyReply, emit: Emit) {
         match method {
             perms::CALL => self.call(data, reply),
             perms::TICKET_TITLE => self.ticket_title(data, reply),
@@ -671,8 +699,199 @@ impl OpenContext {
             perms::PICK => self.pick(data, reply),
             perms::COPY => self.copy(data, reply),
             perms::PREVIEW => self.preview(data, reply),
+            perms::MODELS => self.models(reply),
+            perms::CHAT => self.chat(data, reply, emit),
+            perms::CHAT_STOP => self.chat_stop(data, reply),
             storage => self.storage_named(storage, data, reply),
         }
+    }
+
+    fn models(self: &Arc<Self>, reply: AnyReply) {
+        self.gated(reply, |me| host_api::models(&*me.broker));
+    }
+
+    fn chat(self: &Arc<Self>, data: Value, reply: AnyReply, emit: Emit) {
+        if let Err(e) = self.session.check_live() {
+            return reject(reply, e);
+        }
+        let who = CallActor::new(&self.ui);
+        if who.actor != Actor::Person {
+            return reject(
+                reply,
+                MiniError::new("consent_required", "a person must press to start a chat"),
+            );
+        }
+        let Some(press) = who.press else {
+            return reject(
+                reply,
+                MiniError::new("consent_required", "a fresh person press is required"),
+            );
+        };
+        if !who.ui.spend_press(press) {
+            return reject(
+                reply,
+                MiniError::new("consent_required", "a fresh person press is required"),
+            );
+        }
+        let request = data;
+        let stream_context = self.clone();
+        self.gated_for(reply, self.limits.timeout, move |me| {
+            me.session.check_live()?;
+            me.admit_chat()?;
+            let started = match host_api::infer_start(
+                &*me.broker,
+                &me.session.open_id,
+                &me.prepared.plugin.title,
+                &me.prepared.title,
+                request,
+            ) {
+                Ok(started) => started,
+                Err(e) => {
+                    me.finish_chat(None);
+                    return Err(e);
+                }
+            };
+            let id = started
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    me.finish_chat(None);
+                    MiniError::new("internal", "the broker did not start the chat")
+                })?
+                .to_owned();
+            {
+                let mut chats = me.chats.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(active) = chats.active.as_mut() {
+                    active.id = Some(id.clone());
+                }
+            }
+            let stream = stream_context;
+            let event = emit.clone();
+            let chat_id = id.clone();
+            std::thread::spawn(move || stream.poll_chat(chat_id, event));
+            Ok(json!({"id": id}))
+        });
+    }
+
+    fn admit_chat(&self) -> Result<(), MiniError> {
+        let mut chats = self.chats.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        while chats
+            .recent
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60))
+        {
+            chats.recent.pop_front();
+        }
+        if chats.active.is_some() {
+            return Err(MiniError::new("busy", "a chat is already in progress"));
+        }
+        if chats.recent.len() >= 30 {
+            return Err(MiniError::new("rate_limited", "too many chats; try again in a minute"));
+        }
+        chats.recent.push_back(now);
+        chats.active = Some(ChatRun::default());
+        Ok(())
+    }
+
+    fn finish_chat(&self, id: Option<&str>) {
+        let mut chats = self.chats.lock().unwrap_or_else(|e| e.into_inner());
+        if id.is_none() || chats.active.as_ref().and_then(|active| active.id.as_deref()) == id {
+            chats.active = None;
+        }
+    }
+
+    fn poll_chat(self: Arc<Self>, id: String, emit: Emit) {
+        let open_id = self.session.open_id.clone();
+        let mut after = 0usize;
+        let mut text = String::new();
+        let mut last_activity = Instant::now();
+        loop {
+            let active = self
+                .chats
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.as_deref() == Some(id.as_str()));
+            if self.session.check_live().is_err() || !active {
+                let _ = host_api::infer_stop(&*self.broker, &open_id, &id);
+                self.finish_chat(Some(&id));
+                return;
+            }
+            if last_activity.elapsed() >= Duration::from_secs(120) {
+                let _ = host_api::infer_stop(&*self.broker, &open_id, &id);
+                emit(
+                    "buwiz.chat.error",
+                    json!({"id": id, "error": {"code": "timeout", "message": "the chat was idle for 120 seconds"}}),
+                );
+                self.finish_chat(Some(&id));
+                return;
+            }
+            let poll = match host_api::infer_poll(&*self.broker, &open_id, &id, after) {
+                Ok(poll) => poll,
+                Err(e) => {
+                    emit(
+                        "buwiz.chat.error",
+                        json!({"id": id, "error": {"code": e.code, "message": e.message}}),
+                    );
+                    self.finish_chat(Some(&id));
+                    return;
+                }
+            };
+            if let Some(chunks) = poll.get("chunks").and_then(Value::as_array) {
+                for chunk in chunks {
+                    if let Some(part) = chunk.as_str() {
+                        text.push_str(part);
+                        emit("buwiz.chat.delta", json!({"id": id, "text": part}));
+                        after += 1;
+                        last_activity = Instant::now();
+                    }
+                }
+            }
+            if poll.get("error").is_some_and(|e| !e.is_null()) {
+                emit("buwiz.chat.error", json!({"id": id, "error": poll["error"]}));
+                self.finish_chat(Some(&id));
+                return;
+            }
+            if poll.get("done").and_then(Value::as_bool) == Some(true) {
+                let stop_reason = poll.get("stop_reason").and_then(Value::as_str).unwrap_or("end");
+                emit("buwiz.chat.done", json!({"id": id, "text": text, "stop_reason": stop_reason}));
+                self.finish_chat(Some(&id));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn chat_stop(self: &Arc<Self>, data: Value, reply: AnyReply) {
+        let Some(id) = text(&data, "id").filter(|id| !id.is_empty()).map(str::to_owned) else {
+            return reject(reply, invalid("chat stop needs an id"));
+        };
+        let matches = self
+            .chats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id.as_deref() == Some(id.as_str()));
+        if !matches {
+            return reply.resolve(json!({"ok": true}));
+        }
+        self.gated(reply, move |me| {
+            let still_active = me
+                .chats
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.as_deref() == Some(id.as_str()));
+            if !still_active {
+                return Ok(json!({"ok": true}));
+            }
+            host_api::infer_stop(&*me.broker, &me.session.open_id, &id)
+        });
     }
 
     /// Counts a new call against the per-second limit.

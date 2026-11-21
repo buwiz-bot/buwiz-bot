@@ -90,11 +90,13 @@ struct FakeBroker {
     moved: AtomicBool,
     /// The account routes asked: (route, body).
     switched: Mutex<Vec<(String, Value)>>,
+    host_calls: Mutex<Vec<(String, Value)>>,
 }
 
 impl host_api::Broker for FakeBroker {
     fn request(&self, _: &str, route: &str, body: Option<Value>, _: Duration) -> Result<Value, MiniError> {
         let body = body.unwrap_or(Value::Null);
+        self.host_calls.lock().unwrap().push((route.to_owned(), body.clone()));
         match route {
             "/v1/host/call" => {
                 let env = body["envelope"].clone();
@@ -1387,6 +1389,25 @@ fn con_01_in_the_bridge_only_open_url_and_attach_ask() {
     );
     // the file dialog was the pick's only question
     assert_eq!(o.ui.picks.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn brg_18_chat_requires_a_fresh_person_press() {
+    let permissions = json!({"models": {}});
+    let script = r#"
+        const chat = buwiz.chat({ model: "fake", messages: [{ role: "user", text: "hello" }] });
+        try { await chat.done; return "accepted"; } catch (e) { return e.code; }
+    "#;
+    let mut no_press = Open::start(permissions.clone(), script);
+    assert_eq!(no_press.wait("consent_required"), "consent_required");
+    assert!(no_press.broker.host_calls.lock().unwrap().is_empty(), "a call without a fresh press never reaches the broker");
+
+    let mut agent = Open::start_with(FIXTURE, permissions, script, Limits::default(), |ui| {
+        ui.agent.store(true, Ordering::SeqCst);
+        *ui.hand_press.lock().unwrap() = Some(7);
+    });
+    assert_eq!(agent.wait("consent_required"), "consent_required");
+    assert!(agent.broker.host_calls.lock().unwrap().is_empty(), "an agent-driven call never reaches the broker");
 }
 
 #[test]

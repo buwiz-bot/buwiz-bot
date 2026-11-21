@@ -170,6 +170,9 @@ fn fold(j: &Value, draws: &HashMap<String, bool>, conns: &Conns) -> Option<Vec<V
         o.insert("efforts".to_owned(), Value::Array(efforts));
         o.insert("defaultEffort".to_owned(), m.get("reasoning_effort").filter(|e| truthy(e)).cloned().unwrap_or(json!("")));
         o.insert("image".to_owned(), json!(draws.get(id).copied().unwrap_or(false)));
+        if let Some(modalities) = m.pointer("/capabilities/input_modalities").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            o.insert("input_modalities".to_owned(), Value::Array(modalities.clone()));
+        }
         connection_of(id, m.get("owned_by"), conns, &mut o);
         models.push(Value::Object(o));
     }

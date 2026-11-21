@@ -32,6 +32,53 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Resolve tools, ticket titles and app source (14.2).
 const SHORT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `GET /v1/host/models`: the models this Bot can route, with no route or
+/// connection details.
+pub fn models(b: &dyn Broker) -> Result<Value, MiniError> {
+    b.request("GET", "/v1/host/models", None, SHORT_TIMEOUT)
+}
+
+/// `POST /v1/host/infer`: starts an isolated stream for this open.
+pub fn infer_start(
+    b: &dyn Broker,
+    open_id: &str,
+    plugin: &str,
+    app: &str,
+    request: Value,
+) -> Result<Value, MiniError> {
+    post(
+        b,
+        "/v1/host/infer",
+        json!({
+            "open_id": open_id,
+            "plugin": plugin,
+            "app": app,
+            "request": request
+        }),
+        CALL_TIMEOUT,
+    )
+}
+
+/// `POST /v1/host/infer/poll`: reads stream chunks after `after`.
+pub fn infer_poll(b: &dyn Broker, open_id: &str, id: &str, after: usize) -> Result<Value, MiniError> {
+    post(
+        b,
+        "/v1/host/infer/poll",
+        json!({"open_id": open_id, "id": id, "after": after}),
+        CALL_TIMEOUT,
+    )
+}
+
+/// `POST /v1/host/infer/stop`: stops only a stream belonging to this open.
+pub fn infer_stop(b: &dyn Broker, open_id: &str, id: &str) -> Result<Value, MiniError> {
+    post(
+        b,
+        "/v1/host/infer/stop",
+        json!({"open_id": open_id, "id": id}),
+        SHORT_TIMEOUT,
+    )
+}
+
 fn post(b: &dyn Broker, route: &str, body: Value, timeout: Duration) -> Result<Value, MiniError> {
     b.request("POST", route, Some(body), timeout)
 }
@@ -641,5 +688,30 @@ mod tests {
         let e = super::Broker::request(&b, "GET", "/v1/host/plugins", None, std::time::Duration::from_secs(1)).unwrap_err();
         assert_eq!(e.code, "plugin_unavailable");
         assert!(super::plugin_action(&b, "../x", super::PluginAction::Uninstall).is_err());
+    }
+
+    #[test]
+    fn model_catalog_and_inference_use_the_host_routes() {
+        struct Records(std::sync::Mutex<Vec<(String, String, Option<serde_json::Value>)>>);
+        impl super::Broker for Records {
+            fn request(&self, method: &str, route: &str, body: Option<serde_json::Value>, _: std::time::Duration) -> Result<serde_json::Value, super::MiniError> {
+                self.0.lock().unwrap().push((method.into(), route.into(), body));
+                Ok(json!({"ok": true, "id": "stream"}))
+            }
+        }
+        let records = Records(Default::default());
+        assert_eq!(super::models(&records).unwrap()["ok"], true);
+        super::infer_start(&records, "open", "plugin", "app", json!({"messages": []})).unwrap();
+        super::infer_poll(&records, "open", "stream", 3).unwrap();
+        super::infer_stop(&records, "open", "stream").unwrap();
+        assert_eq!(
+            *records.0.lock().unwrap(),
+            [
+                ("GET".into(), "/v1/host/models".into(), None),
+                ("POST".into(), "/v1/host/infer".into(), Some(json!({"open_id": "open", "plugin": "plugin", "app": "app", "request": {"messages": []}}))),
+                ("POST".into(), "/v1/host/infer/poll".into(), Some(json!({"open_id": "open", "id": "stream", "after": 3}))),
+                ("POST".into(), "/v1/host/infer/stop".into(), Some(json!({"open_id": "open", "id": "stream"}))),
+            ]
+        );
     }
 }

@@ -2,7 +2,8 @@
 //! random bytes written to `<data dir>/host-token` (0600) when the hub
 //! starts, after the port is ours, and a request without it is answered
 //! 401 before anything else. The Origin and JSON guard has run already.
-//! Bodies are JSON objects of at most 2 MiB; refusals are `{ok: false,
+//! Bodies are JSON objects of at most 2 MiB, except infer requests (48 MiB
+//! for base64 file transport); refusals are `{ok: false,
 //! code, message, retryable}` with the status map below. Plugin actions
 //! and sessions are the plugin host's (`helper::plugins`,
 //! `helper::sessions`); the routine routes are `hub::routines::v1`'s.
@@ -55,12 +56,17 @@
 //! until that track registers them; it checks the token with
 //! [`authorized`].
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Frame;
@@ -70,6 +76,7 @@ use serde_json::{json, Value};
 
 use crate::helper::plugins::Host;
 use crate::hub::ctx::HubCtx;
+use crate::hub::model::Settings;
 use crate::hub::market::catalog::Market;
 use crate::hub::routes::market::reapply_google;
 use crate::hub::routines::threads::notice_text;
@@ -77,13 +84,434 @@ use crate::hub::routines::store_host::settle_notices;
 use crate::hub::routines::v1::V1;
 use crate::hub::routines::Routines;
 use crate::hub::tools::v1::{account_card, card_pending};
-use crate::hub::types::{self, HubRequest, HubResponse, Pattern, Verb};
+use crate::hub::types::{self, HubRequest, HubResponse, ModelChoice, Pattern, TurnCtx, Verb};
 use crate::hub::Registry;
 use crate::js;
 use crate::v1::V1Error;
 use buwiz_protocol::proof::same;
 
 const BODY_MAX: usize = 2 * 1024 * 1024;
+const INFER_BODY_MAX: usize = 48 * 1024 * 1024;
+const CHAT_MAX_BYTES: usize = 32 * 1024 * 1024;
+const FILE_MAX_BYTES: usize = 20 * 1024 * 1024;
+const CHAT_IDLE: Duration = Duration::from_secs(120);
+
+struct Inference {
+    open_id: String,
+    created: Instant,
+    chunks: Mutex<Vec<String>>,
+    done: AtomicBool,
+    stop_reason: Mutex<Option<String>>,
+    error: Mutex<Option<Value>>,
+    cancel: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+fn inferences() -> &'static Mutex<HashMap<String, Arc<Inference>>> {
+    static STREAMS: OnceLock<Mutex<HashMap<String, Arc<Inference>>>> = OnceLock::new();
+    STREAMS.get_or_init(Default::default)
+}
+
+fn chat_rates() -> &'static Mutex<HashMap<String, VecDeque<Instant>>> {
+    static RATES: OnceLock<Mutex<HashMap<String, VecDeque<Instant>>>> = OnceLock::new();
+    RATES.get_or_init(Default::default)
+}
+
+fn active_opens() -> &'static Mutex<HashSet<String>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ACTIVE.get_or_init(Default::default)
+}
+
+fn chat_rate(open_id: &str) -> Result<(), V1Error> {
+    let mut all = chat_rates().lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|_, recent| {
+        while recent.front().is_some_and(|at| at.elapsed() >= Duration::from_secs(60)) {
+            recent.pop_front();
+        }
+        !recent.is_empty()
+    });
+    let recent = all.entry(open_id.to_owned()).or_default();
+    let now = Instant::now();
+    while recent.front().is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60)) {
+        recent.pop_front();
+    }
+    if recent.len() >= 30 {
+        return Err(V1Error::new("rate_limited", "too many chats; try again in a minute"));
+    }
+    recent.push_back(now);
+    Ok(())
+}
+
+fn maker_of(id: &str, owner: &Value) -> &'static str {
+    let name = id.split_once('/').map_or_else(|| owner.as_str().unwrap_or(""), |(maker, _)| maker).to_ascii_lowercase();
+    match name.as_str() {
+        s if s.starts_with("anthropic") => "anthropic",
+        s if s.starts_with("openai") => "openai",
+        s if s.starts_with("google") || s == "gemini" => "google",
+        s if s.starts_with("xai") || s.starts_with("x-ai") => "xai",
+        s if s.starts_with("mistral") => "mistral",
+        s if s.starts_with("deepseek") => "deepseek",
+        s if s.starts_with("qwen") || s.starts_with("alibaba") => "qwen",
+        s if s.starts_with("meta") => "meta",
+        _ => {
+            let id = id.to_ascii_lowercase();
+            if id.contains("claude") {
+                "anthropic"
+            } else if id.contains("gemini") {
+                "google"
+            } else if id.contains("grok") {
+                "xai"
+            } else if id.contains("qwen") {
+                "qwen"
+            } else if id.contains("llama") {
+                "meta"
+            } else if id.contains("mistral") {
+                "mistral"
+            } else if id.contains("deepseek") {
+                "deepseek"
+            } else if id.contains("gpt-") || openai_o_series(id.rsplit('/').next().unwrap_or(&id)) {
+                "openai"
+            } else {
+                "other"
+            }
+        }
+    }
+}
+
+fn openai_o_series(family: &str) -> bool {
+    family.strip_prefix('o').and_then(|suffix| suffix.chars().next()).is_some_and(|digit| digit.is_ascii_digit())
+}
+
+fn fallback_inputs(maker: &str, id: &str) -> Vec<&'static str> {
+    let family = id.split_once('/').map_or(id, |(_, model)| model).to_ascii_lowercase();
+    let multimodal = match maker {
+        "anthropic" | "google" => true,
+        "openai" => ["gpt-4o", "gpt-4.1", "gpt-5"].iter().any(|prefix| family.starts_with(prefix)) || openai_o_series(&family),
+        "xai" => family.starts_with("grok-4"),
+        _ => false,
+    };
+    if !multimodal {
+        vec!["text"]
+    } else if maker == "xai" {
+        vec!["text", "image"]
+    } else {
+        vec!["text", "image", "pdf"]
+    }
+}
+
+fn model_inputs(row: &Value, maker: &str, id: &str) -> Vec<&'static str> {
+    let mut inputs = vec!["text"];
+    let modalities = row.get("input_modalities").and_then(Value::as_array);
+    let supported = modalities.map_or_else(|| fallback_inputs(maker, id), |values| {
+        let mut found = Vec::new();
+        if values.iter().any(|value| value.as_str() == Some("image")) {
+            found.push("image");
+        }
+        if values.iter().any(|value| value.as_str() == Some("pdf")) {
+            found.push("pdf");
+        }
+        found
+    });
+    for input in supported {
+        if input != "text" && !inputs.contains(&input) {
+            inputs.push(input);
+        }
+    }
+    inputs
+}
+
+fn model_catalog(raw: &Value) -> Value {
+    let rows = raw.get("models").and_then(Value::as_array);
+    if raw.get("ok").and_then(Value::as_bool) != Some(true) || rows.is_none_or(Vec::is_empty) {
+        return json!({"default": null, "models": []});
+    }
+    let rows = rows.unwrap();
+    let default = raw.get("default").and_then(Value::as_str).filter(|id| rows.iter().any(|row| row.get("id").and_then(Value::as_str) == Some(id)));
+    let models = rows.iter().filter_map(|row| {
+        let id = row.get("id")?.as_str()?;
+        if id.is_empty() {
+            return None;
+        }
+        let owner = row.get("owner").unwrap_or(&Value::Null);
+        let maker = maker_of(id, owner);
+        let name = id.rsplit('/').next().unwrap_or(id);
+        let group = if Some(id) == default { "Default" } else { row.get("group").and_then(Value::as_str).unwrap_or("Default") };
+        let efforts = row.get("efforts").and_then(Value::as_array).cloned().unwrap_or_default();
+        let default_effort = row.get("defaultEffort").and_then(Value::as_str).filter(|effort| !effort.is_empty());
+        Some(json!({
+            "id": id,
+            "name": name,
+            "maker": maker,
+            "group": group,
+            "subscription": row.get("subscription").and_then(Value::as_bool).unwrap_or(false),
+            "efforts": efforts,
+            "default_effort": default_effort,
+            "inputs": model_inputs(row, maker, id),
+        }))
+    }).collect::<Vec<_>>();
+    let default = if models.is_empty() { None } else { default };
+    json!({"default": default, "models": models})
+}
+
+fn chat_messages(request: &Value) -> Result<(String, Option<String>, Vec<Value>), V1Error> {
+    let model = request.get("model").and_then(Value::as_str).filter(|id| !id.is_empty()).ok_or_else(|| V1Error::new("invalid_args", "model is required"))?.to_owned();
+    let effort = match request.get("effort") {
+        None => None,
+        Some(Value::String(effort)) => Some(effort.clone()),
+        _ => return Err(V1Error::new("invalid_args", "effort is a string")),
+    };
+    let source = request.get("messages").and_then(Value::as_array).ok_or_else(|| V1Error::new("invalid_args", "messages is an array"))?;
+    if source.is_empty() || source.len() > 64 {
+        return Err(V1Error::new("invalid_args", "messages has 1 to 64 entries"));
+    }
+    if source.last().and_then(|message| message.get("role")).and_then(Value::as_str) != Some("user") {
+        return Err(V1Error::new("invalid_args", "the last message is from the user"));
+    }
+    let mut accounted = request.clone();
+    let mut file_bytes = 0usize;
+    let mut messages = Vec::with_capacity(source.len());
+    for (message_index, message) in source.iter().enumerate() {
+        let role = message.get("role").and_then(Value::as_str).filter(|role| matches!(*role, "user" | "assistant")).ok_or_else(|| V1Error::new("invalid_args", "message role is user or assistant"))?;
+        let text = message.get("text").and_then(Value::as_str).ok_or_else(|| V1Error::new("invalid_args", "message text is a string"))?;
+        if text.len() > 256 * 1024 {
+            return Err(V1Error::new("quota_exceeded", "message text is over 256 KiB"));
+        }
+        let files = match message.get("files") {
+            None => &[][..],
+            Some(Value::Array(files)) => files.as_slice(),
+            _ => return Err(V1Error::new("invalid_args", "message files is an array")),
+        };
+        if files.len() > 8 {
+            return Err(V1Error::new("quota_exceeded", "a message has at most 8 files"));
+        }
+        if role == "assistant" && !files.is_empty() {
+            return Err(V1Error::new("invalid_args", "assistant messages cannot have files"));
+        }
+        if text.is_empty() && files.is_empty() {
+            return Err(V1Error::new("invalid_args", "empty text requires a file"));
+        }
+        let mut content = Vec::new();
+        if !text.is_empty() {
+            content.push(json!({"type": "text", "text": text}));
+        }
+        for (file_index, file) in files.iter().enumerate() {
+            let name = file.get("name").and_then(Value::as_str).ok_or_else(|| V1Error::new("invalid_args", "file name is a string"))?;
+            let mime = file.get("type").and_then(Value::as_str).ok_or_else(|| V1Error::new("invalid_args", "file type is a string"))?;
+            if !matches!(mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "application/pdf") {
+                return Err(V1Error::new("invalid_args", "unsupported file type"));
+            }
+            let encoded = file.get("data").and_then(Value::as_str).ok_or_else(|| V1Error::new("invalid_args", "file data is base64"))?;
+            if encoded.len() > FILE_MAX_BYTES.div_ceil(3) * 4 + 4 {
+                return Err(V1Error::new("quota_exceeded", "a file is over 20 MiB"));
+            }
+            let data = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| V1Error::new("invalid_args", "file data is invalid base64"))?;
+            if data.len() > FILE_MAX_BYTES {
+                return Err(V1Error::new("quota_exceeded", "a file is over 20 MiB"));
+            }
+            file_bytes = file_bytes.saturating_add(data.len());
+            if let Some(accounted_data) = accounted.pointer_mut(&format!("/messages/{message_index}/files/{file_index}/data")) {
+                *accounted_data = json!("");
+            }
+            let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+            if mime == "application/pdf" {
+                content.push(json!({
+                    "type": "document",
+                    "title": name,
+                    "source": {"type": "base64", "media_type": mime, "data": encoded}
+                }));
+            } else {
+                content.push(json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": encoded}
+                }));
+            }
+        }
+        messages.push(json!({"role": role, "content": content}));
+    }
+    let size = buwiz_protocol::jcs::canonical(&accounted).map_err(|_| V1Error::new("invalid_args", "the chat request is not valid JCS"))?.len().saturating_add(file_bytes);
+    if size > CHAT_MAX_BYTES {
+        return Err(V1Error::new("quota_exceeded", "the chat request is over 32 MiB"));
+    }
+    Ok((model, effort, messages))
+}
+
+async fn host_models() -> Value {
+    let settings = Settings::global();
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    model_catalog(&crate::hub::routes::models::models_json(settings, &home).await)
+}
+
+fn check_file_support(request: &Value, info: &Value) -> Result<(), V1Error> {
+    let supported = |input: &str| info["inputs"].as_array().is_some_and(|inputs| inputs.iter().any(|value| value.as_str() == Some(input)));
+    let files = request["messages"].as_array().into_iter().flatten().flat_map(|m| m.get("files").and_then(Value::as_array).into_iter().flatten());
+    for file in files {
+        match file["type"].as_str() {
+            Some("application/pdf") if !supported("pdf") => return Err(V1Error::new("not_supported", "this model does not accept PDF files")),
+            Some("image/png" | "image/jpeg" | "image/webp" | "image/gif") if !supported("image") => {
+                return Err(V1Error::new("not_supported", "this model does not accept images"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn infer_start(ctx: &HubCtx, body: &Value) -> Result<Value, V1Error> {
+    let open_id = body.get("open_id").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| V1Error::new("invalid_args", "open_id is required"))?.to_owned();
+    let plugin = body.get("plugin").and_then(Value::as_str).ok_or_else(|| V1Error::new("invalid_args", "plugin title is required"))?;
+    let app = body.get("app").and_then(Value::as_str).ok_or_else(|| V1Error::new("invalid_args", "app title is required"))?;
+    let request = body.get("request").filter(|v| v.is_object()).ok_or_else(|| V1Error::new("invalid_args", "request is an object"))?;
+
+    let settings = Settings::global();
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let raw_catalog = crate::hub::routes::models::models_json(settings, &home).await;
+    if raw_catalog.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(V1Error::new("model_unavailable", "the model catalog is unavailable"));
+    }
+    let catalog = model_catalog(&raw_catalog);
+    let (model, requested_effort, messages) = chat_messages(request)?;
+    let info = catalog["models"].as_array().and_then(|models| models.iter().find(|item| item["id"].as_str() == Some(model.as_str())))
+        .ok_or_else(|| V1Error::new("invalid_args", "unknown model id"))?;
+    check_file_support(request, info)?;
+    let effort = if let Some(effort) = requested_effort {
+        let valid = info["efforts"].as_array().is_some_and(|values| values.iter().any(|value| value["value"].as_str() == Some(effort.as_str())));
+        if !valid {
+            return Err(V1Error::new("invalid_args", "effort is not offered by this model"));
+        }
+        effort
+    } else {
+        info["default_effort"].as_str().unwrap_or_default().to_owned()
+    };
+
+    {
+        let mut active = active_opens().lock().unwrap_or_else(|e| e.into_inner());
+        if active.contains(&open_id) {
+            return Err(V1Error::new("busy", "a chat is already in progress for this open"));
+        }
+        active.insert(open_id.clone());
+    }
+    if let Err(e) = chat_rate(&open_id) {
+        active_opens().lock().unwrap_or_else(|e| e.into_inner()).remove(&open_id);
+        return Err(e);
+    }
+    let Some(api) = ctx.model.as_ref() else {
+        active_opens().lock().unwrap_or_else(|e| e.into_inner()).remove(&open_id);
+        return Err(V1Error::new("model_unavailable", "no model is available"));
+    };
+    let model_id = model.clone();
+    let turn = TurnCtx {
+        model: Some(ModelChoice { model: model, effort, fast: false, name: None }),
+        ..TurnCtx::default()
+    };
+    let max_tokens = settings.max_tokens.as_u64().unwrap_or(4096).max(4096).min(1_000_000);
+    let system = format!("You are answering inside the {app} app of {plugin}. Reply in plain text or Markdown.");
+    let request_body = json!({"model": model_id, "max_tokens": max_tokens, "system": system, "messages": messages});
+    let receiver = match api.stream(&turn, request_body).await {
+        Ok(receiver) => receiver,
+        Err(_) => {
+            active_opens().lock().unwrap_or_else(|e| e.into_inner()).remove(&open_id);
+            return Err(V1Error::new("model_unavailable", "the model refused the request"));
+        }
+    };
+    let id = buwiz_protocol::keys::b64(&buwiz_protocol::keys::random::<18>());
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let state = Arc::new(Inference {
+        open_id: open_id.clone(),
+        created: Instant::now(),
+        chunks: Mutex::new(Vec::new()),
+        done: AtomicBool::new(false),
+        stop_reason: Mutex::new(None),
+        error: Mutex::new(None),
+        cancel: Mutex::new(Some(cancel)),
+    });
+    {
+        let mut streams = inferences().lock().unwrap_or_else(|e| e.into_inner());
+        streams.retain(|_, state| !state.done.load(Ordering::SeqCst) || state.created.elapsed() < Duration::from_secs(300));
+        streams.insert(id.clone(), state.clone());
+    }
+    tokio::spawn(collect_inference(receiver, cancelled, state));
+    Ok(json!({"id": id}))
+}
+
+async fn collect_inference(
+    mut receiver: tokio::sync::mpsc::Receiver<Result<Value, String>>,
+    mut cancelled: tokio::sync::oneshot::Receiver<()>,
+    state: Arc<Inference>,
+) {
+    let mut stop_reason = "end";
+    loop {
+        tokio::select! {
+            _ = &mut cancelled => {
+                stop_reason = "stopped";
+                break;
+            }
+            event = tokio::time::timeout(CHAT_IDLE, receiver.recv()) => {
+                match event {
+                    Err(_) => {
+                        *state.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(json!({"code": "timeout", "message": "the model stream was idle for 120 seconds", "retryable": true}));
+                        break;
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(_))) => {
+                        *state.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(json!({"code": "model_unavailable", "message": "the model stream failed", "retryable": true}));
+                        break;
+                    }
+                    Ok(Some(Ok(event))) => {
+                        if event["type"] == "content_block_delta" && event.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") {
+                            if let Some(text) = event.pointer("/delta/text").and_then(Value::as_str) {
+                                state.chunks.lock().unwrap_or_else(|e| e.into_inner()).push(text.to_owned());
+                            }
+                        }
+                        if event["type"] == "message_delta" && event.pointer("/delta/stop_reason").and_then(Value::as_str) == Some("max_tokens") {
+                            stop_reason = "max_tokens";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    *state.stop_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_reason.to_owned());
+    state.done.store(true, Ordering::SeqCst);
+    active_opens().lock().unwrap_or_else(|e| e.into_inner()).remove(&state.open_id);
+}
+
+fn find_inference(id: &str, open_id: &str) -> Option<Arc<Inference>> {
+    inferences().lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|stream| stream.open_id == open_id).cloned()
+}
+
+fn infer_poll(body: &Value) -> Result<Value, V1Error> {
+    let id = body.get("id").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| V1Error::new("invalid_args", "id is required"))?;
+    let open_id = body.get("open_id").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| V1Error::new("invalid_args", "open_id is required"))?;
+    let after = body.get("after").and_then(Value::as_u64).ok_or_else(|| V1Error::new("invalid_args", "after is a nonnegative integer"))? as usize;
+    let state = find_inference(id, open_id).ok_or_else(|| V1Error::new("closed", "the chat is closed"))?;
+    let chunks = state.chunks.lock().unwrap_or_else(|e| e.into_inner());
+    let start = after.min(chunks.len());
+    let mut answer = json!({"chunks": chunks[start..].to_vec(), "done": state.done.load(Ordering::SeqCst)});
+    if let Some(reason) = state.stop_reason.lock().unwrap_or_else(|e| e.into_inner()).as_deref() {
+        answer["stop_reason"] = json!(reason);
+    }
+    if let Some(error) = state.error.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        answer["error"] = error.clone();
+    }
+    let done = state.done.load(Ordering::SeqCst);
+    drop(chunks);
+    if done && start == state.chunks.lock().unwrap_or_else(|e| e.into_inner()).len() {
+        inferences().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+    Ok(answer)
+}
+
+fn infer_stop(body: &Value) -> Result<Value, V1Error> {
+    let id = body.get("id").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| V1Error::new("invalid_args", "id is required"))?;
+    let open_id = body.get("open_id").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| V1Error::new("invalid_args", "open_id is required"))?;
+    if let Some(state) = find_inference(id, open_id) {
+        if !state.done.load(Ordering::SeqCst) {
+            if let Some(cancel) = state.cancel.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                let _ = cancel.send(());
+            }
+        }
+    }
+    Ok(json!({"ok": true}))
+}
 
 /// The agents' host routes (track E's).
 const AGENT_ROUTES: &[&str] = &[
@@ -228,10 +656,13 @@ pub fn status_of(code: &str) -> StatusCode {
     match code {
         "disabled" => StatusCode::CONFLICT,
         "not_found" => StatusCode::NOT_FOUND,
-        "plugin_unavailable" | "plugin_restarted" => StatusCode::SERVICE_UNAVAILABLE,
+        "plugin_unavailable" | "plugin_restarted" | "model_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         "timeout" => StatusCode::GATEWAY_TIMEOUT,
         "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
-        "stale" | "exists" => StatusCode::CONFLICT,
+        "stale" | "exists" | "busy" => StatusCode::CONFLICT,
+        "closed" => StatusCode::GONE,
+        "quota_exceeded" => StatusCode::PAYLOAD_TOO_LARGE,
+        "consent_required" => StatusCode::FORBIDDEN,
         "internal" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     }
@@ -241,10 +672,14 @@ fn refusal(status: StatusCode, code: &str, message: impl Into<String>) -> HubRes
     types::json(status, &V1Error::new(code, message).body())
 }
 
-/// `readBody`: the body as a JSON object (`{}` when empty); `None` past
-/// 2 MiB or when it is no object.
+/// `readBody`: the body as a JSON object (`{}` when empty); `None` over its
+/// route-specific cap or when it is no object.
 pub fn read_body(body: &[u8]) -> Option<Value> {
-    if body.len() > BODY_MAX {
+    read_body_limit(body, BODY_MAX)
+}
+
+fn read_body_limit(body: &[u8], limit: usize) -> Option<Value> {
+    if body.len() > limit {
         return None;
     }
     if body.is_empty() {
@@ -320,6 +755,21 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
         return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "X-Buwiz-Host is missing or wrong");
     }
     let path = req.path().to_owned();
+    if req.method == Method::GET && path == "/v1/host/models" {
+        return types::json(StatusCode::OK, &host_models().await);
+    }
+    if req.method == Method::POST && matches!(path.as_str(), "/v1/host/infer" | "/v1/host/infer/poll" | "/v1/host/infer/stop") {
+        let limit = if path == "/v1/host/infer" { INFER_BODY_MAX } else { BODY_MAX };
+        let Some(body) = read_body_limit(&req.body, limit) else {
+            return refusal(StatusCode::BAD_REQUEST, "invalid_args", "the body must be a JSON object within its size limit");
+        };
+        let result = match path.as_str() {
+            "/v1/host/infer" => infer_start(&ctx, &body).await,
+            "/v1/host/infer/poll" => infer_poll(&body),
+            _ => infer_stop(&body),
+        };
+        return sent(&path, result);
+    }
     if req.method == Method::GET && path == "/v1/host/plugins" {
         return types::json(StatusCode::OK, &json!({"ok": true, "plugins": rs.v1.list(&ctx.db)}));
     }
@@ -941,6 +1391,23 @@ impl hyper::body::Body for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hub::{traits::ModelApi, types::BoxFuture};
+
+    struct FakeModel {
+        sender: Arc<Mutex<Option<tokio::sync::mpsc::Sender<Result<Value, String>>>>>,
+    }
+
+    impl ModelApi for FakeModel {
+        fn create(&self, _: &TurnCtx, _: Value) -> BoxFuture<'static, Result<Value, String>> {
+            Box::pin(async { Ok(json!({})) })
+        }
+
+        fn stream(&self, _: &TurnCtx, _: Value) -> BoxFuture<'static, Result<tokio::sync::mpsc::Receiver<Result<Value, String>>, String>> {
+            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+            *self.sender.lock().unwrap() = Some(sender);
+            Box::pin(async { Ok(receiver) })
+        }
+    }
 
     #[test]
     fn the_update_routes_are_posts_and_no_plugins_action() {
@@ -977,5 +1444,168 @@ mod tests {
         assert_eq!(provider_title("google"), "Google");
         assert_eq!(provider_title("oauth:https://auth.example.com/tenant"), "auth.example.com");
         assert_eq!(provider_title("oauth:http://127.0.0.1:9/"), "127.0.0.1");
+    }
+
+    #[test]
+    fn model_catalog_maps_only_picker_fields_and_uses_gateway_modalities() {
+        let raw = json!({
+            "ok": true,
+            "default": "anthropic/claude-test",
+            "models": [
+                {
+                    "id": "anthropic/claude-test",
+                    "owner": "anthropic-apikey",
+                    "connection": "secret-route",
+                    "group": "Default",
+                    "subscription": true,
+                    "efforts": [{"value": "high", "label": "High"}],
+                    "defaultEffort": "high",
+                    "input_modalities": ["text", "image", "pdf"]
+                },
+                {
+                    "id": "google/gemini-test",
+                    "owner": "google-api-key",
+                    "connection": "secret-google-route",
+                    "group": "Google",
+                    "subscription": false,
+                    "efforts": []
+                },
+                {
+                    "id": "openai/gpt-4o-mini",
+                    "owner": "openai",
+                    "connection": "secret-openai-route",
+                    "group": "OpenAI API",
+                    "subscription": false,
+                    "efforts": []
+                },
+                {
+                    "id": "meta/llama-test",
+                    "owner": "meta",
+                    "connection": "secret-meta-route",
+                    "group": "Meta",
+                    "subscription": false,
+                    "efforts": []
+                }
+            ]
+        });
+        let catalog = model_catalog(&raw);
+        assert_eq!(
+            catalog,
+            json!({
+                "default": "anthropic/claude-test",
+                "models": [
+                    {
+                        "id": "anthropic/claude-test",
+                        "name": "claude-test",
+                        "maker": "anthropic",
+                        "group": "Default",
+                        "subscription": true,
+                        "efforts": [{"value": "high", "label": "High"}],
+                        "default_effort": "high",
+                        "inputs": ["text", "image", "pdf"]
+                    },
+                    {
+                        "id": "google/gemini-test",
+                        "name": "gemini-test",
+                        "maker": "google",
+                        "group": "Google",
+                        "subscription": false,
+                        "efforts": [],
+                        "default_effort": null,
+                        "inputs": ["text", "image", "pdf"]
+                    },
+                    {
+                        "id": "openai/gpt-4o-mini",
+                        "name": "gpt-4o-mini",
+                        "maker": "openai",
+                        "group": "OpenAI API",
+                        "subscription": false,
+                        "efforts": [],
+                        "default_effort": null,
+                        "inputs": ["text", "image", "pdf"]
+                    },
+                    {
+                        "id": "meta/llama-test",
+                        "name": "llama-test",
+                        "maker": "meta",
+                        "group": "Meta",
+                        "subscription": false,
+                        "efforts": [],
+                        "default_effort": null,
+                        "inputs": ["text"]
+                    }
+                ]
+            })
+        );
+        assert!(!catalog.to_string().contains("secret"));
+        assert_eq!(
+            fallback_inputs("openai", "openai/o2-mini"),
+            ["text", "image", "pdf"]
+        );
+    }
+
+    #[test]
+    fn image_to_text_only_models_are_refused() {
+        let request = json!({"messages": [{"role": "user", "text": "describe this", "files": [
+            {"name": "picture.png", "type": "image/png", "data": "aGVsbG8="}
+        ]}]});
+        let text_only = json!({"inputs": ["text"]});
+        assert_eq!(check_file_support(&request, &text_only).unwrap_err().code, "not_supported");
+        assert!(check_file_support(&request, &json!({"inputs": ["text", "image"]})).is_ok());
+    }
+
+    #[tokio::test]
+    async fn fake_model_streams_deltas_and_stop_cancels_the_stream() {
+        let fake = FakeModel { sender: Arc::new(Mutex::new(None)) };
+        let first = fake.stream(&TurnCtx::default(), json!({"model": "fake", "max_tokens": 4096, "messages": []})).await.unwrap();
+        let first_sender = fake.sender.lock().unwrap().take().unwrap();
+        let first_open = "chat-test-delta".to_owned();
+        let first_id = "chat-test-done";
+        let first_state = Arc::new(Inference {
+            open_id: first_open.clone(),
+            created: Instant::now(),
+            chunks: Mutex::new(Vec::new()),
+            done: AtomicBool::new(false),
+            stop_reason: Mutex::new(None),
+            error: Mutex::new(None),
+            cancel: Mutex::new(None),
+        });
+        let (_first_cancel, first_cancelled) = tokio::sync::oneshot::channel();
+        active_opens().lock().unwrap().insert(first_open);
+        inferences().lock().unwrap().insert(first_id.into(), first_state.clone());
+        let first_task = tokio::spawn(collect_inference(first, first_cancelled, first_state.clone()));
+        first_sender.send(Ok(json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}}))).await.unwrap();
+        drop(first_sender);
+        first_task.await.unwrap();
+        assert_eq!(*first_state.chunks.lock().unwrap(), ["hello"]);
+        assert_eq!(first_state.stop_reason.lock().unwrap().as_deref(), Some("end"));
+        assert_eq!(infer_stop(&json!({"open_id": first_state.open_id.clone(), "id": first_id})).unwrap(), json!({"ok": true}));
+        assert_eq!(first_state.stop_reason.lock().unwrap().as_deref(), Some("end"), "stop after completion is a no-op");
+        inferences().lock().unwrap().remove(first_id);
+
+        let second = fake.stream(&TurnCtx::default(), json!({"model": "fake", "max_tokens": 4096, "messages": []})).await.unwrap();
+        let second_sender = fake.sender.lock().unwrap().take().unwrap();
+        let second_open = "chat-test-stop".to_owned();
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let second_state = Arc::new(Inference {
+            open_id: second_open.clone(),
+            created: Instant::now(),
+            chunks: Mutex::new(Vec::new()),
+            done: AtomicBool::new(false),
+            stop_reason: Mutex::new(None),
+            error: Mutex::new(None),
+            cancel: Mutex::new(Some(cancel)),
+        });
+        active_opens().lock().unwrap().insert(second_open.clone());
+        inferences().lock().unwrap().insert("chat-test-stop".into(), second_state.clone());
+        let second_task = tokio::spawn(collect_inference(second, cancelled, second_state.clone()));
+        second_sender.send(Ok(json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "partial"}}))).await.unwrap();
+        infer_stop(&json!({"open_id": second_open, "id": "chat-test-stop"})).unwrap();
+        second_task.await.unwrap();
+        assert_eq!(*second_state.chunks.lock().unwrap(), ["partial"]);
+        assert_eq!(second_state.stop_reason.lock().unwrap().as_deref(), Some("stopped"));
+        assert!(second_state.done.load(Ordering::SeqCst));
+        inferences().lock().unwrap().remove("chat-test-stop");
+        drop(second_sender);
     }
 }

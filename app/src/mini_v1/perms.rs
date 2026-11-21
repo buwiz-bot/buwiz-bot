@@ -39,6 +39,8 @@ pub struct Permissions {
     pub copy: bool,
     /// `max_bytes` of a `buwiz.preview` document, when previews are granted.
     pub preview: Option<u64>,
+    /// The app's model catalog and isolated chat, when granted.
+    pub models: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -63,6 +65,9 @@ pub const ATTACH: &str = "buwiz.attach";
 pub const PICK: &str = "buwiz.pickFile";
 pub const COPY: &str = "buwiz.copy";
 pub const PREVIEW: &str = "buwiz.preview";
+pub const MODELS: &str = "buwiz.models";
+pub const CHAT: &str = "buwiz.chat";
+pub const CHAT_STOP: &str = "buwiz.chat.stop";
 pub const TICKET_TITLE: &str = "buwiz.ticket.title";
 /// An inline app's content height (a post; 6.5, 7.11).
 pub const FIT: &str = "buwiz.fit";
@@ -93,6 +98,12 @@ impl Permissions {
                 "storage" => p.storage = Some(storage(v)?),
                 "copy" => p.copy = v.as_bool().ok_or_else(|| invalid("copy is a boolean"))?,
                 "preview" => p.preview = Some(preview(v)?),
+                "models" => {
+                    if !object(v, "models")?.is_empty() {
+                        return Err(invalid("models has no keys"));
+                    }
+                    p.models = true;
+                }
                 _ => return Err(invalid(&format!("unknown permission {k:?}"))),
             }
         }
@@ -122,6 +133,9 @@ impl Permissions {
         }
         if self.preview.is_some() {
             m.push(PREVIEW);
+        }
+        if self.models {
+            m.extend([MODELS, CHAT, CHAT_STOP]);
         }
         m
     }
@@ -250,7 +264,8 @@ mod tests {
             "pick_file": { "extensions": [".XLSX", ".csv"], "max_bytes": 26214400, "multiple": false },
             "storage": { "quota_bytes": 1048576 },
             "copy": true,
-            "preview": {}
+            "preview": {},
+            "models": {}
         })
     }
 
@@ -277,6 +292,8 @@ mod tests {
             json!({"preview": {"scripts": true}}),
             json!({"preview": {"max_bytes": 8388609}}),
             json!({"preview": {"max_bytes": 0}}),
+            json!({"models": {"x": 1}}),
+            json!({"models": []}),
         ] {
             assert!(Permissions::parse(Some(&bad)).is_err(), "{bad}");
         }
@@ -290,7 +307,7 @@ mod tests {
         for always in ["buwiz.call", "buwiz.ticket.title", "buwiz.fit", "buwiz.ready", "buwiz.actions", "buwiz.settle", "buwiz.meta"] {
             assert!(access.allows_host(always), "{always}");
         }
-        for absent in ["buwiz.open", "buwiz.attach", "buwiz.pickFile", "buwiz.copy", "buwiz.preview", "buwiz.storage.get", "anything"] {
+        for absent in ["buwiz.open", "buwiz.attach", "buwiz.pickFile", "buwiz.copy", "buwiz.preview", "buwiz.storage.get", "buwiz.models", "buwiz.chat", "anything"] {
             assert!(!access.allows_host(absent), "{absent}");
         }
         assert!(!access.allows_http("GET", "http://127.0.0.1:8787/v1/host/call"));
@@ -306,8 +323,10 @@ mod tests {
         assert!(!access.allows_process("sh"));
         assert!(p.policy().harden);
         let all = Permissions::parse(Some(&fixture_board())).unwrap();
-        assert_eq!(all.methods().len(), 16);
+        assert_eq!(all.methods().len(), 19);
         assert!(all.policy().access().allows_host("buwiz.preview"));
+        assert!(all.policy().access().allows_host("buwiz.models"));
+        assert!(all.policy().access().allows_host("buwiz.chat.stop"));
         // a preview is the host's own web view, not one the app gets
         assert!(!all.policy().access().allows_webviews());
         // copy granted is the bridge's pasteboard write, not nsh's clipboard
