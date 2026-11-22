@@ -83,7 +83,12 @@ pub trait HostUi: Send + Sync {
     fn fresh_press(&self) -> Option<u64> {
         None
     }
-    /// Spends `press` on a hand-off: `false` when one did already.
+    /// The person's press or unshifted Enter in text that a chat made now may
+    /// use; never a press for a file hand-off.
+    fn fresh_chat_press(&self) -> Option<u64> {
+        None
+    }
+    /// Spends `press` on a chat call or hand-off: `false` when one did already.
     fn spend_press(&self, press: u64) -> bool {
         let _ = press;
         false
@@ -190,6 +195,9 @@ struct CallActor {
     /// The person's press a hand-off of its result may spend, as it was
     /// when the call was made.
     press: Option<u64>,
+    /// The person's press or chat-submit a chat call may spend, as it was
+    /// when the call was made.
+    chat_press: Option<u64>,
     ui: Arc<dyn HostUi>,
     /// It may still write: an agent's call does until its check says it reads.
     writing: AtomicBool,
@@ -203,7 +211,13 @@ impl CallActor {
             ui.agent_call(true);
             ui.agent_write(true);
         }
-        CallActor { actor, press: ui.fresh_press(), ui: ui.clone(), writing: AtomicBool::new(actor == Actor::Agent) }
+        CallActor {
+            actor,
+            press: ui.fresh_press(),
+            chat_press: ui.fresh_chat_press(),
+            ui: ui.clone(),
+            writing: AtomicBool::new(actor == Actor::Agent),
+        }
     }
 
     /// The call turned out to change nothing.
@@ -721,7 +735,7 @@ impl OpenContext {
                 MiniError::new("consent_required", "a person must press to start a chat"),
             );
         }
-        let Some(press) = who.press else {
+        let Some(press) = who.chat_press else {
             return reject(
                 reply,
                 MiniError::new("consent_required", "a fresh person press is required"),

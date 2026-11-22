@@ -179,6 +179,9 @@ impl host_api::Broker for FakeBroker {
             }),
             "/v1/host/tickets/title" => Ok(json!({"valid": body["ticket"] == TICKET, "title": "Dela Cruz Jane"})),
             "/v1/host/resolve" => Ok(json!({"result": "token", "ticket": TICKET, "title": "Item One"})),
+            "/v1/host/infer" => Ok(json!({"id": "fake-chat"})),
+            "/v1/host/infer/poll" => Ok(json!({"chunks": ["hello"], "done": true, "stop_reason": "end"})),
+            "/v1/host/infer/stop" => Ok(json!({"ok": true})),
             "/v1/host/sessions/close" => {
                 self.closed.lock().unwrap().push(body["open_id"].as_str().unwrap_or_default().to_owned());
                 Ok(json!({"ok": true}))
@@ -247,6 +250,8 @@ struct TestUi {
     /// The person's last press in the open, if fresh, and the presses
     /// hand-offs spent.
     hand_press: Mutex<Option<u64>>,
+    /// The person's last press for a chat, including a text-field submit.
+    chat_press: Mutex<Option<u64>>,
     spent: Mutex<Vec<u64>>,
     /// What the person was told of hand-offs that did nothing.
     refusals: Mutex<Vec<&'static str>>,
@@ -270,6 +275,9 @@ impl HostUi for TestUi {
     }
     fn fresh_press(&self) -> Option<u64> {
         *self.hand_press.lock().unwrap()
+    }
+    fn fresh_chat_press(&self) -> Option<u64> {
+        *self.chat_press.lock().unwrap()
     }
     fn spend_press(&self, press: u64) -> bool {
         let mut spent = self.spent.lock().unwrap();
@@ -1401,6 +1409,23 @@ fn brg_18_chat_requires_a_fresh_person_press() {
     let mut no_press = Open::start(permissions.clone(), script);
     assert_eq!(no_press.wait("consent_required"), "consent_required");
     assert!(no_press.broker.host_calls.lock().unwrap().is_empty(), "a call without a fresh press never reaches the broker");
+
+    let mut submitted =
+        Open::start_with(FIXTURE, permissions.clone(), script, Limits::default(), |ui| {
+            *ui.chat_press.lock().unwrap() = Some(7);
+        });
+    assert_eq!(submitted.wait("accepted"), "accepted");
+    assert_eq!(*submitted.ui.spent.lock().unwrap(), [7]);
+    assert!(
+        submitted
+            .broker
+            .host_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(route, _)| route == "/v1/host/infer"),
+        "a chat submit reaches the isolated inference route",
+    );
 
     let mut agent = Open::start_with(FIXTURE, permissions, script, Limits::default(), |ui| {
         ui.agent.store(true, Ordering::SeqCst);

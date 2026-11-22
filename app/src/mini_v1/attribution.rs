@@ -13,7 +13,8 @@
 //!   opening a screen for the model is such an action ([`agent_opened`]).
 //! - A surface comes back to the person only by the person's own press or
 //!   key in that surface, once the agent is quiet ([`quiet`]). Typing in
-//!   the chat gives nothing in a mini app back.
+//!   the chat gives nothing in a mini app back; unshifted Enter can submit a
+//!   chat call.
 //! - Before that, the person's input changes nothing: the call goes out as
 //!   the agent's. A wrong refusal costs a second press; a wrong "person"
 //!   would run a person-only tool.
@@ -42,6 +43,8 @@
 //! search field hands off nothing. Until an agent has acted every call is the
 //! person's, so an app's code at load or on a timer would pass the actor
 //! alone; it can't make a press. One press, one hand-off.
+//!
+//! Unshifted Enter in text is a press for a chat call only, never a hand-off.
 //!
 //! A press made while the agent is still acting is no press: the agent's
 //! own click can't leave one for the surface to spend once it goes quiet.
@@ -112,7 +115,10 @@ pub struct Attribution {
     /// Each surface's last press of the person's: its number and when. An
     /// agent's action clears them.
     presses: HashMap<u64, (u64, Instant)>,
-    /// Each surface's last press a hand-off spent.
+    /// Each surface's last chat-submit press: its number and when. It cannot
+    /// be spent on a hand-off.
+    submits: HashMap<u64, (u64, Instant)>,
+    /// Each surface's last press a chat call or hand-off spent.
     spent: HashMap<u64, u64>,
     /// The number the next press gets.
     next_press: u64,
@@ -129,6 +135,7 @@ impl Attribution {
         self.last_action = Some(now);
         self.person.clear();
         self.presses.clear();
+        self.submits.clear();
     }
 
     /// A call of the agent's left the app.
@@ -173,12 +180,25 @@ impl Attribution {
         self.presses.insert(surface, (self.next_press, now));
     }
 
+    /// The person submitted a chat in `surface`: this is a chat press, not
+    /// one a hand-off may spend.
+    pub fn person_submitted(&mut self, surface: u64, now: Instant) {
+        if !self.quiet(now) {
+            return;
+        }
+        self.person_pressed(surface, now);
+        self.presses.remove(&surface);
+        self.next_press += 1;
+        self.submits.insert(surface, (self.next_press, now));
+    }
+
     /// The person's input in `surface`, as [`Gesture`] has it: any of it
     /// takes the surface back ([`Self::person_pressed`]); only the press a
     /// hand-off may spend differs.
     pub fn person_input(&mut self, surface: u64, gesture: Gesture, now: Instant) {
         match gesture {
             Gesture::Activation => self.person_activated(surface, now),
+            Gesture::Submit => self.person_submitted(surface, now),
             Gesture::Typing => self.person_typed(surface, now),
             Gesture::Nothing => self.person_pressed(surface, now),
         }
@@ -189,18 +209,36 @@ impl Attribution {
     pub fn person_typed(&mut self, surface: u64, now: Instant) {
         self.person_pressed(surface, now);
         self.presses.remove(&surface);
+        self.submits.remove(&surface);
     }
 
-    /// The person's press in `surface` that a call made `now` may hand off a
-    /// file by: one within [`PRESS_WINDOW`], no hand-off has spent yet.
+    /// The person's press in `surface` that a hand-off made `now` may use:
+    /// one within [`PRESS_WINDOW`] that no chat call or hand-off has spent.
     pub fn fresh_press(&self, surface: u64, now: Instant) -> Option<u64> {
         let &(n, at) = self.presses.get(&surface).filter(|_| self.watching)?;
         let unspent = self.spent.get(&surface).is_none_or(|&s| s < n);
         (unspent && now.saturating_duration_since(at) <= PRESS_WINDOW).then_some(n)
     }
 
-    /// Spends press `n` of `surface` on a hand-off: `false` when one has spent
-    /// it, or a later one, already.
+    /// The newest unspent press or chat submission in `surface` within
+    /// [`PRESS_WINDOW`] that a chat call made `now` may use.
+    pub fn fresh_chat_press(&self, surface: u64, now: Instant) -> Option<u64> {
+        if !self.watching {
+            return None;
+        }
+        self.presses
+            .get(&surface)
+            .into_iter()
+            .chain(self.submits.get(&surface))
+            .filter_map(|&(n, at)| {
+                let unspent = self.spent.get(&surface).is_none_or(|&s| s < n);
+                (unspent && now.saturating_duration_since(at) <= PRESS_WINDOW).then_some(n)
+            })
+            .max()
+    }
+
+    /// Spends press `n` of `surface` on a chat call or hand-off: `false` when
+    /// one has spent it, or a later one, already.
     pub fn spend_press(&mut self, surface: u64, n: u64) -> bool {
         if self.spent.get(&surface).is_some_and(|&s| s >= n) {
             return false;
@@ -239,6 +277,11 @@ pub fn actor(surface: u64) -> Actor {
 /// [`Attribution::fresh_press`] of this process's input, now.
 pub fn fresh_press(surface: u64) -> Option<u64> {
     with(|a| a.fresh_press(surface, Instant::now()))
+}
+
+/// [`Attribution::fresh_chat_press`] of this process's input, now.
+pub fn fresh_chat_press(surface: u64) -> Option<u64> {
+    with(|a| a.fresh_chat_press(surface, Instant::now()))
 }
 
 /// [`Attribution::spend_press`] of this process's input.
@@ -299,6 +342,10 @@ macro_rules! host_methods {
             $crate::mini_v1::attribution::fresh_press(self.$surface)
         }
 
+        fn fresh_chat_press(&self) -> Option<u64> {
+            $crate::mini_v1::attribution::fresh_chat_press(self.$surface)
+        }
+
         fn spend_press(&self, press: u64) -> bool {
             $crate::mini_v1::attribution::spend_press(self.$surface, press)
         }
@@ -343,23 +390,16 @@ pub(crate) fn watch_linux_widget(widget: &nsh_platform_linux::gtk4::Widget, surf
 
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    keys.connect_key_pressed(move |keys, key, keycode, _| {
+    keys.connect_key_pressed(move |keys, key, keycode, state| {
         let in_text = keys
             .widget()
             .and_then(|widget| widget.root())
             .and_then(|root| root.downcast::<gtk::Window>().ok())
             .and_then(|window| gtk::prelude::GtkWindowExt::focus(&window))
             .is_some_and(|focus| focus.is::<gtk::Editable>() || focus.is::<gtk::TextView>());
-        let gesture = with_linux_held(|held| {
-            if !held.insert(keycode) {
-                return Gesture::Nothing;
-            }
-            if in_text || !matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter | gtk::gdk::Key::space) {
-                Gesture::Typing
-            } else {
-                Gesture::Activation
-            }
-        });
+        let first_down = with_linux_held(|held| held.insert(keycode));
+        let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+        let gesture = linux_gesture(key, in_text, shift, first_down);
         // Linux does not distinguish synthesized agent input from a person's.
         linux_input(surface, gesture);
         gtk::glib::Propagation::Proceed
@@ -376,12 +416,37 @@ pub(crate) fn watch_linux_widget(widget: &nsh_platform_linux::gtk4::Widget, surf
     widget.add_controller(focus);
 }
 
+#[cfg(target_os = "linux")]
+fn linux_gesture(
+    key: nsh_platform_linux::gtk4::gdk::Key,
+    in_text: bool,
+    shift: bool,
+    first_down: bool,
+) -> Gesture {
+    use nsh_platform_linux::gtk4::gdk::Key;
+
+    if !first_down {
+        return Gesture::Nothing;
+    }
+    let enter = matches!(key, Key::Return | Key::KP_Enter | Key::ISO_Enter);
+    if in_text {
+        if enter && !shift { Gesture::Submit } else { Gesture::Typing }
+    } else if enter || matches!(key, Key::space) {
+        Gesture::Activation
+    } else {
+        Gesture::Typing
+    }
+}
+
 /// What a piece of the person's input is to a hand-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
     /// A left click, or Return, Enter or Space going down outside text: a
     /// press a hand-off may spend.
     Activation,
+    /// Unshifted Return or Enter in text: a chat press only, never a
+    /// hand-off press.
+    Submit,
     /// Any other key: it takes back a press before it.
     Typing,
     /// Neither: a key repeating or still held, a key or button coming up,
@@ -389,8 +454,8 @@ pub enum Gesture {
     Nothing,
 }
 
-/// The activation keys down now, by code: one going down again before it
-/// came up is no new press ([`gesture_of`]). Main thread.
+/// Activation and chat-submit keys down now, by code: one going down again
+/// before it came up is no new press ([`gesture_of`]). Main thread.
 #[cfg(target_os = "macos")]
 static HELD: Mutex<Option<HashSet<u16>>> = Mutex::new(None);
 
@@ -431,7 +496,7 @@ pub fn takes_text(responder: &nsh_platform_macos::objc2::runtime::NSObject) -> b
 /// keys, `held` the activation keys down now, which this keeps.
 #[cfg(target_os = "macos")]
 pub fn gesture_of(event: &nsh_platform_macos::objc2_app_kit::NSEvent, in_text: bool, held: &mut HashSet<u16>) -> Gesture {
-    use nsh_platform_macos::objc2_app_kit::NSEventType;
+    use nsh_platform_macos::objc2_app_kit::{NSEventModifierFlags, NSEventType};
     let kind = event.r#type();
     if kind == NSEventType::LeftMouseDown {
         return Gesture::Activation;
@@ -447,7 +512,16 @@ pub fn gesture_of(event: &nsh_platform_macos::objc2_app_kit::NSEvent, in_text: b
     if event.isARepeat() || held.contains(&code) {
         return Gesture::Nothing;
     }
-    if in_text || !activation_key(code) {
+    if in_text {
+        if matches!(code, 36 | 76) {
+            held.insert(code);
+            if !event.modifierFlags().contains(NSEventModifierFlags::Shift) {
+                return Gesture::Submit;
+            }
+        }
+        return Gesture::Typing;
+    }
+    if !activation_key(code) {
         return Gesture::Typing;
     }
     held.insert(code);
@@ -726,6 +800,7 @@ mod tests {
         let mut a = Attribution::default();
         a.person_activated(FORM, t);
         assert_eq!(a.fresh_press(FORM, t), None);
+        assert_eq!(a.fresh_chat_press(FORM, t), None);
     }
 
     #[test]
@@ -741,6 +816,82 @@ mod tests {
         assert_eq!(a.fresh_press(FORM, secs(t, 1) + Duration::from_millis(500)), None);
     }
 
+    #[test]
+    fn a_submit_is_available_to_chat_but_never_to_a_hand_off() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_input(FORM, Gesture::Submit, t);
+        assert!(a.fresh_chat_press(FORM, t).is_some());
+        assert_eq!(a.fresh_press(FORM, t), None);
+        assert_eq!(a.fresh_chat_press(FORM, t + PRESS_WINDOW + Duration::from_millis(1)), None);
+    }
+
+    #[test]
+    fn typing_after_a_submit_clears_its_chat_press() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_input(FORM, Gesture::Submit, t);
+        a.person_input(FORM, Gesture::Typing, t + Duration::from_millis(10));
+        assert_eq!(a.fresh_chat_press(FORM, t + Duration::from_millis(10)), None);
+    }
+
+    #[test]
+    fn a_submit_while_the_agent_is_not_quiet_makes_no_chat_press() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.agent_acted(t);
+        a.person_input(FORM, Gesture::Submit, t + Duration::from_secs(1));
+        assert_eq!(a.fresh_chat_press(FORM, t + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn a_spent_press_cannot_start_a_second_chat() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_input(FORM, Gesture::Submit, t);
+        let press = a.fresh_chat_press(FORM, t).unwrap();
+        assert!(a.spend_press(FORM, press));
+        assert_eq!(a.fresh_chat_press(FORM, t + Duration::from_millis(10)), None);
+    }
+
+    #[test]
+    fn a_click_activation_also_satisfies_a_chat_press() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_input(FORM, Gesture::Activation, t);
+        assert_eq!(a.fresh_chat_press(FORM, t), a.fresh_press(FORM, t));
+    }
+
+    #[test]
+    fn a_chat_press_uses_the_newest_activation_or_submit() {
+        let t = Instant::now();
+        let mut a = watched();
+        a.person_input(FORM, Gesture::Activation, t);
+        let activation = a.fresh_chat_press(FORM, t).unwrap();
+        a.person_input(FORM, Gesture::Submit, t + Duration::from_millis(1));
+        let submit = a.fresh_chat_press(FORM, t + Duration::from_millis(1)).unwrap();
+        assert!(submit > activation);
+        a.person_input(FORM, Gesture::Activation, t + Duration::from_millis(2));
+        assert_eq!(
+            a.fresh_chat_press(FORM, t + Duration::from_millis(2)),
+            a.fresh_press(FORM, t + Duration::from_millis(2))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_gesture_classifies_chat_submit_and_hand_off_keys() {
+        use nsh_platform_linux::gtk4::gdk::Key;
+
+        assert_eq!(linux_gesture(Key::Return, true, false, true), Gesture::Submit);
+        assert_eq!(linux_gesture(Key::Return, true, true, true), Gesture::Typing);
+        assert_eq!(linux_gesture(Key::space, true, false, true), Gesture::Typing);
+        assert_eq!(linux_gesture(Key::KP_Enter, true, false, true), Gesture::Submit);
+        assert_eq!(linux_gesture(Key::ISO_Enter, true, false, true), Gesture::Submit);
+        assert_eq!(linux_gesture(Key::Return, true, false, false), Gesture::Nothing);
+        assert_eq!(linux_gesture(Key::Return, false, true, true), Gesture::Activation);
+    }
+
     /// Real AppKit events, as the app gets them.
     #[cfg(target_os = "macos")]
     mod events {
@@ -751,10 +902,19 @@ mod tests {
         };
 
         pub fn key(kind: NSEventType, code: u16, repeat: bool) -> Retained<NSEvent> {
+            key_with_shift(kind, code, repeat, false)
+        }
+
+        pub fn key_with_shift(kind: NSEventType, code: u16, repeat: bool, shift: bool) -> Retained<NSEvent> {
             let chars = NSString::from_str(" ");
+            let flags = if shift {
+                NSEventModifierFlags::Shift
+            } else {
+                NSEventModifierFlags::empty()
+            };
             // SAFETY: NSEvent's documented constructor, its arguments of their types.
             let made: Option<Retained<NSEvent>> = unsafe {
-                msg_send![NSEvent::class(), keyEventWithType: kind, location: NSPoint::new(0.0, 0.0), modifierFlags: NSEventModifierFlags(0), timestamp: 0.0f64, windowNumber: 0isize, context: None::<&AnyObject>, characters: &*chars, charactersIgnoringModifiers: &*chars, isARepeat: Bool::new(repeat), keyCode: code]
+                msg_send![NSEvent::class(), keyEventWithType: kind, location: NSPoint::new(0.0, 0.0), modifierFlags: flags, timestamp: 0.0f64, windowNumber: 0isize, context: None::<&AnyObject>, characters: &*chars, charactersIgnoringModifiers: &*chars, isARepeat: Bool::new(repeat), keyCode: code]
             };
             made.expect("a key event")
         }
@@ -792,6 +952,44 @@ mod tests {
         let n = a.fresh_press(FORM, t).unwrap();
         assert!(a.spend_press(FORM, n));
         assert_eq!(a.fresh_press(FORM, t + Duration::from_millis(500)), None, "its repeats make none");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unshifted_enter_in_text_submits_for_chat_only_once_per_press() {
+        use events::{key, key_with_shift};
+        use nsh_platform_macos::objc2_app_kit::NSEventType;
+
+        let mut held = HashSet::new();
+        assert_eq!(
+            gesture_of(&key(NSEventType::KeyDown, 36, false), true, &mut held),
+            Gesture::Submit
+        );
+        assert_eq!(
+            gesture_of(&key(NSEventType::KeyDown, 36, true), true, &mut held),
+            Gesture::Nothing,
+            "repeat"
+        );
+        assert_eq!(
+            gesture_of(&key(NSEventType::KeyDown, 36, false), true, &mut held),
+            Gesture::Nothing,
+            "already held"
+        );
+        assert_eq!(gesture_of(&key(NSEventType::KeyUp, 36, false), true, &mut held), Gesture::Nothing);
+        assert_eq!(
+            gesture_of(&key_with_shift(NSEventType::KeyDown, 36, false, true), true, &mut held),
+            Gesture::Typing
+        );
+        assert_eq!(
+            gesture_of(&key(NSEventType::KeyDown, 49, false), true, &mut held),
+            Gesture::Typing,
+            "Space"
+        );
+        assert_eq!(
+            gesture_of(&key(NSEventType::KeyDown, 76, false), true, &mut held),
+            Gesture::Submit,
+            "keypad Enter"
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -898,7 +1096,7 @@ mod tests {
         let mut held = HashSet::new();
         let space = events::key(NSEventType::KeyDown, 49, false);
         assert_eq!(gesture_of(&space, takes_text(&field), &mut held), Gesture::Typing);
-        assert_eq!(gesture_of(&events::key(NSEventType::KeyDown, 36, false), takes_text(&field), &mut held), Gesture::Typing, "Return too");
+        assert_eq!(gesture_of(&events::key(NSEventType::KeyDown, 36, false), takes_text(&field), &mut held), Gesture::Submit, "Return too");
         let t = Instant::now();
         let mut a = watched();
         a.person_typed(FORM, t);
