@@ -346,6 +346,9 @@ async fn answer(rs: Arc<Routines>, ctx: Arc<HubCtx>, req: HubRequest) -> HubResp
     if req.method == Method::GET && path == "/v1/host/widget/grants" {
         return sent(&path, crate::hub::sources::grants::host_grants(&ctx, req.query("name").as_deref()).await);
     }
+    if req.method == Method::GET && path == "/v1/host/ext/grants" {
+        return sent(&path, crate::hub::routes::ext_read::host_grants(&ctx));
+    }
     if let Some(raw) = path.strip_prefix("/v1/host/plugins/").and_then(|r| r.strip_suffix("/accounts")).filter(|r| req.method == Method::GET && !r.is_empty() && !r.contains('/')) {
         let out = match (js::decode_uri_component(raw), ctx.plugins.as_ref()) {
             (Err(_), _) => Err(V1Error::new("internal", "URI malformed")),
@@ -420,6 +423,8 @@ const POSTS: &[&str] = &[
     "/v1/host/widget/open",
     "/v1/host/widget/grant",
     "/v1/host/widget/revoke",
+    "/v1/host/ext/grant",
+    "/v1/host/ext/revoke",
 ];
 
 impl Route {
@@ -455,6 +460,8 @@ impl Route {
                     "/v1/host/widget/open" => return crate::hub::sources::grants::host_open(ctx, b).await,
                     "/v1/host/widget/grant" => return crate::hub::sources::grants::host_grant(ctx, b),
                     "/v1/host/widget/revoke" => return crate::hub::sources::grants::host_revoke(ctx, b),
+                    "/v1/host/ext/grant" => return crate::hub::routes::ext_read::host_grant(ctx, b),
+                    "/v1/host/ext/revoke" => return crate::hub::routes::ext_read::host_revoke(ctx, b),
                     _ => {}
                 }
                 if let Some(op) = path.strip_prefix("/v1/host/routines/") {

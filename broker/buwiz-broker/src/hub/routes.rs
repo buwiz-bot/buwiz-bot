@@ -30,6 +30,8 @@ use hyper::Method;
 /// the app-facing `/v1/host/*` routes, the `ri_` webhooks and the host
 /// token (5.5h, track D)
 pub mod host;
+/// narrow read-only external-app door (`/v1/ext/read`) and `/v1/host/ext/*` grants
+pub mod ext_read;
 /// `GET /models` (5.3, track B)
 pub mod models;
 /// track L's leaves
@@ -187,6 +189,8 @@ pub const ROUTES: &[Entry] = &[
     e(Post, X("/v1/host/apps/source"), Hub(Host)),
     // the rest of /v1/host/ (401, 405 and 404 answers)
     e(Any, P("/v1/host/"), Hub(Host)),
+    // narrow read-only external-app door (bearer grant token)
+    e(Post, X("/v1/ext/read"), Hub(Host)),
     // 5.7b artifacts and widgets
     e(Get, P("/module"), Hub(Artifacts)),
     e(Post, X("/app/meta"), Hub(Artifacts)),
@@ -354,7 +358,7 @@ mod tests {
     #[test]
     fn hub_table_counts() {
         let count = |f: &dyn Fn(Owner) -> bool| ROUTES.iter().filter(|r| f(r.owner)).count();
-        assert_eq!(count(&|o| matches!(o, Hub(_))), 124);
+        assert_eq!(count(&|o| matches!(o, Hub(_))), 125);
         assert_eq!(count(&|o| o == Rust), 29);
     }
 }
