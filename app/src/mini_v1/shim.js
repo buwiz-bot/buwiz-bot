@@ -74,6 +74,35 @@ const __buwizBridge = (() => {
     }
     return out;
   };
+  const base64 = (input) => {
+    if (!(input instanceof Uint8Array)) throw new BuwizError("invalid_args", "chat file data must be a Uint8Array");
+    let out = "";
+    for (let i = 0; i < input.length; i += 3) {
+      const a = input[i];
+      const b = i + 1 < input.length ? input[i + 1] : 0;
+      const c = i + 2 < input.length ? input[i + 2] : 0;
+      out += B64[a >> 2]
+        + B64[((a & 3) << 4) | (b >> 4)]
+        + (i + 1 < input.length ? B64[((b & 15) << 2) | (c >> 6)] : "=")
+        + (i + 2 < input.length ? B64[c & 63] : "=");
+    }
+    return out;
+  };
+  const chatHandlers = new Map();
+  const pendingChatEvents = new Map();
+  const chatEvent = (kind, event) => {
+    if (!event || typeof event.id !== "string") return;
+    const handler = chatHandlers.get(event.id);
+    if (handler) handler(kind, event);
+    else {
+      const pending = pendingChatEvents.get(event.id) || [];
+      pending.push([kind, event]);
+      pendingChatEvents.set(event.id, pending);
+    }
+  };
+  __buwizHost.on("buwiz.chat.delta", (event) => chatEvent("delta", event));
+  __buwizHost.on("buwiz.chat.done", (event) => chatEvent("done", event));
+  __buwizHost.on("buwiz.chat.error", (event) => chatEvent("error", event));
   const buwiz = {
     props: freeze(params.props || {}),
     app: freeze(params.app || {}),
@@ -107,6 +136,84 @@ const __buwizBridge = (() => {
   if (has("buwiz.call")) buwiz.call = (tool, args) => ask("buwiz.call", { tool, args: args === undefined ? {} : args });
   if (has("buwiz.open")) buwiz.open = (target) => ask("buwiz.open", target).then(done);
   if (has("buwiz.attach")) buwiz.attach = (scope, value) => ask("buwiz.attach", { scope, value });
+  if (has("buwiz.models")) buwiz.models = () => ask("buwiz.models", null);
+  if (has("buwiz.chat")) {
+    buwiz.chat = (request) => {
+      const listeners = new Set();
+      let id = null;
+      let stopped = false;
+      let settled = false;
+      let resolveDone;
+      let rejectDone;
+      const done = new Promise((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+      const finish = (kind, event) => {
+        if (settled) return;
+        if (kind === "delta") {
+          for (const listener of [...listeners]) {
+            try {
+              listener(event.text);
+            } catch (_) {}
+          }
+          return;
+        }
+        settled = true;
+        chatHandlers.delete(id);
+        if (kind === "done") resolveDone({ text: event.text, stop_reason: event.stop_reason });
+        else {
+          const error = event.error || {};
+          rejectDone(new BuwizError(error.code, error.message, error.retryable, error.details));
+        }
+      };
+      const wireRequest = request && typeof request === "object"
+        ? {
+            ...request,
+            ...(Array.isArray(request.messages)
+              ? {
+                  messages: request.messages.map((message) =>
+                    message && typeof message === "object"
+                      ? {
+                          ...message,
+                          ...(Array.isArray(message.files) ? { files: message.files.map((file) => ({ ...file, data: base64(file.data) })) } : {}),
+                        }
+                      : message,
+                  ),
+                }
+              : {}),
+          }
+        : request;
+      ask("buwiz.chat", wireRequest).then((started) => {
+        if (!started || typeof started.id !== "string") {
+          settled = true;
+          rejectDone(new BuwizError("internal", "the host sent no chat id", true));
+          return;
+        }
+        id = started.id;
+        chatHandlers.set(id, finish);
+        for (const [kind, event] of pendingChatEvents.get(id) || []) finish(kind, event);
+        pendingChatEvents.delete(id);
+        if (stopped && !settled) ask("buwiz.chat.stop", { id }).catch(() => {});
+      }, (error) => {
+        settled = true;
+        rejectDone(error);
+      });
+      return Object.freeze({
+        onDelta: (handler) => {
+          if (typeof handler !== "function") throw new BuwizError("invalid_args", "onDelta takes a function");
+          listeners.add(handler);
+          return () => listeners.delete(handler);
+        },
+        done,
+        stop: () => {
+          if (settled || stopped) return;
+          stopped = true;
+          if (id) ask("buwiz.chat.stop", { id }).catch(() => {});
+        },
+      });
+    };
+  }
   if (has("buwiz.pickFile")) {
     buwiz.pickFile = (options) =>
       ask("buwiz.pickFile", options === undefined ? {} : options).then((files) =>

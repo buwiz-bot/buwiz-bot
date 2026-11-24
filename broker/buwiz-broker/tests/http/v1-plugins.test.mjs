@@ -17,6 +17,14 @@ import { FIXTURE, FX, alive, codeOf, dataOf, envelope, fixtureManifest, fixtureS
 const stateIs = (api, state) => async () => (await api.plugin())?.state === state;
 const provision = (k) => ({ protocol: "1.0.0", plugin: FX, key: { alg: "ed25519", seed: k.seed }, pub: k.pub });
 
+test("GET /v1/host/models returns an empty catalog without gateway details when unreachable", async () => {
+  await withHost("models-empty", async ({ api }) => {
+    const response = await api.raw("GET", "/v1/host/models");
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json, { default: null, models: [] });
+  }, { OPENCODEX_URL: "http://127.0.0.1:1" });
+});
+
 // ── C.4 ──────────────────────────────────────────────────────────────────
 
 test("RSV-01 buwiz.provision is the first request answered; other tools before it fail", async () => {

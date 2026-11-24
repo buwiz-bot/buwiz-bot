@@ -105,6 +105,10 @@ impl HostUi for MacUi {
         attribution::fresh_press(self.surface)
     }
 
+    fn fresh_chat_press(&self) -> Option<u64> {
+        attribution::fresh_chat_press(self.surface)
+    }
+
     fn spend_press(&self, press: u64) -> bool {
         attribution::spend_press(self.surface, press)
     }

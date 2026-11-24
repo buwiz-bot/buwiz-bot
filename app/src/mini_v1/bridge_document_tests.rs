@@ -422,6 +422,33 @@ fn a_hand_off_refused_for_want_of_a_press_says_so_once() {
 }
 
 #[test]
+fn a_chat_submit_press_cannot_hand_off_files() {
+    let bed = Bed::new();
+    let path = bed.folder.join("open-1f/1/IMG_4250.png");
+    let args = json!({"open_with": {"path": path}, "save": {"path": path}});
+    let script = format!("return await buwiz.call(\"fx_document\", {args});");
+    let folder = bed.folder.clone();
+    let mut o = Open::start_with(
+        FIXTURE,
+        json!({"tools": TOOLS}),
+        &script,
+        Limits::default(),
+        move |ui| {
+            ui.first_party.store(true, Ordering::SeqCst);
+            *ui.folder.lock().unwrap() = Some(folder);
+            *ui.chat_press.lock().unwrap() = Some(7);
+        },
+    );
+    o.wait("{");
+    assert!(opened_with(&o).is_empty() && saved(&o).is_empty());
+    assert_eq!(told(&o), [OPEN_REFUSED]);
+    assert!(
+        o.ui.spent.lock().unwrap().is_empty(),
+        "a chat submit is not a hand-off press"
+    );
+}
+
+#[test]
 fn a_document_refused_with_no_press_behind_it_is_only_logged() {
     let bed = Bed::new();
     let mut o = bed.pressed(true, false, None, json!({"field": bed.field("open-1f/1/run.exe")}));
