@@ -1,0 +1,209 @@
+d6e76a5c4	xtask: Build the distribution and runtimes from the committed lock files (#2330)
+563ab90b6	macos: Keep a hovered window as the input's under nsh test (#2335)
+1db9149a7	ios: Let VoiceOver move into labelled lists (#2336)
+5a0e1dfe5	windows: Draw input text in place on a monitor of another scale than the system's (#2338)
+f8edf2007	docs: Recommend a custom title bar on desktop in Design Guides (#2348)
+ccce8e007	android: Report Back's release to a view's onKeyUp (#2344)
+4aeefa80a	android: Keep a focus() request until its view is shown (#2345)
+9ba595199	core: Mount many children of one parent without a search for each (#2347)
+eb5ed6449	macos: Keep the start of right-to-left text in view when a line is cut (#2343)
+90e82f0b8	updater: Install updates that change the app's id or executable name (#2339)
+b190e57f5	menu: Stop overscroll bounce and hide internal scroll bars (#2340)
+6c278f748	text_view: Add a tableGrid part so apps can frame a table (#2342)
+0f417aad8	android: Share input alignment and letter spacing with TextLayouts (#2356)
+7c332d84c	android: Tell TalkBack a control's new state after the app changes it (#2352)
+68a0b5508	macos: Add a gpui-agent control plane behind the gpui-agent feature
+944b2eaee	macos: gpui-agent invoke "drag" — synthesized press-drag-release
+dcc0866c9	macos: gpui-agent invoke "scroll" — trackpad gestures and momentum
+4157ffbf1	macos: gpui-agent invoke "hover" — dispatch MouseMoved directly
+cd3b1de5c	macos: text fields in the a11y tree, gpui-agent invoke "press"
+f6bc16d8d	macos: gpui-agent — prune hidden subtrees, focus before sending keys
+1cee57648	macos: Check a gpui-agent action's target is actionable before acting
+7b4982656	macos: Report gpui-agent nodes' visibility as actions see it
+7dc786f98	macos: Settle the app before a gpui-agent action replies
+75b5e1b0d	macos: Resize the window's content with gpui-agent invoke viewport
+24ba4ed73	macos: List the app's real key bindings for gpui-agent and gate them
+07cef4483	macos: Describe the gpui-agent host in its module docs
+ca8be7756	macos: Give the gpui-agent snapshot a compact format
+41807e789	macos: Never show a masked input's text to gpui-agent clients
+fdee13922	macos: Hand gpui-agent's keys and text to the app's key bindings
+c917d3853	deps: Pin gpui-agent where the shared adapter declares it
+646255854	macos: Activate the app only for gpui-agent actions that type
+998bb1f6a	rox: Name the roles upstream added in the macOS GPUI agent's tree
+419953c3a	macos: Include embedded surfaces in the gpui-agent snapshot
+88b940945	macos: Draw views at the scale they are shown at
+f7afafd8c	Keymaps: bind a menu's reserved keystroke; read a key event as the monitor does
+aae18fbe2	macos: Pause an embedded app's frames and timers while it is unseen
+b66fd5498	core: Clone mount state for agent hooks
+e6c1594d0	dev: Wire semantic tree scene queries
+2129b519d	testing: Add semantic actionability safeguards
+701c45c58	gpui-agent: Add development host adapter
+905d92d8f	linux: Attach GPUI agent to GTK host
+2f67a099e	android: Attach GPUI agent to development hosts
+cea86b6f0	cli: Pass Android GPUI-agent launch options
+102b31470	fixtures: Add deterministic agent safety fixture and tooling guide
+b5a943f0d	report: Record Linux and Android GPUI-agent verification
+e90e16208	android: Serialize agent reload state
+6e4000bb3	testing: Catalog application menu shortcuts
+3ae8bbc57	dev: Describe installed menu shortcuts
+d857a9beb	testing: Resolve synthetic semantic targets
+4d4f161e5	ci: Include GPUI agent in workflow paths
+b2470aaf5	testing: Keep ordinary actions on legacy scene queries
+2bbd90cf6	report: Record post-merge agent validation
+f9e9075a6	report: Complete review fix history
+44cc41391	testing: Preserve button owner for label presses
+dc8323b79	report: Record button-label press verification
+ae975271b	testing: Restrict label hits to its event ancestry
+208ea9ddb	report: Record label hit ancestry verification
+0b9e98598	report: Record approved Default exception
+3fb31b939	testing: Reject strict drag points outside the visible target
+dc8558fd9	testing: Reject strict point presses on what nothing pressable owns
+396635189	testing: Restore the not on screen wording outside strict mode
+6ed71fbd9	testing: Build the semantic tree once per GPUI-agent snapshot
+0a627743a	testing: Accept strict hits on accessibility-hidden children
+eea4916cb	testing: Never show a masked input's text in semantic snapshots
+81fe2a41e	testing: Let an app that keeps requesting frames settle
+ed1a503e5	linux: Keep unsupported test keys a no-op outside strict presses
+8eaf12e0b	android: Report failed agent hit tests as errors
+de9c9a891	android: Stop copying each batch for an attached agent
+d1b23de4d	cli: Hand the Android agent token over private storage
+93fe786b5	android: Hit-test agent points with the touch walk
+809d598fc	linux: Keep JS frames out of the ordinary test model's activity
+195681579	linux: Build the agent's hit test only with development support
+9d1c64c15	android: Keep ordinary test hovers failing without a mouse
+071affd6a	android: Keep the test agent's coordinates in the window
+ccb5216c3	report: Withdraw the Default approval claim and point to the review fixes
+ae7c5e984	testing: Build the agent's keybinding catalog for the web runtime
+000bb3f8c	linux: Size attached viewports independently of window chrome
+5a3640cc6	report: Refresh GPUI-agent verification
+9540c1f06	testing: Let strict coordinate presses reach links in plain text
+a4b984c8e	testing: Refuse a press a hidden child would take for itself
+3f351bca6	cli: Refuse a GPUI-agent token with whitespace around it
+26f7aef59	android: Delete the GPUI-agent token file once the host reads it
+958760e38	android: Hit-test the strict agent's points in Z order
+0b21a651c	report: Record the owner's review fixes
+118f57505	report: Record the merge of main
+5805be459	testing: Keep core's accessibility state and name its new roles
+dcb24c5a5	testing: Give the GPUI agent's test scene a span style
+72380e4b8	testing: Name the fields upstream's menu items and text links gained
+ea224776b	windows: Attach the GPUI agent to native surfaces
+86d7bd945	windows: Count the menu bar when resizing to a client size
+2eacfa7bd	windows: Take the keyboard focus back from web views for focused fields
+cc9398e08	windows: Correct a resize by the client area the window gets
+46ea050e8	testing: Let the platform report a viewport that is not laid out yet
+64f46b2c2	windows: Wait for the layout a resize starts; address the attach review
+d201f448c	testing: Report failed native calls; tell whether a worker still serves
+645598be9	windows: Fail steps whose main-thread call timed out; end the agent with its window
+30eb63d84	windows: Group the menu test imports; call the minimum window size approximate
+1b09f2403	windows: Take the keyboard back from web views when a step presses outside them
+aea62c2d7	gallery: Add a fixture with a web view beside a native field
+7a10d0923	gallery: Count the agent fixture's hovers with onMouseEnter and onMouseLeave
+00bb09058	dev: Route a GPUI agent's steps to the page that holds its key
+38c7f6e54	testing: Ask a page for hits, focus and text bounds over the dev protocol
+fe4f91e1a	web: Answer a GPUI agent's questions from the development page
+dae0a1ac9	cli: Attach a GPUI agent to nsh run --target web
+e68bd5708	gallery: Add a masked input fixture for the GPUI agent's checks
+c920bbc48	docs: Describe the GPUI agent attached to nsh run --target web
+91e54a231	cli: Keep a GPUI agent's token out of the browser nsh starts
+5c24b9c09	cli: Refuse a GPUI agent for a Rust app on the web
+5d4912317	web: Answer text bounds as upstream does, for agents and tests alike
+98bf75859	gallery: Read the masked fixture's input value from its event object
+5127e87c4	web: Press shifted keys and characters as upstream does
+cbbda42d5	web: Paste in the web agent as upstream does
+ad469b46d	macos: Draw content about to scroll into view ahead of time
+407a4aedb	macos: Let a hosted app view take the keys it binds ahead of its host, or after it
+eb52e6e84	macos: Split the gpui-agent server off, and say whose hands input came from
+1336b00e0	macos: Give a caller in the process an AppView's semantic tree
+ad2a2c859	macos: Let a caller in the process act on a node as an agent
+fa9ae7a43	macos: End an in-process action however it stops, and show a field's text in the tree
+ea0d9c626	macos: Let what was typed win over a field's accessibility value
+6f20ea967	macos: Don't count an event another process posted as the person's
+829875f96	macos: Ask before the press, and read the agent token from a file
+31d23200d	buwiz: Fit the gpui-agent control plane to upstream's newer macOS code
+2b0ca2097	buwiz: Fit the gpui-agent roles and the monitor actions to upstream 0.6
+1fe9ef275	testing: Name the dialog roles for the shared gpui-agent adapter
+bf48e626b	testing: Build the gpui-agent adapter's tests against upstream 0.6's menus and scene
+29d0b1739	windows: Pass no menu area when an agent fires a menu shortcut
+804ed65c6	macos: Spread a batch that makes hundreds of views out of sight over frames
+62cd76d68	buwiz: Format the lines the merged topics share
+a09f40be6	windows: Let a web view open the file page its app loaded there
+ad9c1f10e	linux: Export the application menu to KDE Plasma's Global Menu
+65db8858c	gpui-agent: Serve press, scroll, hover, drag, viewport and swipe as operations
+ca5d9a424	gpui-agent: Serve long_press and system back on mobile
+0c9ab8823	ios: Serve gpui-agent from the iOS Simulator development host
+b7bf98a5c	gpui-agent: Hold long presses on views that only take long presses
+7fcb7e77b	ios: Reset the gpui-agent scene when the development host reloads
+abe8d514c	ios: Read the dev session from the held view state on reload
+2e60e1a7e	gpui-agent: Refuse long presses on disabled views; tidy test types
+613a645c8	gpui-agent: Serve rotate, keyboard and paste on Android
+51c92db95	gpui-agent: Fix long-press actionability
+c959c6bb4	gpui-agent: Report the focused input on Android
+ebb6078cc	macos: Serve gpui-agent from the macOS development host
+b2e75816f	macos: Pick the pressed view through the surface root in the agent hit test
+126d39f6f	gpui-agent: Refuse the new operations in the macOS private server
+39ac42bed	macos: Hit test the window targeted by the agent
+cac5968b7	macos: Focus native nodes for agent key input
+f947318cc	macos: Report application focus to the agent
+7481bb113	macos: Feed the agent model only when a worker exists
+dad16b3e2	macos: Document the source-built debug host requirement
+bc5584729	macos: Focus a node only when its own view takes the first responder
+ce2d05027	ci: Check the macOS development host with the gpui-agent adapter
+858af7269	testing: Aim node actions at the node’s own window
+a21f3201f	testing: Name the recorded window action in the two-window fixture
+05ff6e407	testing: Derive the two-window fixture's default on the struct
+5174ca015	macos: Pick agent hits in the targeted window root
+f771cf808	macos: Check native agent window picking and keyboard focus
+16e70855e	macos: Initialize key windows explicitly in native agent checks
+005113791	macos: Dispatch queued mouse events in native agent checks
+4c3c53e45	macos: Clear focus before the targeted key in native agent checks
+0bd1e311c	macos: Keep native checks from starting the shared agent listener
+4d4b0c62f	macos: Report the development agent listener startup error
+6244b37dc	macos: Describe development agent capabilities positively
+e75ddd0a9	ios: Report foreign native hits without a node sentinel
+797fdc970	ios: Continue the development session after agent startup fails
+16e11669c	web: Add synthetic input to the dev protocol
+cacadccad	web: Add dial-out tab agent mode
+6c5c32408	cli: Remove simulator agent token files on every exit path
+654f9df3c	ios: Keep agent and test session models independent
+49a61dfc2	testing: Format the canvas hit regression assertion
+621d39594	ios: Describe simulator agent capabilities and failure recovery
+e15d5333d	ios: Report agent startup failures after the dev client connects
+df1497685	macos: Report foreign native hits without a node sentinel
+c290f14c7	web: Refuse screenshots and swipes in a hand-opened tab
+21b2c1281	macos: Clear the remaining clippy warnings in the platform crate
+27b5327f5	web: Focus the target of synthetic clicks
+eb9586500	web: Emulate editing keys in synthetic input
+4356ee179	web: Guard agent pairing storage access
+19afe9626	web: Stop advertising synthetic paste in tab mode
+574e89af0	web: Dispatch synthetic pointer boundary events
+76da5edca	web: Mark synthetic pointer moves as button-free
+f7f01dfbb	web: Skip unsupported synthetic caret selections
+def385970	web: Emulate word and macOS line shortcuts
+b6f3c3b04	web: Move synthetic carets by grapheme
+4ae9673ac	web: Handle Home at a leading newline
+f13759c27	web: Rename the synthetic key event so nsh.js parses
+c9f4d8c2d	android: Use the InputDevice import in TestAgent
+7ed3aef8a	android: Look up the focused node by identity
+a3175df0a	android: Wait for the keyboard to show or hide
+7031fb0d1	testing: Test paste, rotate and keyboard
+a542c44af	testing: Report a missing drag endpoint before comparing windows
+5f09f6d0d	android: Read keyboard visibility from the focused window
+f17d2e265	macos: Make the focused node's window key before targeted keys
+5413d618f	testing: Keep focus when typing into a focused input
+b2cff85f3	ios: Report app focus to the development agent
+bbca8d587	gpui-agent: Depend on gpui-agent 0.2.0
+0e0faf745	macos: Tolerate unobservable key changes in the targeted key test
+81e3566a0	macos: Keep the key window when a targeted key is refused
+ac7e16d12	web: Refuse keys for a view that cannot take focus
+e4fc782b3	web: Refuse typing into read-only inputs
+b12344b10	web: Refuse keys a hand-opened tab cannot apply
+47feb966f	web: Let the page handle keys before refusing them
+7a86ce0f9	web: Refuse unhandled editing shortcuts in a hand-opened tab
+e2dff9109	macos: Check the agent listener's startup, reload and shutdown natively
+9a2093b99	ci: Run the macOS native agent checks
+5df36e9f1	macos: Check the listener's debug-build requirement at run time
+a2cd66b7a	macos: Check that a reload leaves no old nodes in the agent snapshot
+4c2e403d5	gpui-agent: Depend on gpui-agent 0.2.1
+bcdf85be7	gpui-agent: Depend on gpui-agent 0.3.0
+991ed2d1b	macos: Attribute a lifted input pad's hits to its input
+b05f3f3f4	macos: Cover lifted-input hit attribution in native agent checks
