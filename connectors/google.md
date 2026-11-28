@@ -4,15 +4,24 @@ Checked on 2026-10-25 against Google's docs and live MCP metadata. Items marked 
 
 One Google Cloud project and **one OAuth client (type: Desktop app)** serve all six plugins. You create it once, enable the APIs for the plugins you want, and paste the same Client ID and Client Secret into each Google plugin in Buwiz Bot.
 
-## Your setup (as of 2026-10-25) — read this first
+## Your setup — read this first
+
+**Moving to a client of its own (2026-11-28).** Buwiz Bot used to share project **BudgetWise** (`budgetwise-bqkm6`, client `537583266937-l32e…`) with the eBIRForms app. That client's secret shipped inside eBIRForms v0.2.0, so it is public, and the client is **deleted at eBIRForms' 1.0.0 cut**. Buwiz Bot gets its own project and Desktop client first, so its Google plugins keep working:
+
+1. Follow steps 1–4 below in a **new** project (name `Buwiz Bot`), signed in as the same Google account: enable the 6 base APIs (and the 6 `*mcp` services only if you use Google's official servers), External + Testing with yourself as test user, the scopes you use, then a **Desktop app** client named `Buwiz Bot desktop`.
+2. In Buwiz Bot: **Connect apps → any Google plugin → settings** → paste the new Client ID and Client Secret (saving in one Google plugin updates all), and **Authenticate** each official Google plugin you use again.
+3. For the local `Google Workspace` plugin: delete `~/.google_workspace_mcp/credentials/` (its tokens belong to the old client), then ask the AI for any Google action and approve the consent tab.
+4. Check: "list my last 3 email subjects" and "list tomorrow's events" both answer.
+5. If you applied for the Workspace Developer Preview for `budgetwise-bqkm6`, apply again for the new project (the enrollment is per project).
+6. Only then may the old client in BudgetWise be deleted.
 
 | Item | Value |
 |---|---|
 | Google account | `you@example.com` (gcloud has several accounts; always pass `--account=you@example.com`) |
-| Cloud project | **BudgetWise**, id `budgetwise-bqkm6`, number `537583266937` (the number is the start of the Client ID) |
-| OAuth client | Desktop app, Client ID `537583266937-l32ec2n1…apps.googleusercontent.com`, saved once in Buwiz Bot under the shared Google setup |
+| Cloud project | **Buwiz Bot**, its own project (fill in id and number once created; the number is the start of the Client ID). Until the move: BudgetWise, `budgetwise-bqkm6`. |
+| OAuth client | Desktop app `Buwiz Bot desktop`, saved once in Buwiz Bot under the shared Google setup. Until the move: `537583266937-l32e…` (retired at eBIRForms 1.0.0). |
 | Consent screen | External, Testing, `you@example.com` added as test user |
-| APIs enabled | all 12 from step 2 (6 base APIs + 6 `*mcp` services) |
+| APIs enabled | the 6 base APIs from step 2 (plus the 6 `*mcp` services if you use Google's official servers) |
 
 **Where it stands:** sign-in works and the tokens are saved, but **Google's own MCP servers (`*mcp.googleapis.com`) refuse every tool call** with:
 
